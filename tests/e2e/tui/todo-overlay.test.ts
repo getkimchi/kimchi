@@ -1,6 +1,12 @@
 import { test } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
-import { INPUT_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
+import {
+	INPUT_TIMEOUT_MS,
+	STREAM_TIMEOUT_MS,
+	viewText,
+	waitForText,
+	waitForTurnToSettle,
+} from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -135,16 +141,16 @@ test("todo overlay stays visible after non-todo work and hides when clear_todos 
 				{ stream: [] },
 			],
 		},
-		async (_fixture, trace) => {
+		async (fixture, trace) => {
 			terminal.submit("leave an active todo")
-
 			await waitForText(terminal, "Todos · Global · 2/3 ·", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			trace.step("active todo overlay visible")
 
-			// After the terminal turn ("Work finished."), the overlay stays
-			// visible — the old reconciliation follow-up was removed.
-			await waitForText(terminal, "Work finished.", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
-			trace.step("terminal turn rendered — overlay stays visible")
+			// The terminal turn has no tool calls: its staged response is the
+			// terminal sync signal. Don't wait on assistant text that may fold
+			// into the run summary once the next call arrives.
+			await waitForTurnToSettle(fixture.fake.requests)
+			trace.step("terminal turn completed — overlay stays visible")
 
 			// User explicitly prompts to clear todos → model calls clear_todos
 			// → overlay hides.

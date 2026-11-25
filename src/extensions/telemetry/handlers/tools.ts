@@ -90,7 +90,6 @@ const NESTED_TOOL_ALLOWLIST = new Set([
 	"find",
 	"ls",
 	// Kimchi harness tools with stable names.
-	"set_phase",
 	"agent",
 	"get_subagent_result",
 	"steer_subagent",

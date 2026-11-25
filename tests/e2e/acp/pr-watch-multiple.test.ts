@@ -40,7 +40,10 @@ it("offers to watch the PR of a commit the agent pushed from a non-repository se
 	})
 	try {
 		const sessionId = await newSession(fixture, fixture.workDir)
-		await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "Fix the answer and push it" }] })
+		await fixture.conn.request("session/prompt", {
+			sessionId,
+			prompt: [{ type: "text", text: "Fix the answer and push it" }],
+		})
 		await expect
 			.poll(
 				() =>
@@ -56,7 +59,7 @@ it("offers to watch the PR of a commit the agent pushed from a non-repository se
 			fixture.client.permissionRequests.filter(({ toolCall }) => toolCall.title === "Enable automatic PR watching?"),
 		).toHaveLength(1)
 		const before = fixture.client.agentTextBySession().get(sessionId)?.length ?? 0
-		await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch status" }] })
+		await fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "/pr-watch status" }] })
 		const status = fixture.client.agentTextBySession().get(sessionId)?.slice(before) ?? ""
 		expect(status).toContain(`Checkout: ${realpathSync(target.cwd)}`)
 		expect(status).toContain("Watching · Auto-fix on · CI only")
@@ -120,11 +123,11 @@ it.each([
 		const sessionId = await newSession(fixture, fixture.workDir)
 		const status = async () => {
 			const before = fixture.client.agentTextBySession().get(sessionId)?.length ?? 0
-			await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch status" }] })
+			await fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "/pr-watch status" }] })
 			return fixture.client.agentTextBySession().get(sessionId)?.slice(before) ?? ""
 		}
 		expect(await status()).toContain("PR watch · Not watching")
-		await fixture.conn.prompt({
+		await fixture.conn.request("session/prompt", {
 			sessionId,
 			prompt: [{ type: "text", text: `Watch and fix these PRs: ${targets.map(({ url }) => url).join(" ")}` }],
 		})
@@ -155,7 +158,7 @@ it.each([
 		expect(chatRequests(fixture)).toHaveLength(count)
 		for (const target of targets)
 			expect(readFileSync(join(target.cwd, "answer.txt"), "utf8")).toBe(`fixed ${target.number}\n`)
-		await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "/pr-watch stop" }] })
+		await fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "/pr-watch stop" }] })
 		expect((await status()).split("Stopped · Auto-fix off")).toHaveLength(3)
 		expect(chatRequests(fixture)).toHaveLength(count)
 	} finally {

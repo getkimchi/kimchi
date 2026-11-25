@@ -1,3 +1,4 @@
+import { statSync } from "node:fs"
 import { expect, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, viewText, waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
@@ -8,7 +9,8 @@ test.use(TUI_TEST_CONFIG)
 // Deterministic long-running command: prints a line, then sleeps well past
 // the initial handoff (2s under the e2e fixture) so the first result yields a background handle,
 // and exits on its own shortly after.
-const LONG_COMMAND = "echo started && sleep 15"
+// The final echo updates the output log's mtime when the process exits.
+const LONG_COMMAND = "echo started && sleep 15 && echo LONG_COMMAND_EXITED"
 
 // Workflow 1: start a slow command, do independent work (read), then block
 // with one bounded wait that resolves on the command's natural exit.
@@ -66,19 +68,28 @@ test("background bash: slow command + independent read + final outcome via one b
 		async (fixture, trace) => {
 			terminal.submit("Run a long command, read a file while it runs, then wait for its outcome")
 
-			// The read tool call runs while the process is still tracked — it
-			// must not be hard-blocked.
-			await waitForText(terminal, "Reading a file while the command runs", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("read tool executed concurrently")
-
-			// The bounded wait blocks until the natural exit (~15s), then the
-			// model continues with the final outcome in hand.
-			await waitForText(terminal, "waiting for the command", { timeoutMs: STREAM_TIMEOUT_MS })
-			trace.step("bounded wait issued")
+			// Interim narration folds once the next call runs. Compare the fake
+			// provider's read-result timestamp with the process's exit-marker write
+			// instead of requiring that narration to remain visible.
 			await waitForText(terminal, "The command finished with its output", {
 				timeoutMs: STREAM_TIMEOUT_MS * 3,
 			})
-			trace.step("wait resolved on exit")
+			const messages = fixture.fake.requests.flatMap(
+				(r) => (r.body as { messages?: { role?: string; content?: unknown }[] } | undefined)?.messages ?? [],
+			)
+			const textOf = (content: unknown): string => (typeof content === "string" ? content : JSON.stringify(content))
+			const contains = (needle: string, role?: string) =>
+				messages.some((m) => textOf(m.content).includes(needle) && (role === undefined || m.role === role))
+			const readResult = fixture.fake.requests.find((request) =>
+				JSON.stringify(request.body ?? {}).includes('"call_read"'),
+			)
+			if (!readResult) throw new Error("Expected the model to submit the independent read result")
+			const logReference = messages.find((m) => m.role === "tool" && textOf(m.content).includes(" full log: "))
+			const logPath = logReference ? textOf(logReference.content).match(/ full log: ([^\s"]+)/)?.[1] : undefined
+			if (!logPath) throw new Error("Expected the background handoff to identify its output log")
+			expect(readResult.receivedAt).toBeLessThan(statSync(logPath).mtimeMs)
+			trace.step("independent read completed before the background process exited")
+			trace.step("wait resolved on exit with the final outcome visible")
 
 			// Channel-aware assertions: the exit arrived INSIDE the wait's
 			// tool result (role tool), not as a standalone notification
@@ -88,12 +99,6 @@ test("background bash: slow command + independent read + final outcome via one b
 			expect(systemPrompt).toContain("harness-owned safety limit")
 			expect(systemPrompt).not.toContain("the bash tool's `timeout` parameter")
 			expect(systemPrompt).not.toContain("default 60s")
-			const messages = fixture.fake.requests.flatMap(
-				(r) => (r.body as { messages?: { role?: string; content?: unknown }[] } | undefined)?.messages ?? [],
-			)
-			const textOf = (content: unknown): string => (typeof content === "string" ? content : JSON.stringify(content))
-			const contains = (needle: string, role?: string) =>
-				messages.some((m) => textOf(m.content).includes(needle) && (role === undefined || m.role === role))
 			expect(contains("[Background bash process ended", "tool")).toBe(true)
 			expect(contains("[Background bash process ended", "user")).toBe(false)
 			// The handoff result names the live log and teaches the watch

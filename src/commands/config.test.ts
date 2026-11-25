@@ -12,6 +12,8 @@ vi.mock("../config.js", async (importOriginal) => ({
 	readTelemetryConfig: vi.fn(),
 	writeTelemetryEnabled: vi.fn(),
 	writeTuiWheelScrollLines: vi.fn(),
+	writeTuiTimestamps: vi.fn(),
+	writeTuiTimezone: vi.fn(),
 	writeLanguage: vi.fn(),
 	loadConfig: vi.fn(),
 }))
@@ -34,6 +36,8 @@ import {
 	readTelemetryConfig,
 	writeLanguage,
 	writeTelemetryEnabled,
+	writeTuiTimestamps,
+	writeTuiTimezone,
 	writeTuiWheelScrollLines,
 } from "../config.js"
 import {
@@ -491,6 +495,61 @@ describe("kimchi config set tui.wheelScrollLines", () => {
 		expect(await runConfig(["set", "tui.wheelScrollLines"])).toBe(2)
 		expect(await runConfig(["set"])).toBe(2)
 		expect(writeTuiWheelScrollLines).not.toHaveBeenCalled()
+	})
+})
+
+describe("kimchi config set/get tui timestamp preferences", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.spyOn(console, "log").mockImplementation(() => {})
+		vi.spyOn(console, "error").mockImplementation(() => {})
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it.each(["on", "true", "yes", "1", "enable", "enabled"])("enables timestamps with %s", async (raw) => {
+		expect(await runConfig(["set", "tui.timestamps", raw])).toBe(0)
+		expect(writeTuiTimestamps).toHaveBeenCalledWith(true)
+		expect(console.log).toHaveBeenCalledWith("tui.timestamps = on (written to global config)")
+	})
+
+	it.each(["off", "false", "no", "0", "disable", "disabled"])("disables timestamps with %s", async (raw) => {
+		expect(await runConfig(["set", "tui.timestamps", raw])).toBe(0)
+		expect(writeTuiTimestamps).toHaveBeenCalledWith(false)
+		expect(console.log).toHaveBeenCalledWith("tui.timestamps = off (written to global config)")
+	})
+
+	it("rejects an invalid timestamp switch without writing", async () => {
+		expect(await runConfig(["set", "tui.timestamps", "sometimes"])).toBe(2)
+		expect(writeTuiTimestamps).not.toHaveBeenCalled()
+	})
+
+	it.each(["local", "LoCaL", "UTC", "Europe/Kyiv"])("accepts timezone %s", async (raw) => {
+		expect(await runConfig(["set", "tui.timezone", raw])).toBe(0)
+		expect(writeTuiTimezone).toHaveBeenCalledWith(raw.toLowerCase() === "local" ? "local" : raw)
+	})
+
+	it.each(["Not/AZone", "", "   "])("rejects invalid timezone %j without writing", async (raw) => {
+		expect(await runConfig(["set", "tui.timezone", raw])).toBe(2)
+		expect(writeTuiTimezone).not.toHaveBeenCalled()
+	})
+
+	it("shows configured values and their defaults", async () => {
+		vi.mocked(loadConfig).mockReturnValue({ tui: { timestamps: true, timezone: "UTC" } } as ReturnType<
+			typeof loadConfig
+		>)
+		expect(await runConfig(["get", "tui.timestamps"])).toBe(0)
+		expect(console.log).toHaveBeenCalledWith("tui.timestamps: true (from config)")
+		expect(await runConfig(["get", "tui.timezone"])).toBe(0)
+		expect(console.log).toHaveBeenCalledWith("tui.timezone: UTC (from config)")
+
+		vi.mocked(loadConfig).mockReturnValue({} as ReturnType<typeof loadConfig>)
+		expect(await runConfig(["get", "tui.timestamps"])).toBe(0)
+		expect(console.log).toHaveBeenCalledWith("tui.timestamps: off (default) (from config)")
+		expect(await runConfig(["get", "tui.timezone"])).toBe(0)
+		expect(console.log).toHaveBeenCalledWith("tui.timezone: local (system timezone) (from config)")
 	})
 })
 

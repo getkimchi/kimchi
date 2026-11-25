@@ -1,4 +1,4 @@
-import { PROTOCOL_VERSION, type SessionNotification } from "@agentclientprotocol/sdk"
+import { PROTOCOL_VERSION, type SessionNotification } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import {
 	type AcpSessionCallbacks,

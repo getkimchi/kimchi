@@ -248,6 +248,10 @@ test("check-in gate: ignoring staleness reminders escalates, a wrong confirm is 
 })
 
 test("plan submission: stale final list arms the check-in gate for the approval turn", async ({ terminal }) => {
+	let releaseApprovalResponse!: () => void
+	const approvalResponseGate = new Promise<void>((resolve) => {
+		releaseApprovalResponse = resolve
+	})
 	await runKimchiSession(
 		terminal,
 		{
@@ -268,7 +272,9 @@ test("plan submission: stale final list arms the check-in gate for the approval 
 				// stale list).
 				tool("submit_plan", { plan: "# Plan\n\n## Goal\n\nVerify the plan-submission check-in gate.\n" }),
 				// Approval turn: the first work tool is blocked by the armed gate…
-				tool("bash", { command: "printf 'never runs\n'" }),
+				// Hold its scripted response until the user actually approves so
+				// later requests cannot race past the review-menu interaction.
+				{ ...tool("bash", { command: "printf 'never runs\n'" }), holdUntil: approvalResponseGate },
 				// …the model reconciles (the plan was written and submitted)…
 				tool("mark_todo", { id: 1, status: "completed" }),
 				// …and execution work proceeds.
@@ -282,29 +288,33 @@ test("plan submission: stale final list arms the check-in gate for the approval 
 
 			// The TUI plan-review menu opens at the submission boundary.
 			await waitForText(terminal, "Plan complete. How would you like to proceed?", { timeoutMs: STREAM_TIMEOUT_MS })
+			const requestsAtReview = chat().length
 			trace.step("plan submitted; review menu open")
 
+			// Give an incorrectly queued post-submission steer enough time to run
+			// before approval. Neither model work nor dismissal of the review is valid.
+			await new Promise((resolve) => setTimeout(resolve, 250))
+			expect(chat()).toHaveLength(requestsAtReview)
+			expect(viewText(terminal)).toContain("Plan complete. How would you like to proceed?")
 			// Approve locally: the first option is "Execute the plan locally".
 			terminal.keyPress(Key.Enter)
+			releaseApprovalResponse()
 			await waitForText(terminal, "Plan executed. Ready for the next task.", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("approved locally; execution finished")
 
 			const history = JSON.stringify(chat())
 			// The blocked work call carried the plan-submission check-in reason.
 			expect(history).toContain("check-in pending (input revision 1)")
-			// The plan-submission instruction rode the first request after the
-			// submission boundary — the same request that carries the submit_plan
-			// tool result — so the model knew why the gate was open before its
-			// work tool ran, and the block followed the instruction.
 			const bodies = chat().map((request) => JSON.stringify(request.body))
-			const submissionTurn = bodies.findIndex((body) => body.includes("The plan was submitted for review"))
-			expect(submissionTurn).toBeGreaterThanOrEqual(0)
-			expect(bodies[submissionTurn]).toContain("Plan submitted")
+			// The first new request must be the approval turn, carrying both the
+			// approval and the deferred submission check-in. This proves execution
+			// did not consume queued fake responses before the user approved.
+			expect(bodies[requestsAtReview]).toContain("The user approved the plan")
+			expect(bodies[requestsAtReview]).toContain("The plan was submitted for review")
+			expect(bodies[requestsAtReview]).toContain("Plan submitted")
 			expect(bodies.findIndex((body) => body.includes("check-in pending (input revision 1)"))).toBeGreaterThan(
-				submissionTurn,
+				requestsAtReview,
 			)
-			// The approval turn still ran after the gate-forced reconciliation.
-			expect(bodies.some((body) => body.includes("The user approved the plan"))).toBe(true)
 			// The reconciliation the gate forced is visible in the final state.
 			terminal.submit("/todos")
 			await waitForText(terminal, "1/1 ✓", { timeoutMs: STREAM_TIMEOUT_MS, full: false })

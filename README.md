@@ -60,99 +60,7 @@ Run `kimchi --help` to see all available subcommands and flags.
 
 The supported model list is fetched at startup from the kimchi metadata service. Use `/model` or `ctrl+p` in the interactive CLI to switch between available models.
 
-Kimchi operates in one of two modes:
-
-| Mode | Status line indicator | Behavior |
-|------|-----------------|----------|
-| **Multi-model** | `multi-model (orchestrator-id)` | The orchestrator delegates each task to the model assigned for that role |
-| **Single-model** | model name | All work runs on the selected model directly |
-
-Use `ctrl+p` to cycle through models. The last entry in the cycle is `multi-model`. You can also open the `/model` picker and select a specific model or `multi-model` from the list.
-
-In single-model mode the orchestration system prompt (environment, tools, research rules, guidelines, phase tagging) stays active, but task classification and delegation are disabled. The subagent tool remains available if you explicitly ask the agent to delegate.
-
-### Model roles
-
-In multi-model mode, each task type is handled by a specific role. Each role can have one model or a **pool of candidates** — the orchestrator reads model tier and description and picks the best fit for each task.
-
-Use `/multi-model` in the interactive CLI to toggle models on/off per role, or edit `~/.config/kimchi/harness/settings.json` directly:
-
-```json
-{
-  "modelRoles": {
-    "orchestrator": "kimchi-dev/kimi-k2.6",
-    "builder": ["kimchi-dev/minimax-m2.7", "anthropic/claude-sonnet-4-5"],
-    "reviewer": "anthropic/claude-sonnet-4-5",
-    "explorer": "kimchi-dev/nemotron-3-ultra-fp4"
-  }
-}
-```
-
-| Role | Default | Description |
-|------|---------|-------------|
-| **orchestrator** | `kimi-k2.6` | Runs the main loop, classifies tasks, delegates work. Single model. |
-| **planner** | `kimi-k2.6` | Designs the approach, writes specs. When same as orchestrator, planning is done in-process. |
-| **builder** | `kimi-k2.6`, `minimax-m2.7` | Code implementation. For complex tasks the orchestrator may pick a heavier model from the pool. |
-| **reviewer** | `kimi-k2.6`, `minimax-m2.7` | Code review. Orchestrator picks the strongest by tier for initial review. |
-| **explorer** | `nemotron-3-ultra-fp4` | Codebase exploration — navigating files, reading code, tracing architecture. |
-| **researcher** | `kimi-k2.6` | Research beyond the codebase — web search, documentation lookup, external sources. |
-
-Defaults are hardcoded in `DEFAULT_MODEL_ROLES`. Roles accept any `provider/model-id` string or an array of strings. Only non-default values need to be specified; missing keys fall back to defaults.
-
-#### How delegation works
-
-The orchestrator receives explicit per-phase directives generated from the role configuration. For each pipeline phase (plan, build, review, explore, research), the system prompt tells the orchestrator exactly what to do:
-
-- **Roles it owns** (its model ID appears in the role pool): "DO perform this work yourself."
-- **Roles it does not own**: "DO NOT perform this work yourself. Delegate to Agent(type: X, model: Y)." — with the concrete model IDs from the pool.
-- **Review is always delegated**, even when the orchestrator has the reviewer role, to ensure independence via a fresh context.
-
-When a role pool has multiple models, the orchestrator picks the lightest-tier model that fits the task and escalates to heavy-tier only for complex work (concurrency, algorithms) or as a retry after a standard-tier model has failed.
-
-Built-in models (kimchi-dev) have tier and description baked in. External models need metadata — see below.
-
-#### Model metadata
-
-External models (Anthropic, OpenAI, or any non-builtin provider) have no built-in tier or description. Without metadata, they default to `standard` tier, `vision: false`, and an auto-generated description based on their assigned roles. To give the orchestrator better routing information, add a `modelMetadata` section to `settings.json`:
-
-```json
-{
-  "modelRoles": {
-    "builder": ["kimchi-dev/minimax-m2.7", "anthropic/claude-sonnet-4-5"],
-    "reviewer": "anthropic/claude-sonnet-4-5"
-  },
-  "modelMetadata": {
-    "anthropic/claude-sonnet-4-5": {
-      "tier": "heavy",
-      "description": "Strong general-purpose model — use for complex builds and thorough reviews."
-    }
-  }
-}
-```
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `tier` | `standard` | `light`, `standard`, or `heavy`. Used for complexity-based routing. |
-| `description` | Auto-generated | Shown to the orchestrator so it can match model strengths to task requirements. |
-| `vision` | `false` | Whether the model supports image input. |
-
-With the metadata above, the orchestrator will use minimax for simple build chunks and Claude for complex ones. Without it, both models look like standard-tier to the orchestrator and selection is arbitrary.
-
-Metadata can also be managed interactively via `/multi-model` → "Edit model metadata" — this is the only in-app path for configuring or overriding metadata, so model selection stays uninterrupted. Custom overrides can be reset to defaults from the same menu. Metadata for builtin models can be overridden the same way.
-
-### Phase tracking
-
-Kimchi tags every LLM request with a `phase:{name}` label for usage analytics and cost attribution. The orchestrator sets the phase as work progresses and it is displayed in the status line.
-
-| Phase | Description |
-|-------|-------------|
-| `explore` | Navigating the codebase, reading files to understand structure |
-| `plan` | Designing, breaking down tasks, writing specs |
-| `build` | Writing, modifying, or refactoring code |
-| `review` | Analyzing output, verifying correctness |
-| `research` | Investigating documentation, researching issues |
-
-Subagents inherit the current phase from the orchestrator but cannot change it.
+All work runs on the selected model, and the status line shows it. The subagent tool remains available if you explicitly ask the agent to delegate.
 
 ## Tags
 
@@ -190,7 +98,7 @@ Sources are unioned; when two sources define the same tag key, the stronger sour
 Two tags are added automatically to every request and do not count toward the 10 tag limit:
 
 - `model:{model_id}` -- the model handling the request
-- `phase:{phase}` -- the current work phase
+- `phase:plan` in plan mode, `phase:build` in every other permission mode
 
 ### Persistence
 
@@ -214,11 +122,11 @@ Enable **Ferment V2** under `/resources` → **Experimental**, then restart Kimc
 
 Ferment V2 state is stored in the native session journal, so restart, resume, rewind, and fork follow the selected branch. An old turn cannot update an edited or replaced run because model updates must match both its ID and revision.
 
-At `turn_end`, Ferment V2 checkpoints the current session's assistant usage and active time. Reaching a token budget stops continuation before evaluation and changes the run to `budget_limited`. At the later settled checkpoint, an independent tool-free evaluator returns `met`, `impossible`, or `continue` only while the pending-input, tool-availability, identity, and stop-condition gates permit. The `fermenting time` counter counts active agent turns; cancellation, repeated errors, unchanged continuation, or evaluator unavailability pause the run. Runtime accounting is for the current session; the Terminal-Bench adapter separately aggregates valid usage from all discovered session files, including nested or child files.
+At `turn_end`, Ferment V2 checkpoints the current session's assistant usage and active time. Reaching a token budget stops continuation before evaluation and changes the run to `budget_limited`. At the later settled checkpoint, an executing verifier subagent (read/bash/grep/find/ls, unlimited turns and duration) returns `met`, `impossible`, or `continue` only while the pending-input, tool-availability, identity, and stop-condition gates permit. The `fermenting time` counter counts active agent turns; cancellation, repeated errors, unchanged continuation, or evaluator unavailability pause the run. Runtime accounting is for the current session; the Terminal-Bench adapter separately aggregates valid usage from all discovered session files, including nested or child files.
 
-Ferment V2 directs the agent to track tactical progress in the normal Todos widget without creating a second feature-specific checklist. `update_ferment_v2 complete` records an optional runtime completion claim and ends the working turn; it never completes the run by itself. The claim response stays hidden while evaluation runs. In interactive mode, a `met` verdict still requires a visible, fully completed Todo list for the current revision; headless mode has no visible widget and may proceed directly from evidenced `met`. Both start one buffered final-answer turn. `update_ferment_v2 blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
+Ferment V2 directs the agent to track tactical progress in the normal Todos widget. `update_ferment_v2 complete` records an optional runtime completion claim and ends the working turn; it never completes the run by itself. The claim response stays hidden while evaluation runs. In interactive mode, a `met` verdict still requires a visible, fully completed Todo list for the current revision; headless mode has no visible widget and may proceed directly from evidenced `met`. Both start one buffered final-answer turn. `update_ferment_v2 blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
 
-Evaluation details stay out of the visible transcript. `/ferment-v2` shows the evaluation count and latest verdict/reason; the evaluator uses the session model, or the configured `judge` role when multi-model is enabled, and records each check in a child session. Todo observations are valid only for the current session, Ferment V2 ID, and revision. User objective and Todo mutations wait for active work to settle before changing that state.
+Evaluation details stay out of the visible transcript. `/ferment-v2` shows the evaluation count, latest verdict/reason, and the verifier usage breakdown; the executing verifier runs on the first usable model from `evaluatorModels` that is not the implementer's session model, in a hidden child session that executes checks in the working tree. Todo observations are valid only for the current session, Ferment V2 ID, and revision. User objective and Todo mutations wait for active work to settle before changing that state.
 
 ### Settings
 
@@ -231,7 +139,7 @@ Ferment V2's policy numbers are adjustable. Edit `~/.config/kimchi/harness/setti
     "maxUnchangedContinuations": 3,
     "maxConsecutiveErrors": 3,
     "defaultTokenBudget": 200000,
-    "evaluationTimeoutMs": 180000
+    "evaluatorModels": ["kimchi-dev/glm-5.3", "kimchi-dev/kimi-k3"]
   }
 }
 ```
@@ -242,9 +150,10 @@ Ferment V2's policy numbers are adjustable. Edit `~/.config/kimchi/harness/setti
 | `maxUnchangedContinuations` | `3` | Consecutive continuation turns without recorded progress before the Ferment V2 run pauses itself. |
 | `maxConsecutiveErrors` | `3` | Consecutive agent-error turns before the Ferment V2 run pauses itself. |
 | `defaultTokenBudget` | unset | Token budget applied to `/ferment-v2 <objective>` when `--tokens` isn't given. An explicit `--tokens` always overrides this. |
-| `evaluationTimeoutMs` | `180000` | How long the independent completion check is allowed to run before it's treated as unavailable. |
+| `evaluationTimeoutMs` | unset | Optional wall-clock cap on one executing-verifier run, in milliseconds. Default: no cap. A timed-out verifier run is not retried. |
+| `evaluatorModels` | `["kimchi-dev/glm-5.3", "kimchi-dev/kimi-k3"]` | Ordered model refs for the executing verifier. The first usable entry that is not the implementer's session model wins; the session model is the fallback. |
 
-Only non-default values need to be specified; missing or invalid keys fall back to their default rather than failing the extension. There is no separate evaluator-model setting -- it uses the `judge` model role from [Model roles](#model-roles). The full evaluator evidence and failure-handling rules are in the [runtime guide](docs/ferment-v2.md).
+Only non-default values need to be specified; missing or invalid keys fall back to their default rather than failing the extension. The full verifier evidence, integrity-guard, and failure-handling rules are in the [runtime guide](docs/ferment-v2.md).
 
 ## Ferment -- cross-session project management
 
@@ -478,6 +387,10 @@ Kimchi stores its configuration (settings, sessions, models) under:
 ### TUI wheel-scroll speed
 
 Mouse-wheel scroll speed in fullscreen mode is configurable via `tui.wheelScrollLines` (synced to pi's `fullscreenWheelScrollLines` setting) — see [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md).
+
+### TUI transcript timestamps
+
+Optional datetime labels for prompts, responses, completed tools, and other transcript events are disabled by default. Enable them with `/timestamps on` for an immediate in-session redraw, or `kimchi config set tui.timestamps on` for the next TUI start. Timestamps use the system timezone unless `tui.timezone` is set to `UTC` or an IANA zone — see [docs/tui-timestamps.md](docs/tui-timestamps.md).
 
 ### Reply language
 

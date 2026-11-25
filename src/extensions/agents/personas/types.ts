@@ -3,8 +3,7 @@
  */
 
 import type { AgentSession, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import type { ModelTier } from "../../orchestration/model-registry/types.js"
-import type { ModelRole } from "../../orchestration/model-roles.js"
+import type { ModelRole, ModelTier } from "../../orchestration/model-registry/types.js"
 import type { RemoteSessionMeta } from "../manager/remote-agent-runner.js"
 import type { LifetimeUsage } from "../manager/usage.js"
 import type { PersistedGitWorkflow } from "../remote-run-persistence.js"
@@ -85,6 +84,7 @@ export const AGENT_REVIEWER = "Reviewer"
 export const AGENT_FIXER = "Fixer"
 export const AGENT_GRADER = "Grader"
 export const AGENT_DEBUGGER = "Debugger"
+export const AGENT_FERMENT_VERIFIER = "Verifier"
 
 /** Names of the embedded default agents (in canonical display order). */
 export const DEFAULT_AGENT_NAMES = [
@@ -97,6 +97,7 @@ export const DEFAULT_AGENT_NAMES = [
 	AGENT_FIXER,
 	AGENT_GRADER,
 	AGENT_DEBUGGER,
+	AGENT_FERMENT_VERIFIER,
 ] as const
 
 /** Isolation mode for agent execution. */
@@ -147,11 +148,13 @@ export interface AgentConfig {
 	isDefault?: boolean
 	/** false = agent is hidden from the registry */
 	enabled?: boolean
+	/** true = host-spawned persona hidden from user spawning and agent UIs; runtime config remains available. */
+	hostOnly?: boolean
 	/** Where this agent was loaded from */
 	source?: "default" | "project" | "global" | "package"
 	/**
-	 * Task roles this persona is optimized for. Used by the orchestrator
-	 * auto-pick logic when no model is explicitly specified and models[] is empty.
+	 * Task roles this persona is optimized for. Selects role-specific prompt guidance;
+	 * does not select or constrain the model.
 	 */
 	roles?: ModelRole[]
 }
@@ -191,6 +194,15 @@ export interface AgentRecord {
 	pendingSteers?: string[]
 	/** The tool_use_id from the original Agent tool call. */
 	toolCallId?: string
+	/** Original delegated prompt, before manager-added worker protocol text. */
+	prompt?: string
+	/** Native child session id, captured as soon as the session is created. */
+	sessionId?: string
+	/** Owning parent session identity, captured synchronously at spawn. */
+	parentSessionId?: string
+	parentSessionFile?: string
+	/** Absolute child working directory, refined from the native session when available. */
+	cwd?: string
 	/** Path to the streaming output transcript file. */
 	outputFile?: string
 	/** The system prompt used for this agent run. */

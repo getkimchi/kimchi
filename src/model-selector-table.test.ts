@@ -20,7 +20,6 @@ import { initTheme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { beforeAll, describe, expect, it, vi } from "vitest"
 import { ModelSelectorComponent } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/model-selector.js"
-import { MULTI_MODEL_DEPRECATION_LABEL } from "./extensions/auto-model/constants.js"
 import { installModelTableRenderer, renderModelTable } from "./model-selector-table.js"
 
 beforeAll(() => {
@@ -301,8 +300,6 @@ describe("/model selector capability table (installed patch)", () => {
 	})
 
 	type PatchedProcess = NodeJS.Process & {
-		__kimchiOrchestratorRef?: Map<string, string>
-		__kimchiMultiModelEnabled?: Map<string, boolean>
 		__kimchiModelDescriptions?: Map<string, string>
 		__kimchiModelThinkingLevels?: Map<string, string[]>
 	}
@@ -327,62 +324,6 @@ describe("/model selector capability table (installed patch)", () => {
 			patchedProcess.__kimchiModelThinkingLevels = undefined
 		}
 	}
-
-	it("the virtual multi-model row inherits its orchestrator's context/vision stats", () => {
-		patchedProcess.__kimchiOrchestratorRef = new Map([["mm-session", "kimchi-dev/kimi-k2.6"]])
-		patchedProcess.__kimchiMultiModelEnabled = new Map([["mm-session", false]])
-		try {
-			withLevels({ "kimchi-dev/kimi-k2.6": ["off", "low", "high", "max"] }, () => {
-				withDescriptions({ "kimchi-dev/kimi-k2.6": "Flagship vision model." }, () => {
-					const { renderPlain } = makeSelector({ sessionId: "mm-session" })
-					const rows = modelRows(renderPlain(120))
-					const multiRow = rows.find((r) => r.includes("multi-model"))
-					expect(multiRow).toBeDefined()
-					expect(multiRow).toContain("orchestration")
-					// Orchestrator (kimi-k2.6) stats: 200k context, vision ✓. Its
-					// description follows the harness-side deprecation label.
-					expect(multiRow).toMatch(/✓ {7}\[Deprecated\]/)
-					expect(multiRow).toContain("Flagship vision model.")
-					expect(multiRow).toContain("200k")
-					// Capabilities come from the orchestrator ref even though the
-					// display id is the virtual multi-model label.
-					expect(multiRow).toContain("off, low, high, max")
-				})
-			})
-		} finally {
-			patchedProcess.__kimchiOrchestratorRef = undefined
-			patchedProcess.__kimchiMultiModelEnabled = undefined
-		}
-	})
-
-	it("labels the virtual multi-model row as deprecated", () => {
-		// The deprecation label is harness-side: multi-model does not exist in
-		// the platform catalog, so no backend marker can carry it. It outranks
-		// the default-model annotation and keeps the orchestrator description.
-		//
-		// This is THE cross-surface pin: the patch renders a literal it cannot
-		// import from harness source, so the row produced by the patched
-		// selector is asserted against MULTI_MODEL_DEPRECATION_LABEL itself —
-		// any drift between patch literal and constant fails here.
-		patchedProcess.__kimchiOrchestratorRef = new Map([["mm-session", "kimchi-dev/kimi-k2.6"]])
-		try {
-			withDescriptions({ "kimchi-dev/kimi-k2.6": "Flagship vision model." }, () => {
-				const { renderPlain } = makeSelector({
-					sessionId: "mm-session",
-					// The saved default is the orchestrator model — the patch would
-					// annotate the multi-model row "Default for new sessions." too.
-					defaultModel: { provider: "kimchi-dev", id: "kimi-k2.6" },
-				})
-				const multiRow = modelRows(renderPlain(120)).find((r) => r.includes("multi-model"))
-				expect(multiRow).toBeDefined()
-				expect(multiRow).toContain(MULTI_MODEL_DEPRECATION_LABEL)
-				expect(multiRow).not.toContain("Default for new sessions.")
-				expect(multiRow).toContain("Flagship vision model.")
-			})
-		} finally {
-			patchedProcess.__kimchiOrchestratorRef = undefined
-		}
-	})
 
 	it("truncates the description column first on narrow terminals", () => {
 		withDescriptions(

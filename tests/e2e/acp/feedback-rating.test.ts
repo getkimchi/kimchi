@@ -20,7 +20,7 @@ async function rate(
 	sessionId: string,
 	params: { sentiment: string; reason?: string },
 ): Promise<unknown> {
-	return fixture.conn.extMethod(AVAILABLE_EXT_METHODS.feedback, {
+	return fixture.conn.request(AVAILABLE_EXT_METHODS.feedback, {
 		sessionId,
 		action: "rate_response",
 		...params,
@@ -51,7 +51,7 @@ describe("ACP integration — settled-response rating", () => {
 	it("rates the settled response once; the reason never reaches the model", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
 
-		const promptResult = await fixture.conn.prompt({
+		const promptResult = await fixture.conn.request("session/prompt", {
 			sessionId,
 			prompt: [{ type: "text", text: "hello" }],
 		})
@@ -67,7 +67,7 @@ describe("ACP integration — settled-response rating", () => {
 
 		// The next prompt re-arms the window and must not carry the reason to
 		// the model — feedback is a custom entry, never LLM context.
-		const next = await fixture.conn.prompt({
+		const next = await fixture.conn.request("session/prompt", {
 			sessionId,
 			prompt: [{ type: "text", text: "follow-up" }],
 		})
@@ -96,7 +96,7 @@ describe("ACP integration — rating window gating", () => {
 	it("rejects while a prompt is in progress, then accepts after the turn settles", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
 
-		const promptPromise = fixture.conn.prompt({
+		const promptPromise = fixture.conn.request("session/prompt", {
 			sessionId,
 			prompt: [{ type: "text", text: "go" }],
 		})
@@ -118,12 +118,12 @@ describe("ACP integration — rating window gating", () => {
 	it("leaves nothing to rate after a cancelled turn", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
 
-		const promptPromise = fixture.conn.prompt({
+		const promptPromise = fixture.conn.request("session/prompt", {
 			sessionId,
 			prompt: [{ type: "text", text: "go" }],
 		})
 		await waitForSessionUpdate(fixture, sessionId, (u) => u.sessionUpdate === "agent_message_chunk")
-		await fixture.conn.cancel({ sessionId })
+		await fixture.conn.notify("session/cancel", { sessionId })
 
 		const promptResult = await Promise.race([
 			promptPromise,

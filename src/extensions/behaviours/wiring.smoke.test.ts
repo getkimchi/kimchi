@@ -212,7 +212,7 @@ describe("wireBehaviours — session_start", () => {
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
 			contextFiles: [],
-			mode: "orchestrator",
+			mode: "single",
 			sessionId: TEST_SESSION_ID,
 		})
 		expect(sp).toContain("Use gh for GitHub.")
@@ -408,7 +408,7 @@ describe("wireBehaviours — tool_result", () => {
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
 			contextFiles: [],
-			mode: "orchestrator",
+			mode: "single",
 			sessionId: TEST_SESSION_ID,
 		})
 		expect(sp).toContain("Use gh for GitHub.")
@@ -421,7 +421,7 @@ describe("wireBehaviours — before_agent_start", () => {
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
 			contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
-			mode: "orchestrator",
+			mode: "single",
 		})
 
 		setupWired([ghCli])
@@ -429,7 +429,7 @@ describe("wireBehaviours — before_agent_start", () => {
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
 			contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
-			mode: "orchestrator",
+			mode: "single",
 		})
 
 		expect(promptAfterWiring).toBe(basePrompt)
@@ -444,7 +444,7 @@ describe("wireBehaviours — before_agent_start", () => {
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
 			contextFiles: [{ path: "/repo/AGENTS.md", content: "Project rule." }],
-			mode: "orchestrator",
+			mode: "single",
 			sessionId: TEST_SESSION_ID,
 		})
 
@@ -470,7 +470,7 @@ describe("wireBehaviours — before_agent_start", () => {
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
 			contextFiles: [],
-			mode: "orchestrator",
+			mode: "single",
 			sessionId: TEST_SESSION_ID,
 		})
 
@@ -499,7 +499,7 @@ describe("wireBehaviours — before_agent_start", () => {
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
 			contextFiles: [],
-			mode: "orchestrator",
+			mode: "single",
 			sessionId: TEST_SESSION_ID,
 		})
 
@@ -539,7 +539,7 @@ describe("wireBehaviours — before_agent_start", () => {
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
 			contextFiles: [],
-			mode: "orchestrator",
+			mode: "single",
 			sessionId: TEST_SESSION_ID,
 		})
 		expect(sp).not.toContain("Use glab for GitLab.")
@@ -561,7 +561,7 @@ describe("wireBehaviours — before_agent_start", () => {
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
 			contextFiles: [],
-			mode: "orchestrator",
+			mode: "single",
 			sessionId: TEST_SESSION_ID,
 		})
 		expect(beforeCompact).toContain("Use gh for GitHub.")
@@ -572,7 +572,7 @@ describe("wireBehaviours — before_agent_start", () => {
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
 			contextFiles: [],
-			mode: "orchestrator",
+			mode: "single",
 			sessionId: TEST_SESSION_ID,
 		})
 		expect(afterCompact).toContain("Use gh for GitHub.")
@@ -599,7 +599,7 @@ describe("wireBehaviours — before_agent_start", () => {
 			tools: [{ name: "read", description: "Read file contents" }],
 			env: testEnv,
 			contextFiles: [],
-			mode: "orchestrator",
+			mode: "single",
 			sessionId: TEST_SESSION_ID,
 		})
 

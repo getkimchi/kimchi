@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises"
-import type { AvailableCommand } from "@agentclientprotocol/sdk"
+import type { AvailableCommand } from "@agentclientprotocol/sdk/unstable"
 import type { ResourceLoader } from "@earendil-works/pi-coding-agent"
 import { stripFrontmatter } from "@earendil-works/pi-coding-agent"
 import { SKILL_INVOKE_PREFIX } from "../../extensions/skills-manager/skill-triggers.js"

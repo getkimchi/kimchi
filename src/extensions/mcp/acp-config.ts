@@ -1,4 +1,4 @@
-import type { McpServer } from "@agentclientprotocol/sdk"
+import type { McpServer } from "@agentclientprotocol/sdk/unstable"
 import type { ServerEntry } from "pi-mcp-adapter/types"
 
 function entriesToRecord(

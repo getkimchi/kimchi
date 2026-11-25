@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Key, matchesKey } from "@earendil-works/pi-tui"
-import { MULTI_MODEL_ID } from "../../cli-args.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
 import { isStaleCtxError } from "../stale-ctx.js"
@@ -218,10 +217,9 @@ export default function feedbackExtension(pi: ExtensionAPI): void {
 		if (!event.previousModel || !isAutoRoutedModel(event.previousModel)) {
 			return
 		}
-		// Only react when the new model is a concrete model — skip auto/multi-model.
+		// Only react when the new model is a concrete model.
 		const newModel = event.model
 		if (isAutoRoutedModel(newModel)) return
-		if (newModel.id === MULTI_MODEL_ID) return
 
 		const modelId = newModel.id
 		const modelName = newModel.name ?? newModel.id

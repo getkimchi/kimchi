@@ -16,9 +16,10 @@ layer, and choose which server and API key kimchi uses — so they are gated
 behind the same project-trust check the CLI runs for pi's own settings:
 
 - **Before trust**, every project-scope reader fails closed: the project config,
-  permissions, hooks, skills, agent personas, agent memory, tags, and plan
-  objective files are not read at all. A cloned repo cannot redirect your
-  endpoint, ride your API key, inject prompts via skills, or run hooks.
+  permissions, hooks, skills, agent personas, agent memory, tags, plan
+  objective files, and agent rules (`.agents/rules/`) are not read at all. A
+  cloned repo cannot redirect your endpoint, ride your API key, inject
+  prompts via skills, or run hooks.
 - **After trust**, everything applies. Trust is remembered per folder in
   `~/.config/kimchi/harness/agent/trust.json` (pi's trust store), so you are
   asked once per project, with the same options pi offers (Trust, Trust parent
@@ -42,7 +43,7 @@ any of:
 | `.kimchi/` | `config.json`, `permissions.json`, `permissions.local.json`, `hooks.json`, `hooks.local.json`, `hooks/`, `skills/`, `agents/`, `agents.json`, `agent-memory/`, `agent-memory-local/`, `mcp.json`, `tags.json`, `plans/`, `ferments/` |
 | `.claude/` | `skills/`, `settings.json`, `settings.local.json` |
 | `.pi/agent/skills` | kimchi's default skill discovery also reads this pi-style project location (gated on trust like the others) |
-| any ancestor | `.agents/skills/`, plus the `.kimchi/`/`.claude/` entries above — detection walks cwd and its ancestors (the skills/tags readers walk ancestors, so detection must match), with the user's home directory excluded |
+| any ancestor | `.agents/skills/`, `.agents/rules/`, plus the `.kimchi/`/`.claude/` entries above — detection walks cwd and its ancestors (the skills/tags/agent-rules readers walk ancestors, so detection must match), with the user's home directory excluded |
 
 Custom relative skill paths configured in the user's global config (beyond the
  defaults above) resolve under the project cwd at runtime and are gated on
@@ -51,7 +52,7 @@ Custom relative skill paths configured in the user's global config (beyond the
  (the user's own config opted into that location).
 
 The kimchi-specific entries come from a patch to the pinned
-`@earendil-works/pi-coding-agent` (`patches/@earendil-works__pi-coding-agent@0.85.1.patch`
+`@earendil-works/pi-coding-agent` (`patches/@earendil-works__pi-coding-agent@1.3.0.patch`
 — see the header there for removal criteria). The entry list lives canonically
 in `TRUST_REQUIRING_PROJECT_RESOURCES` (`src/project-scope-trust.ts`); a unit
 test cross-checks the patch's embedded copy against the constant, so gating a
@@ -73,6 +74,9 @@ reader of project scope calls `isProjectScopeAllowed(cwd)`:
   registration/provenance — an untrusted repo must not spawn MCP servers)
 - `src/extensions/permissions/config.ts` — project + local permission files
 - `src/resources/bash-hook-discovery.ts` — project `.kimchi/hooks/bash/`
+- `src/extensions/agents-rules/index.ts` — project `.agents/rules/` (always-apply
+  rule bodies reach the system prompt, glob rules reach steers — an untrusted
+  cwd loads no rules at all)
 - `src/extensions/kimchi-hooks/definition.ts` — project
   `.kimchi/hooks.json` / `hooks.local.json` (registered in /resources so
   their default-enabled execution is visible and toggleable)

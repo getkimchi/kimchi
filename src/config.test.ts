@@ -10,12 +10,14 @@ import {
 	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
+	firstRunSettingsDefaults,
 	getApiKeyMismatchWarning,
 	getApiKeySource,
 	getConfiguredLegacyMcpKeys,
 	loadConfig,
 	MAX_LANGUAGE_SETTING_LENGTH,
 	normalizeLanguageSetting,
+	normalizeTuiTimezone,
 	RETRY_DEFAULTS,
 	readApiKeyFromConfigFile,
 	readClaudeCodeInstructionsNoticeSeenAt,
@@ -38,6 +40,8 @@ import {
 	writeStudioOnboardingSeenAt,
 	writeTelemetryEnabled,
 	writeTeleportCompactHintEnabled,
+	writeTuiTimestamps,
+	writeTuiTimezone,
 	writeTuiWheelScrollLines,
 } from "./config.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "./project-scope-trust.js"
@@ -240,6 +244,61 @@ describe("loadConfig", () => {
 
 		rmSync(globalDir, { recursive: true, force: true })
 		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("reads timestamp preferences without dropping other TUI settings", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({ tui: { wheelScrollLines: 3, timestamps: true, timezone: "Europe/Kyiv" } }),
+		)
+		expect(loadConfig({ configPath }).tui).toEqual({
+			wheelScrollLines: 3,
+			timestamps: true,
+			timezone: "Europe/Kyiv",
+		})
+	})
+
+	it("leaves timestamps disabled and timezone local when their config is absent or invalid", () => {
+		for (const tui of [
+			{},
+			{ timestamps: "on", timezone: "Not/AZone" },
+			{ timestamps: null, timezone: 42 },
+			{ timestamps: undefined, timezone: "" },
+		]) {
+			writeFileSync(configPath, JSON.stringify({ tui }))
+			const config = loadConfig({ configPath })
+			expect(config.tui?.timestamps).toBeUndefined()
+			expect(config.tui?.timezone).toBeUndefined()
+		}
+	})
+
+	it("uses a trusted project's complete tui block for timestamp preferences", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ tui: { timestamps: false, timezone: "UTC" } }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ tui: { timestamps: true, timezone: "Europe/Kyiv" } }))
+		setProjectScopeTrusted(projectDir, true)
+
+		expect(loadConfig({ configPath: globalPath, cwd: projectDir }).tui).toEqual({
+			timestamps: true,
+			timezone: "Europe/Kyiv",
+		})
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("normalizes local and validates explicit timezones without adding a dependency", () => {
+		expect(normalizeTuiTimezone(" LoCaL ")).toBe("local")
+		expect(normalizeTuiTimezone("UTC")).toBe("UTC")
+		expect(normalizeTuiTimezone(" Europe/Kyiv ")).toBe("Europe/Kyiv")
+		expect(normalizeTuiTimezone("Not/AZone")).toBeUndefined()
+		expect(normalizeTuiTimezone("")).toBeUndefined()
+		expect(normalizeTuiTimezone(42)).toBeUndefined()
 	})
 
 	it("reads a pinned language from global config", () => {
@@ -774,6 +833,41 @@ describe("writeTuiWheelScrollLines", () => {
 		writeTuiWheelScrollLines(4, configPath)
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.tui).toEqual({ wheelScrollLines: 4 })
+	})
+})
+
+describe("writeTuiTimestamps and writeTuiTimezone", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writes both values while preserving existing TUI and top-level keys", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k", tui: { wheelScrollLines: 4 } }))
+		writeTuiTimestamps(true, configPath)
+		writeTuiTimezone("UTC", configPath)
+
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw).toEqual({
+			apiKey: "k",
+			tui: { wheelScrollLines: 4, timestamps: true, timezone: "UTC" },
+		})
+	})
+
+	it("creates the TUI block and supports disabling timestamps", () => {
+		writeTuiTimestamps(false, configPath)
+		writeTuiTimezone("local", configPath)
+
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.tui).toEqual({ timestamps: false, timezone: "local" })
+		expect(loadConfig({ configPath }).tui).toEqual({ timestamps: false, timezone: "local" })
 	})
 })
 
@@ -1784,6 +1878,42 @@ describe("ensureHideThinkingBlockDefault", () => {
 		const visible = { hideThinkingBlock: false }
 		expect(ensureHideThinkingBlockDefault(visible)).toBe(false)
 		expect(visible.hideThinkingBlock).toBe(false)
+	})
+})
+
+describe("firstRunSettingsDefaults", () => {
+	it("seeds the explicit new-user default set, including collapseWork", () => {
+		expect(firstRunSettingsDefaults()).toEqual({
+			quietStartup: true,
+			theme: "kimchi-minimal",
+			retry: RETRY_DEFAULTS,
+			hideThinkingBlock: true,
+			collapseWork: "all",
+		})
+	})
+
+	it("keeps collapseWork at the read-time fallback so /settings shows it", () => {
+		expect(firstRunSettingsDefaults().collapseWork).toBe("all")
+	})
+
+	it("returns a fresh object each call so callers cannot corrode the defaults", () => {
+		const first = firstRunSettingsDefaults()
+		first.collapseWork = "off"
+		expect(firstRunSettingsDefaults().collapseWork).toBe("all")
+	})
+
+	it("deep-copies the retry defaults so nested mutations cannot corrode them", () => {
+		const first = firstRunSettingsDefaults()
+		const firstRetry = first.retry as typeof RETRY_DEFAULTS
+		firstRetry.provider.timeoutMs = 1
+
+		// The shared module-level defaults stay untouched...
+		expect(RETRY_DEFAULTS.provider.timeoutMs).toBe(600_000)
+
+		// ...and a later call still gets pristine retry settings.
+		const second = firstRunSettingsDefaults()
+		expect(second.retry).toEqual(RETRY_DEFAULTS)
+		expect((second.retry as typeof RETRY_DEFAULTS).provider.timeoutMs).toBe(600_000)
 	})
 })
 

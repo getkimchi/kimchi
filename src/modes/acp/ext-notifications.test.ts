@@ -1,12 +1,10 @@
-import type { AgentSideConnection } from "@agentclientprotocol/sdk"
+import type { AgentContext } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { emitExtNotification } from "./ext-notifications.js"
 
-function makeConn(
-	extNotification: (method: string, params: Record<string, unknown>) => Promise<void>,
-): AgentSideConnection {
-	const stub = { extNotification }
-	return stub as unknown as AgentSideConnection
+function makeConn(extNotification: (method: string, params: Record<string, unknown>) => Promise<void>): AgentContext {
+	const stub = { notify: extNotification }
+	return stub as unknown as AgentContext
 }
 
 describe("emitExtNotification", () => {

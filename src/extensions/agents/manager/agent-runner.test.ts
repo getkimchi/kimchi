@@ -9,6 +9,7 @@ import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
 import dapExtension from "../../dap.js"
 import codexCorrelationExtension from "../../login/codex-correlation-extension.js"
+import { createWorkerPermissionsExtension, getPermissionsExtensionOptions } from "../../permissions/index.js"
 import * as diagnostics from "../../work-attribution/diagnostics.js"
 import { flushWorkSummaries, readWorkRecords } from "../../work-attribution/summary.js"
 import { createWorkAttributionExtension, type WorkSegment } from "../../work-attribution.js"
@@ -24,12 +25,15 @@ afterEach(async () => {
 	rmSync(attributionDir, { recursive: true, force: true })
 })
 
-vi.mock("@earendil-works/pi-coding-agent", async () => {
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
 	return {
+		...actual,
 		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
 		DefaultResourceLoader: vi.fn().mockImplementation(function () {
 			return {
 				reload: vi.fn().mockResolvedValue(undefined),
+				getExtensions: vi.fn(() => ({ extensions: [], errors: [] })),
 			}
 		}),
 		SessionManager: {
@@ -44,6 +48,13 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 		getAgentDir: vi.fn(() => process.env.PI_CODING_AGENT_DIR),
 	}
 })
+
+// The gate's behavior is covered by the permissions suite. Stub its module so
+// runner tests do not import the main-session editor and planning UI graph.
+vi.mock("../../permissions/index.js", () => ({
+	createWorkerPermissionsExtension: vi.fn(() => function workerPermissionsStub() {}),
+	getPermissionsExtensionOptions: vi.fn(() => undefined),
+}))
 
 vi.mock("../../env.js", () => ({
 	detectEnv: vi.fn().mockResolvedValue({ os: "linux", shell: "bash" }),
@@ -104,11 +115,6 @@ vi.mock("../personas/default-agents.js", () => ({
 	DEFAULT_AGENTS: new Map(),
 }))
 
-vi.mock("../../tags.js", () => ({
-	getCurrentPhase: vi.fn().mockReturnValue(undefined),
-	setCurrentPhase: vi.fn(),
-}))
-
 vi.mock("../../memory/memory.js", () => ({
 	buildMemoryBlock: vi.fn().mockReturnValue(""),
 	buildReadOnlyMemoryBlock: vi.fn().mockReturnValue(""),
@@ -136,7 +142,7 @@ vi.mock("../../../config.js", () => ({
 }))
 
 vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", () => ({
-	buildPhaseGuidelinesSection: vi.fn().mockReturnValue(""),
+	buildRoleGuidelinesSection: vi.fn().mockReturnValue(""),
 }))
 
 vi.mock("../../auto-model/index.js", () => ({
@@ -173,12 +179,14 @@ import {
 	DefaultResourceLoader,
 	type ExtensionAPI,
 	type ExtensionFactory,
+	type ExtensionUIContext,
 	type InlineExtension,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { resetOrgPolicyForTests } from "../../../org-policy.js"
 import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"
+import { holdAgentWorkerInactivity, registerWorkerParentSession, runAsAgentWorker } from "../../agent-worker-context.js"
 import {
 	createSubagentBashClampExtension,
 	DEFAULT_BASH_TIMEOUT_SECONDS,
@@ -188,11 +196,11 @@ import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
-import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
+import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import requestTimingExtension from "../../request-timing.js"
-import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
+import { createInteractiveTimeBudget } from "../interactive-time-budget.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { scanBriefSkills } from "../prompt/brief-skill-loader.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
@@ -206,6 +214,7 @@ import {
 	runAgent,
 	shouldRegisterDapForTools,
 } from "./agent-runner.js"
+import { registerAgentWorkerSessionAdapter } from "./agent-worker-session.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { formatRunResultText } from "./result-text.js"
 
@@ -216,15 +225,15 @@ const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
 const mockScanBriefSkills = vi.mocked(scanBriefSkills)
-const mockBuildPhaseGuidelinesSection = vi.mocked(buildPhaseGuidelinesSection)
+const mockBuildRoleGuidelinesSection = vi.mocked(buildRoleGuidelinesSection)
 const mockCreateAutoModelRoutingExtension = vi.mocked(createAutoModelRoutingExtension)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
-const mockGetCurrentPhase = vi.mocked(getCurrentPhase)
-const mockSetCurrentPhase = vi.mocked(setCurrentPhase)
 const mockCreateWorkAttributionExtension = vi.mocked(createWorkAttributionExtension)
 const mockCreateWorkerReportExtension = vi.mocked(createWorkerReportExtension)
+const mockCreateWorkerPermissionsExtension = vi.mocked(createWorkerPermissionsExtension)
+const mockGetPermissionsExtensionOptions = vi.mocked(getPermissionsExtensionOptions)
 const mockCreateSubagentBashClampExtension = vi.mocked(createSubagentBashClampExtension)
 const mockCreateKimchiMcpAdapterExtension = vi.mocked(createKimchiMcpAdapterExtension)
 
@@ -350,7 +359,7 @@ function makeFakeSession({
 
 	// Attach extensionRunner directly so callers can inspect it without destructuring.
 	const fullSession = Object.assign(session, {
-		extensionRunner: { emit: vi.fn().mockResolvedValue(true) },
+		extensionRunner: { emit: vi.fn().mockResolvedValue(true), setUIContext: vi.fn() },
 	})
 	return fullSession
 }
@@ -449,11 +458,17 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(6)
+		expect(ctorArg?.extensionFactories).toHaveLength(7)
 		expect(ctorArg?.extensionFactories).toContain(codexCorrelationExtension)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
+		expect(mockCreateWorkerPermissionsExtension).toHaveBeenCalledWith({
+			parentSessionId: ctx.sessionManager.getSessionId(),
+			persona: "General-Purpose",
+			agentId: undefined,
+			description: "do something",
+		})
 		const childApi = createExtensionApi()
 		await runInlineExtension(ctorArg?.extensionFactories?.[1], childApi.api)
 		const child = createContext({ cwd: attributionDir, sessionManager: { getSessionId: () => "child-segment" } })
@@ -464,6 +479,40 @@ describe("runAgent — telemetry extension", () => {
 		expect(readWorkRecords(attributionDir)).toContainEqual(
 			expect.objectContaining({ type: "request", sessionId: "child-segment", segment }),
 		)
+	})
+
+	it("fails before loader initialization when the worker gate cannot be constructed", async () => {
+		mockCreateWorkerPermissionsExtension.mockImplementationOnce(() => {
+			throw new Error("gate initialization failed")
+		})
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow("gate initialization failed")
+		expect(mockDefaultResourceLoader).not.toHaveBeenCalled()
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
+	})
+
+	it("fails after reload when the worker gate reports a loader error", async () => {
+		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
+		mockDefaultResourceLoader.mockImplementationOnce(function () {
+			return {
+				reload: vi.fn().mockResolvedValue(undefined),
+				getExtensions: vi.fn(() => ({
+					extensions: [],
+					errors: [{ path: "<inline:kimchi-worker-permissions>", error: "worker gate setup failed" }],
+				})),
+			}
+		})
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow("<inline:kimchi-worker-permissions>: worker gate setup failed")
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
 	})
 
 	describe("subagent telemetry policy", () => {
@@ -535,7 +584,7 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(6)
+		expect(ctorArg?.extensionFactories).toHaveLength(7)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
@@ -593,7 +642,7 @@ describe("runAgent — telemetry extension", () => {
 		})
 
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
-		expect(ctorArg?.extensionFactories).toHaveLength(7)
+		expect(ctorArg?.extensionFactories).toHaveLength(8)
 		expect(ctorArg?.extensionFactories).toContain(dapExtension)
 		// The debug tool names must flow into the child session's tool allowlist so the
 		// SDK activates them once the dap extension registers them on session_start.
@@ -613,6 +662,50 @@ describe("runAgent — telemetry extension", () => {
 			}),
 		).rejects.toThrow("Pi model registry runtime is unavailable")
 		expect(mockCreateAgentSession).not.toHaveBeenCalled()
+	})
+
+	it("loads the host-only Verifier without disk extensions, skills, web tools or MCP", async () => {
+		mockGetConfig.mockReturnValue(
+			makeTypeConfig({
+				extensions: false,
+				skills: false,
+				builtinToolNames: [
+					"read",
+					"bash",
+					"grep",
+					"find",
+					"ls",
+					"write",
+					"report_finding",
+					"retract_finding",
+					"resolve_finding",
+					"submit_verdict",
+				],
+			}),
+		)
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "Verifier", disallowedTools: ["edit"] }))
+		mockGetToolNamesForType.mockReturnValue(["read", "write"])
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Verifier", "verify", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		const loaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(loaderOptions?.noExtensions).toBe(true)
+		expect(loaderOptions?.noSkills).toBe(true)
+		// Six host-installed factories plus the worker permission gate: no web
+		// or MCP factories, and no caller-provided inline factories in this
+		// focused profile run.
+		expect(loaderOptions?.extensionFactories).toHaveLength(7)
+		expect(mockScanBriefSkills).not.toHaveBeenCalled()
+		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
 	})
 
 	it("applies Kimchi's default bash timeout to subagent tool calls", async () => {
@@ -671,8 +764,8 @@ describe("runAgent — telemetry extension", () => {
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
 		// Counts include the two bundled web-tool factories appended after the
 		// builder's list (extensions: true → inherited via registration).
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(10)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(9)
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(11)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(10)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -799,7 +892,7 @@ describe("runAgent — telemetry extension", () => {
 			abortSpy,
 			emitUsage: false,
 			promptAction: async (emit) => {
-				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[6]
+				const factory = mockCreateWorkerReportExtension.mock.results[0]?.value
 				const childApi = createExtensionApi()
 				await runInlineExtension(factory, childApi.api)
 				const tool = childApi.getRegisteredTool("submit_agent_report")
@@ -837,6 +930,37 @@ describe("runAgent — telemetry extension", () => {
 		expect(result.aborted).toBe(false)
 	})
 
+	it("stops a session after a caller-accepted terminal tool, but not after a rejected call", async () => {
+		const abortSpy = vi.fn()
+		let accepted = false
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async (emit) => {
+				emit({ type: "tool_execution_end", toolName: "submit_verdict" })
+				await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+				expect(abortSpy).not.toHaveBeenCalled()
+				accepted = true
+				emit({ type: "tool_execution_end", toolName: "submit_verdict" })
+				await new Promise<void>((resolve) => queueMicrotask(() => resolve()))
+			},
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "verify", {
+			pi: pi as unknown as RunOptions["pi"],
+			shouldTerminateAfterTool: (toolName) => toolName === "submit_verdict" && accepted,
+		})
+
+		expect(abortSpy).toHaveBeenCalledOnce()
+		expect(result.aborted).toBe(false)
+	})
+
 	it("emits session_shutdown after prompt completes so telemetry flushes and timers are cleared", async () => {
 		const session = makeFakeSession({})
 		mockCreateAgentSession.mockResolvedValue({
@@ -851,6 +975,46 @@ describe("runAgent — telemetry extension", () => {
 		})
 
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" })
+	})
+})
+
+describe("runAgent — fail-closed persona guard (issue #1678)", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockClear()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+	})
+
+	it("rejects an unknown type before any session work instead of running tool-less", async () => {
+		mockGetAgentConfig.mockReturnValue(undefined)
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Nope", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow('Refusing to run unknown or disabled agent type "Nope".')
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
+	})
+
+	it("rejects a disabled type before any session work", async () => {
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ enabled: false }))
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow('Refusing to run unknown or disabled agent type "General-Purpose".')
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
 	})
 })
 
@@ -1340,6 +1504,44 @@ describe("runAgent — token_budget tool skip (R2)", () => {
 		await resumeAgent(session as unknown as AgentSession, "continue", {})
 
 		expect(emitSpy).toHaveBeenCalledWith({ type: "session_start", reason: "resume" })
+	})
+
+	it("resumeAgent: restores the owning worker's host before its resume lifecycle", async () => {
+		const lifecycle: string[] = []
+		const uiContext = { tag: "worker" } as unknown as ExtensionUIContext
+		const session = {
+			sessionId: "child-session",
+			subscribe: vi.fn(() => () => {}),
+			abort: vi.fn(),
+			steer: vi.fn(),
+			messages: [],
+			extensionRunner: {
+				setUIContext: (ui: unknown) => lifecycle.push(ui === uiContext ? "host-bound" : "unexpected-host"),
+				emit: vi.fn(async () => lifecycle.push("resume")),
+			},
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockResolvedValue(undefined),
+		}
+		registerWorkerParentSession(session as unknown as AgentSession, "parent")
+		const removeAdapter = registerAgentWorkerSessionAdapter("parent", () => ({
+			bindings: { mode: "rpc", uiContext },
+			cleanup: () => lifecycle.push("cleanup"),
+		}))
+		let cleanup = () => {}
+		try {
+			await resumeAgent(session as unknown as AgentSession, "continue", {
+				onRuntimeCleanupRegistered: (release) => {
+					cleanup = release
+				},
+			})
+			expect(lifecycle).toEqual(["host-bound", "resume"])
+		} finally {
+			cleanup()
+			removeAdapter()
+		}
+		expect(lifecycle).toEqual(["host-bound", "resume", "cleanup"])
 	})
 })
 
@@ -1982,6 +2184,64 @@ describe("runAgent — maxDuration enforcement", () => {
 		})
 	}
 
+	it("does not charge the time spent setting the session up", async () => {
+		const SETUP_MS = 20_000
+		const abortSpy = vi.fn()
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const session = {
+			subscribe: vi.fn(() => () => {}),
+			abort: abortSpy.mockImplementation(() => {
+				resolvePrompt?.()
+			}),
+			steer: vi.fn(),
+			getActiveToolNames: vi.fn().mockReturnValue([]),
+			setActiveToolsByName: vi.fn(),
+			bindExtensions: vi.fn().mockResolvedValue(undefined),
+			messages: [],
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockImplementation(async () => {
+				await promptPromise
+			}),
+		}
+		// A slow session setup: most of max_duration passes before the worker
+		// can do anything.
+		mockCreateAgentSession.mockImplementation(async () => {
+			await new Promise((resolve) => setTimeout(resolve, SETUP_MS))
+			return {
+				session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			}
+		})
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"do something",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+				maxDuration: 30,
+			},
+		)
+
+		await vi.advanceTimersByTimeAsync(SETUP_MS)
+		expect(session.prompt).toHaveBeenCalledOnce()
+		// 40 s after the start, but only 20 s into the worker's own time.
+		await vi.advanceTimersByTimeAsync(20_000)
+		expect(abortSpy).not.toHaveBeenCalled()
+
+		await vi.advanceTimersByTimeAsync(11_000)
+		const result = await resultPromise
+		expect(abortSpy).toHaveBeenCalled()
+		expect(result.abortReason).toBe("max_duration")
+	})
+
 	it("uses agentConfig.maxDuration when no param override", async () => {
 		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ maxDuration: 20 }))
 		const abortSpy = vi.fn()
@@ -2261,6 +2521,244 @@ describe("runAgent — runtime cleanup", () => {
 	})
 })
 
+describe("runAgent — inline extension factories and model-only inactivity", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		vi.useFakeTimers()
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockDefaultResourceLoader.mockClear()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+	})
+
+	function mockSession(session: ReturnType<typeof makeFakeSession>) {
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+	}
+
+	it("appends caller-provided inline extension factories to the child loader", async () => {
+		const inlineExtension: InlineExtension = (childPi) => {
+			childPi.on("session_start", () => {})
+		}
+		mockSession(makeFakeSession({ emitUsage: false }))
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			extensionFactories: [inlineExtension],
+		})
+
+		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(ctorArg?.extensionFactories).toContain(inlineExtension)
+	})
+
+	it("folds a caller's permission gate into the worker gate instead of loading it", async () => {
+		const guard: InlineExtension = () => {}
+		const report: InlineExtension = { name: "report", factory: () => {} }
+		const hostGate: InlineExtension = () => {}
+		const preApproved = (toolName: string) => toolName === "submit_verdict"
+		mockGetPermissionsExtensionOptions.mockImplementation((extension) =>
+			extension === hostGate ? { preApproved } : undefined,
+		)
+		mockSession(makeFakeSession({ emitUsage: false }))
+
+		try {
+			await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Verifier", "verify", {
+				pi: pi as unknown as RunOptions["pi"],
+				extensionFactories: [guard, hostGate, report],
+			})
+		} finally {
+			mockGetPermissionsExtensionOptions.mockImplementation(() => undefined)
+		}
+
+		expect(mockCreateWorkerPermissionsExtension).toHaveBeenCalledWith(
+			expect.objectContaining({ preApproved, askParent: false }),
+		)
+		const factories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories
+		expect(factories).toContain(guard)
+		expect(factories).toContain(report)
+		expect(factories).not.toContain(hostGate)
+		expect(factories).toContainEqual(expect.objectContaining({ name: "kimchi-worker-permissions" }))
+	})
+
+	it("passes no pre-approval to the worker gate when the caller supplies no gate", async () => {
+		mockSession(makeFakeSession({ emitUsage: false }))
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			extensionFactories: [() => {}],
+		})
+
+		expect(mockCreateWorkerPermissionsExtension.mock.calls[0]?.[0]).not.toHaveProperty("preApproved")
+		expect(mockCreateWorkerPermissionsExtension.mock.calls[0]?.[0]).not.toHaveProperty("askParent")
+	})
+
+	it("refuses to start a child whose host supplies two permission gates", async () => {
+		mockGetPermissionsExtensionOptions.mockImplementation(() => ({}))
+
+		try {
+			await expect(
+				runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Verifier", "verify", {
+					pi: pi as unknown as RunOptions["pi"],
+					extensionFactories: [() => {}, () => {}],
+				}),
+			).rejects.toThrow("at most one permission gate")
+		} finally {
+			mockGetPermissionsExtensionOptions.mockImplementation(() => undefined)
+		}
+		expect(mockDefaultResourceLoader).not.toHaveBeenCalled()
+		expect(mockCreateAgentSession).not.toHaveBeenCalled()
+	})
+
+	it("does not steer or abort during a silent long tool call in model_only mode", async () => {
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async (emit) => {
+				emit({ type: "tool_execution_start", toolName: "bash" })
+				// A silent 30s tool call: no session events while it executes.
+				await new Promise((resolve) => setTimeout(resolve, 30_000))
+				emit({ type: "tool_execution_end", toolName: "bash" })
+				await promptPromise
+			},
+		})
+		mockSession(session)
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"verify the work",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+				inactivityTimeout: 10,
+				maxDuration: 0,
+				inactivityMode: "model_only",
+			},
+		)
+
+		// 25s of silence while the tool runs — past the 10s inactivity timeout.
+		await vi.advanceTimersByTimeAsync(25_000)
+		expect(session.steer).not.toHaveBeenCalled()
+		expect(abortSpy).not.toHaveBeenCalled()
+
+		// Once the tool ends, model inactivity steers and then aborts as usual.
+		await vi.advanceTimersByTimeAsync(31_000)
+		expect(session.steer).toHaveBeenCalledWith(expect.stringContaining("stalled"))
+		await vi.advanceTimersByTimeAsync(11_000)
+		expect(abortSpy).toHaveBeenCalled()
+
+		resolvePrompt?.()
+		const result = await resultPromise
+		expect(result.aborted).toBe(true)
+		expect(result.abortReason).toBe("inactivity")
+	})
+
+	it("still steers on a silent tool call in the default any_event mode", async () => {
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const session = makeFakeSession({
+			emitUsage: false,
+			promptAction: async (emit) => {
+				emit({ type: "tool_execution_start", toolName: "bash" })
+				await new Promise((resolve) => setTimeout(resolve, 30_000))
+				emit({ type: "tool_execution_end", toolName: "bash" })
+				await promptPromise
+			},
+		})
+		mockSession(session)
+
+		const resultPromise = runAgent(
+			ctx as unknown as Parameters<typeof runAgent>[0],
+			"General-Purpose",
+			"verify the work",
+			{
+				pi: pi as unknown as RunOptions["pi"],
+				inactivityTimeout: 10,
+				maxDuration: 0,
+			},
+		)
+
+		await vi.advanceTimersByTimeAsync(25_000)
+		expect(session.steer).toHaveBeenCalledWith(expect.stringContaining("stalled"))
+
+		resolvePrompt?.()
+		// Release the silent tool's sleep so the prompt can settle.
+		await vi.advanceTimersByTimeAsync(10_000)
+		await resultPromise
+	})
+
+	it("does not abort a model_only resume during a silent tool call", async () => {
+		let resolvePrompt: (() => void) | undefined
+		const promptPromise = new Promise<void>((resolve) => {
+			resolvePrompt = resolve
+		})
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async (emit) => {
+				emit({ type: "tool_execution_start", toolName: "bash" })
+				await new Promise((resolve) => setTimeout(resolve, 30_000))
+				emit({ type: "tool_execution_end", toolName: "bash" })
+				await promptPromise
+			},
+		})
+
+		const resultPromise = resumeAgent(session as unknown as AgentSession, "continue", {
+			inactivityTimeout: 10,
+			maxDuration: 0,
+			inactivityMode: "model_only",
+		})
+
+		await vi.advanceTimersByTimeAsync(25_000)
+		expect(abortSpy).not.toHaveBeenCalled()
+
+		resolvePrompt?.()
+		// Release the silent tool's sleep so the resume prompt can settle.
+		await vi.advanceTimersByTimeAsync(10_000)
+		const result = await resultPromise
+		expect(result.aborted).toBe(false)
+	})
+
+	it("honours unlimited turns and duration (maxTurns 0, maxDuration 0)", async () => {
+		// A 40-turn agent must never hit a turn cap or wall-clock abort.
+		const session = makeFakeSession({
+			emitUsage: false,
+			events: Array.from({ length: 40 }, () => ({ type: "turn_end" })),
+		})
+		mockSession(session)
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "work", {
+			pi: pi as unknown as RunOptions["pi"],
+			maxTurns: 0,
+			maxDuration: 0,
+		})
+
+		expect(result.aborted).toBe(false)
+		expect(result.maxTurns).toBeUndefined()
+	})
+})
+
 describe("resumeAgent — maxDuration enforcement", () => {
 	beforeEach(() => {
 		vi.useFakeTimers()
@@ -2405,12 +2903,11 @@ describe("runAgent — includeContextFiles", () => {
 		expect(extras?.contextFiles).toBeUndefined()
 	})
 
-	it("resolves guidelines from agent persona role, not orchestrator phase", async () => {
+	it("resolves guidelines from the agent persona role", async () => {
 		mockGetAgentConfig.mockReturnValue(
 			makeAgentConfig({ name: "Builder", description: "Build agent", roles: ["build"] }),
 		)
-		mockBuildPhaseGuidelinesSection.mockReturnValue("## Model Guidelines\n\nBuilder guideline")
-		mockGetCurrentPhase.mockReturnValue("explore")
+		mockBuildRoleGuidelinesSection.mockReturnValue("## Model Guidelines\n\nBuilder guideline")
 
 		mockCreateAgentSession.mockResolvedValue({
 			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -2423,17 +2920,14 @@ describe("runAgent — includeContextFiles", () => {
 			pi: pi as unknown as RunOptions["pi"],
 		})
 
-		expect(mockBuildPhaseGuidelinesSection).toHaveBeenCalledWith(undefined, "build", expect.anything())
+		expect(mockBuildRoleGuidelinesSection).toHaveBeenCalledWith(undefined, "build", expect.anything())
 		const extras = mockBuildAgentPrompt.mock.calls[0]?.[4]
 		expect(extras?.guidelinesBlock).toContain("Builder guideline")
-		expect(mockGetCurrentPhase).toHaveBeenCalledWith("session-1")
-		expect(mockSetCurrentPhase).toHaveBeenCalledWith("session-1", "build")
-		expect(mockSetCurrentPhase).toHaveBeenLastCalledWith("session-1", "explore")
 	})
 
 	it("omits guidelines when agent has no persona role", async () => {
 		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "General-Purpose" }))
-		mockBuildPhaseGuidelinesSection.mockReturnValue("")
+		mockBuildRoleGuidelinesSection.mockReturnValue("")
 
 		mockCreateAgentSession.mockResolvedValue({
 			session: makeFakeSession() as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -2446,7 +2940,7 @@ describe("runAgent — includeContextFiles", () => {
 			pi: pi as unknown as RunOptions["pi"],
 		})
 
-		expect(mockBuildPhaseGuidelinesSection).toHaveBeenCalledWith(undefined, undefined, expect.anything())
+		expect(mockBuildRoleGuidelinesSection).toHaveBeenCalledWith(undefined, undefined, expect.anything())
 	})
 })
 
@@ -2486,6 +2980,7 @@ describe("runAgent — parent session ID env ordering", () => {
 			})
 			return {
 				reload: vi.fn().mockResolvedValue(undefined),
+				getExtensions: vi.fn(() => ({ extensions: [], errors: [] })),
 			} as unknown as DefaultResourceLoader
 		})
 
@@ -2626,6 +3121,148 @@ describe("steerAgent — explicit steering", () => {
 	})
 })
 
+describe("runAgent — inactivity watchdog hold", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		vi.useFakeTimers()
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig())
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+		vi.clearAllMocks()
+	})
+
+	it("pauses the fresh-run watchdog while the worker waits in an escalated prompt", async () => {
+		const abortSpy = vi.fn()
+		let releaseHold: (() => void) | undefined
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async () => {
+				// The gate takes this hold for the duration of an escalated
+				// permission prompt; without it the watchdog would steer this
+				// legitimately-waiting worker at 10 s.
+				releaseHold = holdAgentWorkerInactivity()
+				await vi.advanceTimersByTimeAsync(25_000)
+			},
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			inactivityTimeout: 10,
+			maxDuration: 0,
+		})
+
+		expect(session.steer).not.toHaveBeenCalled()
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(false)
+		releaseHold?.()
+	})
+
+	it("pauses the resume watchdog while a resumed worker waits in an escalated prompt", async () => {
+		const abortSpy = vi.fn()
+		let releaseHold: (() => void) | undefined
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async () => {
+				releaseHold = holdAgentWorkerInactivity()
+				await vi.advanceTimersByTimeAsync(25_000)
+			},
+		})
+
+		// The manager wraps resumes in runAsAgentWorker (see agent-manager)
+		// before resumeAgent installs the hold — mirrored here.
+		const result = await runAsAgentWorker(
+			async () =>
+				resumeAgent(session as unknown as AgentSession, "continue", { inactivityTimeout: 10, maxDuration: 0 }),
+			{},
+		)
+
+		expect(session.steer).not.toHaveBeenCalled()
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(false)
+		releaseHold?.()
+	})
+
+	it("pauses the fresh wall-clock cap and keeps bash's remaining time while waiting", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({
+			abortSpy,
+			emitUsage: false,
+			promptAction: async () => {
+				const releaseHold = holdAgentWorkerInactivity()
+				const getRemaining = mockCreateSubagentBashClampExtension.mock.calls.at(-1)?.[3]
+				if (!getRemaining) throw new Error("bash clamp did not receive the shared clock")
+				expect(getRemaining()).toBe(20_000)
+				await vi.advanceTimersByTimeAsync(35_000)
+				expect(getRemaining()).toBe(20_000)
+				releaseHold()
+			},
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			maxDuration: 20,
+		})
+
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(false)
+	})
+
+	it("uses the resume's paused clock instead of the disposed prior run clock", async () => {
+		const abortSpy = vi.fn()
+		const session = makeFakeSession({ abortSpy, emitUsage: false })
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			maxDuration: 20,
+		})
+		const getRemaining = mockCreateSubagentBashClampExtension.mock.calls.at(-1)?.[3]
+		if (!getRemaining) throw new Error("bash clamp did not receive the shared clock")
+		vi.mocked(session.prompt).mockImplementation(async () => {
+			const releaseHold = holdAgentWorkerInactivity()
+			expect(getRemaining()).toBe(20_000)
+			await vi.advanceTimersByTimeAsync(35_000)
+			expect(getRemaining()).toBe(20_000)
+			releaseHold()
+		})
+
+		const result = await runAsAgentWorker(
+			() => resumeAgent(session as unknown as AgentSession, "continue", { maxDuration: 20 }),
+			{},
+		)
+
+		expect(abortSpy).not.toHaveBeenCalled()
+		expect(result.aborted).toBe(false)
+	})
+})
+
 describe("resumeAgent — inactivity steering", () => {
 	it("completes after a report on the resume's final turn and token boundary", async () => {
 		const { resumeAgent } = await import("./agent-runner.js")
@@ -2759,6 +3396,7 @@ describe("formatRunResultText", () => {
 })
 
 describe("buildInlineExtensionFactories", () => {
+	const WORKER_PERMISSIONS_EXTENSION: ExtensionFactory = () => {}
 	const DEBUG_TOOL_NAMES = ["read", "grep", "debug_state_at", "debug_launch", "step_in"]
 	const CONCRETE_MODEL: Model<Api> = { ...AUTO_MODEL, provider: "kimchi-dev", id: "gemini-3-pro" }
 	let agentDir: string
@@ -2766,7 +3404,10 @@ describe("buildInlineExtensionFactories", () => {
 	function makeDeps(overrides: Partial<InlineExtensionFactoryDeps> = {}): InlineExtensionFactoryDeps {
 		return {
 			effectiveMaxDuration: 900,
+			timeBudget: { budget: createInteractiveTimeBudget(900, Date.now()) },
 			type: "General-Purpose",
+			workerPermissionsExtension: WORKER_PERMISSIONS_EXTENSION,
+			parentSessionId: "parent-session",
 			model: undefined,
 			toolNames: ["read", "bash"],
 			workerReport: undefined,
@@ -2830,13 +3471,18 @@ describe("buildInlineExtensionFactories", () => {
 			codexCorrelationExtension,
 			dapExtension,
 			workerReportFactory,
-			// MCP adapter — appended last for non-isolated children (LLM-4465).
 			mockCreateKimchiMcpAdapterExtension.mock.results[0].value,
+			{ name: "kimchi-worker-permissions", factory: WORKER_PERMISSIONS_EXTENSION }, // always last
 		])
 		expect(mockReadTelemetryConfig).toHaveBeenCalledTimes(1)
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith("work-1", segment)
-		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(900, expect.any(Number), "General-Purpose")
+		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(
+			900,
+			expect.any(Number),
+			"General-Purpose",
+			expect.any(Function),
+		)
 		expect(mockCreateWorkerReportExtension).toHaveBeenCalledWith(workerReport)
 	})
 
@@ -2845,17 +3491,22 @@ describe("buildInlineExtensionFactories", () => {
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledTimes(1)
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith(null, undefined)
 		const attributionFactory = mockCreateWorkAttributionExtension.mock.results[0].value
-		expect(enabled).toHaveLength(7)
+		expect(enabled).toHaveLength(8)
 		expect(enabled).toContain(attributionFactory)
 
 		const disabled = buildInlineExtensionFactories(makeDeps({ costPerPrEnabled: false }))
-		expect(disabled).toHaveLength(6)
+		expect(disabled).toHaveLength(7)
 		expect(disabled).not.toContain(attributionFactory)
 	})
 
 	it("uses the bash clamp when effectiveMaxDuration is positive and the default timeout when it is 0", () => {
 		const clamped = buildInlineExtensionFactories(makeDeps({ effectiveMaxDuration: 60 }))
-		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(60, expect.any(Number), "General-Purpose")
+		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(
+			60,
+			expect.any(Number),
+			"General-Purpose",
+			expect.any(Function),
+		)
 		expect(clamped).not.toContain(subagentBashDefaultTimeoutExtension)
 
 		mockCreateSubagentBashClampExtension.mockClear()
@@ -2871,13 +3522,13 @@ describe("buildInlineExtensionFactories", () => {
 		const routed = buildInlineExtensionFactories(makeDeps({ model: AUTO_MODEL }))
 		expect(mockCreateAutoModelRoutingExtension).toHaveBeenCalledWith()
 		expect(routed).toContain(autoRoutingFactory)
-		expect(routed).toHaveLength(8)
+		expect(routed).toHaveLength(9)
 
 		mockCreateAutoModelRoutingExtension.mockClear()
 		const concrete = buildInlineExtensionFactories(makeDeps({ model: CONCRETE_MODEL }))
 		expect(mockCreateAutoModelRoutingExtension).not.toHaveBeenCalled()
 		expect(concrete).not.toContain(autoRoutingFactory)
-		expect(concrete).toHaveLength(6)
+		expect(concrete).toHaveLength(7)
 	})
 
 	it("registers the dap extension exactly when shouldRegisterDapForTools admits the tool names", () => {
@@ -2885,6 +3536,14 @@ describe("buildInlineExtensionFactories", () => {
 		expect(buildInlineExtensionFactories(makeDeps({ toolNames: DEBUG_TOOL_NAMES }))).toContain(dapExtension)
 		expect(shouldRegisterDapForTools(["read", "bash"])).toBe(false)
 		expect(buildInlineExtensionFactories(makeDeps({ toolNames: ["read", "bash"] }))).not.toContain(dapExtension)
+	})
+
+	it.each([true, false])("includes the named worker gate (extensions=%s)", (effectiveExtensions) => {
+		const factories = buildInlineExtensionFactories(makeDeps({ effectiveExtensions }))
+		expect(factories.at(-1)).toEqual({
+			name: "kimchi-worker-permissions",
+			factory: WORKER_PERMISSIONS_EXTENSION,
+		})
 	})
 
 	it("registers the worker-report extension only when a capability is provided", () => {
@@ -2926,7 +3585,7 @@ describe("buildInlineExtensionFactories", () => {
 		const factories = buildInlineExtensionFactories(makeDeps({ mcpAppsEnabled: false }))
 
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(factories).toHaveLength(5)
+		expect(factories).toHaveLength(6)
 	})
 
 	it("omits the MCP adapter factory for allowlists that exclude MCP", () => {
@@ -2934,21 +3593,21 @@ describe("buildInlineExtensionFactories", () => {
 		// servers) only to filter its tool out afterwards.
 		const unrelated = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: ["unrelated"] }))
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(unrelated).toHaveLength(5) // telemetry, request-timing, bash default timeout, infrastructure breaker, codex correlation
+		expect(unrelated).toHaveLength(6) // core factories + lazy worker permission gate
 
 		// The worker-report edge: workerReport + extensions:false resolves to
 		// [], which no longer registers the adapter either.
 		mockCreateKimchiMcpAdapterExtension.mockClear()
 		const emptyArray = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: [] }))
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(emptyArray).toHaveLength(5)
+		expect(emptyArray).toHaveLength(6)
 	})
 
 	it("omits the MCP adapter factory for isolated children (effectiveExtensions false)", () => {
 		const factories = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: false }))
 
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(factories).toHaveLength(5) // telemetry, request-timing, bash default timeout, infrastructure breaker, codex correlation
+		expect(factories).toHaveLength(6) // core factories + lazy worker permission gate
 	})
 
 	it("passes the effective cwd to the MCP adapter factory", () => {
@@ -2958,6 +3617,7 @@ describe("buildInlineExtensionFactories", () => {
 			cwd: "/repo-under-test",
 			suppressWarnings: true,
 			lazyGatewayConnect: true,
+			parentSessionId: "parent-session",
 		})
 	})
 
@@ -2984,5 +3644,105 @@ describe("buildInlineExtensionFactories", () => {
 		expect(buildSystemPrompt).toHaveBeenCalledWith(["tool_a"], CONCRETE_MODEL.id)
 		expect(onSystemPrompt).toHaveBeenCalledWith("Rebuilt prompt")
 		expect(result).toEqual({ systemPrompt: "Rebuilt prompt" })
+	})
+})
+
+describe("runAgent — worker permission role", () => {
+	let ctx: ReturnType<typeof makeFakeCtx>
+	let pi: ReturnType<typeof makeFakePi>
+
+	beforeEach(() => {
+		ctx = makeFakeCtx()
+		pi = makeFakePi()
+		mockCreateAgentSession.mockReset()
+		mockGetConfig.mockReturnValue(makeTypeConfig({ extensions: false, skills: false }))
+		mockGetAgentConfig.mockReturnValue(makeAgentConfig({ name: "Explore" }))
+		mockGetToolNamesForType.mockReturnValue([])
+	})
+
+	afterEach(() => {
+		vi.clearAllMocks()
+		Reflect.deleteProperty(process.env, "KIMCHI_AGENT_PERSONA")
+	})
+
+	it("passes parent, persona, agent ID, and description to the worker role", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Explore", "look around", {
+			pi: pi as unknown as RunOptions["pi"],
+			agentId: "agent-7",
+			description: "inspect the settings",
+		})
+
+		expect(mockCreateWorkerPermissionsExtension).toHaveBeenCalledWith({
+			parentSessionId: "session-1",
+			persona: "Explore",
+			agentId: "agent-7",
+			description: "inspect the settings",
+		})
+	})
+
+	it("does not leave the persona env var set when the child session cannot be created", async () => {
+		mockCreateAgentSession.mockRejectedValue(new Error("session creation failed"))
+
+		await expect(
+			runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "Explore", "look around", {
+				pi: pi as unknown as RunOptions["pi"],
+			}),
+		).rejects.toThrow("session creation failed")
+
+		expect(process.env.KIMCHI_AGENT_PERSONA).toBeUndefined()
+	})
+
+	it("does not leave a finished sibling's persona in the environment when runs overlap", async () => {
+		mockGetAgentConfig.mockImplementation((type: string) => makeAgentConfig({ name: type }))
+		// Start a run and wait until its turn is in flight; `finish` ends the turn.
+		const startRun = async (type: string) => {
+			let finish = () => {}
+			let started = () => {}
+			const turnStarted = new Promise<void>((resolve) => {
+				started = resolve
+			})
+			const session = makeFakeSession({
+				promptAction: () => {
+					started()
+					return new Promise<void>((resolve) => {
+						finish = resolve
+					})
+				},
+			})
+			mockCreateAgentSession.mockResolvedValueOnce({
+				session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+			const done = runAgent(ctx as unknown as Parameters<typeof runAgent>[0], type, "look around", {
+				pi: pi as unknown as RunOptions["pi"],
+			}).catch(() => undefined)
+			await turnStarted
+			return { done, finish: () => finish() }
+		}
+
+		const older = await startRun("Explore")
+		const newer = await startRun("Builder")
+		expect(process.env.KIMCHI_AGENT_PERSONA).toBe("Builder")
+
+		// The older run ends first: the variable stays with the run still active.
+		older.finish()
+		await older.done
+		expect(process.env.KIMCHI_AGENT_PERSONA).toBe("Builder")
+
+		// The later run found "Explore" when it started. Putting that back would
+		// leave a finished run's persona in the environment for good.
+		newer.finish()
+		await newer.done
+		expect(process.env.KIMCHI_AGENT_PERSONA).toBeUndefined()
 	})
 })

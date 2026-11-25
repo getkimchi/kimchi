@@ -42,8 +42,7 @@ test("a saved default removed from the catalog is healed to the served heir with
 			models: POST_SUNSET_MODELS,
 			responses: [{ stream: ["Healed reply."] }],
 			seedHome: (homeDir) => {
-				// Post-migration state from the gated default: a concrete default
-				// with multiModel=false, whose model has since left the catalog.
+				// A concrete saved default whose model has since left the catalog.
 				const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 				const settings = JSON.parse(readFileSync(settingsPath, "utf-8"))
 				writeFileSync(
@@ -78,11 +77,8 @@ test("a saved default removed from the catalog is healed to the served heir with
 			// The persisted default points at the heir, so the next launch heals nothing.
 			const settings = JSON.parse(readFileSync(join(fixture.agentDir, "settings.json"), "utf-8")) as {
 				defaultModel?: string
-				multiModel?: boolean
 			}
 			expect(settings.defaultModel).toBe("deepseek-v4-flash")
-			// Multi-model is never re-enabled by the heal — it stays off for good.
-			expect(settings.multiModel).not.toBe(true)
 			trace.step("settings.json default healed to the served model")
 		},
 	)

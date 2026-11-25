@@ -4,19 +4,19 @@ Kimchi's `agents` extension brings Claude-Code-style subagents to the harness. T
 LLM can spawn specialized agents via the `Agent` tool — each runs as a focused
 child session with its own system prompt, model, and tool restrictions.
 
-## Phase model
+## Permission modes
 
-Kimchi has a separate phase system that gates the **parent session's** autonomy
-(read-only vs full edit, etc.). Phases and agents are independent:
+Kimchi's permission modes (`default`, `plan`, `auto`, `yolo`) and agents work
+together:
 
-- **Phases** (managed by kimchi's `behaviours` extension and `set_phase` tool)
-  control what the parent session is allowed to do.
+- **Permission modes** control what the session is allowed to do.
 - **Agents** (this extension) handle delegation. Each persona declares its own
-  tool set independently of the parent's phase.
+  tool set in its `tools` field.
 
-A `plan`-phase parent (read-only) can still spawn an `expert-coder` agent that
-edits files — that's by design. Agents are isolated child sessions; their
-authority is scoped to the persona's `tools` field, not the parent's phase.
+A subagent's tool calls follow the main session's mode and rules. The persona
+decides which tools the subagent has; the mode decides whether a call may run.
+For example, a subagent started from a session in `plan` mode cannot edit
+files, even when its persona lists `edit`. See [Permissions](#permissions).
 
 ## How it works
 
@@ -31,6 +31,21 @@ When the LLM calls `Agent({ subagent_type: "expert-coder", prompt: "...", descri
 While agents run, a persistent widget above the editor shows live status, token
 counts, and current activity. Open `/agents` to see the menu — select any
 running or completed agent to view its full conversation in a live overlay.
+
+## Permissions
+
+Subagent tool calls go through the same permission gate as the main session and
+follow its mode and rules. A subagent has no prompt of its own. When a call
+needs a decision, the main session asks the user and names the subagent. When
+nobody can be asked, the call is blocked. The details are in
+[subagent-permissions.md](subagent-permissions.md).
+
+### Branching
+
+After `/branch`, a subagent that is still running keeps its original parent
+session. It cannot ask the new session for approval, so a call that needs
+approval is blocked. Start a new subagent from the new session when a call needs
+the user's approval.
 
 ## Discovery hierarchy
 
@@ -89,6 +104,8 @@ enabled: <bool>                  # false to hide this agent without deleting the
 You are a senior X engineer who...
 (persona body — markdown, becomes the subagent's system prompt)
 ```
+
+Built-in host-spawned personas (currently the Ferment V2 `Verifier`) use the internal `hostOnly` flag. Unlike `enabled: false`, this hides them from user spawning and agent UIs without discarding their runtime configuration or falling back to General Purpose. `hostOnly` is not a supported custom-agent frontmatter field.
 
 ### Invalid frontmatter
 

@@ -55,11 +55,6 @@ vi.mock("../prompt/context.js", () => ({
 	extractText: vi.fn().mockImplementation((content: unknown) => (typeof content === "string" ? content : "")),
 }))
 
-vi.mock("../../tags.js", () => ({
-	getCurrentPhase: vi.fn().mockReturnValue(undefined),
-	setCurrentPhase: vi.fn(),
-}))
-
 vi.mock("../../memory/memory.js", () => ({
 	buildMemoryBlock: vi.fn().mockReturnValue(""),
 	buildReadOnlyMemoryBlock: vi.fn().mockReturnValue(""),
@@ -86,7 +81,7 @@ vi.mock("../../../config.js", () => ({
 }))
 
 vi.mock("../../orchestration/model-registry/guidelines/guidelines-resolver.js", () => ({
-	buildPhaseGuidelinesSection: vi.fn().mockReturnValue(""),
+	buildRoleGuidelinesSection: vi.fn().mockReturnValue(""),
 }))
 
 vi.mock("../../auto-model/index.js", () => ({

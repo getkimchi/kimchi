@@ -81,7 +81,7 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 			expect(authorizations).toEqual([`Bearer ${REPLACEMENT_ACCESS_TOKEN}`, `Bearer ${REPLACEMENT_ACCESS_TOKEN}`])
 
 			const updatesBeforeReplay = fixture.client.sessionUpdates.length
-			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+			await fixture.conn.request("session/load", { sessionId, cwd: fixture.workDir, mcpServers: [] })
 			const replayedText = fixture.client.sessionUpdates
 				.slice(updatesBeforeReplay)
 				.filter(({ update }) => update.sessionUpdate === "agent_message_chunk")
@@ -122,7 +122,7 @@ for (const replacementExpiresInSeconds of [3600, 60]) {
 			expireSeededOAuthCredential(authPath)
 
 			const error = await fixture.conn
-				.prompt({ sessionId, prompt: [{ type: "text", text: "Use the revoked credential" }] })
+				.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "Use the revoked credential" }] })
 				.then(
 					() => undefined,
 					(failure: unknown) => failure,
@@ -250,7 +250,10 @@ describe("ACP integration — transient canonical refresh failure", () => {
 		expireSeededOAuthCredential(authPath)
 
 		const error = await fixture.conn
-			.prompt({ sessionId, prompt: [{ type: "text", text: "Request before a transient refresh failure" }] })
+			.request("session/prompt", {
+				sessionId,
+				prompt: [{ type: "text", text: "Request before a transient refresh failure" }],
+			})
 			.then(
 				() => undefined,
 				(failure: unknown) => failure,

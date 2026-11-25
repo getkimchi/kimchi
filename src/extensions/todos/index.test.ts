@@ -11,6 +11,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { STEER_EVENTS } from "../steer-events.js"
 import {
 	__resetCheckinGate,
+	claimGateBlockedWork,
 	disposeCheckinGateSession,
 	getPendingCheckins,
 	hasEffectivePendingCheckin,
@@ -891,6 +892,133 @@ describe("todo check-in gate", () => {
 		expect(isGateBlockedToolCall("w1")).toBe(true)
 		disposeCheckinGateSession("session")
 		expect(isGateBlockedToolCall("w1")).toBe(false)
+	})
+
+	it("names swallowed work calls in the block reason and keeps a re-issue ledger for the closing surface", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+		await fireInput(harness, ctx)
+
+		// Path-bearing and command-bearing calls are described by their target
+		// / first line, so the reminder can name what to re-issue.
+		const write = await harness.fire(
+			"tool_call",
+			{ type: "tool_call", toolCallId: "w1", toolName: "write", input: { path: "README.md", content: "new" } },
+			ctx,
+		)
+		expect(write).toMatchObject({ block: true })
+		expect((write as { reason?: string }).reason).toContain(
+			"Blocked work calls are NOT executed and are never replayed — after reconciling or confirming, re-issue them",
+		)
+
+		const bash = await harness.fire(
+			"tool_call",
+			{ type: "tool_call", toolCallId: "w2", toolName: "bash", input: { command: "git status\nsecond line" } },
+			ctx,
+		)
+		expect(bash).toMatchObject({ block: true })
+
+		// The closing write releases the gate and the swallowed calls become
+		// claimable exactly once for the re-issue reminder.
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 1,
+		})
+		expect(claimGateBlockedWork("session")).toEqual(["write(README.md)", "bash(git status)"])
+		expect(claimGateBlockedWork("session")).toEqual([])
+	})
+
+	it("keeps path descriptions one line and bounded", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+		await fireInput(harness, ctx)
+
+		await harness.fire(
+			"tool_call",
+			{ type: "tool_call", toolCallId: "w1", toolName: "write", input: { path: `${"a".repeat(250)}.txt` } },
+			ctx,
+		)
+		await harness.fire(
+			"tool_call",
+			{ type: "tool_call", toolCallId: "w2", toolName: "write", input: { path: "real/path.txt\nsecond line" } },
+			ctx,
+		)
+
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 1,
+		})
+		// A 254-char path caps at 200; a multiline path keeps only its first line.
+		expect(claimGateBlockedWork("session")).toEqual([`write(${"a".repeat(200)})`, "write(real/path.txt)"])
+	})
+
+	it("blocks safely when a work call carries no input, degrading to the tool name", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+		await fireInput(harness, ctx)
+
+		// A malformed event must not take the block decision down with it.
+		const result = await harness.fire(
+			"tool_call",
+			{ type: "tool_call", toolCallId: "w1", toolName: "bash", input: null },
+			ctx,
+		)
+		expect(result).toMatchObject({ block: true })
+
+		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "pending" }] }, "session", {
+			origin: "tool",
+			inputRevision: 1,
+		})
+		expect(claimGateBlockedWork("session")).toEqual(["bash"])
+	})
+
+	it("surfaces the re-issue reminder on the closing todo write's own result, drained once", async () => {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+		await fireInput(harness, ctx)
+
+		expect(
+			await harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "w1", toolName: "bash", input: { command: "git status -sb" } },
+				ctx,
+			),
+		).toMatchObject({ block: true })
+
+		// The real executor closes the gate through the production store subscriber,
+		// and its own result text carries the reminder.
+		const toolCtx = createToolContext("session", [])
+		const markTodo = harness.registeredTool("mark_todo")
+		const result = await markTodo.execute("m1", { id: 1, status: "pending" }, undefined, undefined, toolCtx)
+		const text = result.content[0].type === "text" ? result.content[0].text : ""
+		expect(text).toContain("Marked todo #1 pending in global.")
+		expect(text).toContain("1 tool call was blocked by this check-in and never executed (bash(git status -sb))")
+		expect(text).toContain("Re-issue it (or its updated equivalent) now")
+
+		// Drained: a later write carries no reminder.
+		const again = await markTodo.execute("m2", { id: 1, status: "in_progress" }, undefined, undefined, toolCtx)
+		const againText = again.content[0].type === "text" ? again.content[0].text : ""
+		expect(againText).toBe("Marked todo #1 in_progress in global.")
 	})
 
 	it("arms the gate without queueing an instruction steer — the block reason carries the instructions", async () => {
@@ -1987,6 +2115,7 @@ describe("plan-submission check-in gate", () => {
 		expect(pending[0]?.scope).toEqual({ kind: "global" })
 		const steers = steerCallsByReason(harness.sendMessage, "plan_submission")
 		expect(steers).toHaveLength(1)
+		expect(steers[0]?.[1]).toEqual({ deliverAs: "nextTurn" })
 		const text = JSON.stringify(steers[0])
 		expect(text).toContain("The plan was submitted for review")
 		expect(text).toContain("[in_progress] #1 Finalize plan")
@@ -2176,5 +2305,57 @@ describe("plan-submission check-in gate", () => {
 		await submitPlan(harness, ctx)
 		expect(steerCallsByReason(harness.sendMessage, "plan_submission")).toHaveLength(2)
 		expect(getPendingCheckins("session")[0]?.reasons.has("plan_submission")).toBe(true)
+	})
+})
+
+describe("check-in gate blocked-work ledger", () => {
+	beforeEach(() => {
+		__resetTodoStore()
+		__resetCheckinGate()
+		__resetReconciliationBookkeeping()
+	})
+
+	async function blockThenClose(close: () => void) {
+		const harness = createTodosHarness()
+		const ctx = createContext("session", [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+			origin: "tool",
+			inputRevision: 0,
+		})
+		await fireInput(harness, ctx)
+		const call = { type: "tool_call", toolName: "bash", input: { command: "echo x >> log" } }
+		expect(await harness.fire("tool_call", { ...call, toolCallId: "w1" }, ctx)).toMatchObject({ block: true })
+
+		close()
+		expect(getPendingCheckins("session")).toHaveLength(0)
+
+		// The model re-issues the call on its own, as the block reason tells it to.
+		expect(await harness.fire("tool_call", { ...call, toolCallId: "w2" }, ctx)).toMatchObject({ block: false })
+
+		const update = harness.registeredTool(UPDATE_TODOS_TOOL_NAME)
+		const result = await update.execute(
+			"u1",
+			{ todos: [{ content: "task", status: "completed" }] },
+			undefined,
+			undefined,
+			createToolContext("session", []),
+		)
+		return result.content[0].type === "text" ? result.content[0].text : ""
+	}
+
+	it("does not remind about a blocked call after a /todos command closed the check", async () => {
+		const text = await blockThenClose(() =>
+			applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session", {
+				origin: "command",
+				inputRevision: getInputRevision("session"),
+			}),
+		)
+		expect(text).not.toContain("Re-issue")
+	})
+
+	it("does not remind about a blocked call after a background write dropped the check", async () => {
+		const text = await blockThenClose(() => applyWriteTodos({ todos: [] }, "session"))
+		expect(text).not.toContain("Re-issue")
 	})
 })

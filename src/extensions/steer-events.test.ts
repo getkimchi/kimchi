@@ -24,7 +24,6 @@ const ALL_KINDS: SteerKind[] = [
 	"bash_timeout_guidance",
 	"bash_control_checkin",
 	"exploration_guard",
-	"review_write_guard",
 	"continuation_nudge",
 	"planning_stop_nudge",
 ]
@@ -404,9 +403,9 @@ describe("sendSteer", () => {
 	it("sends a marked hidden message, emits the fired event, returns the fire id", () => {
 		const { pi, emitted, sent } = makePiWithSend()
 		const ok = sendSteer(pi, makeCtx(), {
-			kind: "review_write_guard",
+			kind: "exploration_guard",
 			reason: "steer",
-			customType: "review-write-guard-steer",
+			customType: "exploration-guard-steer",
 			text: "stop editing",
 		})
 
@@ -420,7 +419,7 @@ describe("sendSteer", () => {
 			content: { type: string; text: string }[]
 			display: boolean
 		}
-		expect(message.customType).toBe("review-write-guard-steer")
+		expect(message.customType).toBe("exploration-guard-steer")
 		expect(message.display).toBe(false)
 		// Raw text is wrapped in the harness marker.
 		expect(message.content[0].text).toContain("<system-reminder>")
@@ -429,7 +428,7 @@ describe("sendSteer", () => {
 
 		expect(emitted).toHaveLength(1)
 		expect(emitted[0].channel).toBe(STEER_EVENTS.FIRED)
-		expect(emitted[0].payload).toMatchObject({ kind: "review_write_guard", reason: "steer" })
+		expect(emitted[0].payload).toMatchObject({ kind: "exploration_guard", reason: "steer" })
 	})
 
 	it("kill switch: returns undefined, sends nothing, emits nothing", () => {

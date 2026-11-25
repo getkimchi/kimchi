@@ -448,6 +448,8 @@ function fermentV2EvaluatedTelemetryHandler(ctx: TelemetryContext, raw: unknown)
 		verdict: payload.verdict,
 		evaluation_count: payload.count ?? 1,
 		evaluator_model: payload.model ?? "unknown",
+		same_model_as_implementer: payload.sameModelAsImplementer === true,
+		model_fallback: payload.modelFallback ?? "",
 		duration_ms: payload.durationMs ?? 0,
 		timeout_ms: payload.timeoutMs ?? 0,
 		provider_request_count: payload.providerRequestCount ?? 0,

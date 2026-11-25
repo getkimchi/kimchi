@@ -2,28 +2,75 @@ import { spawnSync } from "node:child_process"
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+function commentBlock(block, field) {
+	const isCommentBlock =
+		typeof block === "string" &&
+		block
+			.trimEnd()
+			.split(/\r\n?|\n/)
+			.every((line) => line.startsWith("#"))
+	if (!isCommentBlock) {
+		throw new Error(`Header addition ${field} must be a text block containing comment lines`)
+	}
+	return block.trimEnd()
+}
+
 const editDirectory = process.argv[2]
-if (!editDirectory) throw new Error("Usage: pnpm exec node scripts/commit-pi-patch.js <edit-directory>")
+if (!editDirectory)
+	throw new Error(
+		"Usage: pnpm exec node scripts/commit-pi-patch.js <edit-directory> [package-name] [header-additions.json]",
+	)
 
 // Derive the patch filename from package.json's pinned version so the script
 // does not go stale on every upstream bump.
 const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"))
-const version =
-	pkg.dependencies?.["@earendil-works/pi-coding-agent"] ?? pkg.devDependencies?.["@earendil-works/pi-coding-agent"]
-if (!version) throw new Error("Could not find the pi-coding-agent version pin in package.json")
-const patchPath = resolve(`patches/@earendil-works__pi-coding-agent@${version.replace(/^[^\d]*/, "")}.patch`)
+const packageName = process.argv[3] ?? "@earendil-works/pi-coding-agent"
+const version = pkg.dependencies?.[packageName] ?? pkg.devDependencies?.[packageName]
+if (!version) throw new Error(`Could not find the ${packageName} version pin in package.json`)
+const patchPath = resolve(`patches/${packageName.replaceAll("/", "__")}@${version.replace(/^[^\d]*/, "")}.patch`)
 const existing = readFileSync(patchPath, "utf8")
 const splitAt = existing.indexOf("diff --git")
 if (splitAt === -1) throw new Error("Checked-in patch has no diff hunks — there is no header to preserve")
 // The maintenance header is the single source of truth for tracking and
 // removal criteria; pnpm patch-commit regenerates only the bare diff.
-const header = existing.slice(0, splitAt)
-for (const field of ["# Tracking:", "# Removal:"]) {
-	if (!header.includes(field)) {
-		throw new Error(
-			`Maintenance header is missing "${field}" — restore it before committing a patch (repo patch policy)`,
-		)
+let header = existing.slice(0, splitAt)
+const headerAdditionsPath = process.argv[4]
+if (headerAdditionsPath) {
+	// Optional { tracking, changes } comment blocks add new maintenance records;
+	// { replaceTracking: { from, to } } replaces one existing comment record.
+	// Neither mode edits the generated patch hunks by hand.
+	const additions = JSON.parse(readFileSync(resolve(headerAdditionsPath), "utf8"))
+	const replacement = additions.replaceTracking
+	if (replacement !== undefined) {
+		if (additions.tracking !== undefined || additions.changes !== undefined) {
+			throw new Error("Header additions and replaceTracking are mutually exclusive")
+		}
+		if (
+			!replacement ||
+			typeof replacement !== "object" ||
+			Array.isArray(replacement) ||
+			typeof replacement.from !== "string" ||
+			typeof replacement.to !== "string"
+		) {
+			throw new Error("Header replaceTracking must be an object with from and to comment blocks")
+		}
+		const from = commentBlock(replacement.from, "replaceTracking.from")
+		const to = commentBlock(replacement.to, "replaceTracking.to")
+		const start = header.indexOf(from)
+		if (start === -1 || header.lastIndexOf(from) !== start) {
+			throw new Error("Expected exactly one matching tracking comment in the existing header")
+		}
+		header = `${header.slice(0, start)}${to}${header.slice(start + from.length)}`
+	} else {
+		const tracking = commentBlock(additions.tracking, "tracking")
+		const changes = commentBlock(additions.changes, "changes")
+		header = header.replace("# Changes:\n", `${tracking}\n# Changes:\n${changes}\n`)
 	}
+}
+if (!header.includes("# Tracking:") || (!header.includes("# Removal:") && !/remove when upstream/i.test(header))) {
+	throw new Error(
+		"Maintenance header must name upstream tracking and its removal criteria (# Removal or per-change instructions)",
+	)
 }
 
 function pnpm(args) {

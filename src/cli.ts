@@ -9,6 +9,7 @@ import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@eare
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
+	dropRetiredMultiModelArg,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -20,7 +21,6 @@ import {
 	normalizeResumeIdArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
-	stripMultiModelArgs,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
@@ -47,9 +47,9 @@ import {
 	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
+	firstRunSettingsDefaults,
 	getApiKeyMismatchWarning,
 	loadConfig,
-	RETRY_DEFAULTS,
 	readTelemetryConfig,
 	resolveEffectiveApiKey,
 	syncWheelScrollToPiSettings,
@@ -65,6 +65,7 @@ import idleGcExtension from "./extensions/adaptive-gc.js"
 import { installAgentEndWillRetryPatch } from "./extensions/agent-end-will-retry.js"
 import agentsExtension from "./extensions/agents/index.js"
 import { WEB_TOOL_MANAGED_FACTORIES } from "./extensions/agents/manager/subagent-web-tools.js"
+import agentsRulesExtension from "./extensions/agents-rules/index.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import { artifactRecorderExtension } from "./extensions/artifacts/recorder.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
@@ -133,7 +134,6 @@ import modelListExtension from "./extensions/model-list.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
 import modelWindowSnapshotExtension from "./extensions/model-window-snapshot.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
-import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
 import packageInstallGuardExtension from "./extensions/package-install-guard.js"
 import { loadConfig as loadPermissionsConfig } from "./extensions/permissions/config.js"
@@ -158,7 +158,6 @@ import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import refusedTurnsExtension, { applyRefusalNoticeRenderingPatch } from "./extensions/refused-turns.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
-import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
 import sessionMemoryStatsExtension from "./extensions/session-memory-stats.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
@@ -186,6 +185,7 @@ import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard
 import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
 import themeSelectorExtension from "./extensions/theme-selector.js"
 import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
+import transcriptTimestampsExtension from "./extensions/timestamps.js"
 import tipsExtension from "./extensions/tips/index.js"
 import todosExtension from "./extensions/todos/index.js"
 import toolGroupingExtension from "./extensions/tool-grouping.js"
@@ -216,13 +216,7 @@ import {
 	updateModelsConfig,
 } from "./models.js"
 import { IS_ACP_MODE } from "./modes/acp/state.js"
-import {
-	augmentModelRolesWithOllama,
-	injectOllamaProvider,
-	readOllamaModelMetadata,
-	readOllamaModelsFromConfig,
-	resolveOllamaHost,
-} from "./ollama.js"
+import { injectOllamaProvider, readOllamaModelMetadata, resolveOllamaHost } from "./ollama.js"
 import { initOrgPolicy } from "./org-policy.js"
 import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
@@ -521,7 +515,7 @@ async function cliMain(): Promise<void> {
 			installAutoModelAdapters()
 			// Publish the print-mode gate the
 			// same way so interactive-only (questionnaire) and ferment-mode-only
-			// (set_phase, list_ferments, ferment suite) tools stay out of headless
+			// (list_ferments, ferment suite) tools stay out of headless
 			// --print sessions. The ferment-oneshot argv scan is the load-bearing
 			// composition: a headless one-shot planner still needs the suite.
 			setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))
@@ -559,8 +553,8 @@ async function cliMain(): Promise<void> {
 
 			const envKey = captureApiKeyFromEnvironment()
 
-			// Capture the frozen launch-time metadata (OS + config snapshot incl.
-			// multimodel) for injection into JSONL/HTML exports. Decoupled from the
+			// Capture the frozen launch-time metadata (OS + config snapshot) for
+			// injection into JSONL/HTML exports. Decoupled from the
 			// telemetry opt-in below — exports must surface this even when telemetry
 			// is disabled.
 			captureSessionStart(config, telemetryConfig.enabled)
@@ -635,7 +629,6 @@ async function cliMain(): Promise<void> {
 			const rejectedEnvironmentKeyMessage =
 				"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
 			let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
-			let environmentOllamaModels: Awaited<ReturnType<typeof discoverEnvironmentModels>>["ollamaModels"] | undefined
 			try {
 				if (envKey) {
 					const discover = () =>
@@ -645,7 +638,6 @@ async function cliMain(): Promise<void> {
 						})
 					const discovered = await discover()
 					models = discovered.models
-					environmentOllamaModels = discovered.ollamaModels
 					installEnvironmentModels(envKey, discovered.providers, discovered.refreshed ? undefined : discover)
 				} else {
 					;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey || "", {
@@ -729,24 +721,13 @@ async function cliMain(): Promise<void> {
 			// prompt-enrichment reads this to build ModelRegistry with live model IDs.
 			setAvailableModels(models)
 
-			// Wire Ollama-discovered models into the explorer / reviewer / builder
-			// role pools. Runs after setAvailableModels so the resolved roles
-			// singleton reflects the same model list the picker exposes.
-			const ollamaModelsForRoles = environmentOllamaModels ?? readOllamaModelsFromConfig(modelsJsonPath)
-			if (ollamaModelsForRoles.length > 0) {
-				applyRoleAugmentation((roles) => augmentModelRolesWithOllama(roles, ollamaModelsForRoles))
-			}
-
 			// Write default settings on first run only — respect user's choices afterward
 			const settingsPath = resolve(agentDir, "settings.json")
 			try {
 				readFileSync(settingsPath, "utf-8")
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-					writeFileSync(
-						settingsPath,
-						`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS, hideThinkingBlock: true }, null, 2)}\n`,
-					)
+					writeFileSync(settingsPath, `${JSON.stringify(firstRunSettingsDefaults(), null, 2)}\n`)
 				} else {
 					console.error(`Warning: could not read ${settingsPath}: ${(err as Error).message}`)
 				}
@@ -807,8 +788,12 @@ async function cliMain(): Promise<void> {
 				: resolve(dirname(fileURLToPath(import.meta.url)), "../themes")
 			mkdirSync(themesDir, { recursive: true })
 
+			const supportedArgs = dropRetiredMultiModelArg(originalArgs)
+			if (supportedArgs.length !== originalArgs.length) {
+				console.warn("Warning: --model multi-model is no longer supported; using your default model.")
+			}
 			const atFileArgs = normalizeAtFileArgs(
-				normalizeResumeIdArgs(stripExperimentalFeaturesArg(originalArgs)),
+				normalizeResumeIdArgs(stripExperimentalFeaturesArg(supportedArgs)),
 				process.cwd(),
 				isCliAtFileArg,
 			)
@@ -818,9 +803,7 @@ async function cliMain(): Promise<void> {
 			}
 			const rawArgs = atFileArgs.args
 
-			// Parse Kimchi-local CLI flags once and strip virtual multi-model args
-			// before upstream pi-mono sees them (it does not recognize "multi-model"
-			// as a model id).
+			// Parse Kimchi-local CLI flags once before upstream pi-mono sees them.
 			populateCliArgs(rawArgs)
 			// Couple the background-bash pair BEFORE pi parses the args: a
 			// `--tools` allowlist that admits `bash` also admits `bash_control`,
@@ -832,7 +815,7 @@ async function cliMain(): Promise<void> {
 			// extensions/bash-background/tool-coupling.ts). Explicit
 			// `--exclude-tools bash_control` is honored: those sessions fall back
 			// to plain blocking bash instead (execute-time availability check).
-			const rawArgsWithoutMultiModel = coupleBashControlToolArg(stripMultiModelArgs(rawArgs))
+			const piArgs = coupleBashControlToolArg(rawArgs)
 
 			// Probe runs here (before pi-mono takes stdin) so the result is cached for
 			// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
@@ -961,8 +944,8 @@ async function cliMain(): Promise<void> {
 				createApiKeyWarningExtension(apiKeyWarning),
 				loopGuardExtension,
 				explorationGuardExtension,
-				reviewWriteGuardExtension,
 				...enabledExtensionFactories([
+					{ id: "extensions.agents-rules", factory: agentsRulesExtension },
 					{ id: "extensions.lsp", factory: lspExtension },
 					{ id: "extensions.dap", factory: dapExtension },
 				] satisfies ManagedExtensionFactory[]),
@@ -1065,6 +1048,9 @@ async function cliMain(): Promise<void> {
 				surveysExtension(),
 				toolRenderingExtension,
 				toolGroupingExtension,
+				// Must stay outside the existing renderers so cached content never
+				// absorbs or drops the optional display-only timestamp line.
+				transcriptTimestampsExtension,
 				...enabledExtensionFactories(WEB_TOOL_MANAGED_FACTORIES),
 				...enabledExtensionFactories([
 					{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },
@@ -1130,12 +1116,12 @@ async function cliMain(): Promise<void> {
 								mcpProbe: new UpstreamMcpProbe(),
 							}
 						: {}),
-					appendSystemPrompt: parsePiArgs(rawArgsWithoutMultiModel).appendSystemPrompt,
+					appendSystemPrompt: parsePiArgs(piArgs).appendSystemPrompt,
 				})
 			} else {
 				// Delegate to pi-mono's CLI main function, injecting the kimchi extension
 				const { main } = await import("@earendil-works/pi-coding-agent")
-				await main(rawArgsWithoutMultiModel, { extensionFactories })
+				await main(piArgs, { extensionFactories })
 			}
 			applyPostMainInfrastructureExitPolicy(
 				infrastructureErrorTracker.getFailure(),

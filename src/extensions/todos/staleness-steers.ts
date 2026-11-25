@@ -54,6 +54,8 @@ export function stalenessIndicator(changes: number, scope: TodoScope): string | 
 	return `⚠ ${changes} changes since the ${label} todo list was last updated — remove obsolete items or complete items whose work is done, then update the list at the next natural breakpoint`
 }
 
+export type HiddenSteerDeliverAs = "steer" | "nextTurn"
+
 /** Send a hidden persistent steer message (lands in session history at the
  *  current chronological position, so it joins the stable cache prefix).
  *  This is the single send path for staleness steers — the fire event
@@ -65,13 +67,20 @@ export function sendHiddenSteer(
 	customType: string,
 	text: string,
 	details: Record<string, unknown>,
-	opts: { steerKind?: SteerKind; steerReason?: SteerReason; interactive?: boolean; sessionId?: string } = {},
+	opts: {
+		steerKind?: SteerKind
+		steerReason?: SteerReason
+		interactive?: boolean
+		sessionId?: string
+		deliverAs?: HiddenSteerDeliverAs
+	} = {},
 ): boolean {
 	if (opts.steerKind && isSteerDisabled(opts.steerKind)) return false
 	// markHarnessSteer neutralizes closing-marker near-misses in the payload
 	// (todo content is model-authored and may carry external text) — the
 	// protection lives inside the marker so every wrapped channel is covered,
 	// including the todo state block and other markHarnessSteer callers.
+	const deliverAs: HiddenSteerDeliverAs = opts.deliverAs ?? "steer"
 	pi.sendMessage(
 		{
 			customType,
@@ -79,7 +88,7 @@ export function sendHiddenSteer(
 			content: markHarnessSteer(text),
 			details,
 		},
-		{ deliverAs: "steer" },
+		{ deliverAs },
 	)
 	if (opts.steerKind) {
 		const steerId = emitSteerFired(pi, opts.steerKind, opts.steerReason ?? "staleness", {

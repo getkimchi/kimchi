@@ -5,7 +5,7 @@
 // content/tool-call updates after the response.
 
 import { setTimeout as delay } from "node:timers/promises"
-import type { PromptResponse } from "@agentclientprotocol/sdk"
+import type { PromptResponse } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, describe, expect, it } from "vitest"
 import { type AcpFixture, type AcpFixtureOptions, PROMPT_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, waitForSessionUpdate } from "./support/scenarios.js"
@@ -26,7 +26,7 @@ async function expectConformantCancel(
 	sessionId: string,
 	cancel: () => Promise<void>,
 ): Promise<void> {
-	const promptPromise = fixture.conn.prompt({
+	const promptPromise = fixture.conn.request("session/prompt", {
 		sessionId,
 		prompt: [{ type: "text", text: "count from 1 to 1000, slowly" }],
 	})
@@ -68,7 +68,7 @@ describe("ACP integration — session/cancel conformance", () => {
 			])
 			const sessionId = await newSession(fx, fx.workDir)
 			const cancelArmed = waitForSessionUpdate(fx, sessionId, (u) => u.sessionUpdate === "agent_message_chunk").then(
-				() => fx.conn.cancel({ sessionId }),
+				() => fx.conn.notify("session/cancel", { sessionId }),
 			)
 			await expectConformantCancel(fx, sessionId, () => cancelArmed)
 		},
@@ -87,7 +87,7 @@ describe("ACP integration — session/cancel conformance", () => {
 			])
 			const sessionId = await newSession(fx, fx.workDir)
 			await expectConformantCancel(fx, sessionId, async () => {
-				await fx.conn.cancel({ sessionId })
+				await fx.conn.notify("session/cancel", { sessionId })
 			})
 		},
 		PROMPT_TIMEOUT_MS + 20_000,
@@ -100,7 +100,9 @@ describe("ACP integration — session/cancel conformance", () => {
 				{ stream: Array.from({ length: 60 }, (_, i) => `chunk-${i} `), textDelayMs: 200, delayMs: 500 },
 			])
 			const sessionId = await newSession(fx, fx.workDir)
-			const cancelArmed = waitForSessionUpdate(fx, sessionId, () => true).then(() => fx.conn.cancel({ sessionId }))
+			const cancelArmed = waitForSessionUpdate(fx, sessionId, () => true).then(() =>
+				fx.conn.notify("session/cancel", { sessionId }),
+			)
 			await expectConformantCancel(fx, sessionId, () => cancelArmed)
 		},
 		PROMPT_TIMEOUT_MS + 20_000,
@@ -123,7 +125,7 @@ describe("ACP integration — session/cancel conformance", () => {
 			).then(async () => {
 				// Let the tool actually start before cancelling.
 				await delay(300)
-				await fx.conn.cancel({ sessionId })
+				await fx.conn.notify("session/cancel", { sessionId })
 			})
 			await expectConformantCancel(fx, sessionId, () => cancelArmed)
 		},

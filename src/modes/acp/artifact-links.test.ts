@@ -1,8 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { SessionUpdate } from "@agentclientprotocol/sdk"
+import type { SessionUpdate } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { snapshotArtifactFiles } from "../../extensions/artifacts/detect.js"
 import { buildArtifactLinkChunks, TurnArtifactBuffer } from "./artifact-links.js"
 
 // Narrow a chunk-shaped SessionUpdate for assertions (the builder only
@@ -175,6 +176,41 @@ describe("TurnArtifactBuffer", () => {
 		args: { path, content: "x" },
 		result: { content: [{ type: "text", text: "done" }] },
 		cwd: tmpDir,
+	})
+
+	it("requires opt-in for live and recorded snapshot artifacts", () => {
+		const silent = join(tmpDir, "silent.html")
+		const snapshot = snapshotArtifactFiles("bash", { command: "node build.js" }, tmpDir)
+		writeFileSync(silent, "<h1>Silent</h1>")
+		const call = {
+			toolName: "bash",
+			args: { command: "node build.js" },
+			result: { content: [] },
+			cwd: tmpDir,
+			windowStart: Date.now(),
+			fileSnapshot: snapshot,
+		}
+		const hidden = new TurnArtifactBuffer()
+		hidden.collectFromToolCall(call)
+		expect(hidden.size).toBe(0)
+		const visible = new TurnArtifactBuffer()
+		visible.noteTextBlock("km.snapshot")
+		visible.collectFromToolCall(call, { includeSnapshotArtifacts: true })
+		expect(visible.flush()).toHaveLength(1)
+
+		const recorded = {
+			path: silent,
+			name: "silent.html",
+			mimeType: "text/html",
+			sniffed: true,
+			snapshot: true,
+		}
+		expect(hidden.size).toBe(0)
+		hidden.adoptRecorded([recorded])
+		expect(hidden.size).toBe(0)
+		visible.adoptRecorded([recorded], { includeSnapshotArtifacts: true })
+		visible.noteTextBlock("km.recorded")
+		expect(visible.flush()).toHaveLength(1)
 	})
 
 	it("attaches to the LAST noted text block and clears after flush", () => {

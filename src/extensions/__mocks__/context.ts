@@ -11,6 +11,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { type Mocked, vi } from "vitest"
 import { createModelRegistry } from "./model-registry.js"
+import { testTheme } from "./theme.js"
 
 export function createCommandContext(): ExtensionCommandContext {
 	return {
@@ -22,6 +23,20 @@ export function createCommandContext(): ExtensionCommandContext {
 		navigateTree: vi.fn(async () => ({ cancelled: false })),
 		switchSession: vi.fn(async () => ({ cancelled: false })),
 		reload: vi.fn(async () => {}),
+	}
+}
+
+/** Upstream's `ReplacedSessionContext`, which the package root does not export. */
+export type ReplacedSessionContext = Parameters<
+	NonNullable<NonNullable<Parameters<ExtensionCommandContext["newSession"]>[0]>["withSession"]>
+>[0]
+
+/** Context a `newSession({ withSession })` callback receives for the replacement session. */
+export function createReplacedSessionContext(): ReplacedSessionContext {
+	return {
+		...createCommandContext(),
+		sendMessage: vi.fn(async () => {}),
+		sendUserMessage: vi.fn(async () => {}),
 	}
 }
 
@@ -133,6 +148,9 @@ export function createContext(
 				}
 			: undefined,
 		ui: {
+			theme: testTheme,
+			setWorkingIndicator: vi.fn(),
+			setWorkingMessage: vi.fn(),
 			input: vi.fn(),
 			select: vi.fn(),
 			confirm: vi.fn(),

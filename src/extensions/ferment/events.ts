@@ -5,7 +5,6 @@ import { formatSanitizedErrorMessage, isRetryableErrorStillPending } from "../..
 import { isAgentWorker } from "../agent-worker-context.js"
 import { getEffectiveModel } from "../auto-model/state.js"
 import { deferExtensionAction } from "../deferred-action.js"
-import { getMultiModelEnabled } from "../multi-model.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { maybeTriggerFermentCompaction, maybeTriggerMidTurnFermentCompaction } from "./auto-compaction.js"
@@ -341,12 +340,7 @@ export function registerFermentEvents(
 		if (isAgentWorker()) {
 			return
 		}
-		runtime.captureJudgeContext(
-			getEffectiveModel(ctx),
-			ctx.modelRegistry,
-			getMultiModelEnabled(ctx.sessionManager),
-			ctx,
-		)
+		runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry, ctx)
 		clearAllLifecycleGuards()
 		runtime.setContinuationPolicy(ctx?.hasUI ? "manual" : "automated")
 		runtime.clearAllStepStarts()
@@ -490,7 +484,7 @@ export function registerFermentEvents(
 			)
 			return {
 				action: "transform" as const,
-				text: buildOneshotNudge(updated, intent, getMultiModelEnabled(ctx.sessionManager)),
+				text: buildOneshotNudge(updated, intent),
 				images: event.images,
 			}
 		} catch (err) {
@@ -529,22 +523,12 @@ export function registerFermentEvents(
 	})
 
 	pi.on("model_select", (_event, ctx) => {
-		runtime.captureJudgeContext(
-			getEffectiveModel(ctx),
-			ctx.modelRegistry,
-			getMultiModelEnabled(ctx.sessionManager),
-			ctx,
-		)
+		runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry, ctx)
 	})
 
 	pi.on("turn_end", async (event, ctx) => {
 		if (isAgentWorker()) return
-		runtime.captureJudgeContext(
-			getEffectiveModel(ctx),
-			ctx.modelRegistry,
-			getMultiModelEnabled(ctx.sessionManager),
-			ctx,
-		)
+		runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry, ctx)
 		if (event.message.role !== "assistant") return
 		const content = getAssistantContentParts(event.message.content)
 		const activeId = runtime.getActiveId()

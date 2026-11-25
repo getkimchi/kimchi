@@ -316,7 +316,6 @@ export function markHumanInput(): void {
 
 let judgeModel: Model<Api> | undefined
 let judgeModelRegistry: ModelRegistry | undefined
-let judgeMultiModelEnabled = false
 let judgeWorkContext: WorkContext | undefined
 
 export function getJudgeWorkContext(): WorkContext | undefined {
@@ -331,23 +330,10 @@ export function getJudgeModelRegistry(): ModelRegistry | undefined {
 	return judgeModelRegistry
 }
 
-/** Whether the judge may use the configured modelRoles.judge assignment.
- *  Single-model sessions grade with the current session model; roles only
- *  apply when multi-model mode is on. */
-export function isJudgeMultiModelEnabled(): boolean {
-	return judgeMultiModelEnabled
-}
-
-export function captureJudgeContext(
-	model?: Model<Api>,
-	registry?: ModelRegistry,
-	multiModelEnabled?: boolean,
-	context?: WorkContext,
-): void {
+export function captureJudgeContext(model?: Model<Api>, registry?: ModelRegistry, context?: WorkContext): void {
 	if (context) judgeWorkContext = pinWorkContext(context)
 	if (model) judgeModel = model
 	if (registry) judgeModelRegistry = registry
-	if (multiModelEnabled !== undefined) judgeMultiModelEnabled = multiModelEnabled
 }
 
 // ─── Counter abstraction ──────────────────────────────────────────────────────
@@ -815,7 +801,7 @@ function persistFerment(fermentId: string, root = runtimeStatePersistRoot): void
 
 // ─── Scoping exploration turn counter ─────────────────────────────────────────
 // Tracks consecutive turns during draft scoping where the model only called
-// read-like tools (read, grep, ls, find, bash, web_search, web_fetch, set_phase)
+// read-like tools (read, grep, ls, find, bash, web_search, web_fetch)
 // without calling any scoping-progression tool (ask_user,
 // confirm_ferment_completion_criteria, propose_ferment_scoping, scope_ferment, Agent).
 // After MAX_SCOPING_EXPLORE_TURNS, the turn_end handler injects a nudge

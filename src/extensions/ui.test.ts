@@ -1,6 +1,7 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { createCommandContext, createReplacedSessionContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { isBareExitAlias } from "./exit-utils.js"
 import uiExtension, {
@@ -71,6 +72,24 @@ describe("bare exit input handler", () => {
 		const result = await harness.getHandler("input")({ type: "input", text: "hello" } as never, ctx)
 		expect(shutdown).not.toHaveBeenCalled()
 		expect(result).toBeUndefined()
+	})
+})
+
+describe("clear command", () => {
+	it("announces completion through the replacement session context", async () => {
+		const harness = createExtensionApi()
+		uiExtension(harness.api)
+		const replacementCtx = createReplacedSessionContext()
+		const ctx = createCommandContext()
+		ctx.newSession = vi.fn<ExtensionCommandContext["newSession"]>(async (options) => {
+			await options?.withSession?.(replacementCtx)
+			return { cancelled: false }
+		})
+
+		await harness.getRegisteredCommand("clear").handler("", ctx)
+
+		expect(replacementCtx.ui.notify).toHaveBeenCalledWith("New session started", "info")
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
 	})
 })
 
@@ -338,6 +357,20 @@ describe("withWorkingHidden — cooking animator pause/resume", () => {
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(1, false)
 		expect(ctx.ui.setWorkingVisible).toHaveBeenNthCalledWith(2, true)
 		expect(order).toEqual(["pause", "setWorkingVisible:false", "prompt", "setWorkingVisible:true", "resume"])
+	})
+
+	it("releases the animator but leaves the indicator hidden for a prompt that gave way", async () => {
+		const ctx = fakeCtx()
+		ctx.ui.setWorkingVisible = vi.fn()
+		const controller = { pause: vi.fn(), resume: vi.fn(), stop: vi.fn() }
+		__setWorkingAnimatorForTest(controller)
+
+		await withWorkingHidden(ctx, async () => undefined, { keepHidden: () => true })
+
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		expect(controller.pause).toHaveBeenCalledTimes(1)
+		expect(controller.resume).toHaveBeenCalledTimes(1)
 	})
 
 	it("resumes the animator even when the prompt resolves to undefined", async () => {

@@ -11,9 +11,9 @@ import {
 
 const namesOf = (entries: ToolEntry[]): string[] => entries.map((t) => t.name)
 
-const TODO_TOOL_NAMES = ["create_todos", "update_todos", "add_todo", "mark_todo", "clear_todos"]
-const WORKFLOW_OUTPUT_TOOL_NAMES = ["workflow_submit_result", "workflow_submit_questions"]
-const FERMENT_V2_TOOL_NAMES = ["get_ferment_v2", "update_ferment_v2"]
+const TODO_TOOL_NAMES = ["create_todos", "update_todos", "add_todo", "mark_todo", "clear_todos", "confirm_todos"]
+const WORKFLOW_OUTPUT_TOOL_NAMES = ["workflow_submit_result", "workflow_submit_questions", "submit_agent_report"]
+const FERMENT_V2_TOOL_NAMES = ["get_ferment_v2", "update_ferment_v2", "respond_to_ferment_v2_finding"]
 
 const DAP_TOOL_NAMES = [
 	"debug_launch",
@@ -52,7 +52,6 @@ const TOOL_NAMES = {
 	],
 	adhocOnly: ["questionnaire"],
 	fermentPlanningTools: [
-		"set_phase",
 		"propose_ferment_scoping",
 		"scope_ferment",
 		"update_ferment_scope_field",
@@ -95,7 +94,7 @@ describe("ADHOC_MODE_TOOLS", () => {
 	})
 
 	it("does not contain ferment-mode tools", () => {
-		const fermentTools = ["ask_user", "confirm_ferment_completion_criteria", "set_phase", "activate_ferment_phase"]
+		const fermentTools = ["ask_user", "confirm_ferment_completion_criteria", "activate_ferment_phase"]
 		for (const name of fermentTools) {
 			expect(namesOf(ADHOC_MODE_TOOLS)).not.toContain(name)
 		}
@@ -106,7 +105,6 @@ describe("FERMENT_MODE_TOOLS", () => {
 	const allNames = namesOf(FERMENT_MODE_TOOLS)
 
 	const expectedPlanningTools = [
-		"set_phase",
 		"propose_ferment_scoping",
 		"scope_ferment",
 		"update_ferment_scope_field",
@@ -151,7 +149,6 @@ describe("FERMENT_MODE_TOOLS", () => {
 		}
 
 		// planning-only
-		expect(byName("set_phase").phases).toEqual(["planning"])
 		expect(byName("propose_ferment_scoping").phases).toEqual(["planning"])
 		expect(byName("confirm_ferment_completion_criteria").phases).toEqual(["planning"])
 		expect(byName("activate_ferment_phase").phases).toEqual(["planning"])
@@ -265,7 +262,6 @@ describe("getToolsForProfile", () => {
 			const fermentOnly = [
 				"ask_user",
 				"confirm_ferment_completion_criteria",
-				"set_phase",
 				"propose_ferment_scoping",
 				"scope_ferment",
 				"activate_ferment_phase",

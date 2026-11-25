@@ -14,6 +14,7 @@
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
+import type { Api, Model } from "@earendil-works/pi-ai"
 import {
 	type AgentSession,
 	defineTool,
@@ -22,6 +23,7 @@ import {
 	type ExtensionContext,
 	type ExtensionUIContext,
 	getAgentDir,
+	type InlineExtension,
 } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
@@ -31,16 +33,10 @@ import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { notifyUser } from "../../utils/notify-user.js"
 import { createDeferredReveal } from "../deferred-reveal.js"
+import { getRawErrorMessage } from "../error-preservation.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
 import { sessionHasImages } from "../model-guard.js"
-import { getMultiModelEnabled } from "../multi-model.js"
 import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
-import {
-	type DEFAULT_MODEL_ROLES,
-	getAllowedMultiModelRefs,
-	getModelRoles,
-	normalizeRoleModels,
-} from "../orchestration/model-roles.js"
 import { backgroundNotificationsReachUser, isTuiSession } from "../prompt-construction/session-user-loop.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import type { RemoteGitWorkflow } from "../remote-run/git-workflow.js"
@@ -82,6 +78,7 @@ import {
 	BUILTIN_TOOL_NAMES,
 	getAgentConfig,
 	getAllTypes,
+	getAvailableTypes,
 	getDefaultAgentNames,
 	getUserAgentNames,
 	registerAgents,
@@ -94,6 +91,7 @@ import {
 	type SkippedAgentFile,
 } from "./personas/custom-agents.js"
 import {
+	AGENT_FERMENT_VERIFIER,
 	AGENT_GENERAL_PURPOSE,
 	type AgentAbortReason,
 	type AgentConfig,
@@ -104,6 +102,7 @@ import {
 	type JoinMode,
 	type NotificationDetails,
 	type SubagentType,
+	type ThinkingLevel,
 } from "./personas/types.js"
 import { findResumableRemoteRuns, persistRemoteRunState, type RemoteRunState } from "./remote-run-persistence.js"
 import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
@@ -134,39 +133,6 @@ import {
 export const AGENT_CONTINUATION_TOOL_NAMES = ["resume_subagent", "steer_subagent", "get_subagent_result"] as const
 
 // ---- Shared helpers ----
-
-/**
- * Maps an agent persona type to its model-roles key.
- * Returns null for types that don't have a configured role.
- */
-export function agentTypeToRoleKey(subagentType: string): keyof typeof DEFAULT_MODEL_ROLES | null {
-	const map: Record<string, keyof typeof DEFAULT_MODEL_ROLES> = {
-		Builder: "builder",
-		Reviewer: "reviewer",
-		Explore: "explorer",
-		Plan: "planner",
-		Researcher: "researcher",
-		Fixer: "builder", // Fixer uses the builder model pool
-		"General-Purpose": "builder", // GP defaults to builder model pool
-	}
-	return map[subagentType] ?? null
-}
-
-/**
- * When multi-model is enabled and the caller did not specify a model,
- * resolve the default model ref string from the role config based on
- * the agent type. Returns the first model ref (e.g. "kimchi-dev/minimax-m3")
- * or undefined if no role mapping exists.
- */
-export function resolveRoleModelRef(subagentType: string): string | undefined {
-	const roleKey = agentTypeToRoleKey(subagentType)
-	if (!roleKey) return undefined
-	const roles = getModelRoles()
-	const assignment = roles[roleKey]
-	if (!assignment) return undefined
-	const modelRefs = normalizeRoleModels(assignment)
-	return modelRefs[0]
-}
 
 // Give aborted sub-agents a bounded chance to reach runner finally blocks.
 // If they do not settle, manager.dispose() still runs hard-fallback cleanup.
@@ -285,7 +251,7 @@ export function buildRunInBackgroundParameterDescription(backgroundNotifications
 }
 
 export const AGENT_MODEL_PARAMETER_DESCRIPTION =
-	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only role-configured models may be used.'
+	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters.'
 
 function textResult<T = AgentDetails>(msg: string, details?: T) {
 	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
@@ -526,7 +492,7 @@ export function shouldAutoResumeFermentWorker(record: AutoResumeShape): boolean 
 	)
 }
 
-function getStatusInstruction(status: string, multiModelEnabled: boolean, abortReason?: AgentAbortReason): string {
+function getStatusInstruction(status: string, abortReason?: AgentAbortReason): string {
 	if (status === "aborted" && abortReason === "token_budget") {
 		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do not blindly retry the same prompt."
 	}
@@ -534,16 +500,10 @@ function getStatusInstruction(status: string, multiModelEnabled: boolean, abortR
 		return "\nThe agent stopped producing output and was terminated. Inspect the worker report before acting; this may indicate a stall. Resume only with a steering prompt that continues the same thread while avoiding the stalled operation, or spawn a narrower replacement Agent if remaining_steps have a clean task boundary."
 	}
 	if (status === "aborted" && abortReason === "max_duration") {
-		const relaxed = !multiModelEnabled
-		return relaxed
-			? "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary."
-			: '\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build. If this is a ferment step that simply needs more wall-clock for builds/tests, restart it at budget_tier="complex" (max_duration "900", max_turns "45") — full multi-file builds do not fit the standard duration tier.'
+		return "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary."
 	}
 	if (status === "aborted" && abortReason === "max_turns") {
-		const relaxed = !multiModelEnabled
-		return relaxed
-			? "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked."
-			: "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+		return "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked."
 	}
 	return ""
 }
@@ -771,26 +731,6 @@ export async function runWithOverlay<T>(description: string, fn: () => Promise<T
 	}
 }
 
-/** Resolve the model the Grader subagent should grade with: the configured
- *  `modelRoles.judge` ref resolved against the session registry — the same
- *  resolution the ferment judge uses for single-shot grades and for its
- *  `gradedBy` provenance label. Only applies in multi-model mode: in
- *  single-model mode the judge IS the current session model, so this returns
- *  undefined and the agent runner falls back to ctx.model. Also undefined
- *  when the role does not resolve in the registry, which matches the judge's
- *  own session-model fallback. */
-function resolveGraderModel(ctx: ExtensionContext): typeof ctx.model | undefined {
-	if (!getMultiModelEnabled(ctx.sessionManager)) return undefined
-	const judgeAssignment = getModelRoles().judge
-	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
-	if (!judgeModelStr) return undefined
-	const resolved = resolveModel(judgeModelStr, ctx.modelRegistry as ModelRegistry)
-	// resolveModel returns `unknown | string` (string is an error message) —
-	// same casting pattern as the Agent-tool model resolution below.
-	if (typeof resolved === "string") return undefined
-	return resolved as typeof ctx.model
-}
-
 /** Spawn a Grader subagent (read-only + bash, bounded turns) and wait for its
  *  result. Returns the agent's final text response and status. Used by the
  *  ferment grader to independently verify agent claims with tool access.
@@ -825,19 +765,12 @@ export async function spawnGraderAgent(
 	// Allow the grader to be cancelled when the parent session shuts down.
 	const abortController = new AbortController()
 
-	// Resolve and pass the judge-role model so this grader runs on the same
-	// model the ferment judge labels its grades with (describeJudgeModel).
-	// Without it the runner silently falls back to the parent session model,
-	// making persisted `gradedBy` provenance wrong whenever the roles differ.
-	const graderModel = resolveGraderModel(ctx)
-
 	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_GRADER_TYPE, prompt, {
 		description: "Ferment grader",
 		visibility: "system",
 		sessionFile,
 		sessionDir,
 		signal: abortController.signal,
-		...(graderModel ? { model: graderModel } : {}),
 	})
 	// Collect all assistant text from the session — the grade JSON may appear
 	// in an earlier turn, not just the final response.
@@ -854,6 +787,172 @@ export async function spawnGraderAgent(
 		fullText = assistantText || fullText
 	}
 	return { text: fullText, status: record.status }
+}
+
+/** Result of one Ferment V2 verifier agent run (spawn or resume). */
+export interface FermentV2VerifierAgentRun {
+	id: string
+	/** Final response text (the verdict output). */
+	text: string
+	/** Agent record status: "completed" | "steered" | "aborted" | "stopped" | "error". */
+	status: string
+	/** Error message when status is "error". */
+	error?: string
+	/** Raw abort reason when the run was aborted (e.g. "inactivity", "max_duration"). */
+	abortReason?: string
+	/** Tool calls recorded on the agent's record — cumulative across resumes (the manager never resets it). */
+	toolCalls: number
+	/** Turns used by the run. */
+	turns: number
+	/** The verifier session — usage is accumulated by the in-session guard, not folded from here. */
+	session?: AgentSession
+}
+
+function verifierRunFromRecord(record: {
+	id: string
+	result?: string
+	status: string
+	error?: string
+	abortReason?: AgentAbortReason
+	toolUses?: number
+	lastTurnCount?: number
+	session?: AgentSession
+}): FermentV2VerifierAgentRun {
+	// A record the manager marked "completed" can still have ended on a
+	// terminal assistant error (see terminalAssistantError): surface it as an
+	// error result so the evaluator's transient-failure retry policy engages
+	// instead of the invalid-output correction path.
+	const terminalError = record.status === "completed" ? terminalAssistantError(record.session) : undefined
+	const error = terminalError ?? record.error
+	return {
+		id: record.id,
+		text: record.result ?? "",
+		status: terminalError !== undefined ? "error" : record.status,
+		...(error ? { error } : {}),
+		...(record.abortReason ? { abortReason: record.abortReason } : {}),
+		toolCalls: record.toolUses ?? 0,
+		turns: record.lastTurnCount ?? 0,
+		...(record.session ? { session: record.session } : {}),
+	}
+}
+
+/**
+ * A terminal provider error (429/5xx, dropped stream) ends the child
+ * session's run by *resolving normally*: upstream retries the error
+ * in-session and, once those retries are disabled or exhausted,
+ * `_handlePostAgentRun` simply stops, so the manager marks the record
+ * "completed" and the error survives only as the session's last assistant
+ * message (`stopReason: "error"`). Translate that message into an error
+ * result for both spawn and resume. Retry layers compose deterministically:
+ * in-session auto-retries (upstream plus the kimchi retry patch) run first;
+ * the evaluator's transient-failure policy (3× with backoff) engages only
+ * after they are exhausted or disabled, never in parallel.
+ */
+function terminalAssistantError(session: AgentSession | undefined): string | undefined {
+	const messages = session?.messages ?? []
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i]
+		if (message.role !== "assistant") continue
+		// Only the last assistant message is the run's outcome — an earlier
+		// error that was retried in-session is followed by a later message.
+		if (message.stopReason === "error") {
+			// Prefer the preserved raw provider text: display extensions may
+			// have replaced `errorMessage` with a placeholder.
+			return getRawErrorMessage(message) ?? "unknown provider error"
+		}
+		return undefined
+	}
+	return undefined
+}
+
+/** Spawn the Ferment V2 Verifier subagent and wait for its result.
+ *
+ *  The verifier executes checks in the working tree with read-only tools and
+ *  must not be bounded by turn or duration limits: pass `maxTurns: 0` and
+ *  `maxDuration: 0` (both default here to unlimited). Inactivity is accounted
+ *  in "model_only" mode — a silent long-running tool call never counts as
+ *  inactivity. Inline `extensionFactories` (evidence guard, redaction, allowlist)
+ *  load even though the persona disables extensions.
+ *
+ *  Returns undefined when the agent system is not active (unit tests, non-agent
+ *  contexts) so the caller can surface an `agent_unavailable` verdict. */
+export async function spawnFermentV2VerifierAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+	opts: {
+		model: Model<Api>
+		cwd: string
+		extensionFactories: InlineExtension[]
+		signal: AbortSignal
+		/** Wall-clock cap in seconds; 0 (default) = unlimited. */
+		maxDuration?: number
+		/** Thinking level of the verifier session; default `low`. */
+		thinkingLevel?: ThinkingLevel
+		/** Ends the session once the named tool completes and this returns true (an accepted verdict submission). */
+		shouldTerminateAfterTool?: (toolName: string) => boolean
+	},
+): Promise<FermentV2VerifierAgentRun | undefined> {
+	if (!activeManager) return undefined
+
+	// Persist the verifier transcript alongside the parent session for
+	// post-mortem analysis, exactly like the grader.
+	let sessionFile: string | undefined
+	let sessionDir: string | undefined
+	try {
+		const parentSessionDir = ctx.sessionManager.getSessionDir()
+		const parentSessionFile = ctx.sessionManager.getSessionFile()
+		if (parentSessionDir && parentSessionFile) {
+			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, opts.cwd, AGENT_FERMENT_VERIFIER)
+			sessionFile = prepared?.sessionFile
+			sessionDir = parentSessionDir
+		}
+	} catch {
+		// Best-effort: the verifier can run without a persisted transcript.
+	}
+
+	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_FERMENT_VERIFIER, prompt, {
+		description: "Ferment V2 verifier",
+		visibility: "system",
+		model: opts.model,
+		cwd: opts.cwd,
+		sessionFile,
+		sessionDir,
+		signal: opts.signal,
+		// 0 = unlimited: bounded by the caller's wall-clock cap, not turns.
+		maxTurns: 0,
+		maxDuration: opts.maxDuration ?? 0,
+		inactivityMode: "model_only",
+		thinkingLevel: opts.thinkingLevel ?? "low",
+		extensionFactories: opts.extensionFactories,
+		...(opts.shouldTerminateAfterTool ? { shouldTerminateAfterTool: opts.shouldTerminateAfterTool } : {}),
+	})
+	return verifierRunFromRecord(record)
+}
+
+/** Resume the Ferment V2 verifier session with a correction prompt. Same
+ *  unlimited limits and model-only inactivity as the initial run. Returns
+ *  undefined when the agent system is not active or the run is unknown. */
+export async function resumeFermentV2VerifierAgent(
+	id: string,
+	prompt: string,
+	opts: {
+		signal: AbortSignal
+		/** Wall-clock cap in seconds for this resume; 0 (default) = unlimited. */
+		maxDuration?: number
+		shouldTerminateAfterTool?: (toolName: string) => boolean
+	},
+): Promise<FermentV2VerifierAgentRun | undefined> {
+	if (!activeManager) return undefined
+	const record = await activeManager.resume(id, prompt, {
+		signal: opts.signal,
+		maxTurns: 0,
+		maxDuration: opts.maxDuration ?? 0,
+		inactivityMode: "model_only",
+		...(opts.shouldTerminateAfterTool ? { shouldTerminateAfterTool: opts.shouldTerminateAfterTool } : {}),
+	})
+	if (!record) return undefined
+	return verifierRunFromRecord(record)
 }
 
 function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undefined {
@@ -1064,12 +1163,29 @@ export default function (pi: ExtensionAPI) {
 		widget.update()
 	}, 30_000)
 
+	function buildAgentLifecycleData(record: AgentRecord) {
+		return {
+			agentId: record.id,
+			sessionId: record.sessionId ?? "",
+			parentSessionId: record.parentSessionId ?? "",
+			toolCallId: record.toolCallId,
+			prompt: record.prompt ?? "",
+			description: record.description,
+			cwd: record.cwd ?? "",
+			visibility: record.visibility,
+			remote: record.remote ?? false,
+			status: record.status,
+			background: record.isBackground ?? false,
+		}
+	}
+
 	function buildEventData(record: AgentRecord) {
 		const durationMs = record.completedAt ? record.completedAt - record.startedAt : Date.now() - record.startedAt
 		const u = record.lifetimeUsage
 		const total = getLifetimeTotal(u)
 		const tokens = total > 0 ? { input: u.input, output: u.output, total } : undefined
 		return {
+			...buildAgentLifecycleData(record),
 			id: record.id,
 			type: record.type,
 			description: record.description,
@@ -1089,7 +1205,14 @@ export default function (pi: ExtensionAPI) {
 			id: record.id,
 			type: record.type,
 			description: record.description,
+			agentId: record.id,
+			sessionId: record.sessionId ?? "",
+			parentSessionId: record.parentSessionId ?? "",
+			toolCallId: record.toolCallId,
+			cwd: record.cwd ?? "",
 			visibility: record.visibility,
+			remote: record.remote ?? false,
+			background: record.isBackground ?? false,
 			status: record.status,
 			abortReason: record.abortReason,
 			result: record.result,
@@ -1102,6 +1225,7 @@ export default function (pi: ExtensionAPI) {
 			outputFile: record.outputFile,
 			sessionFile: record.sessionFile,
 			systemPrompt: record.systemPrompt,
+			parentSessionFile: record.parentSessionFile,
 		})
 	}
 
@@ -1363,6 +1487,7 @@ export default function (pi: ExtensionAPI) {
 		undefined,
 		(record, ctx) => {
 			emitSubagentEvent("subagents:started", {
+				...buildAgentLifecycleData(record),
 				id: record.id,
 				type: record.type,
 				description: record.description,
@@ -1372,6 +1497,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		(record, info) => {
 			emitSubagentEvent("subagents:compacted", {
+				...buildAgentLifecycleData(record),
 				id: record.id,
 				type: record.type,
 				description: record.description,
@@ -1379,6 +1505,25 @@ export default function (pi: ExtensionAPI) {
 				reason: info.reason,
 				tokensBefore: info.tokensBefore,
 				compactionCount: record.compactionCount,
+			})
+		},
+		(record, session) => {
+			emitSubagentEvent("subagents:session_created", {
+				...buildAgentLifecycleData(record),
+				sessionId: session.sessionId,
+				// The event bus is already scoped to this parent runtime. Carry the
+				// existing child session directly so consumers never resolve through
+				// the process-global active manager (which another root can replace).
+				agentSession: session,
+			})
+		},
+		(record, session, prompt) => {
+			emitSubagentEvent("subagents:session_created", {
+				...buildAgentLifecycleData(record),
+				sessionId: session.sessionId,
+				prompt,
+				phase: "resumed",
+				agentSession: session,
 			})
 		},
 	)
@@ -1790,15 +1935,17 @@ export default function (pi: ExtensionAPI) {
 			return ` [models: ${labels.join(" | ")}]`
 		}
 
-		const defaultDescs = defaultNames.map((name) => {
+		// Advertise only spawnable types: a disabled agent now hard-fails in
+		// execute() (issue #1678), so listing it here would send the model into a
+		// guaranteed error round-trip.
+		const describe = (name: string): string | undefined => {
 			const cfg = getAgentConfig(name)
+			if (cfg?.enabled === false) return undefined
 			return `- ${name}: ${cfg?.description ?? name}${formatModels(cfg)}`
-		})
+		}
 
-		const customDescs = userNames.map((name) => {
-			const cfg = getAgentConfig(name)
-			return `- ${name}: ${cfg?.description ?? name}${formatModels(cfg)}`
-		})
+		const defaultDescs = defaultNames.map(describe).filter((d) => d !== undefined)
+		const customDescs = userNames.map(describe).filter((d) => d !== undefined)
 
 		return [
 			"Agent types:",
@@ -2007,22 +2154,40 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				// replace/fork/reload mid-run invalidates this per-call ctx (every
 				// property read throws — see ../stale-ctx.ts), which must not turn a
 				// completed subagent result into a tool error. cwd/session id are
-				// call-invariant. The multi-model flag deliberately freezes at spawn
-				// time — the agent runs under the config it was spawned with.
-				// Same convention as the surfaceMode capture in get_subagent_result
+				// call-invariant. Same convention as the surfaceMode capture in get_subagent_result
 				// and spawnCtx in agent-manager.
 				const agentCwd = ctx.cwd
 				const parentSessionId = ctx.sessionManager.getSessionId()
-				const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
 
-				const rawType = params.subagent_type as SubagentType
+				// subagent_type is required by the schema, but tolerate a missing or
+				// non-string value: route it through the same fail-closed error below
+				// instead of crashing on undefined.toLowerCase() inside resolveKey.
+				const rawType = (typeof params.subagent_type === "string" ? params.subagent_type : "") as SubagentType
+				if (getAgentConfig(rawType)?.hostOnly === true) {
+					return textResult(`Agent type "${rawType}" is host-only and cannot be spawned through the Agent tool.`)
+				}
 				const resolved = resolveType(rawType)
-				const subagentType = resolved ?? AGENT_GENERAL_PURPOSE
-				const fellBack = resolved === undefined
+				// Fail closed: an unknown type must never silently widen to a more
+				// privileged persona (previously fell back to General-Purpose with all
+				// builtin tools — see issue #1678). Return the valid names so the
+				// caller can retry immediately.
+				if (resolved === undefined) {
+					return textResult(
+						`Error: Unknown agent type "${rawType}". Valid types: ${getAvailableTypes().join(", ")}. Retry with one of these.`,
+					)
+				}
+				const subagentType = resolved
 
 				const displayName = getDisplayName(subagentType)
 
 				const customConfig = getAgentConfig(subagentType)
+				// A registered but disabled agent is likewise not spawnable: its
+				// permission profile is unavailable, so it must not fall back either.
+				if (customConfig?.enabled === false) {
+					return textResult(
+						`Error: Agent type "${subagentType}" is disabled. Valid types: ${getAvailableTypes().join(", ")}. Retry with one of these.`,
+					)
+				}
 
 				// Background-by-default is a TUI-only behavior — the TUI is the only
 				// surface with a loop that presents background-agent lifecycle to the
@@ -2043,39 +2208,6 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 						if (resolvedConfig.modelFromParams) return textResult(resolvedModel)
 					} else {
 						model = resolvedModel as typeof ctx.model
-					}
-				}
-
-				// When multi-model is enabled and the caller did NOT specify a model,
-				// resolve the default model from the role config based on the agent
-				// type. This ensures Builder calls use the configured builder model,
-				// not the orchestrator's own model.
-				if (multiModelEnabled && !resolvedConfig.modelFromParams) {
-					const roleModelRef = resolveRoleModelRef(subagentType)
-					if (roleModelRef) {
-						const resolved = resolveModel(roleModelRef, ctx.modelRegistry as ModelRegistry)
-						if (typeof resolved !== "string") {
-							// resolveModel returns `unknown | string` — the cast is required because
-							// ModelRegistry.find() returns unknown. Same pattern as line 1243.
-							model = resolved as typeof ctx.model
-						}
-					}
-				}
-
-				// Multi-model guard: when multi-model mode is active and the caller supplied
-				// an explicit model, the resolved model must belong to the configured
-				// multi-model role pool. This runs before budget-retry and task_ref checks
-				// so invalid models are rejected immediately.
-				if (multiModelEnabled && resolvedConfig.modelFromParams) {
-					const fullRef = `${(model as { provider?: string }).provider}/${(model as { id?: string }).id}`
-					const allowed = new Set(getAllowedMultiModelRefs())
-					if (!allowed.has(fullRef)) {
-						const allowedList = Array.from(allowed)
-							.map((ref) => `  - ${ref}`)
-							.join("\n")
-						return textResult(
-							`Model "${fullRef}" is not allowed in multi-model mode.\n\nAllowed models:\n${allowedList}\n\nOmit the model parameter to use the current session model, or specify one of the allowed models.`,
-						)
 					}
 				}
 
@@ -2187,6 +2319,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 
 					try {
 						id = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
+							toolCallId,
 							description: params.description as string,
 							visibility,
 							model: model as Parameters<typeof manager.spawn>[4]["model"],
@@ -2210,7 +2343,6 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					const record = manager.getRecord(id)
 					if (record && joinMode) {
 						record.joinMode = joinMode
-						record.toolCallId = toolCallId
 						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
 						writeInitialEntry(record.outputFile, id, params.prompt as string, ctx.cwd)
 					}
@@ -2234,6 +2366,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					widget.update()
 
 					pi.events.emit("subagents:created", {
+						...(record ? buildAgentLifecycleData(record) : {}),
 						id,
 						type: subagentType,
 						description: params.description,
@@ -2339,6 +2472,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				let spawnedId: string
 				try {
 					spawnedId = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
+						toolCallId,
 						description: params.description as string,
 						visibility,
 						model: model as Parameters<typeof manager.spawn>[4]["model"],
@@ -2366,7 +2500,6 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				record.detachResolver = detachResolve
 				if (fgOutputFile) {
 					record.outputFile = fgOutputFile.replace("placeholder", spawnedId)
-					record.toolCallId = toolCallId
 					writeInitialEntry(record.outputFile, spawnedId, params.prompt as string, ctx.cwd)
 				}
 
@@ -2444,10 +2577,6 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					widget.markFinished(fgId)
 				}
 
-				const fallbackNote = fellBack
-					? `Note: Unknown agent type "${rawType}" - using ${AGENT_GENERAL_PURPOSE}.\n\n`
-					: ""
-
 				// Ferment step worker killed by its OWN budget (turns/duration) on a
 				// first attempt: auto-resume once so the worker finishes instead of the
 				// orchestrator patching the remaining work on the main thread — the
@@ -2479,7 +2608,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
 
 				if (record.status === "error") {
-					return textResult(`${fallbackNote}Agent failed: ${record.error}`, details)
+					return textResult(`Agent failed: ${record.error}`, details)
 				}
 				blockBudgetRetryIfNeeded(
 					record,
@@ -2508,10 +2637,10 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				const timeTaken = formatMs(durationMs)
 				const autoResumeNote = buildAutoResumeNote(autoResumedFromReason)
 				const note = getStatusNote(record.status, record.abortReason)
-				const instruction = getStatusInstruction(record.status, multiModelEnabled, record.abortReason)
+				const instruction = getStatusInstruction(record.status, record.abortReason)
 				const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
 				return textResult(
-					`${fallbackNote}Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}${autoResumeNote}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
+					`Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}${autoResumeNote}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
 					details,
 				)
 			},

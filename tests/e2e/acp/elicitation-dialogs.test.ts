@@ -8,7 +8,7 @@
 
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
-import type { ClientCapabilities } from "@agentclientprotocol/sdk"
+import type { ClientCapabilities } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession } from "./support/scenarios.js"

@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { SessionNotification } from "@agentclientprotocol/sdk"
+import type { SessionNotification } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AcpSessionCallbacks } from "../../../sandbox/worker/acp-client.js"
 import { streamRemoteToOutputFile } from "./remote-output-file.js"

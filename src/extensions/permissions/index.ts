@@ -1,13 +1,12 @@
 import { basename, extname, resolve } from "node:path"
 import { Type } from "@earendil-works/pi-ai"
-import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, InlineExtension, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { resolveFermentsDir } from "../../ferment/store.js"
 import { isExistingDirectory } from "../../fs-paths.js"
-import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
@@ -33,7 +32,13 @@ import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { notifyUser } from "../../utils/notify-user.js"
 import { isInSandboxCluster } from "../../utils/sandbox.js"
-import { isAgentWorker } from "../agent-worker-context.js"
+import {
+	getLaunchAgentPersona,
+	holdAgentWorkerInactivity,
+	isAgentWorker,
+	runOutsideWorkerContext,
+} from "../agent-worker-context.js"
+import { WORKER_REPORT_TOOL_NAME } from "../agents/worker-report.js"
 import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
 import { readE2eSeam } from "../e2e-seam.js"
 import { createFerment } from "../ferment/create.js"
@@ -63,9 +68,8 @@ import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
-import { withBlocked } from "../herdr-events.js"
+import { createBlockedDialogActivity, withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
-import { getMultiModelEnabled } from "../multi-model.js"
 import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
@@ -77,12 +81,21 @@ import {
 import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js"
 import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
+import { isStaleCtxError } from "../stale-ctx.js"
 import { markHarnessSteer } from "../steer-marker.js"
-import { TODO_TOOL_NAMES } from "../todos/tool.js"
+import { CONFIRM_TODOS_TOOL_NAME, TODO_TOOL_NAMES } from "../todos/tool.js"
 import { getWorkId, saveToolPlan, tryWorkAttribution } from "../work-attribution.js"
 import { isDocCliCommand, isReadOnlyDocCliCommand, isUnderBundledSkillsDir } from "./bundled-skill-cli.js"
-import { classifyToolCall } from "./classifier.js"
-import { classifierHealth } from "./classifier-health.js"
+import { classifyToolCallViaBreaker } from "./classifier-breaker.js"
+import {
+	CLASSIFIER_RECOVERED_NOTICE,
+	CLASSIFIER_UNAVAILABLE_PROMPT_SUBTITLE,
+	CLASSIFIER_UNAVAILABLE_SUBAGENT_PROMPT_SUBTITLE,
+	classifierBlockedNotice,
+	classifierBlockReason,
+	classifierBlockReasonCodeTail,
+	classifierHealth,
+} from "./classifier-health.js"
 import { resolveClassifierCandidates } from "./classifier-models.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
@@ -90,9 +103,12 @@ import {
 	BUILTIN_DENY,
 	DANGEROUS_BYPASS_FLAG,
 	DEFAULT_CONFIG,
+	ESCALATED_PROMPT_TIMEOUT_MS,
+	MODE_SETTLE_MS,
 	PERMISSION_MODES_WITH_META as MODES,
 	PERMISSIONS_ENV_KEY,
 } from "./constants.js"
+import { createEscalatedTerminalInteraction, type EscalatedPromptResult } from "./escalated-interaction.js"
 import { flagModeFromOptions, resolveMode } from "./mode.js"
 import {
 	getPermissionMode,
@@ -101,6 +117,16 @@ import {
 	setPermissionMode,
 } from "./mode-controller.js"
 import { getSessionPermissionFlagController } from "./mode-controller-registry.js"
+import { sanitizeIdentity, sanitizePermissionOrigin } from "./origin-text.js"
+import {
+	cancelEscalatedRequests,
+	getParentSurface,
+	type ParentSurface,
+	type ParentSurfaceLevel,
+	registerEscalationAbort,
+	registerParentSurface,
+	unregisterParentSurface,
+} from "./parent-surface-registry.js"
 import { PERMISSION_EVENTS, type PermissionDecision } from "./permissions-events.js"
 import {
 	getAllowedModes,
@@ -110,7 +136,16 @@ import {
 	isModeAllowed,
 	releaseTargetForPlanApproval,
 } from "./policy.js"
-import type { ToolPermissionPrompter } from "./prompter.js"
+import { getPermissionPolicySource, registerPermissionPolicySource } from "./policy-source-registry.js"
+import { PromptQueue } from "./prompt-queue.js"
+import {
+	type EscalatedCallStatus,
+	MODE_CHANGED_ABORT_ERROR,
+	type PermissionChoice,
+	type PermissionOrigin,
+	type PermissionRequest,
+	type ToolPermissionPrompter,
+} from "./prompter.js"
 import planModeSupplement from "./prompts/plan-mode-supplement.js"
 import {
 	type ApprovalOutcome,
@@ -122,6 +157,7 @@ import {
 } from "./prompts.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
+import { canPromptThroughSession, resolveSessionPermissionPrompter } from "./session-prompter-registry.js"
 import {
 	isCompoundCommand,
 	isHardBlockedBash,
@@ -168,9 +204,12 @@ const PLAN_MODE_MCP_NOTE =
 	"\n\nPlan mode is active: the `mcp` gateway is restricted to read-only operations (status, search, describe, server instructions, and read-only-qualified tool calls). All non-read-only `mcp__*` server tools are hidden while plan mode is on; read-only `mcp__*` tools remain available. Install/auth actions, explicit reconnects, and write-capable gateway calls are blocked. Hidden tools and mutating operations work again after the user leaves plan mode. If the user's request needs a mutating MCP operation, say it is unavailable in plan mode instead of reporting a connection or login problem."
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
-// `set_phase` is a kimchi built-in. `agent`/`get_subagent_result`/`steer_subagent`
-// are the agents-extension surface — `agent` is the canonical delegation tool,
-// the other two are read-only/control-plane operations on already-approved spawns.
+// `agent`/`get_subagent_result`/`steer_subagent` are the agents-extension
+// surface — `agent` is the canonical delegation tool, allowed without its own
+// check because the child session checks its own calls; the other two are
+// read-only/control-plane operations on already-approved spawns.
+// `codemode` is a dispatcher: its nested calls pass through this same tool_call
+// gate individually, so classifying the wrapper's source would double-gate them.
 // `bash_control` is the control-plane companion of a background `bash` call: the
 // originating command already passed the permission gate (prompt/classifier), so
 // checking its state or stopping it needs no second approval.
@@ -178,9 +217,13 @@ const PLAN_MODE_MCP_NOTE =
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
 
+/** Fallback for direct `handleConfirm`/`handleCompoundConfirm` callers that do
+ *  not pass a per-session queue (tests): still serializes prompts. */
+const sharedPromptQueue = new PromptQueue()
+
 const BUILTIN_ALLOW_TOOL_NAMES = [
-	"set_phase",
 	"agent",
+	"codemode",
 	"get_subagent_result",
 	"steer_subagent",
 	// Plan-review control plane: writes the plan artifact and opens the review
@@ -189,28 +232,51 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	BASH_CONTROL_TOOL_NAME,
 	...FERMENT_V2_TOOL_NAMES,
 	...TODO_TOOL_NAMES,
+	CONFIRM_TODOS_TOOL_NAME,
+	WORKER_REPORT_TOOL_NAME,
 ]
 
 export { notifyFermentActive }
 
-function canPrompt(ctx: ExtensionContext): boolean {
-	if (isAgentWorker()) return false
+/** Open or queued permission prompts per event bus (a session's own and its
+ *  subagents'). The prompt queue shows them one at a time, so an escalated
+ *  prompt must not count them as foreign dialogs: it would step aside for a
+ *  prompt that is queued behind it, and neither would ever be shown. */
+const permissionPromptDepth = new WeakMap<ExtensionAPI["events"], number>()
 
-	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
-	if (ctx.mode === "rpc" && acpPrompter) return true
-
-	if (ctx.hasUI) return true
-	return false
+/** `withBlocked` for a prompt that goes through the prompt queue. */
+async function withPermissionBlocked<T>(
+	events: ExtensionAPI["events"],
+	label: string,
+	fn: () => Promise<T>,
+): Promise<T> {
+	permissionPromptDepth.set(events, (permissionPromptDepth.get(events) ?? 0) + 1)
+	return withBlocked(events, label, async () => {
+		try {
+			return await fn()
+		} finally {
+			// Before the deactivation is emitted: for a moment the tally is one
+			// too high, never one too low.
+			permissionPromptDepth.set(events, Math.max(0, (permissionPromptDepth.get(events) ?? 1) - 1))
+		}
+	})
 }
 
-function resolvePrompter(ctx: ExtensionContext): ToolPermissionPrompter | undefined {
-	if (isAgentWorker()) return undefined
+function canPrompt(ctx: ExtensionContext, worker = false): boolean {
+	// A session host can explicitly expose a direct interaction. An unexposed
+	// worker uses the classifier-then-parent-escalation flow so its request
+	// carries origin metadata and lifecycle reporting to the parent surface.
+	if (canPromptThroughSession(ctx)) return true
+	if (worker || isAgentWorker()) return false
+	return ctx.hasUI
+}
 
-	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
-	if (ctx.mode === "rpc" && acpPrompter) return acpPrompter
+function resolvePrompter(ctx: ExtensionContext, worker = false): ToolPermissionPrompter | undefined {
+	const sessionPrompter = resolveSessionPermissionPrompter(ctx)
+	if (sessionPrompter) return sessionPrompter
+	if (worker || isAgentWorker()) return undefined
 
-	if (ctx.hasUI) return terminalPrompter(ctx)
-	return undefined
+	return ctx.hasUI ? terminalPrompter(ctx) : undefined
 }
 
 /**
@@ -229,43 +295,221 @@ export function buildPlanModeSupplementBlock(getMode: () => PermissionModeState)
 	}
 }
 
+export interface PermissionsExtensionOptions {
+	/**
+	 * Pre-approves a tool call once deny rules, the plan gate, and the read-only
+	 * checks have run — it never overrides a deny. For host-spawned agents whose
+	 * narrowly scoped operations would otherwise hit the classifier (e.g. the
+	 * Ferment V2 verifier creating new probe files).
+	 */
+	preApproved?: (toolName: string, input: Record<string, unknown>) => boolean
+}
+
+export interface WorkerPermissionsOptions extends PermissionsExtensionOptions {
+	parentSessionId: string
+	persona: string
+	/** Manager-owned agent ID used for prompt identity and ACP call-ID namespacing. */
+	agentId?: string
+	/** User-facing task summary that distinguishes parallel workers of one persona. */
+	description?: string
+	/**
+	 * `false` keeps this worker failing closed: a call the classifier does not
+	 * clear is blocked instead of being put to the user in the main session.
+	 * For hidden host-run subagents (the Ferment V2 verifier), whose contract is
+	 * that they never prompt. Defaults to asking.
+	 */
+	askParent?: boolean
+}
+
+type GateOptions = ({ role: "main" } & PermissionsExtensionOptions) | ({ role: "worker" } & WorkerPermissionsOptions)
+
+const hostGateOptions = new WeakMap<object, PermissionsExtensionOptions>()
+
+/**
+ * The permissions extension with host-specific options (the default export
+ * uses none). Passed to a subagent spawn, this factory is not loaded: the
+ * runner folds its options into the subagent's own gate, so the child keeps a
+ * single gate that follows the parent session's policy.
+ */
+export function createPermissionsExtension(options: PermissionsExtensionOptions = {}): (pi: ExtensionAPI) => void {
+	const extension = (pi: ExtensionAPI): void => registerPermissions(pi, { ...options, role: "main" })
+	hostGateOptions.set(extension, options)
+	return extension
+}
+
+/** The options of a gate built by {@link createPermissionsExtension}; undefined for any other extension. */
+export function getPermissionsExtensionOptions(extension: InlineExtension): PermissionsExtensionOptions | undefined {
+	return hostGateOptions.get(typeof extension === "function" ? extension : extension.factory)
+}
+
 export default function permissionsExtension(pi: ExtensionAPI): void {
-	pi.registerFlag("plan", {
-		description: "Start in plan mode (read-only exploration).",
-		type: "boolean",
-		default: false,
-	})
-	pi.registerFlag("yolo", {
-		description: "Start in YOLO mode (auto-approve everything, no classifier — your deny rules still apply).",
-		type: "boolean",
-		default: false,
-	})
-	pi.registerFlag("auto", {
-		description: "Start in autonomous mode (YOLO with classifier).",
-		type: "boolean",
-		default: false,
-	})
-	pi.registerFlag(DANGEROUS_BYPASS_FLAG, {
-		description:
-			"DANGER: Skip ALL permission checks including denylist (sudo, .env writes), rules, classifier, and prompts. Intended for throwaway/sandbox environments only.",
-		type: "boolean",
-		default: false,
-	})
-	pi.registerFlag("permissions-config", {
-		description: "Path to a permissions.json file that replaces user/project configs.",
-		type: "string",
-	})
-	pi.registerFlag("allow-tool", {
-		description: "Add a session allow rule (may repeat via comma-separated list).",
-		type: "string",
-	})
-	pi.registerFlag("deny-tool", {
-		description: "Add a session deny rule (may repeat via comma-separated list).",
-		type: "string",
-	})
+	registerPermissions(pi, { role: "main" })
+}
+
+export function createWorkerPermissionsExtension(options: WorkerPermissionsOptions): (pi: ExtensionAPI) => void {
+	return (pi) => registerPermissions(pi, { ...options, role: "worker" })
+}
+
+function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
+	const isWorker = options.role === "worker"
+	if (!isWorker) {
+		pi.registerFlag("plan", {
+			description: "Start in plan mode (read-only exploration).",
+			type: "boolean",
+			default: false,
+		})
+		pi.registerFlag("yolo", {
+			description: "Start in YOLO mode (auto-approve everything, no classifier — your deny rules still apply).",
+			type: "boolean",
+			default: false,
+		})
+		pi.registerFlag("auto", {
+			description: "Start in autonomous mode (YOLO with classifier).",
+			type: "boolean",
+			default: false,
+		})
+		pi.registerFlag(DANGEROUS_BYPASS_FLAG, {
+			description:
+				"DANGER: Skip ALL permission checks including denylist (sudo, .env writes), rules, classifier, and prompts. Intended for throwaway/sandbox environments only.",
+			type: "boolean",
+			default: false,
+		})
+		pi.registerFlag("permissions-config", {
+			description: "Path to a permissions.json file that replaces user/project configs.",
+			type: "string",
+		})
+		pi.registerFlag("allow-tool", {
+			description: "Add a session allow rule (may repeat via comma-separated list).",
+			type: "string",
+		})
+		pi.registerFlag("deny-tool", {
+			description: "Add a session deny rule (may repeat via comma-separated list).",
+			type: "string",
+		})
+	}
 
 	const session = new SessionMemory()
 	const classifierWarnings = new Set<string>()
+	// This session's parent surface, registered while it can reach its user so
+	// subagents can hand it their classifier warnings and escalate permission
+	// prompts when their classifier fails or requires confirmation.
+	let parentSurface: ParentSurface | undefined
+	let parentSurfaceSessionId: string | undefined
+
+	/**
+	 * Route a classifier notice to a human. A subagent worker has no UI of its
+	 * own: its warning goes to the parent session's registered sink, prefixed
+	 * with the subagent persona when known, falling back to stderr when the
+	 * parent is gone or its context is stale. Sessions with a UI get a toast;
+	 * every other context gets stderr, so a blocked call is never silent.
+	 */
+	function reportClassifierNotice(ctx: ExtensionContext, message: string, level: ParentSurfaceLevel): void {
+		// Identity comes from this worker extension's immutable role arguments;
+		// parallel workers cannot overwrite one another's parent or persona.
+		if (options.role === "worker") {
+			const surface = getParentSurface(options.parentSessionId)
+			if (surface) {
+				const prefixed = `[${sanitizeIdentity(options.persona) ?? "assistant"}] ${message}`
+				try {
+					surface.notify(prefixed, level)
+					return
+				} catch (err) {
+					// The parent session was replaced mid-run — its UI surface is
+					// gone. Fall through to stderr rather than failing the gate.
+					if (!isStaleCtxError(err)) throw err
+				}
+			}
+		}
+		if (ctx.hasUI) {
+			ctx.ui.notify(message, level)
+		} else {
+			// stderr for both levels: stdout is program output in print runs.
+			console.error(message)
+		}
+	}
+
+	// Calls this worker asked its parent about. The parent's surface may keep
+	// a card for each of them; an entry stays until the parent has been told
+	// how the call ended.
+	const escalatedCalls = new Set<string>()
+
+	/**
+	 * Tell the parent surface where an escalated call stands. The answer to a
+	 * permission request does not say this: an allowed call can still fail,
+	 * and a request withdrawn by a mode change is decided again.
+	 */
+	function reportEscalatedCall(toolCallId: string | undefined, status: EscalatedCallStatus): void {
+		if (options.role !== "worker" || toolCallId === undefined || !escalatedCalls.has(toolCallId)) return
+		if (status !== "running") escalatedCalls.delete(toolCallId)
+		try {
+			getParentSurface(options.parentSessionId)?.reportEscalatedCall?.({
+				toolCallId,
+				agentId: options.agentId,
+				status,
+			})
+		} catch {
+			// Reporting is display only; it must never change the call's outcome.
+		}
+	}
+
+	/**
+	 * Try the parent surface for a worker's unapproved call. A wrapped result
+	 * distinguishes an allow (`result === undefined`) from an unavailable or
+	 * failed route (`undefined`), which must fall back to the existing block.
+	 */
+	async function requestWorkerApproval(
+		event: ToolCallEvent,
+		ctx: ExtensionContext,
+		permissionMode: PermissionMode,
+		toolName: string,
+		input: Record<string, unknown>,
+		subtitle: string,
+		riskScore?: RiskScore,
+	): Promise<{ result: PromptOutcome } | undefined> {
+		if (options.role !== "worker" || options.askParent === false) return undefined
+		const requestPermission = getParentSurface(options.parentSessionId)?.requestPermission
+		if (!requestPermission) return undefined
+		const origin: PermissionOrigin =
+			sanitizePermissionOrigin({
+				persona: options.persona,
+				agentId: options.agentId,
+				description: options.description,
+			}) ?? {}
+		let releaseHold = () => {}
+		// Without an id the tool's result cannot be matched to this call later.
+		if (event.toolCallId !== undefined) escalatedCalls.add(event.toolCallId)
+		try {
+			releaseHold = holdAgentWorkerInactivity()
+			// One prompt for the whole call, including compounds. Remembered rules
+			// land in this worker's own session memory and survive its resume cycle.
+			const choices = buildPermissionChoices(toolName, input, "for this subagent")
+			const result = await handleConfirm(event, {
+				ctx,
+				pi,
+				subtitle,
+				riskScore,
+				session,
+				activeAborts: activeAbortControllers,
+				promptToolCalls: activePromptToolCalls,
+				allRules,
+				permissionMode,
+				worker: true,
+				promptQueue,
+				prompter: { request: (request) => requestPermission({ ...request, origin }) },
+				// Keep the main session's option order. The parent TUI waits for
+				// an idle editor instead of relying on deny-first ordering.
+				choices,
+			})
+			return { result }
+		} catch {
+			// No parent, a stale surface, an unanswered prompt, an abort, or any
+			// other route error fails closed through the caller's existing block.
+			return undefined
+		} finally {
+			releaseHold()
+		}
+	}
+
 	const builtinRules: Rule[] = parseRules(BUILTIN_DENY, "deny", "builtin")
 	// Base KIMCHI_PERMISSIONS env var used as a launch-time default. Subagent
 	// inheritance is handled separately in session_start via the parent session's
@@ -298,18 +542,38 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let planModeApplied = false
 	let planModeHiddenTools: string[] = []
 	let restoreMcpAfterPlan = false
-	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
+	const planToolVisibility: ToolVisibilityAPI | undefined = isWorker ? undefined : createToolVisibility(pi)
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
 	/** Associates each open permission prompt's abort controller with its tool
 	 *  call, so mode changes that dismiss prompts can be attributed per call. */
 	const activePromptToolCalls = new Map<AbortController, string>()
+	/** At most one permission prompt at a time in this session: pi keeps a
+	 *  single dialog slot, so a concurrent second prompt would silently
+	 *  replace the first and orphan its promise. Escalated subagent prompts
+	 *  (requestPermission on the session's registered sink) share the queue. */
+	const promptQueue = new PromptQueue()
+	const dialogActivity = isWorker
+		? undefined
+		: createBlockedDialogActivity(pi.events, () => permissionPromptDepth.get(pi.events) ?? 0)
 	/** Mode-change reasons queued per tool call whose prompt a mode change
 	 *  dismissed. Consumed when the re-evaluation loop observes the "aborted"
 	 *  return; entries never survive the tool call's evaluation. */
 	const pendingModeChangeDismissals = new Map<string, ModeChangeReason[]>()
 	let unsubscribeTerminalInput: (() => void) | null = null
+	let lastTerminalInputAt = Number.NEGATIVE_INFINITY
+	/** When this session's mode last changed; see `whenModeSettled`. */
+	let lastModeChangeAt = Number.NEGATIVE_INFINITY
 	let unsubscribePermissionFlagController: (() => void) | undefined
+	let unregisterMainPolicy: (() => void) | undefined
+	const registerParentAbort: ConfirmOptions["registerParentAbort"] = isWorker
+		? (controller, toolCallId) => {
+				return registerEscalationAbort(options.parentSessionId, toolCallId, controller, options.agentId)
+			}
+		: undefined
+	let workerMode: PermissionModeState | undefined
+	let workerRules: Rule[] | undefined
+	let workerDangerBypass: boolean | undefined
 
 	// Plan completion menu state: tracks whether the agent used tools during the
 	// current user-input cycle so we can detect text-only turns (plan output).
@@ -329,6 +593,9 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	 * Returns the current permission mode flag or falls back to a user default.
 	 */
 	function getRuntimePermissionMode(): PermissionModeState {
+		if (isWorker) {
+			return workerMode ?? resolveMode({ env: permissionsEnvFlag, config: loaded.config.defaultMode })
+		}
 		const runtimeMode = currentCtx && getPermissionMode(currentCtx.sessionManager.getSessionId())
 		return resolveMode({
 			runtime: runtimeMode,
@@ -355,7 +622,54 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	function allRules(): Rule[] {
+		if (isWorker) return [...session.all(), ...(workerRules ?? [...configRules, ...builtinRules])]
 		return [...session.all(), ...configRules, ...builtinRules]
+	}
+
+	function isDangerBypass(): boolean {
+		if (isWorker) return workerDangerBypass ?? isInSandboxCluster()
+		return pi.getFlag(DANGEROUS_BYPASS_FLAG) === true || isInSandboxCluster()
+	}
+
+	function refreshWorkerPolicy(ctx: ExtensionContext): void {
+		if (options.role !== "worker") return
+		const source = getPermissionPolicySource(options.parentSessionId)
+		if (source) {
+			workerMode = source.getMode()
+			workerRules = source.getRules()
+			loaded = source.getConfig()
+			workerDangerBypass = source.isDangerBypass()
+			return
+		}
+		// A vanished parent keeps the last snapshot. With no snapshot, fail into
+		// the ordinary config/mode resolution chain rather than allowing the call.
+		if (workerMode) return
+		doLoadConfig(ctx)
+		session.addMany(parseRules(loaded.allowBySource.cli, "allow", "cli"))
+		session.addMany(parseRules(loaded.denyBySource.cli, "deny", "cli"))
+		workerRules = [...configRules, ...builtinRules]
+		workerMode = resolveInitialPermissionModeDetailed(ctx.sessionManager, permissionsEnvFlag, undefined, loaded).state
+		workerDangerBypass = isInSandboxCluster()
+	}
+
+	/**
+	 * Wait until the mode has stayed unchanged for MODE_SETTLE_MS. Shift+Tab
+	 * cycles default → plan → auto → yolo, so reaching a mode means passing
+	 * through others. A call whose prompt was withdrawn by a mode change is
+	 * decided after this wait, under the mode the user stopped on: a passing
+	 * yolo must not approve it and a passing plan must not block it. A worker
+	 * waits on its parent's clock; with no parent there is nothing to wait for.
+	 */
+	async function whenModeSettled(signal?: AbortSignal): Promise<void> {
+		if (options.role === "worker") {
+			await getPermissionPolicySource(options.parentSessionId)?.whenModeSettled(signal)
+			return
+		}
+		while (!signal?.aborted) {
+			const remaining = lastModeChangeAt + MODE_SETTLE_MS - Date.now()
+			if (remaining <= 0) return
+			await abortableDelay(remaining, signal)
+		}
 	}
 
 	function isPlanModeTool(name: string): boolean {
@@ -367,7 +681,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	function applyPlanModeTools(): void {
-		if (planModeApplied) return
+		if (planModeApplied || !planToolVisibility) return
 		try {
 			// Track which tools plan mode is removing so `restoreToolsFromPlanMode`
 			// can re-enable them. Without this snapshot, restore would be a no-op
@@ -389,7 +703,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	function restoreToolsFromPlanMode(): void {
-		if (!planModeApplied) return
+		if (!planModeApplied || !planToolVisibility) return
 		try {
 			planToolVisibility.enable(planModeHiddenTools)
 		} catch {
@@ -423,7 +737,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// the e2e test renders both at 160 columns, so keep this string short
 			// enough for the notice to fit beside it (see
 			// tests/e2e/tui/update-restart-notice.test.ts).
-			const dangerBypass = pi.getFlag(DANGEROUS_BYPASS_FLAG) === true || isInSandboxCluster()
+			const dangerBypass = isDangerBypass()
 			ctx.ui.setStatus(
 				"permissions-warning",
 				dangerBypass
@@ -506,7 +820,11 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			reasons.push(reason)
 			pendingModeChangeDismissals.set(toolCallId, reasons)
 		}
+		// The prompts go away at once; the calls behind them are decided again
+		// only after the mode has settled (whenModeSettled).
+		lastModeChangeAt = Date.now()
 		for (const ctrl of activeAbortControllers) ctrl.abort()
+		cancelEscalatedRequests(ctx.sessionManager.getSessionId(), MODE_CHANGED_ABORT_ERROR)
 		activeAbortControllers.clear()
 		activePromptToolCalls.clear()
 		updateStatus(ctx)
@@ -555,82 +873,89 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// ferment change applies to the current session. This is fine for CLI usage,
 	// but incorrect for ACP use where a single process may have multiple sessions (and therefore ferments)
 	// running at the same time. Fix this when introducing ferment commands to ACP.
-	onActiveFermentChange((hasActive) => {
-		// Scoped decision teardown runs before ANY early return (including the
-		// no-session and CLI-flag ones): a deactivation or an A→B active-ferment
-		// switch must drop the deactivated ferment's own decision and degraded
-		// marker — never another ferment's (ACP runs several per process).
-		if (!hasActive) {
-			if (lastActiveFermentId) clearFermentGateDecision(lastActiveFermentId)
-			lastActiveFermentId = undefined
-		} else {
-			const nextId = getActiveId()
-			// A→B switch: no deactivation event fires for A, so without this its
-			// decision would leak — it is never read again (only the active
-			// ferment's decision is) and never torn down.
-			if (lastActiveFermentId && lastActiveFermentId !== nextId) {
-				clearFermentGateDecision(lastActiveFermentId)
-			}
-			lastActiveFermentId = nextId
-		}
-		if (!currentCtx) return // No active session
-		const current = getRuntimePermissionMode()
-		if (current.source === "flag") return // explicit CLI flag always wins (post-clamp)
-		if (!hasActive) {
-			if (preFermentMode) {
-				const saved = preFermentMode
-				preFermentMode = undefined
-				// Only restore the pre-ferment mode while the session is still on the
-				// ferment elevation. If the user changed mode manually mid-ferment,
-				// their choice wins over the restore.
-				if (current.initiatedBy === "ferment") {
-					changeMode(currentCtx, current.mode, saved, "ferment_restore")
+	if (!isWorker)
+		onActiveFermentChange((hasActive) => {
+			// Scoped decision teardown runs before ANY early return (including the
+			// no-session and CLI-flag ones): a deactivation or an A→B active-ferment
+			// switch must drop the deactivated ferment's own decision and degraded
+			// marker — never another ferment's (ACP runs several per process).
+			if (!hasActive) {
+				if (lastActiveFermentId) clearFermentGateDecision(lastActiveFermentId)
+				lastActiveFermentId = undefined
+			} else {
+				const nextId = getActiveId()
+				// A→B switch: no deactivation event fires for A, so without this its
+				// decision would leak — it is never read again (only the active
+				// ferment's decision is) and never torn down.
+				if (lastActiveFermentId && lastActiveFermentId !== nextId) {
+					clearFermentGateDecision(lastActiveFermentId)
 				}
+				lastActiveFermentId = nextId
 			}
-			return
-		}
-		// Policy-aware elevation. Without a policy this preserves the historical
-		// behavior (activation → yolo). With a policy the elevation follows the
-		// gate decision recorded for this ferment (elevation-gate.ts); no decision
-		// (e.g. draft-scoping activation before the execution gate ran) means no
-		// mode change. A degraded decision drops plan → default once the ferment
-		// is actually executing (plan cannot run steps; default is policy-allowed).
-		const restricted = hasOrgPolicyRestrictions()
-		const decision = restricted ? getFermentGateDecision(lastActiveFermentId) : undefined
-		if (restricted && decision?.kind !== "elevated") {
-			const activeFerment = getActive()
-			const executing = activeFerment?.status === "running" || activeFerment?.status === "planned"
-			if (decision?.kind === "degraded" && executing && current.mode === "plan" && isModeAllowed("default")) {
-				if (current.initiatedBy === "user") preFermentMode = current
-				changeMode(
-					currentCtx,
-					current.mode,
-					{ mode: "default", source: "runtime", initiatedBy: "ferment" },
-					"ferment_elevation",
-				)
+			if (!currentCtx) return // No active session
+			const current = getRuntimePermissionMode()
+			if (current.source === "flag") return // explicit CLI flag always wins (post-clamp)
+			if (!hasActive) {
+				if (preFermentMode) {
+					const saved = preFermentMode
+					preFermentMode = undefined
+					// Only restore the pre-ferment mode while the session is still on the
+					// ferment elevation. If the user changed mode manually mid-ferment,
+					// their choice wins over the restore.
+					if (current.initiatedBy === "ferment") {
+						changeMode(currentCtx, current.mode, saved, "ferment_restore")
+					}
+				}
+				return
 			}
-			return
-		}
-		const target = restricted && decision?.kind === "elevated" ? decision.mode : "yolo"
-		if (current.initiatedBy === "user") preFermentMode = current
-		changeMode(
-			currentCtx,
-			current.mode,
-			{
-				mode: target,
-				source: "runtime",
-				initiatedBy: "ferment",
-			},
-			"ferment_elevation",
-		)
-	})
+			// Policy-aware elevation. Without a policy this preserves the historical
+			// behavior (activation → yolo). With a policy the elevation follows the
+			// gate decision recorded for this ferment (elevation-gate.ts); no decision
+			// (e.g. draft-scoping activation before the execution gate ran) means no
+			// mode change. A degraded decision drops plan → default once the ferment
+			// is actually executing (plan cannot run steps; default is policy-allowed).
+			const restricted = hasOrgPolicyRestrictions()
+			const decision = restricted ? getFermentGateDecision(lastActiveFermentId) : undefined
+			if (restricted && decision?.kind !== "elevated") {
+				const activeFerment = getActive()
+				const executing = activeFerment?.status === "running" || activeFerment?.status === "planned"
+				if (decision?.kind === "degraded" && executing && current.mode === "plan" && isModeAllowed("default")) {
+					if (current.initiatedBy === "user") preFermentMode = current
+					changeMode(
+						currentCtx,
+						current.mode,
+						{ mode: "default", source: "runtime", initiatedBy: "ferment" },
+						"ferment_elevation",
+					)
+				}
+				return
+			}
+			const target = restricted && decision?.kind === "elevated" ? decision.mode : "yolo"
+			if (current.initiatedBy === "user") preFermentMode = current
+			changeMode(
+				currentCtx,
+				current.mode,
+				{
+					mode: target,
+					source: "runtime",
+					initiatedBy: "ferment",
+				},
+				"ferment_elevation",
+			)
+		})
 
 	function doLoadConfig(ctx: ExtensionContext): { errors: string[] } {
+		const cliOptions = isWorker ? getParsedCliArgs().options : undefined
+		const readCliFlag = (name: "permissions-config" | "allow-tool" | "deny-tool"): string | boolean | undefined => {
+			if (!isWorker) return pi.getFlag(name)
+			const value = cliOptions?.[name]
+			return Array.isArray(value) ? value.join(",") : value
+		}
 		const { loaded: lc, errors } = loadConfig({
 			cwd: ctx.cwd,
-			cliConfigPath: pi.getFlag("permissions-config") as string | undefined,
-			cliAllow: splitFlag(pi.getFlag("allow-tool")),
-			cliDeny: splitFlag(pi.getFlag("deny-tool")),
+			cliConfigPath: readCliFlag("permissions-config") as string | undefined,
+			cliAllow: splitFlag(readCliFlag("allow-tool")),
+			cliDeny: splitFlag(readCliFlag("deny-tool")),
 		})
 		loaded = lc
 		rebuildConfigRules()
@@ -694,6 +1019,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		bundledSkillCliRoot = resolveBundledSkillsDir()
+		if (isWorker) {
+			// Keep child approvals and the last parent snapshot across runs of the
+			// same child. Resume may follow fork adoption, when the old parent
+			// source no longer exists; the next tool call refreshes live policy.
+			refreshWorkerPolicy(ctx)
+			return
+		}
 		classifierWarnings.clear()
 		currentCtx = ctx
 		appliedPermissionMode = undefined
@@ -702,7 +1035,6 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		activePlanSlug = undefined
 		planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		const { errors } = doLoadConfig(ctx)
-		bundledSkillCliRoot = resolveBundledSkillsDir()
 		if (bundledSkillCliRoot === null) {
 			// Fail-open visibility: without the root the write/edit deny over the
 			// doc-cli load path is inactive. Should only happen on a broken
@@ -720,6 +1052,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (unsubscribeTerminalInput) unsubscribeTerminalInput()
 		if (ctx.hasUI) {
 			unsubscribeTerminalInput = ctx.ui.onTerminalInput((data) => {
+				lastTerminalInputAt = Date.now()
 				if (matchesKey(data, "shift+tab")) {
 					// Defer to a foreground UI that is forwarding raw terminal input
 					// (e.g. the teleport overlay), so its consumer sees Shift+Tab.
@@ -803,6 +1136,153 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		}
 
 		const sessionId = ctx.sessionManager.getSessionId()
+		unregisterMainPolicy?.()
+		unregisterMainPolicy = registerPermissionPolicySource(sessionId, {
+			getMode: getRuntimePermissionMode,
+			getRules: allRules,
+			getConfig: () => loaded,
+			isDangerBypass,
+			whenModeSettled,
+		})
+
+		// Parent surface: a session that can reach its user accepts its
+		// subagents' classifier warnings and their escalated permission prompts.
+		// The prompter is resolved lazily per request (at session_start time the
+		// ACP prompter may not be registered yet), so registration covers any
+		// potentially-capable session and prompts fail late instead.
+		if (ctx.hasUI || ctx.mode === "rpc") {
+			// Re-attach without an intervening shutdown (load+resume coalescing)
+			// must not stack a second surface for the same session.
+			if (parentSurface && parentSurfaceSessionId) {
+				unregisterParentSurface(parentSurfaceSessionId, parentSurface)
+			}
+			parentSurface = {
+				notify: (message, level) => {
+					if (ctx.hasUI) ctx.ui.notify(message, level)
+					else console.error(message)
+				},
+				requestPermission: (req: PermissionRequest): Promise<ApprovalOutcome> =>
+					// The whole handler belongs to the parent, including notification,
+					// queue ownership and withBlocked side effects — not the worker that
+					// happened to invoke this surface through its async chain.
+					runOutsideWorkerContext(async () => {
+						const controller = new AbortController()
+						const request: PermissionRequest = {
+							...req,
+							signal: controller.signal,
+							origin: sanitizePermissionOrigin(req.origin),
+						}
+						// One bell / desktop notification per request, when it is first
+						// held back or first shown, whichever comes first. It belongs to
+						// the PARENT's bus — the worker's own bus reaches nobody.
+						let bellRung = false
+						const ringOnce = () => {
+							if (bellRung) return
+							bellRung = true
+							pi.events.emit("notification", {
+								notification_type: "permission_prompt",
+								tool_name: req.toolName,
+								tool_use_id: req.toolCallId,
+							})
+						}
+						const terminal =
+							ctx.mode === "tui" && ctx.hasUI && dialogActivity
+								? createEscalatedTerminalInteraction(ctx, request, {
+										lastInputAt: () => lastTerminalInputAt,
+										hasOtherDialogs: dialogActivity.hasOtherDialogs,
+										onFirstHold: ringOnce,
+									})
+								: undefined
+						const prompter = terminal ? undefined : resolvePrompter(ctx)
+						if (!terminal && !prompter) {
+							return Promise.reject(new Error("permissions: parent session has no prompt surface"))
+						}
+						const unlinkWorkerAbort = linkAbortSignal(req.signal, controller)
+						const unregister = registerEscalationAbort(sessionId, req.toolCallId, controller, req.origin?.agentId)
+						// On screen (or sent to the client) and waiting for the answer. The
+						// answer timeout covers only this: time spent held back or queued
+						// does not count, and a reopened selector starts it again.
+						const ask = async (): Promise<EscalatedPromptResult> => {
+							ringOnce()
+							const timer = setTimeout(
+								() => controller.abort(new Error("permissions: subagent permission prompt timed out")),
+								ESCALATED_PROMPT_TIMEOUT_MS,
+							)
+							try {
+								if (terminal) return await terminal.prompt()
+								return await (prompter as ToolPermissionPrompter).request(request)
+							} finally {
+								clearTimeout(timer)
+							}
+						}
+						const settle = (outcome: ApprovalOutcome): ApprovalOutcome => {
+							if (outcome.kind === "aborted") {
+								// A user- or client-initiated mode change returns through the
+								// worker's outer gate so its policy is evaluated again. A
+								// stopped worker is reported by its own gate.
+								if (controller.signal.reason === MODE_CHANGED_ABORT_ERROR || req.signal?.aborted) return outcome
+							}
+							// A timeout or a closing client has no answer to carry: fail the
+							// route closed rather than treating an absent answer as an approval.
+							if (outcome.kind === "aborted" || outcome.kind === "denied-by-client") {
+								throw (
+									controller.signal.reason ??
+									new Error(`permissions: escalated prompt closed without an answer (${outcome.kind})`)
+								)
+							}
+							return outcome
+						}
+						try {
+							// The blocked-session event covers the whole request, held back
+							// or shown, on the PARENT's bus.
+							return await withPermissionBlocked(pi.events, `Permission (subagent): ${req.toolName}`, async () => {
+								while (true) {
+									// Held back OUTSIDE the queue. A request that waits for an
+									// empty input is not on screen, and the session's own
+									// prompts must not wait behind it.
+									if (terminal && !(await terminal.waitUntilPromptable())) return settle({ kind: "aborted" })
+									const outcome = await runQueuedPrompt(
+										promptQueue,
+										async (): Promise<EscalatedPromptResult> => {
+											if (controller.signal.aborted) return { kind: "aborted" }
+											// At the front of the queue. The input may have become
+											// busy while this entry waited behind another prompt:
+											// give the place back and wait again.
+											if (terminal && !terminal.isPromptable()) return { kind: "deferred" }
+											return ask()
+										},
+										// The request's own controller, not the worker's turn
+										// signal: a mode change and the answer timeout abort
+										// only the controller, and the queue must drop or
+										// release this entry for them too. A stopped worker
+										// still reaches it through linkAbortSignal above.
+										controller.signal,
+									)
+									// Deferred: not asked, or the selector gave way to another
+									// dialog. The queue entry is released either way.
+									if (outcome.kind !== "deferred") return settle(outcome)
+								}
+							})
+						} finally {
+							terminal?.dispose()
+							unlinkWorkerAbort()
+							unregister()
+						}
+					}),
+				// Only a surface that keeps a card for the call has anything to
+				// update (ACP); the terminal selector is gone once it is answered.
+				reportEscalatedCall: (report) =>
+					runOutsideWorkerContext(() => {
+						try {
+							resolvePrompter(ctx)?.reportEscalatedCall?.(report)
+						} catch {
+							// Display only.
+						}
+					}),
+			}
+			parentSurfaceSessionId = sessionId
+			registerParentSurface(sessionId, parentSurface)
+		}
 		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {
 			if (!next || applyingPermissionMode) return
 
@@ -820,105 +1300,125 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("session_shutdown", () => {
+		if (isWorker) {
+			// The run is over. A call that was allowed but whose result never
+			// arrived (the run was stopped first) did not complete.
+			for (const toolCallId of [...escalatedCalls]) reportEscalatedCall(toolCallId, "failed")
+			// Per-run shutdown is not disposal: the label "for this subagent"
+			// promises that approvals and the policy snapshot survive resume.
+			return
+		}
+		unregisterMainPolicy?.()
+		unregisterMainPolicy = undefined
 		unsubscribePermissionFlagController?.()
 		unsubscribePermissionFlagController = undefined
+		if (parentSurface && parentSurfaceSessionId) {
+			unregisterParentSurface(parentSurfaceSessionId, parentSurface)
+		}
+		parentSurface = undefined
+		parentSurfaceSessionId = undefined
+		dialogActivity?.dispose()
 		currentCtx = undefined
 		appliedPermissionMode = undefined
 		applyingPermissionMode = false
 	})
 
-	const blocks = createSystemPromptBlocks(pi, "permissions")
-	// Register the plan-mode prompt supplement via the shared registry so that
-	// future readers (`compose('adhoc')` from the renderer) can find it without
-	// having to walk every extension's blocks handle. The blocks handle is kept
-	// alive (it still owns the `pi` binding for session-shutdown cleanup); the
-	// registry entry below is the canonical lookup path.
-	const planModeSupplementBlock = buildPlanModeSupplementBlock(getRuntimePermissionMode)
-	PromptSupplementRegistry.register("plan-mode-supplement", planModeSupplementBlock, {
-		modes: ["adhoc"],
-	})
-	blocks.register(planModeSupplementBlock)
+	if (!isWorker) {
+		const blocks = createSystemPromptBlocks(pi, "permissions")
+		// Register the plan-mode prompt supplement via the shared registry so that
+		// future readers (`compose('adhoc')` from the renderer) can find it without
+		// having to walk every extension's blocks handle. The blocks handle is kept
+		// alive (it still owns the `pi` binding for session-shutdown cleanup); the
+		// registry entry below is the canonical lookup path.
+		const planModeSupplementBlock = buildPlanModeSupplementBlock(getRuntimePermissionMode)
+		PromptSupplementRegistry.register("plan-mode-supplement", planModeSupplementBlock, {
+			modes: ["adhoc"],
+		})
+		blocks.register(planModeSupplementBlock)
 
-	// ─── Entry triggers (planning mode routing) ───────────────────────────
-	// The actual mode-mutating logic lives in the inline handlers below; the
-	// registry entries make the routing table explicit and discoverable.
-	EntryTriggerRegistry.register("--plan-flag", (event) => {
-		if (event.kind !== "cli-flag") return { kind: "noop" }
-		if (event.name !== "--plan") return { kind: "noop" }
-		return { kind: "enter-mode", mode: "adhoc", reason: "CLI --plan flag" }
-	})
-	EntryTriggerRegistry.register("shift-tab-cycle", (event) => {
-		if (event.kind !== "key-press") return { kind: "noop" }
-		if (event.key !== "shift+tab") return { kind: "noop" }
-		// Cycling semantics: caller picks next mode from runtime state.
-		return { kind: "switch-mode", mode: "adhoc", reason: "shift+tab cycle (caller picks next)" }
-	})
-	EntryTriggerRegistry.register("questionnaire-auto-promote", (event) => {
-		if (event.kind !== "tool-call") return { kind: "noop" }
-		if (event.toolName !== "questionnaire") return { kind: "noop" }
-		if (event.mode !== "idle") return { kind: "noop" }
-		return { kind: "enter-mode", mode: "adhoc", reason: "questionnaire tool call in default mode" }
-	})
+		// ─── Entry triggers (planning mode routing) ───────────────────────────
+		// The actual mode-mutating logic lives in the inline handlers below; the
+		// registry entries make the routing table explicit and discoverable.
+		EntryTriggerRegistry.register("--plan-flag", (event) => {
+			if (event.kind !== "cli-flag") return { kind: "noop" }
+			if (event.name !== "--plan") return { kind: "noop" }
+			return { kind: "enter-mode", mode: "adhoc", reason: "CLI --plan flag" }
+		})
+		EntryTriggerRegistry.register("shift-tab-cycle", (event) => {
+			if (event.kind !== "key-press") return { kind: "noop" }
+			if (event.key !== "shift+tab") return { kind: "noop" }
+			// Cycling semantics: caller picks next mode from runtime state.
+			return { kind: "switch-mode", mode: "adhoc", reason: "shift+tab cycle (caller picks next)" }
+		})
+		EntryTriggerRegistry.register("questionnaire-auto-promote", (event) => {
+			if (event.kind !== "tool-call") return { kind: "noop" }
+			if (event.toolName !== "questionnaire") return { kind: "noop" }
+			if (event.mode !== "idle") return { kind: "noop" }
+			return { kind: "enter-mode", mode: "adhoc", reason: "questionnaire tool call in default mode" }
+		})
+	}
 
 	// Initial modes and temporary Ferment elevation are recorded when work starts.
 	// User-owned changes are also persisted immediately by their transition paths.
-	pi.on("before_agent_start", (event, ctx) => {
-		maybePersistPermissionMode(ctx)
-		if (getRuntimePermissionMode().mode !== "plan") return undefined
-		// MCP direct tools can finish registering after session_start. Rebuild
-		// the snapshot immediately before every model request so late
-		// registration cannot widen the restricted tool surface.
-		ToolProfileManager.apply("planning-adhoc", "adhoc", pi)
-		// Computed fresh per request because the gateway and direct tools can
-		// register after the enter-time planModeHiddenTools snapshot. The gateway
-		// only registers when at least one server is configured (mcp/index.ts),
-		// so "mcp" alone guarantees a real MCP setup. A read-only direct tool by
-		// itself needs no special gateway guidance.
-		const needsMcpNote = pi
-			.getAllTools()
-			.some((tool) => tool.name === "mcp" || (tool.name.startsWith("mcp__") && !isPlanModeTool(tool.name)))
-		if (!needsMcpNote) return undefined
-		return { systemPrompt: `${event.systemPrompt}${PLAN_MODE_MCP_NOTE}` }
-	})
+	if (!isWorker)
+		pi.on("before_agent_start", (event, ctx) => {
+			maybePersistPermissionMode(ctx)
+			if (getRuntimePermissionMode().mode !== "plan") return undefined
+			// MCP direct tools can finish registering after session_start. Rebuild
+			// the snapshot immediately before every model request so late
+			// registration cannot widen the restricted tool surface.
+			ToolProfileManager.apply("planning-adhoc", "adhoc", pi)
+			// Computed fresh per request because the gateway and direct tools can
+			// register after the enter-time planModeHiddenTools snapshot. The gateway
+			// only registers when at least one server is configured (mcp/index.ts),
+			// so "mcp" alone guarantees a real MCP setup. A read-only direct tool by
+			// itself needs no special gateway guidance.
+			const needsMcpNote = pi
+				.getAllTools()
+				.some((tool) => tool.name === "mcp" || (tool.name.startsWith("mcp__") && !isPlanModeTool(tool.name)))
+			if (!needsMcpNote) return undefined
+			return { systemPrompt: `${event.systemPrompt}${PLAN_MODE_MCP_NOTE}` }
+		})
 
 	// Plan-mode stall recovery: when the model made tool calls in plan mode and
 	// then ended the turn with stopReason "stop" without calling submit_plan,
 	// the session would stall silently — nudge it to resolve open questions and
 	// submit the plan. Capped per session; agent workers are excluded (they
 	// submit via submit_plan in their own terminate-on-tool-return flow).
-	pi.on("turn_end", (event, ctx) => {
-		if (isAgentWorker()) return
-		if (getRuntimePermissionMode().mode !== "plan") return
-		if (event.message.role !== "assistant") return
-		const content = Array.isArray(event.message.content) ? event.message.content : []
-		const toolNames = content
-			.filter((c) => (c as { type: string }).type === "toolCall" || (c as { type: string }).type === "tool_use")
-			.map((c) => (c as { name?: unknown }).name)
-			.filter((name): name is string => typeof name === "string")
-		if (hasPlanSubmitToolCall(toolNames)) {
-			// The review flow owns the turn now. Reset the stall budget so a
-			// rework round starts fresh.
-			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
-			return
-		}
-		const stopReason = (event.message as { stopReason?: string }).stopReason
-		if (!shouldNudge({ hasToolCall: contentHasToolCall(content), stopReason, completionSignalPresent: false })) {
-			return
-		}
-		const sessionId = ctx.sessionManager.getSessionId()
-		const count = (planStopNudgeCounts.get(sessionId) ?? 0) + 1
-		planStopNudgeCounts.set(sessionId, count)
-		if (isNudgeSuppressed(count)) return
-		safeSendMessage(
-			pi,
-			{
-				customType: "plan-mode-stop-nudge",
-				content: PLAN_MODE_STOP_NUDGE,
-				display: false,
-			},
-			{ triggerTurn: true, deliverAs: "steer" },
-		)
-	})
+	if (!isWorker)
+		pi.on("turn_end", (event, ctx) => {
+			if (isAgentWorker()) return
+			if (getRuntimePermissionMode().mode !== "plan") return
+			if (event.message.role !== "assistant") return
+			const content = Array.isArray(event.message.content) ? event.message.content : []
+			const toolNames = content
+				.filter((c) => (c as { type: string }).type === "toolCall" || (c as { type: string }).type === "tool_use")
+				.map((c) => (c as { name?: unknown }).name)
+				.filter((name): name is string => typeof name === "string")
+			if (hasPlanSubmitToolCall(toolNames)) {
+				// The review flow owns the turn now. Reset the stall budget so a
+				// rework round starts fresh.
+				planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
+				return
+			}
+			const stopReason = (event.message as { stopReason?: string }).stopReason
+			if (!shouldNudge({ hasToolCall: contentHasToolCall(content), stopReason, completionSignalPresent: false })) {
+				return
+			}
+			const sessionId = ctx.sessionManager.getSessionId()
+			const count = (planStopNudgeCounts.get(sessionId) ?? 0) + 1
+			planStopNudgeCounts.set(sessionId, count)
+			if (isNudgeSuppressed(count)) return
+			safeSendMessage(
+				pi,
+				{
+					customType: "plan-mode-stop-nudge",
+					content: PLAN_MODE_STOP_NUDGE,
+					display: false,
+				},
+				{ triggerTurn: true, deliverAs: "steer" },
+			)
+		})
 
 	// submit_plan tool — the adhoc plan-mode completion signal.
 	// Visible in both adhoc plan mode and ferment planning phase (via the
@@ -926,10 +1426,10 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	// For ferment, the model should call propose_ferment_scoping first (to
 	// populate the structured scope), then submit_plan to trigger the review.
 	// The review is a TUI flow, so the tool is dead surface in plain --print
-	// runs — suppress it there like the ferment-mode gate does for set_phase.
+	// runs — suppress it there like the ferment-mode gate does for the ferment suite.
 	// ferment-oneshot print runs keep it (submit_plan is part of their
 	// planning catalog).
-	if (!shouldSuppressFermentModeTools()) {
+	if (!isWorker && !shouldSuppressFermentModeTools()) {
 		pi.registerTool({
 			name: SUBMIT_PLAN_TOOL_NAME,
 			label: "Submit Plan",
@@ -1132,321 +1632,353 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 
 	// Decision handler for adhoc plan reviews — handles decisions from both
 	// the TUI menu and plannotator's browser UI (first decision wins).
-	onPlanReviewDecision(pi, async (payload: PlanReviewDecisionPayload) => {
-		if (payload.planReviewSource !== "adhoc") return
-		const reviewCtx = consumePlanReviewContext()
-		if (!reviewCtx) return
-		const { ctx, planPath, planText, rawText, activePlanSlug: reviewedPlanSlug } = reviewCtx
+	if (!isWorker)
+		onPlanReviewDecision(pi, async (payload: PlanReviewDecisionPayload) => {
+			if (payload.planReviewSource !== "adhoc") return
+			const reviewCtx = consumePlanReviewContext()
+			if (!reviewCtx) return
+			const { ctx, planPath, planText, rawText, activePlanSlug: reviewedPlanSlug } = reviewCtx
 
-		const executeLocally = async () => {
-			// Plan mode withholds execution until approval — release it to the highest
-			// policy-allowed execution mode. Submissions made from auto mode are
-			// already executable: no transition.
-			if (!releaseFromPlanForApproval(ctx)) return
-			await executePlan(ctx, planPath, planText, reviewedPlanSlug)
-			activePlanSlug = undefined
-		}
-
-		// Spawn a foreground remote agent to execute the plan in a cloud sandbox.
-		// From plan mode the session switches to auto; submissions already in
-		// auto stay there. The call blocks until the remote agent completes (or
-		// is killed via Ctrl+X). The result is injected into the local session
-		// as a steer message so the local agent has context for follow-up work.
-		// Shared by the start_cloud decision and the plannotator "where should
-		// it run?" route below.
-		const executeInCloud = async () => {
-			// Only plan mode needs the release transition; submissions already in
-			// an executable mode are already in an execution posture. Release
-			// BEFORE clearing state so a policy-blocked release leaves the review
-			// exactly as it was (slug kept, no approval event fired).
-			const wasPlanMode = getRuntimePermissionMode().mode === "plan"
-			if (wasPlanMode && !releaseFromPlanForApproval(ctx)) return
-			const releasedMode = getRuntimePermissionMode().mode
-			const approvedSlug = activePlanSlug
-			activePlanSlug = undefined
-			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
-			const cloudDescription = `${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
-			try {
-				const { prompt: cloudPrompt, gitWorkflow } = await buildRemotePlanPromptWithIntent(ctx, planText, {
-					origin: "plan-mode",
-				})
-				await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true, gitWorkflow })
-			} catch (err) {
-				// Spawn failed — otherwise the user is stranded in auto mode with
-				// no active plan and no visible error. Surface the error and
-				// restore plan mode (when we switched away from it) so they can retry.
-				const message = err instanceof Error ? err.message : String(err)
-				ctx.ui?.notify?.(`Could not start the remote agent: ${message}`, "error")
-				activePlanSlug = approvedSlug
-				if (wasPlanMode) {
-					changeMode(ctx, releasedMode, { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
-				}
+			const executeLocally = async () => {
+				// Plan mode withholds execution until approval — release it to the highest
+				// policy-allowed execution mode. Submissions made from auto mode are
+				// already executable: no transition.
+				if (!releaseFromPlanForApproval(ctx)) return
+				await executePlan(ctx, planPath, planText, reviewedPlanSlug)
+				activePlanSlug = undefined
 			}
-			// Cloud execution never starts a local follow-up turn (the remote run
-			// reports back asynchronously) — the review is over either way: notify.
-			notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
-		}
 
-		if (payload.decision === "execute") {
-			// Plannotator's own dialog has no cloud option — when remote
-			// execution is enabled, ask where the plan should run instead of
-			// auto-executing locally. Escape/dismiss defers: no mode change,
-			// nothing starts; re-open the review to choose again.
-			// A plan-only policy cannot execute anywhere — skip the where-dialog
-			// and go straight through the blocked-release path (notify + close).
-			if (payload.source === "plannotator" && isRemoteRunEnabled() && hasExecutableMode()) {
-				// The same decision event dismisses the older review surface (TUI
-				// menu) via a listener registered AFTER this handler. pi's TUI
-				// keeps a single extensionSelector and disposes whatever is
-				// current on abort — opening our dialog before that listener runs
-				// gets OUR dialog destroyed and its promise never resolves. Defer
-				// one macrotask so the old surface tears down first.
-				await new Promise((resolve) => setTimeout(resolve, 0))
-				const choice = await withWorkingHidden(
-					ctx,
-					() =>
-						ctx.ui?.select?.("Plan approved — where should it run?", [
-							EXECUTE_LOCAL_DECISION_OPTION,
-							CLOUD_DECISION_OPTION,
-						]) ?? Promise.resolve(undefined),
-				)
-				if (choice === CLOUD_DECISION_OPTION) {
-					await executeInCloud()
-				} else if (choice === EXECUTE_LOCAL_DECISION_OPTION) {
-					await executeLocally()
-				} else {
-					ctx.ui?.notify?.("Plan execution deferred — re-open the review to choose again.", "info")
-					// Deferral ends the review with no follow-up turn: notify surfaces
-					// (e.g. ACP holds the originating prompt open across the review).
-					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
+			// Spawn a foreground remote agent to execute the plan in a cloud sandbox.
+			// From plan mode the session switches to auto; submissions already in
+			// auto stay there. The call blocks until the remote agent completes (or
+			// is killed via Ctrl+X). The result is injected into the local session
+			// as a steer message so the local agent has context for follow-up work.
+			// Shared by the start_cloud decision and the plannotator "where should
+			// it run?" route below.
+			const executeInCloud = async () => {
+				// Only plan mode needs the release transition; submissions already in
+				// an executable mode are already in an execution posture. Release
+				// BEFORE clearing state so a policy-blocked release leaves the review
+				// exactly as it was (slug kept, no approval event fired).
+				const wasPlanMode = getRuntimePermissionMode().mode === "plan"
+				if (wasPlanMode && !releaseFromPlanForApproval(ctx)) return
+				const releasedMode = getRuntimePermissionMode().mode
+				const approvedSlug = activePlanSlug
+				activePlanSlug = undefined
+				pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
+				const cloudDescription = `${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
+				try {
+					const { prompt: cloudPrompt, gitWorkflow } = await buildRemotePlanPromptWithIntent(ctx, planText, {
+						origin: "plan-mode",
+					})
+					await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true, gitWorkflow })
+				} catch (err) {
+					// Spawn failed — otherwise the user is stranded in auto mode with
+					// no active plan and no visible error. Surface the error and
+					// restore plan mode (when we switched away from it) so they can retry.
+					const message = err instanceof Error ? err.message : String(err)
+					ctx.ui?.notify?.(`Could not start the remote agent: ${message}`, "error")
+					activePlanSlug = approvedSlug
+					if (wasPlanMode) {
+						changeMode(
+							ctx,
+							releasedMode,
+							{ mode: "plan", initiatedBy: "user", source: "runtime" },
+							"cloud_spawn_failed",
+						)
+					}
 				}
-				return
+				// Cloud execution never starts a local follow-up turn (the remote run
+				// reports back asynchronously) — the review is over either way: notify.
+				notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 			}
-			await executeLocally()
-		} else if (payload.decision === "start_ferment") {
-			// Converted into a ferment — same release as the execute path.
-			activePlanSlug = undefined
-			// ── Tool-swap contract ────────────────────────────────────────────────
-			// This is a SNAPSHOT SWAP that takes effect at the next turn boundary —
-			// there is no explicit handoff message and no model-visible notification.
-			// `ToolProfileManager.apply("implementation-ferment", "ferment", pi)`
-			// calls `pi.setActiveTools(...)` with the catalog-derived set for that
-			// profile (see `src/shared/planning/tool-catalog.ts`). The model sees the
-			// swap on its next invocation; nothing is queued or deferred.
-			//
-			// Tools REMOVED (adhoc / planning-only, no longer visible):
-			//   - questionnaire          (adhoc-only; superseded by ask_user)
-			//
-			// Note: todo lifecycle tools (create_todos, update_todos, add_todo,
-			// mark_todo, clear_todos) are shared core — they remain visible in
-			// all modes including ferment.
-			//
-			// Tools ADDED (ferment-mode, newly visible):
-			//   - ask_user               (interactive routing — TUI in interactive mode,
-			//                              judge model in oneshot via ferment/ask-user.ts)
-			//   - confirm_ferment_completion_criteria (interactive routing, planning)
-			//   - set_phase              (planning — phase tracker)
-			//   - propose_ferment_scoping / scope_ferment / update_ferment_scope_field
-			//                            (planning — scoping surface)
-			//   - list_ferments          (always-both discovery)
-			//   - activate_ferment_phase (planning → implementation transition)
-			//   - refine/complete/skip/fail/start/complete/verify/skip/fail_ferment_step
-			//                            (implementation — step lifecycle)
-			//   - add_ferment_decision / add_ferment_memory
-			//                            (implementation — knowledge capture)
-			//   - complete_ferment       (implementation — termination)
-			//   - edit / write / Agent / get_subagent_result (implementation write set)
-			//
-			// Tools UNCHANGED (shared core, visible in both modes):
-			//   - read, grep, find, ls, web_fetch, web_search
-			//   - bash (read-only gate still applies — same per-call enforcement)
-			try {
-				// Parse the plan against the shared planning process structure first.
-				// Goal / Constraints / Chunks become structured ferment fields;
-				// Verification Strategy / Decision Log / Risks are metadata and must
-				// not become implementation steps. (PR #683 review nit 3473746281.)
-				const parsed = parseSharedPlan(rawText ?? planText)
-				// Create a storage instance scoped to ctx.cwd so the ferment artifact
-				// lands in the project's .kimchi/ferments/ directory, not process.cwd().
-				// defaultFermentRuntime.getStorage() always uses process.cwd(); in
-				// production these are the same, but tests (and future multi-root setups)
-				// need the explicit scoping.
-				const fermentDir = resolveFermentsDir(ctx.cwd)
-				const storage = new FermentEventStore(fermentDir)
-				const runtime = { ...defaultFermentRuntime, getStorage: () => storage }
 
-				// If the plan doesn't follow the shared structure (no `## Chunks`
-				// section), fall back to draft-only: persist the ferment but do NOT
-				// activate a phase or swap to implementation tools. Lossy section
-				// splitting would produce steps named "Goal", "Constraints", "Risks",
-				// etc., which silently misrepresent the plan. The user can resume
-				// the draft via /ferment list when they want to implement it.
-				if (parsed.chunks.length === 0) {
-					const draftName = parsed.goal.split("\n")[0] || "Plan from --plan mode"
+			if (payload.decision === "execute") {
+				// Plannotator's own dialog has no cloud option — when remote
+				// execution is enabled, ask where the plan should run instead of
+				// auto-executing locally. Escape/dismiss defers: no mode change,
+				// nothing starts; re-open the review to choose again.
+				// A plan-only policy cannot execute anywhere — skip the where-dialog
+				// and go straight through the blocked-release path (notify + close).
+				if (payload.source === "plannotator" && isRemoteRunEnabled() && hasExecutableMode()) {
+					// The same decision event dismisses the older review surface (TUI
+					// menu) via a listener registered AFTER this handler. pi's TUI
+					// keeps a single extensionSelector and disposes whatever is
+					// current on abort — opening our dialog before that listener runs
+					// gets OUR dialog destroyed and its promise never resolves. Defer
+					// one macrotask so the old surface tears down first.
+					await new Promise((resolve) => setTimeout(resolve, 0))
+					const choice = await withWorkingHidden(
+						ctx,
+						() =>
+							ctx.ui?.select?.("Plan approved — where should it run?", [
+								EXECUTE_LOCAL_DECISION_OPTION,
+								CLOUD_DECISION_OPTION,
+							]) ?? Promise.resolve(undefined),
+					)
+					if (choice === CLOUD_DECISION_OPTION) {
+						await executeInCloud()
+					} else if (choice === EXECUTE_LOCAL_DECISION_OPTION) {
+						await executeLocally()
+					} else {
+						ctx.ui?.notify?.("Plan execution deferred — re-open the review to choose again.", "info")
+						// Deferral ends the review with no follow-up turn: notify surfaces
+						// (e.g. ACP holds the originating prompt open across the review).
+						notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
+					}
+					return
+				}
+				await executeLocally()
+			} else if (payload.decision === "start_ferment") {
+				// Converted into a ferment — same release as the execute path.
+				activePlanSlug = undefined
+				// ── Tool-swap contract ────────────────────────────────────────────────
+				// This is a SNAPSHOT SWAP that takes effect at the next turn boundary —
+				// there is no explicit handoff message and no model-visible notification.
+				// `ToolProfileManager.apply("implementation-ferment", "ferment", pi)`
+				// calls `pi.setActiveTools(...)` with the catalog-derived set for that
+				// profile (see `src/shared/planning/tool-catalog.ts`). The model sees the
+				// swap on its next invocation; nothing is queued or deferred.
+				//
+				// Tools REMOVED (adhoc / planning-only, no longer visible):
+				//   - questionnaire          (adhoc-only; superseded by ask_user)
+				//
+				// Note: todo lifecycle tools (create_todos, update_todos, add_todo,
+				// mark_todo, clear_todos) are shared core — they remain visible in
+				// all modes including ferment.
+				//
+				// Tools ADDED (ferment-mode, newly visible):
+				//   - ask_user               (interactive routing — TUI in interactive mode,
+				//                              judge model in oneshot via ferment/ask-user.ts)
+				//   - confirm_ferment_completion_criteria (interactive routing, planning)
+				//   - propose_ferment_scoping / scope_ferment / update_ferment_scope_field
+				//                            (planning — scoping surface)
+				//   - list_ferments          (always-both discovery)
+				//   - activate_ferment_phase (planning → implementation transition)
+				//   - refine/complete/skip/fail/start/complete/verify/skip/fail_ferment_step
+				//                            (implementation — step lifecycle)
+				//   - add_ferment_decision / add_ferment_memory
+				//                            (implementation — knowledge capture)
+				//   - complete_ferment       (implementation — termination)
+				//   - edit / write / Agent / get_subagent_result (implementation write set)
+				//
+				// Tools UNCHANGED (shared core, visible in both modes):
+				//   - read, grep, find, ls, web_fetch, web_search
+				//   - bash (read-only gate still applies — same per-call enforcement)
+				try {
+					// Parse the plan against the shared planning process structure first.
+					// Goal / Constraints / Chunks become structured ferment fields;
+					// Verification Strategy / Decision Log / Risks are metadata and must
+					// not become implementation steps. (PR #683 review nit 3473746281.)
+					const parsed = parseSharedPlan(rawText ?? planText)
+					// Create a storage instance scoped to ctx.cwd so the ferment artifact
+					// lands in the project's .kimchi/ferments/ directory, not process.cwd().
+					// defaultFermentRuntime.getStorage() always uses process.cwd(); in
+					// production these are the same, but tests (and future multi-root setups)
+					// need the explicit scoping.
+					const fermentDir = resolveFermentsDir(ctx.cwd)
+					const storage = new FermentEventStore(fermentDir)
+					const runtime = { ...defaultFermentRuntime, getStorage: () => storage }
+
+					// If the plan doesn't follow the shared structure (no `## Chunks`
+					// section), fall back to draft-only: persist the ferment but do NOT
+					// activate a phase or swap to implementation tools. Lossy section
+					// splitting would produce steps named "Goal", "Constraints", "Risks",
+					// etc., which silently misrepresent the plan. The user can resume
+					// the draft via /ferment list when they want to implement it.
+					if (parsed.chunks.length === 0) {
+						const draftName = parsed.goal.split("\n")[0] || "Plan from --plan mode"
+						const draft = createFerment(runtime, {
+							name: draftName,
+							goal: parsed.goal || (rawText ?? planText).trim(),
+							hasUI: ctx.hasUI,
+							isOneShot: pi.getFlag("ferment-oneshot") === true,
+							cwd: ctx.cwd,
+						})
+						tryWorkAttribution(() => setFermentWorkId(draft.id, getWorkId(ctx), fermentDir))
+						defaultFermentRuntime.setActive(draft)
+						if (pi.events) emitFermentCreated(pi.events, draft)
+						appendRefEntry(pi, draft.id)
+						ctx.ui?.notify?.(
+							`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
+						)
+						// A blocked release already warned and closed the review — done.
+						if (getRuntimePermissionMode().mode === "plan" && !releaseFromPlanForApproval(ctx)) return
+						// Draft-only conversion dispatches no follow-up turn: notify.
+						notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
+						return
+					}
+
+					// Create the ferment through the normal storage API so it gets a
+					// proper ID, is visible to runtime.getActive(), the scheduler, and
+					// the compaction / resume paths.
+					const fermentName = parsed.goal.split("\n")[0].slice(0, 80) || "Plan from --plan mode"
 					const draft = createFerment(runtime, {
-						name: draftName,
-						goal: parsed.goal || (rawText ?? planText).trim(),
+						name: fermentName,
+						goal: parsed.goal,
 						hasUI: ctx.hasUI,
 						isOneShot: pi.getFlag("ferment-oneshot") === true,
 						cwd: ctx.cwd,
 					})
+					// Set the draft active before emitting STARTED so telemetry can capture
+					// the scoping baseline. Keep planning tools until activation succeeds.
 					tryWorkAttribution(() => setFermentWorkId(draft.id, getWorkId(ctx), fermentDir))
 					defaultFermentRuntime.setActive(draft)
 					if (pi.events) emitFermentCreated(pi.events, draft)
-					appendRefEntry(pi, draft.id)
-					ctx.ui?.notify?.(
-						`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
-					)
-					// A blocked release already warned and closed the review — done.
-					if (getRuntimePermissionMode().mode === "plan" && !releaseFromPlanForApproval(ctx)) return
-					// Draft-only conversion dispatches no follow-up turn: notify.
-					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
-					return
-				}
-
-				// Create the ferment through the normal storage API so it gets a
-				// proper ID, is visible to runtime.getActive(), the scheduler, and
-				// the compaction / resume paths.
-				const fermentName = parsed.goal.split("\n")[0].slice(0, 80) || "Plan from --plan mode"
-				const draft = createFerment(runtime, {
-					name: fermentName,
-					goal: parsed.goal,
-					hasUI: ctx.hasUI,
-					isOneShot: pi.getFlag("ferment-oneshot") === true,
-					cwd: ctx.cwd,
-				})
-				// Set the draft active before emitting STARTED so telemetry can capture
-				// the scoping baseline. Keep planning tools until activation succeeds.
-				tryWorkAttribution(() => setFermentWorkId(draft.id, getWorkId(ctx), fermentDir))
-				defaultFermentRuntime.setActive(draft)
-				if (pi.events) emitFermentCreated(pi.events, draft)
-				// Scope it using the structured fields from the shared plan.
-				const applyAndPersist = createApplyAndPersist(runtime)
-				const scoped = applyAndPersist(draft.id, {
-					type: "scope",
-					goal: parsed.goal,
-					successCriteria: parsed.successCriteria,
-					constraints: parsed.constraints,
-					phases: [
+					// Scope it using the structured fields from the shared plan.
+					const applyAndPersist = createApplyAndPersist(runtime)
+					const scoped = applyAndPersist(draft.id, {
+						type: "scope",
+						goal: parsed.goal,
+						successCriteria: parsed.successCriteria,
+						constraints: parsed.constraints,
+						phases: [
+							{
+								name: fermentName,
+								goal: parsed.goal,
+								// Each chunk becomes one implementation step. Title and body
+								// are joined so the engineer sees the full chunk context.
+								steps: parsed.chunks.map((chunk) => ({
+									description: chunk.body ? `${chunk.title}\n${chunk.body}` : chunk.title,
+								})),
+							},
+						],
+					})
+					if (!scoped.ok) throw new Error(scoped.error.message)
+					// Activate the first phase so the ferment enters implementation mode.
+					const activated = applyAndPersist(draft.id, {
+						type: "activate_phase",
+						phaseId: scoped.ferment.phases[0]?.id ?? "phase-1",
+					})
+					if (!activated.ok) throw new Error(activated.error.message)
+					// Elevation gate: ask before the scoped ferment activates (ladder in
+					// elevation-gate.ts); cancelled/blocked leaves the scoped ferment
+					// inactive for a later /ferment resume.
+					const gate = ctx
+						? await gateFermentElevation(ctx, activated.ferment.id, activated.ferment.name)
+						: ({ kind: "stayed" } as const)
+					if (gate.kind === "cancelled" || gate.kind === "blocked") {
+						// Deactivate only the draft this flow activated: while the gate was
+						// open, another ferment (e.g. another session's wake-up) may have
+						// claimed the process-global active slot — never tear that one down.
+						deactivateIfStillActive(defaultFermentRuntime, draft.id)
+						ctx.ui.notify(
+							gate.kind === "blocked" ? FERMENT_PLAN_ONLY_MESSAGE : "Ferment start cancelled.",
+							gate.kind === "blocked" ? "warning" : "info",
+						)
+						// The review ends here with no follow-up turn: close it out for
+						// surfaces holding the prompt open (ACP).
+						notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
+						return
+					}
+					if (gate.kind === "degraded") {
+						// Declined elevation: keep THIS ferment on manual continuation —
+						// background steps cannot answer approval prompts.
+						applyDegradedFermentStart(ctx, activated.ferment.id)
+					}
+					defaultFermentRuntime.setActive(activated.ferment)
+					setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
+					appendRefEntry(pi, activated.ferment.id)
+					// Explicit model-visible handoff. Without this, the only post-approval
+					// signal was the hidden `ferment_reference` entry above, and the model
+					// started "from scratch": it re-ran discovery (`list_ferments`) and
+					// re-drafted the whole scope via `scope_ferment`, which the FSM then
+					// rejected (already PHASE_ACTIVE). Tell the model the ferment is
+					// already scoped/active and what the immediate next action is, so "Start
+					// as ferment" goes straight to execution.
+					const activePhase = activated.ferment.phases.find((p) => p.status === "active")
+					const nextActionHint = formatNextActionHint(activated.ferment)
+					safeSendMessage(
+						pi,
 						{
-							name: fermentName,
-							goal: parsed.goal,
-							// Each chunk becomes one implementation step. Title and body
-							// are joined so the engineer sees the full chunk context.
-							steps: parsed.chunks.map((chunk) => ({
-								description: chunk.body ? `${chunk.title}\n${chunk.body}` : chunk.title,
-							})),
+							customType: "ferment_handoff",
+							content: [
+								{
+									type: "text",
+									text: markHarnessSteer(
+										[
+											`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
+											planPath ? `Approved plan saved to: ${planPath}` : undefined,
+											`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
+											`${formatNoReplanningGuidance()} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
+											nextActionHint,
+											"Go straight to execution.",
+										]
+											.filter(Boolean)
+											.join("\n"),
+									),
+								},
+							],
+							display: false,
+							details: { fermentId: activated.ferment.id, origin: "plan_mode_start_as_ferment" },
 						},
-					],
-				})
-				if (!scoped.ok) throw new Error(scoped.error.message)
-				// Activate the first phase so the ferment enters implementation mode.
-				const activated = applyAndPersist(draft.id, {
-					type: "activate_phase",
-					phaseId: scoped.ferment.phases[0]?.id ?? "phase-1",
-				})
-				if (!activated.ok) throw new Error(activated.error.message)
-				// Elevation gate: ask before the scoped ferment activates (ladder in
-				// elevation-gate.ts); cancelled/blocked leaves the scoped ferment
-				// inactive for a later /ferment resume.
-				const gate = ctx
-					? await gateFermentElevation(ctx, activated.ferment.id, activated.ferment.name)
-					: ({ kind: "stayed" } as const)
-				if (gate.kind === "cancelled" || gate.kind === "blocked") {
-					// Deactivate only the draft this flow activated: while the gate was
-					// open, another ferment (e.g. another session's wake-up) may have
-					// claimed the process-global active slot — never tear that one down.
-					deactivateIfStillActive(defaultFermentRuntime, draft.id)
-					ctx.ui.notify(
-						gate.kind === "blocked" ? FERMENT_PLAN_ONLY_MESSAGE : "Ferment start cancelled.",
-						gate.kind === "blocked" ? "warning" : "info",
+						{ triggerTurn: true },
 					)
-					// The review ends here with no follow-up turn: close it out for
-					// surfaces holding the prompt open (ACP).
+					if (getRuntimePermissionMode().mode === "plan") {
+						releaseFromPlanForApproval(ctx)
+					}
+				} catch (err) {
+					// Promotion failed before activation. Keep the planning profile, clear
+					// the half-set runtime state, and tell the user that they can retry.
+					defaultFermentRuntime.setActive(undefined)
+					const message = err instanceof Error ? err.message : String(err)
+					ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
+					// Promotion failed — the review is over with no follow-up turn: notify.
 					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
-					return
 				}
-				if (gate.kind === "degraded") {
-					// Declined elevation: keep THIS ferment on manual continuation —
-					// background steps cannot answer approval prompts.
-					applyDegradedFermentStart(ctx, activated.ferment.id)
-				}
-				defaultFermentRuntime.setActive(activated.ferment)
-				setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
-				appendRefEntry(pi, activated.ferment.id)
-				// Explicit model-visible handoff. Without this, the only post-approval
-				// signal was the hidden `ferment_reference` entry above, and the model
-				// started "from scratch": it re-ran discovery (`list_ferments`) and
-				// re-drafted the whole scope via `scope_ferment`, which the FSM then
-				// rejected (already PHASE_ACTIVE). Tell the model the ferment is
-				// already scoped/active and what the immediate next action is, so "Start
-				// as ferment" goes straight to execution.
-				const activePhase = activated.ferment.phases.find((p) => p.status === "active")
-				const nextActionHint = formatNextActionHint(activated.ferment, getMultiModelEnabled(ctx.sessionManager))
+			} else if (payload.decision === "start_cloud") {
+				await executeInCloud()
+			} else if (payload.decision === "feedback") {
 				safeSendMessage(
 					pi,
 					{
-						customType: "ferment_handoff",
-						content: [
-							{
-								type: "text",
-								text: markHarnessSteer(
-									[
-										`Handoff from plan mode: the plan you just presented was approved by the user ("Start as ferment") and converted into ferment "${activated.ferment.name}" (${activated.ferment.id}).`,
-										planPath ? `Approved plan saved to: ${planPath}` : undefined,
-										`The ferment is ALREADY scoped — goal, success criteria, and constraints are set — and ${activePhase ? `phase "${activePhase.id}" (${activePhase.steps.length} steps) is ACTIVE` : "its first phase is ACTIVE"}.`,
-										`${formatNoReplanningGuidance()} Scope mutations will be rejected in this lifecycle state. Do not re-run any orient, interview, or planning steps.`,
-										nextActionHint,
-										"Go straight to execution.",
-									]
-										.filter(Boolean)
-										.join("\n"),
-								),
-							},
-						],
+						customType: "plannotator-feedback",
+						content: [{ type: "text", text: payload.feedback ?? "" }],
 						display: false,
-						details: { fermentId: activated.ferment.id, origin: "plan_mode_start_as_ferment" },
 					},
 					{ triggerTurn: true },
 				)
-				if (getRuntimePermissionMode().mode === "plan") {
-					releaseFromPlanForApproval(ctx)
-				}
-			} catch (err) {
-				// Promotion failed before activation. Keep the planning profile, clear
-				// the half-set runtime state, and tell the user that they can retry.
-				defaultFermentRuntime.setActive(undefined)
-				const message = err instanceof Error ? err.message : String(err)
-				ctx.ui?.notify?.(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`)
-				// Promotion failed — the review is over with no follow-up turn: notify.
+			} else {
+				// "rework" (and any future no-op decision) — the review ends here
+				// without dispatching a follow-up turn. Notify surfaces that hold
+				// state across the review (ACP keeps the prompt open so execution
+				// lands inside it; a no-turn close must still end it).
 				notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 			}
-		} else if (payload.decision === "start_cloud") {
-			await executeInCloud()
-		} else if (payload.decision === "feedback") {
-			safeSendMessage(
-				pi,
-				{
-					customType: "plannotator-feedback",
-					content: [{ type: "text", text: payload.feedback ?? "" }],
-					display: false,
-				},
-				{ triggerTurn: true },
-			)
-		} else {
-			// "rework" (and any future no-op decision) — the review ends here
-			// without dispatching a follow-up turn. Notify surfaces that hold
-			// state across the review (ACP keeps the prompt open so execution
-			// lands inside it; a no-turn close must still end it).
-			notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
+		})
+
+	/**
+	 * Every path a write/edit call names. The tools write to `path`;
+	 * `file_path` is an alias a call can carry next to it. A path check must
+	 * hold for all of them, so that a call carrying both is never judged on
+	 * the one that is not written.
+	 */
+	const writeEditTargetPaths = (input: Record<string, unknown>): string[] =>
+		[input.path, input.file_path].filter((value): value is string => typeof value === "string")
+
+	pi.on("tool_call", async (event, ctx) => {
+		try {
+			const result = await gateToolCall(event, ctx)
+			// The gate's own decision, whatever the last answer was: a call that
+			// is let through is about to run, a blocked one will not.
+			reportEscalatedCall(event.toolCallId, result?.block ? "failed" : "running")
+			return result
+		} catch (error) {
+			reportEscalatedCall(event.toolCallId, "failed")
+			throw error
 		}
 	})
 
-	/** Write/edit target path: `file_path` or `path`, whichever the tool names. */
-	const writeEditTargetPath = (input: Record<string, unknown>): string =>
-		typeof input.file_path === "string" ? input.file_path : typeof input.path === "string" ? input.path : ""
+	// How an allowed call really ended. A call the gate blocked never gets here.
+	// Only a worker escalates, so only a worker has anything to report.
+	if (isWorker) {
+		pi.on("tool_result", (event) => {
+			reportEscalatedCall(event.toolCallId, event.isError ? "failed" : "completed")
+		})
+	}
 
-	pi.on("tool_call", async (event, ctx) => {
+	async function gateToolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<GateResult> {
+		refreshWorkerPolicy(ctx)
 		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
 
@@ -1461,18 +1993,21 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			}
 		}
 
-		// Plan persona path-scope enforcement: when KIMCHI_AGENT_PERSONA=plan (case-insensitive),
-		// write and edit are only allowed for .kimchi/plans/* paths.
-		if (process.env.KIMCHI_AGENT_PERSONA?.toLowerCase() === "plan") {
+		// A main session keeps the persona it was launched with: the value a
+		// running subagent puts in the environment is that subagent's, not this
+		// session's. Workers use their captured persona so parallel children
+		// cannot affect one another.
+		const agentPersona = options.role === "worker" ? options.persona : getLaunchAgentPersona()
+		if (agentPersona?.toLowerCase() === "plan") {
 			if (toolName === "write" || toolName === "edit") {
-				const filePath = writeEditTargetPath(input)
-				if (filePath && !isWithinKimchiPlans(filePath, ctx.cwd)) {
+				const outside = writeEditTargetPaths(input).find((target) => !isWithinKimchiPlans(target, ctx.cwd))
+				if (outside !== undefined) {
 					return {
 						block: true,
-						reason: `Plan persona: ${toolName} is restricted to .kimchi/plans/ files. The path "${filePath}" is outside that scope.`,
+						reason: `Plan persona: ${toolName} is restricted to .kimchi/plans/ files. The path "${outside}" is outside that scope.`,
 					}
 				}
-				// path is within .kimchi/plans/ — allow without further checks
+				// every named path is within .kimchi/plans/ — allow without further checks
 				return undefined
 			}
 		}
@@ -1484,8 +2019,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		// tools) inside it stay behind the classifier, the documented residual
 		// (see docs/doc-cli.md).
 		if ((toolName === "write" || toolName === "edit") && bundledSkillCliRoot !== null) {
-			const filePath = writeEditTargetPath(input)
-			if (filePath && isUnderBundledSkillsDir(filePath, bundledSkillCliRoot, ctx.cwd)) {
+			const skillsRoot = bundledSkillCliRoot
+			if (writeEditTargetPaths(input).some((target) => isUnderBundledSkillsDir(target, skillsRoot, ctx.cwd))) {
 				emitToolDecision(pi, event, getRuntimePermissionMode().mode, "reject", "bundled_skill_dir_deny")
 				return {
 					block: true,
@@ -1515,6 +2050,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			modeChangeSources.push(reasons.shift() as ModeChangeReason)
 			if (reasons.length === 0) pendingModeChangeDismissals.delete(dismissalKey)
 		}
+		// A worker stop is a terminal decision, not a mode change. Return a
+		// real block instead of the legacy bare "aborted" sentinel.
+		const settleWorkerAbort = (result: PromptOutcome): PromptOutcome => {
+			if (options.role === "worker" && result === "aborted" && ctx.signal?.aborted) {
+				return { block: true, reason: "Subagent was stopped before the permission request was answered." }
+			}
+			return result
+		}
 		/** Prompt settlement, shared by all three prompt sites: a prompt
 		 *  dismissed by a mode change resolves "aborted" — consume the recorded
 		 *  dismissal source and report that the loop should re-evaluate under
@@ -1523,11 +2066,22 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		 *  not-aborted narrowing the inline checks used to provide. */
 		const promptAbortedByModeChange = (result: PromptOutcome): result is "aborted" => {
 			if (result !== "aborted") return false
+			// A worker's own cancellation is a stop, not a mode flap. Only
+			// cancellation by the parent's mode change is re-evaluated.
+			if (options.role === "worker" && ctx.signal?.aborted) return false
 			consumeModeChangeDismissal()
 			return true
 		}
 		try {
 			for (let attempt = 0; attempt < MODES.length; attempt++) {
+				// Every pass after the first follows a mode change (each `continue`
+				// below). The withdrawn prompt is already gone; the decision waits
+				// until the mode has settled, so it is taken under the mode the
+				// user stopped on and not one Shift+Tab only passed through.
+				if (attempt > 0) await whenModeSettled(ctx.signal)
+				// A parent mode change cancels escalated prompts. The worker must
+				// refresh the parent's live policy on every pass.
+				refreshWorkerPolicy(ctx)
 				const { mode } = getRuntimePermissionMode()
 
 				// YOLO mode: skip approval prompts and the classifier — but the user's
@@ -1538,7 +2092,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// that flag's documented use case, and those sessions enter yolo via
 				// the ACP client with no flag of their own) — keeps the full bypass.
 				if (mode === "yolo") {
-					if (pi.getFlag(DANGEROUS_BYPASS_FLAG) !== true && !isInSandboxCluster()) {
+					if (!isDangerBypass()) {
 						const match = evaluateRules(allRules(), toolName, input)
 						if (match.decision === "deny") {
 							emitToolDecision(pi, event, mode, "reject", ruleSourceDetail(match.rule))
@@ -1606,7 +2160,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// IDE connection AND we're in default mode, write/edit approvals are
 				// handled via the IDE diff viewer. In auto/yolo the user has opted out
 				// of per-file approval, so don't defer.
-				if ((toolName === "write" || toolName === "edit") && mode === "default" && isIdeConnected()) {
+				if (!isWorker && (toolName === "write" || toolName === "edit") && mode === "default" && isIdeConnected()) {
 					// Skip the terminal prompt so the user isn't asked twice.
 					return undefined
 				}
@@ -1656,7 +2210,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// In default mode, a questionnaire call means the agent wants to plan —
 				// auto-promote the session to plan mode so the rest of the conversation
 				// runs under the right tool set instead of silently approving here.
-				if (toolName === "questionnaire" && mode === "default") {
+				if (!isWorker && toolName === "questionnaire" && mode === "default") {
 					changeMode(
 						ctx,
 						"default",
@@ -1677,10 +2231,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						return undefined
 					}
 				}
+				if (options.preApproved?.(toolName, input)) {
+					emitToolDecision(pi, event, mode, "accept", "preapproved")
+					return undefined
+				}
 
 				// Auto mode + non-promptable default mode (headless/subagents) both go
 				// through the classifier; prompts without a frontend fail closed.
-				const promptAvailable = canPrompt(ctx)
+				const promptAvailable = canPrompt(ctx, isWorker)
 				// The hidden document-skill CLI route (`kimchi doc-cli pdf …`) is
 				// first-party: the binary resolves and loads the staged bundle, the
 				// model only supplies the fixed command shape. It skips the classifier
@@ -1700,7 +2258,12 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				}
 				if (mode === "auto" || !promptAvailable) {
 					const { candidates, missingRefs } = resolveClassifierCandidates(ctx.modelRegistry)
-					const verdict = await classifyToolCall(
+					const {
+						result: verdict,
+						tripped,
+						recovered,
+						fromBreaker,
+					} = await classifyToolCallViaBreaker(
 						candidates,
 						ctx.modelRegistry,
 						{ toolName, input, cwd: ctx.cwd },
@@ -1711,24 +2274,124 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						},
 						ctx.signal,
 					)
-					const health = classifierHealth(verdict, candidates, missingRefs, ctx.signal)
-					if (health) {
-						pi.events.emit(health.channel, health.payload)
-						if (ctx.hasUI && !classifierWarnings.has(health.notifyKey)) {
-							classifierWarnings.add(health.notifyKey)
-							ctx.ui.notify(health.message, "warning")
+					// Health events describe real classifier calls; a stored breaker
+					// failure is a cache hit, not a new failure.
+					if (!fromBreaker) {
+						const health = classifierHealth(verdict, candidates, missingRefs, ctx.signal)
+						if (health) {
+							pi.events.emit(health.channel, health.payload)
+							if (health.channel === PERMISSION_EVENTS.CLASSIFIER_DEGRADED) {
+								// A fallback model answered: informational, and it recurs on
+								// every call while a model ref is missing. Only the session
+								// that owns a UI shows it, once — a worker forwarding it would
+								// toast the parent on every subagent run.
+								if (ctx.hasUI && !classifierWarnings.has(health.notifyKey)) {
+									classifierWarnings.add(health.notifyKey)
+									reportClassifierNotice(ctx, health.message, "warning")
+								}
+							} else if (promptAvailable) {
+								// The health line is for the prompt path only: without a
+								// prompt the call is blocked below, and that notice names the
+								// cause — sending both would warn twice for one call. A trip
+								// warns every time; failures the breaker ignores (bad output,
+								// no candidates, no API key) warn once per session.
+								if (tripped) {
+									reportClassifierNotice(ctx, health.message, "warning")
+								} else if (!classifierWarnings.has(health.notifyKey)) {
+									classifierWarnings.add(health.notifyKey)
+									reportClassifierNotice(ctx, health.message, "warning")
+								}
+							}
 						}
 					}
+					if (recovered) {
+						// A probe succeeded and closed the breaker — say so once.
+						reportClassifierNotice(ctx, CLASSIFIER_RECOVERED_NOTICE, "info")
+					}
 
+					// The classifier can take many seconds, and a mode change in that
+					// time found no prompt of this call to withdraw. Acting on the
+					// verdict now would use a mode the session has left: a "safe"
+					// would run a write in plan mode, and a prompt would let "Yes" do
+					// the same. Decide again under the current mode instead.
+					refreshWorkerPolicy(ctx)
+					if (getRuntimePermissionMode().mode !== mode) continue
+
+					// A failed classification (timeout, provider error, bad output) is not
+					// a verdict: it never confirms the call. With a prompt the user is
+					// asked under fixed outage copy (no provider diagnostics); without
+					// one the call fails closed with an instructive block reason.
+					// Aborted results keep the fall-through handling — a user cancel is
+					// not an outage.
+					if (!verdict.ok && verdict.failureCode !== "aborted") {
+						if (!promptAvailable) {
+							const escalated = await requestWorkerApproval(
+								event,
+								ctx,
+								mode,
+								toolName,
+								input,
+								CLASSIFIER_UNAVAILABLE_SUBAGENT_PROMPT_SUBTITLE,
+							)
+							if (escalated) {
+								const settledOutcome = settleWorkerAbort(escalated.result)
+								if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
+								return settledOutcome
+							}
+							reportClassifierNotice(ctx, classifierBlockedNotice(toolName, verdict.failureCode), "warning")
+							emitToolDecision(pi, event, mode, "reject", "classifier_no_ui")
+							return {
+								block: true,
+								// The code tail is a bounded enum value so tool-error telemetry
+								// can recover the failure code; never provider text.
+								reason:
+									classifierBlockReason(verdict.failureCode, isWorker) +
+									classifierBlockReasonCodeTail(verdict.failureCode),
+							}
+						}
+						const result = await handleConfirm(event, {
+							ctx,
+							pi,
+							subtitle: CLASSIFIER_UNAVAILABLE_PROMPT_SUBTITLE,
+							session,
+							activeAborts: activeAbortControllers,
+							promptToolCalls: activePromptToolCalls,
+							allRules,
+							permissionMode: mode,
+							promptQueue,
+							registerParentAbort,
+						})
+						const settledOutcome = settleWorkerAbort(result)
+						if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
+						return settledOutcome
+					}
 					if (verdict.verdict === "safe") {
 						emitToolDecision(pi, event, mode, "accept", "classifier")
 						return undefined
 					}
 					if (!promptAvailable) {
+						const escalated = await requestWorkerApproval(
+							event,
+							ctx,
+							mode,
+							toolName,
+							input,
+							verdict.reason,
+							verdict.riskScore,
+						)
+						if (escalated) {
+							const settledOutcome = settleWorkerAbort(escalated.result)
+							if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
+							return settledOutcome
+						}
 						emitToolDecision(pi, event, mode, "reject", "classifier_no_ui")
 						return {
 							block: true,
-							reason: `Classifier: ${verdict.reason} (no UI to confirm)`,
+							reason: `Classifier: ${verdict.reason}${
+								isWorker
+									? " Do not retry; report to the main agent that the call needs the user's approval. (no UI to confirm)"
+									: " (no UI to confirm)"
+							}`,
 						}
 					}
 					const result = await handleConfirm(event, {
@@ -1741,9 +2404,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 						promptToolCalls: activePromptToolCalls,
 						allRules,
 						permissionMode: mode,
+						worker: isWorker,
+						promptQueue,
+						registerParentAbort,
 					})
-					if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
-					return result
+					const settledOutcome = settleWorkerAbort(result)
+					if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
+					return settledOutcome
 				}
 
 				// Prompt site — branch to compound or single-command flow
@@ -1761,9 +2428,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 								subcommands,
 								allRules,
 								permissionMode: mode,
+								worker: isWorker,
+								promptQueue,
+								registerParentAbort,
 							})
-							if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
-							return result
+							const settledOutcome = settleWorkerAbort(result)
+							if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
+							return settledOutcome
 						}
 					}
 				}
@@ -1775,9 +2446,13 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 					promptToolCalls: activePromptToolCalls,
 					allRules,
 					permissionMode: mode,
+					worker: isWorker,
+					promptQueue,
+					registerParentAbort,
 				})
-				if (promptAbortedByModeChange(result)) continue // mode changed, re-evaluate
-				return result
+				const settledOutcome = settleWorkerAbort(result)
+				if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
+				return settledOutcome
 			}
 
 			// Exhausted re-evaluation attempts — fail closed.
@@ -1797,28 +2472,32 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// unique, so an unconsumed entry would otherwise sit here forever.
 			pendingModeChangeDismissals.delete(dismissalKey)
 		}
-	})
+	}
 
-	registerCommands(pi, {
-		getSession: () => session,
-		getLoaded: () => loaded,
-		getPermissionMode: () => getRuntimePermissionMode().mode,
-		setPermissionMode: (ctx, mode) =>
-			changeMode(ctx, getRuntimePermissionMode().mode, { mode, initiatedBy: "user", source: "runtime" }, "command"),
-		rebuildConfigRules,
-		reloadConfig: (ctx) => {
-			const { errors } = doLoadConfig(ctx)
-			if (errors.length && ctx.hasUI) {
-				for (const err of errors) ctx.ui.notify(`permissions: ${err}`, "warning")
-			}
-		},
-		updateStatus,
-	})
+	if (!isWorker)
+		registerCommands(pi, {
+			getSession: () => session,
+			getLoaded: () => loaded,
+			getPermissionMode: () => getRuntimePermissionMode().mode,
+			setPermissionMode: (ctx, mode) =>
+				changeMode(ctx, getRuntimePermissionMode().mode, { mode, initiatedBy: "user", source: "runtime" }, "command"),
+			rebuildConfigRules,
+			reloadConfig: (ctx) => {
+				const { errors } = doLoadConfig(ctx)
+				if (errors.length && ctx.hasUI) {
+					for (const err of errors) ctx.ui.notify(`permissions: ${err}`, "warning")
+				}
+			},
+			updateStatus,
+		})
 }
 
 /** What a permission prompt settles to: a decision to apply, "aborted"
  *  (dismissed by a mode change — re-evaluate), or undefined (allow). */
 type PromptOutcome = { block: true; reason: string } | "aborted" | undefined
+
+/** What the gate hands back to the tool loop: a block, or nothing (let it run). */
+type GateResult = Exclude<PromptOutcome, "aborted">
 
 interface ConfirmOptions {
 	ctx: ExtensionContext
@@ -1834,30 +2513,88 @@ interface ConfirmOptions {
 	pi: ExtensionAPI
 	/** Permission mode the prompt is opened under (reported with the decision). */
 	permissionMode: PermissionMode
+	/** Inline workers never resolve a prompt directly; escalations supply a parent prompter. */
+	worker?: boolean
+	/** Serializes prompts so only one is shown at a time; defaults to the module-level queue. */
+	promptQueue?: PromptQueue
+	/** Override the resolved prompter — escalated subagent calls forward to the
+	 *  parent session's surface instead of the worker's (nonexistent) UI. */
+	prompter?: ToolPermissionPrompter
+	/** Link a direct worker prompt to its parent's mode-change cancellations.
+	 *  Escalated prompts already register through the parent surface. */
+	registerParentAbort?: (controller: AbortController, toolCallId: string) => () => void
+	/** Prebuilt choices for the prompt (escalated prompts carry
+	 *  "for this subagent" remember labels). */
+	choices?: PermissionChoice[]
+}
+
+/**
+ * Run a prompt task through the queue and map a queue-level abort (the entry
+ * was dropped while waiting) to the same `{kind: "aborted"}` outcome a
+ * visible prompt produces when its signal fires — downstream
+ * mode-change-dismissal accounting stays identical.
+ */
+async function runQueuedPrompt<T extends { kind: string }>(
+	queue: PromptQueue,
+	task: () => Promise<T>,
+	signal?: AbortSignal,
+): Promise<T | { kind: "aborted" }> {
+	try {
+		return await queue.enqueue(task, signal)
+	} catch (err) {
+		if (signal?.aborted) return { kind: "aborted" }
+		throw err
+	}
+}
+
+function createConfirmAbort(
+	opts: ConfirmOptions,
+	toolCallId: string | undefined,
+): {
+	controller: AbortController
+	cleanup: () => void
+} {
+	const controller = new AbortController()
+	const unlinkAbort = linkAbortSignal(opts.ctx.signal, controller)
+	opts.activeAborts.add(controller)
+	opts.promptToolCalls.set(controller, toolCallId ?? "")
+	const unregister = opts.prompter ? undefined : opts.registerParentAbort?.(controller, toolCallId ?? "")
+	return {
+		controller,
+		cleanup: () => {
+			unregister?.()
+			unlinkAbort()
+			opts.activeAborts.delete(controller)
+			opts.promptToolCalls.delete(controller)
+		},
+	}
 }
 
 async function handleConfirm(
 	event: ToolCallEvent,
 	opts: ConfirmOptions,
 ): Promise<{ block: true; reason: string } | "aborted" | undefined> {
-	const abort = new AbortController()
-	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
-	opts.activeAborts.add(abort)
-	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
+	const { controller: abort, cleanup } = createConfirmAbort(opts, event.toolCallId)
 	try {
-		const prompter = resolvePrompter(opts.ctx)
+		const prompter = opts.prompter ?? resolvePrompter(opts.ctx, opts.worker)
 		if (!prompter) {
 			emitToolDecision(opts.pi, event, opts.permissionMode, "reject", "no_ui")
 			return { block: true, reason: "No UI to confirm permission" }
 		}
 
-		opts.pi.events.emit("notification", {
-			notification_type: "permission_prompt",
-			tool_name: event.toolName,
-			tool_use_id: event.toolCallId,
-		})
+		// The escalated route emits the notification and withBlocked on the
+		// PARENT's bus (its handler does so before prompting); re-emitting them
+		// on the worker's bus would reach nobody and double the bell when the
+		// worker does have a prompt surface of its own.
+		if (!opts.prompter) {
+			opts.pi.events.emit("notification", {
+				notification_type: "permission_prompt",
+				tool_name: event.toolName,
+				tool_use_id: event.toolCallId,
+			})
+		}
 
-		return await withBlocked(opts.pi.events, `Permission: ${event.toolName}`, async () => {
+		return await withPermissionBlocked(opts.pi.events, `Permission: ${event.toolName}`, async () => {
 			opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
@@ -1867,15 +2604,20 @@ async function handleConfirm(
 			})
 
 			const input = event.input
-			const outcome = await prompter.request({
-				toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
-				toolName: event.toolName,
-				input,
-				subtitle: opts.subtitle,
-				riskScore: opts.riskScore,
-				choices: buildPermissionChoices(event.toolName, input),
-				signal: abort.signal,
-			})
+			const outcome = await runQueuedPrompt(
+				opts.promptQueue ?? sharedPromptQueue,
+				() =>
+					prompter.request({
+						toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
+						toolName: event.toolName,
+						input,
+						subtitle: opts.subtitle,
+						riskScore: opts.riskScore,
+						choices: opts.choices ?? buildPermissionChoices(event.toolName, input),
+						signal: abort.signal,
+					}),
+				abort.signal,
+			)
 
 			opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
 				toolCallId: event.toolCallId,
@@ -1891,9 +2633,7 @@ async function handleConfirm(
 			return applyApprovalOutcome(outcome, opts.session)
 		})
 	} finally {
-		unlinkAbort()
-		opts.activeAborts.delete(abort)
-		opts.promptToolCalls.delete(abort)
+		cleanup()
 	}
 }
 
@@ -1901,12 +2641,9 @@ export async function handleCompoundConfirm(
 	event: ToolCallEvent,
 	opts: ConfirmOptions & { subcommands: string[] },
 ): Promise<{ block: true; reason: string } | "aborted" | undefined> {
-	const abort = new AbortController()
-	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
-	opts.activeAborts.add(abort)
-	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
+	const { controller: abort, cleanup } = createConfirmAbort(opts, event.toolCallId)
 	try {
-		const prompter = resolvePrompter(opts.ctx)
+		const prompter = resolvePrompter(opts.ctx, opts.worker)
 		if (!prompter) {
 			emitToolDecision(opts.pi, event, opts.permissionMode, "reject", "no_ui")
 			return { block: true, reason: "No UI to confirm permission" }
@@ -1918,7 +2655,7 @@ export async function handleCompoundConfirm(
 			tool_use_id: event.toolCallId,
 		})
 
-		return await withBlocked(opts.pi.events, `Permission: ${event.toolName} (compound)`, async () => {
+		return await withPermissionBlocked(opts.pi.events, `Permission: ${event.toolName} (compound)`, async () => {
 			opts.pi.events.emit(PERMISSION_EVENTS.BEFORE_PROMPT, {
 				toolCallId: event.toolCallId,
 				toolName: event.toolName,
@@ -1933,14 +2670,19 @@ export async function handleCompoundConfirm(
 				// remembered rules are scoped to the compound call's suggested scope
 				// rather than each segment.
 				const input = event.input
-				const outcome = await prompter.request({
-					toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
-					toolName: event.toolName,
-					input,
-					subtitle: opts.subtitle,
-					choices: buildPermissionChoices(event.toolName, input),
-					signal: abort.signal,
-				})
+				const outcome = await runQueuedPrompt(
+					opts.promptQueue ?? sharedPromptQueue,
+					() =>
+						prompter.request({
+							toolCallId: event.toolCallId ?? `${event.toolName}-permission`,
+							toolName: event.toolName,
+							input,
+							subtitle: opts.subtitle,
+							choices: buildPermissionChoices(event.toolName, input),
+							signal: abort.signal,
+						}),
+					abort.signal,
+				)
 				opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
 					toolCallId: event.toolCallId,
 					toolName: event.toolName,
@@ -1954,12 +2696,17 @@ export async function handleCompoundConfirm(
 				return applyApprovalOutcome(outcome, opts.session)
 			}
 
-			const outcome = await promptForCompoundApproval({
-				toolName: event.toolName,
-				command: "command" in event.input ? String(event.input.command) : "",
-				ctx: opts.ctx,
-				signal: abort.signal,
-			})
+			const outcome = await runQueuedPrompt(
+				opts.promptQueue ?? sharedPromptQueue,
+				() =>
+					promptForCompoundApproval({
+						toolName: event.toolName,
+						command: "command" in event.input ? String(event.input.command) : "",
+						ctx: opts.ctx,
+						signal: abort.signal,
+					}),
+				abort.signal,
+			)
 
 			opts.pi.events.emit(PERMISSION_EVENTS.AFTER_DECISION, {
 				toolCallId: event.toolCallId,
@@ -2036,9 +2783,7 @@ export async function handleCompoundConfirm(
 			return { block: true, reason: "Declined by user" }
 		})
 	} finally {
-		unlinkAbort()
-		opts.activeAborts.delete(abort)
-		opts.promptToolCalls.delete(abort)
+		cleanup()
 	}
 }
 
@@ -2070,6 +2815,19 @@ function applyApprovalOutcome(
 		}
 	}
 	return { block: true, reason: "Declined by user" }
+}
+
+/** Resolves after `ms`, or at once when `signal` aborts. Never rejects. */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		const done = () => {
+			clearTimeout(timer)
+			signal?.removeEventListener("abort", done)
+			resolve()
+		}
+		const timer = setTimeout(done, ms)
+		signal?.addEventListener("abort", done, { once: true })
+	})
 }
 
 function linkAbortSignal(signal: AbortSignal | undefined, controller: AbortController): () => void {
