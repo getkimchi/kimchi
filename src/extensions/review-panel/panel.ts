@@ -42,8 +42,23 @@ import type {
 import { ReviewPanelUsageBuffer } from "./usage.js"
 
 const DEFAULT_RECONCILIATION_RESERVE_MS = 120_000
-const DEFAULT_SUBMIT_GRACE_MS = 30_000
-const DEFAULT_CANCELLATION_GRACE_MS = 1_000
+
+/** Process-level smoke tests need a real signal window, not a 30-second wait. */
+function testGraceMs(name: "SUBMIT" | "CANCELLATION", productionMs: number): number {
+	// The opt-in flag is deliberate: production never changes a default merely
+	// because its NODE_ENV happens to be "test", including compiled binaries.
+	if (process.env.KIMCHI_REVIEW_TEST_TIMING !== "1") return productionMs
+	const raw =
+		name === "SUBMIT"
+			? process.env.KIMCHI_REVIEW_TEST_SUBMIT_GRACE_MS
+			: process.env.KIMCHI_REVIEW_TEST_CANCELLATION_GRACE_MS
+	if (raw === undefined) return productionMs
+	const value = Number(raw)
+	return Number.isFinite(value) && value >= 0 ? value : productionMs
+}
+
+const DEFAULT_SUBMIT_GRACE_MS = testGraceMs("SUBMIT", 30_000)
+const DEFAULT_CANCELLATION_GRACE_MS = testGraceMs("CANCELLATION", 1_000)
 const CLEANUP_EXIT_MARGIN_MS = 100
 /** Time protected from reviewers, cancellation and the verifier for final atomic artifacts. */
 export const REVIEW_PANEL_FINAL_WRITE_HEADROOM_MS = 5_000

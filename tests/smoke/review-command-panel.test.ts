@@ -51,7 +51,7 @@ function runPrint(
 	homeDir: string,
 	prompt: string,
 	directories: { contextDir: string; outputDir: string },
-	options: { sessionId?: string; timeoutMs?: number } = {},
+	options: { sessionId?: string; timeoutMs?: number; submitGraceMs?: number } = {},
 ): RunningPrint {
 	const runDir = join(homeDir, "run")
 	const child = spawn(
@@ -82,6 +82,14 @@ function runPrint(
 			cwd: runDir,
 			detached: process.platform !== "win32",
 			env: {
+				...(options.submitGraceMs === undefined
+					? {}
+					: {
+							NODE_ENV: "test",
+							KIMCHI_REVIEW_TEST_TIMING: "1",
+							KIMCHI_REVIEW_TEST_SUBMIT_GRACE_MS: String(options.submitGraceMs),
+							KIMCHI_REVIEW_TEST_CANCELLATION_GRACE_MS: "250",
+						}),
 				PATH: process.env.PATH ?? "",
 				HOME: homeDir,
 				PI_PACKAGE_DIR: PACKAGE_DIR,
@@ -402,6 +410,7 @@ for (const withFinding of [false, true] as const) {
 		try {
 			const running = runPrint(f.homeDir, `/review --manifest ${f.manifestPath} --lens spec`, f.directories, {
 				timeoutMs: 60_000,
+				submitGraceMs: 1_000,
 			})
 			await waitForProbe(
 				() =>

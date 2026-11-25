@@ -940,15 +940,15 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		// verifier in the short reserve window.
 		rmSync(join(contextDir, "comments.json"))
 		const pending = deferred<RunResult>()
-		const deadline = Date.now() + 1000
+		const deadline = Date.now() + 600
 		let progressEvents = 0
 		const result = await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
 				deadline,
-				finalWriteHeadroomMs: 200,
-				submitGraceMs: 250,
-				cancellationGraceMs: 250,
+				finalWriteHeadroomMs: 100,
+				submitGraceMs: 50,
+				cancellationGraceMs: 50,
 				onProgress: () => {
 					progressEvents += 1
 				},
@@ -1018,13 +1018,15 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		const usageEvents: unknown[] = []
 		let abortObserved = false
 		let submitted = false
-		const deadline = Date.now() + 900
+		const deadline = Date.now() + 400
 		const result = await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
 				deadline,
-				finalWriteHeadroomMs: 200,
+				finalWriteHeadroomMs: 50,
 				reconciliationReserveMs: 0,
+				submitGraceMs: 50,
+				cancellationGraceMs: 50,
 				onChildUsage: (usage) => {
 					usageEvents.push(usage)
 				},
@@ -1086,11 +1088,11 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
-				deadline: Date.now() + 700,
-				finalWriteHeadroomMs: 150,
+				deadline: Date.now() + 500,
+				finalWriteHeadroomMs: 50,
 				reconciliationReserveMs: 0,
-				submitGraceMs: 150,
-				cancellationGraceMs: 150,
+				submitGraceMs: 50,
+				cancellationGraceMs: 50,
 				spawnAgent: () => abandoned.promise,
 			}),
 		)
@@ -1198,11 +1200,11 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
-				deadline: Date.now() + 800,
-				finalWriteHeadroomMs: 200,
+				deadline: Date.now() + 600,
+				finalWriteHeadroomMs: 100,
 				reconciliationReserveMs: 0,
-				submitGraceMs: 250,
-				cancellationGraceMs: 250,
+				submitGraceMs: 50,
+				cancellationGraceMs: 50,
 				onChildUsage: (usage) => {
 					usageEvents.push(usage)
 				},
@@ -1321,16 +1323,16 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		const childUsage = createUsageSession()
 		const dropped: ReviewPanelDroppedUsage[] = []
 		let attempted = 0
-		const deadline = Date.now() + 800
+		const deadline = Date.now() + 600
 		await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
 				deadline,
-				finalWriteHeadroomMs: 200,
+				finalWriteHeadroomMs: 100,
 				// Enter reserve inside D so callback latency is isolated from expiry.
-				reconciliationReserveMs: 300,
-				submitGraceMs: 250,
-				cancellationGraceMs: 250,
+				reconciliationReserveMs: 100,
+				submitGraceMs: 50,
+				cancellationGraceMs: 50,
 				onUsageDropped: (usage) => {
 					dropped.push(usage)
 				},
