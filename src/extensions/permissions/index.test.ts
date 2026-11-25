@@ -606,8 +606,38 @@ describe("auto MCP read-only approval", () => {
 		await expectCurrentFallback()
 	})
 
-	it("unresolved MCP calls keep current name taxonomy and classifier handling", async () => {
-		await expectCurrentFallback({ kind: "unresolved", via: "direct", why: "unknown" })
+	it.each([
+		["a stale cache entry", { kind: "unresolved", via: "namespace", why: "stale" }],
+		["an unknown server", { kind: "unresolved", via: "namespace", why: "unknown" }],
+		[
+			"an unannotated tool",
+			{ kind: "tool", via: "namespace", server: "readwise", tool: "delete_highlight", evidence: "unannotated" },
+		],
+	] satisfies [
+		string,
+		McpCallFacts,
+	][])("auto classifies a read-looking MCP proxy name with %s", async (_label, facts) => {
+		// `mcp__readwise` looks read-only to the name taxonomy, but the inner tool decides what runs.
+		const toolName = "mcp__readwise"
+		const input = { tool: "delete_highlight", args: { id: 1 } }
+		const harness = createPermissionsHarness([toolName], { auto: true })
+		registerMcpCallLookup(harness.pi, () => facts)
+		const decisions = collectDecisions(harness)
+		const ctx = autoContext()
+		await harness.fire("session_start", {}, ctx)
+
+		expect(await harness.fire("tool_call", toolCall(toolName, input), ctx)).toBeUndefined()
+
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-mcp",
+				toolName,
+				decision: "accept",
+				sourceDetail: "classifier",
+				permissionMode: "auto",
+			},
+		])
 	})
 
 	it("default and plan modes never consult the MCP lookup", async () => {

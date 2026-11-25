@@ -42,16 +42,19 @@ describe("decideAutoMcpCall", () => {
 		).toEqual({ action: "classify" })
 	})
 
-	it("keeps current handling for unannotated name_convention and resource", () => {
+	it("classifies unannotated tools without name taxonomy", () => {
 		expect(
 			decideAutoMcpCall({
 				kind: "tool",
-				via: "direct",
-				server: "example",
-				tool: "get_item",
+				via: "namespace",
+				server: "readwise",
+				tool: "delete_highlight",
 				evidence: "unannotated",
 			}),
-		).toEqual({ action: "current" })
+		).toEqual({ action: "classify" })
+	})
+
+	it("keeps current handling for name_convention and resource", () => {
 		expect(
 			decideAutoMcpCall({
 				kind: "tool",
@@ -72,10 +75,15 @@ describe("decideAutoMcpCall", () => {
 		).toEqual({ action: "current" })
 	})
 
-	it("keeps current handling for unresolved calls", () => {
-		expect(decideAutoMcpCall({ kind: "unresolved", via: "gateway", why: "unknown" })).toEqual({
-			action: "current",
-		})
+	it.each([
+		"unknown",
+		"ambiguous",
+		"stale",
+		"disabled",
+		"malformed",
+		"action",
+	] as const)("classifies unresolved calls (%s)", (why) => {
+		expect(decideAutoMcpCall({ kind: "unresolved", via: "namespace", why })).toEqual({ action: "classify" })
 	})
 
 	it("keeps current handling for not_mcp calls", () => {

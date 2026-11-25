@@ -374,18 +374,22 @@ This trust is limited in the following ways:
   config hash as the current server definition and its TTL is still valid. A
   cached hint therefore comes from the same configured server as a live
   `tools/list` would.
-- Unknown, ambiguous, stale, and disabled-server calls fall back to the normal
-  auto-mode flow. Tools with `readOnlyHint: false` or no annotations go to the
-  classifier.
+- Unknown, ambiguous, stale, disabled-server and malformed calls go to the
+  classifier. So do tools with `readOnlyHint: false`, an annotations object
+  without the hint, or no annotations and no read-only name. The name taxonomy
+  is not used for these calls, because it would judge the wrapper or server
+  name (`mcp__readwise`) and not the tool that runs.
+- Tools without annotations whose name starts with a read verb, and resource
+  tools, keep the normal auto-mode flow.
 
 The permission hook, the gateway check, and the plan-mode wire names share one
 cached catalog. The catalog is rebuilt when the config, the private catalogs,
 the `stat` of the cache file, or a TTL expiry changes. If the cache file cannot
 be `stat`ed, nothing is reused and every lookup rebuilds. Kimchi refreshes the
 config on each `session_start` in file-backed mode and keeps it in programmatic
-mode. In file-backed mode, if the config source or the session `cwd` changes, MCP calls fall back to
-the normal approval flow until the next reload. Servers added at runtime
-resolve as `unknown` and keep the normal approval flow.
+mode. In file-backed mode, if the config source or the session `cwd` changes, MCP
+calls go to the classifier until the next reload. Servers added at runtime
+resolve as `unknown` and also go to the classifier.
 
 Known limits:
 
