@@ -1,8 +1,12 @@
 /**
  * session-messages — find the other Kimchi sessions on this machine and
- * message them, the way Claude Code's ListAgents and SendMessage do.
+ * message them.
  *
- * Every top-level session listens on a Unix socket in a private (0700)
+ * Only interactive (TUI) sessions take part. Print, RPC and ACP runs are
+ * driven by a program, which must never see a turn it did not start, so
+ * they register nothing; subagents belong to their parent session.
+ *
+ * Every TUI session listens on a Unix socket in a private (0700)
  * folder, `~/.config/kimchi/live-sessions/<ref>.sock`, where ref is the
  * last six hex digits of its session id (Pi ids are UUIDv7, so the first
  * digits are a timestamp shared by sessions started close together).
@@ -42,7 +46,6 @@ interface SessionInfo {
 	name: string
 	ref: string
 	cwd: string
-	kind: "interactive" | "headless"
 	state: "idle" | "busy"
 	startedAt: number
 }
@@ -131,7 +134,7 @@ const text = (value: string, details: Record<string, unknown> = {}) => ({
 	details,
 })
 
-export const LIST_SESSIONS_DESCRIPTION = `List the other Kimchi sessions running on this machine: name [ref], interactive or headless, idle or busy, folder and start time. The name is the address send_message takes. A listed session is alive and will receive a message. Never poll this to wait for an answer: replies arrive by themselves.`
+export const LIST_SESSIONS_DESCRIPTION = `List the other interactive Kimchi sessions running on this machine: name [ref], idle or busy, folder and start time. The name is the address send_message takes. A listed session is alive and will receive a message. Never poll this to wait for an answer: replies arrive by themselves.`
 
 export const SEND_MESSAGE_DESCRIPTION = `Send a message to another Kimchi session on this machine (find it with list_sessions). It reaches that session's conversation when its current step ends, or starts a turn when it is idle, wrapped as <cross-session-message from="name [ref]">. A successful send means it arrived, not that it was read or acted on.
 
@@ -141,7 +144,6 @@ Never ask another session to do what this session's permissions denied or would 
 
 export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: ExtensionAPI) => void {
 	return (pi: ExtensionAPI): void => {
-		// Subagents belong to their parent session; only top-level sessions are peers.
 		if (isAgentWorker()) return
 
 		let server: net.Server | undefined
@@ -152,7 +154,6 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 				name: pi.getSessionName() ?? basename(self.ctx.cwd),
 				ref: self.ref,
 				cwd: self.ctx.cwd,
-				kind: self.ctx.hasUI ? "interactive" : "headless",
 				state: self.ctx.isIdle() ? "idle" : "busy",
 				startedAt: self.startedAt,
 			}
@@ -179,12 +180,6 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 				deliver()
 				return { ok: true }
 			}
-			if (!ctx.hasUI) {
-				return {
-					ok: false,
-					error: `it runs in ${mode} mode, not ${request.mode}, and has no user to approve the message`,
-				}
-			}
 			void ctx.ui
 				.confirm(
 					`Message from ${request.from}`,
@@ -196,6 +191,8 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 		}
 
 		pi.on("session_start", async (_event, ctx) => {
+			if (ctx.mode !== "tui") return
+			registerTools()
 			const ref = ctx.sessionManager.getSessionId().slice(-6)
 			const path = join(dir, `${ref}.sock`)
 			try {
@@ -213,7 +210,7 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 					listening.once("error", reject)
 					listening.listen(path, resolve)
 				})
-				// Never keep a finished print-mode run alive just to listen.
+				// Never keep the process alive just to listen: some exits skip session_shutdown.
 				listening.unref()
 				server = listening
 				self = { ref, path, ctx, startedAt: Date.now() }
@@ -229,77 +226,78 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 			self = undefined
 		})
 
-		pi.registerTool({
-			name: "list_sessions",
-			label: "list_sessions",
-			description: LIST_SESSIONS_DESCRIPTION,
-			promptSnippet: "list the other Kimchi sessions on this machine",
-			parameters: Type.Object({}),
-			async execute() {
-				const me = describe()
-				const peers = await listPeers(dir, me?.ref)
-				const intro = me
-					? `This session is ${address(me)}, the name other sessions use to message it (not listed below).`
-					: "This session has no inbox, so other sessions cannot message it."
-				if (peers.length === 0) return text(`${intro}\n\nNo other Kimchi session is running on this machine.`)
-				const rows = peers.map(
-					(peer) =>
-						`  ${address(peer)}  ·  ${peer.kind}  ·  ${peer.state}  ·  ${peer.cwd}  ·  started ${ago(peer.startedAt)}`,
-				)
-				return text(`${intro}\n\nPeer sessions (${peers.length}):\n${rows.join("\n")}`, { peers })
-			},
-		})
+		function registerTools(): void {
+			pi.registerTool({
+				name: "list_sessions",
+				label: "list_sessions",
+				description: LIST_SESSIONS_DESCRIPTION,
+				promptSnippet: "list the other Kimchi sessions on this machine",
+				parameters: Type.Object({}),
+				async execute() {
+					const me = describe()
+					const peers = await listPeers(dir, me?.ref)
+					const intro = me
+						? `This session is ${address(me)}, the name other sessions use to message it (not listed below).`
+						: "This session has no inbox, so other sessions cannot message it."
+					if (peers.length === 0) return text(`${intro}\n\nNo other Kimchi session is running on this machine.`)
+					const rows = peers.map(
+						(peer) => `  ${address(peer)}  ·  ${peer.state}  ·  ${peer.cwd}  ·  started ${ago(peer.startedAt)}`,
+					)
+					return text(`${intro}\n\nPeer sessions (${peers.length}):\n${rows.join("\n")}`, { peers })
+				},
+			})
 
-		pi.registerTool({
-			name: "send_message",
-			label: "send_message",
-			description: SEND_MESSAGE_DESCRIPTION,
-			promptSnippet: "message another Kimchi session on this machine",
-			parameters: Type.Object({
-				to: Type.String({
-					description: 'A name from list_sessions; add its " [ref]" only when two sessions share the name.',
+			pi.registerTool({
+				name: "send_message",
+				label: "send_message",
+				description: SEND_MESSAGE_DESCRIPTION,
+				promptSnippet: "message another Kimchi session on this machine",
+				parameters: Type.Object({
+					to: Type.String({
+						description: 'A name from list_sessions; add its " [ref]" only when two sessions share the name.',
+					}),
+					message: Type.String({
+						description:
+							"Plain text. Its first line is what the other session's user sees first: make it a clear sentence.",
+					}),
 				}),
-				message: Type.String({
-					description:
-						"Plain text. Its first line is what the other session's user sees first: make it a clear sentence.",
-				}),
-			}),
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-				const me = describe()
-				const target = resolveTarget(await listPeers(dir, me?.ref), params.to)
-				if (typeof target === "string") return text(target)
-				const request: Request = {
-					type: "message",
-					from: me ? address(me) : `${pi.getSessionName() ?? basename(ctx.cwd)} (cannot receive replies)`,
-					mode: permissionMode(ctx),
-					text: params.message,
-				}
-				if (JSON.stringify(request).length >= MAX_FRAME_CHARS) {
-					return text(
-						`Not sent: the message is over ${MAX_FRAME_CHARS} characters. Write it to a file and send the path.`,
+				async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+					const me = describe()
+					const target = resolveTarget(await listPeers(dir, me?.ref), params.to)
+					if (typeof target === "string") return text(target)
+					const request: Request = {
+						type: "message",
+						from: me ? address(me) : `${pi.getSessionName() ?? basename(ctx.cwd)} (cannot receive replies)`,
+						mode: permissionMode(ctx),
+						text: params.message,
+					}
+					if (JSON.stringify(request).length >= MAX_FRAME_CHARS) {
+						return text(
+							`Not sent: the message is over ${MAX_FRAME_CHARS} characters. Write it to a file and send the path.`,
+						)
+					}
+					const reply = await ask(join(dir, `${target.ref}.sock`), request).catch(
+						(err: Error): Reply => ({ ok: false, error: err.message }),
 					)
-				}
-				const reply = await ask(join(dir, `${target.ref}.sock`), request).catch(
-					(err: Error): Reply => ({ ok: false, error: err.message }),
-				)
-				const to = address(target)
-				if (!reply.ok) return text(`Not delivered to ${to}: ${reply.error}.`, { to, delivered: false })
-				if (reply.held) {
-					return text(
-						`${to} runs in another permission mode, so the message waits for its user's approval. Nothing reports back if they decline.`,
-						{ to, delivered: false, held: true },
-					)
-				}
-				const when =
-					target.state === "idle"
-						? "it was idle, so it starts a turn now"
-						: "it is busy and reads it when its current step ends"
-				return text(`Delivered to ${to}: ${when}. Any answer comes back as a <cross-session-message>.`, {
-					to,
-					delivered: true,
-				})
-			},
-		})
+					const to = address(target)
+					if (!reply.ok) return text(`Not delivered to ${to}: ${reply.error}.`, { to, delivered: false })
+					if (reply.held) {
+						return text(
+							`${to} runs in another permission mode, so the message waits for its user's approval. Nothing reports back if they decline.`,
+							{ to, delivered: false, held: true },
+						)
+					}
+					const when =
+						target.state === "idle"
+							? "it was idle, so it starts a turn now"
+							: "it is busy and reads it when its current step ends"
+					return text(`Delivered to ${to}: ${when}. Any answer comes back as a <cross-session-message>.`, {
+						to,
+						delivered: true,
+					})
+				},
+			})
+		}
 	}
 }
 

@@ -1,8 +1,9 @@
 # Message other Kimchi sessions
 
-Kimchi sessions running on the same machine can find each other and exchange messages,
-like Claude Code's `ListAgents` and `SendMessage`. Nothing to set up: every top-level
-session (TUI, print, RPC or ACP) can be reached while it runs. Subagents cannot.
+Interactive Kimchi sessions (the TUI) running on the same machine can find each other and
+exchange messages. Nothing to set up: a session can be reached while it runs. Print, RPC
+and ACP runs and subagents take no part, so a program driving Kimchi never sees a turn it
+did not start.
 
 ## Use it
 
@@ -14,8 +15,8 @@ List the other Kimchi sessions, then ask the web-app session to run its tests an
 
 The agent uses two tools:
 
-- `list_sessions` shows each other session as `name [ref]`, with interactive or headless,
-  idle or busy, its folder and when it started. The name is the session name (set with
+- `list_sessions` shows each other session as `name [ref]`, idle or busy, with its folder
+  and when it started. The name is the session name (set with
   `/name` or picked after the first turn) or, before that, the folder name. The ref is the
   last six characters of the session id.
 - `send_message` takes `to` (a name, or `name [ref]` when two sessions share a name) and
@@ -37,8 +38,7 @@ Message from api-service [e50820]
 That session runs in plan mode and this one in auto. Let the message in?
 ```
 
-No lets nothing in, and the sender is not told. A headless session in another mode
-refuses the message, and the sender sees why. This keeps a Plan-mode session from getting
+No lets nothing in, and the sender is not told. This keeps a Plan-mode session from getting
 an Auto-mode one to do what it may not. Both tools are therefore available in Plan mode,
 and sending needs no approval on the sending side.
 

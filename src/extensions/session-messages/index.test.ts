@@ -22,12 +22,12 @@ function tempDir(): string {
 	return join(dir, "live")
 }
 
-async function startSession(dir: string, options: { id: string; name: string; idle?: boolean; hasUI?: boolean }) {
+async function startSession(dir: string, options: { id: string; name: string; idle?: boolean; mode?: "tui" | "rpc" }) {
 	const harness = createExtensionApi()
 	harness.api.getSessionName = () => options.name
 	createSessionMessagesExtension(dir)(harness.api)
 	const ctx = createContext({
-		hasUI: options.hasUI ?? true,
+		mode: options.mode ?? "tui",
 		cwd: `/work/${options.name}`,
 		isIdle: vi.fn(() => options.idle ?? true),
 		sessionManager: { getSessionId: () => options.id },
@@ -59,7 +59,7 @@ describe("session-messages", () => {
 		expect((statSync(dir).mode & 0o777).toString(8)).toBe("700")
 		const listing = await alpha.run("list_sessions", {})
 		expect(listing).toContain("This session is alpha [aaaaa1]")
-		expect(listing).toContain("beta [bbbbb2]  ·  interactive  ·  busy  ·  /work/beta")
+		expect(listing).toContain("beta [bbbbb2]  ·  busy  ·  /work/beta")
 		expect(listing).not.toContain("alpha [aaaaa1]  ·")
 
 		expect(await alpha.run("send_message", { to: "beta", message: "Run the tests, please." })).toContain(
@@ -107,12 +107,9 @@ describe("session-messages", () => {
 		const dir = tempDir()
 		const strictId = "0190aaaa-0000-7000-8000-00000aaaaaa1"
 		const looseId = "0190aaaa-0000-7000-8000-00000bbbbbb2"
-		const headlessId = "0190aaaa-0000-7000-8000-00000cccccc3"
 		const strict = await startSession(dir, { id: strictId, name: "strict" })
 		const loose = await startSession(dir, { id: looseId, name: "loose" })
-		const headless = await startSession(dir, { id: headlessId, name: "headless", hasUI: false })
 		setPermissionMode(looseId, { mode: "yolo", initiatedBy: "user", source: "runtime" })
-		setPermissionMode(headlessId, { mode: "yolo", initiatedBy: "user", source: "runtime" })
 		try {
 			vi.mocked(loose.ctx.ui.confirm).mockResolvedValue(true)
 			expect(await strict.run("send_message", { to: "loose", message: "Delete the cache." })).toContain(
@@ -123,15 +120,19 @@ describe("session-messages", () => {
 				expect.stringContaining("runs in default mode and this one in yolo"),
 			)
 			await vi.waitFor(() => expect(loose.harness.sendMessage).toHaveBeenCalledTimes(1))
-
-			expect(await strict.run("send_message", { to: "headless", message: "Delete the cache." })).toContain(
-				"Not delivered to headless [ccccc3]: it runs in yolo mode, not default, and has no user to approve the message.",
-			)
-			expect(headless.harness.sendMessage).not.toHaveBeenCalled()
 		} finally {
 			clearPermissionModeEnv(looseId)
-			clearPermissionModeEnv(headlessId)
 		}
+	})
+
+	it("leaves sessions driven by a program out (ACP reports mode rpc)", async () => {
+		const dir = tempDir()
+		const alpha = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000aaaaaa1", name: "alpha" })
+		const driven = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "driven", mode: "rpc" })
+
+		expect(driven.harness.registerTool).not.toHaveBeenCalled()
+		expect(existsSync(join(dir, "bbbbb2.sock"))).toBe(false)
+		expect(await alpha.run("list_sessions", {})).toContain("No other Kimchi session is running on this machine.")
 	})
 
 	it("drops closed sessions and removes sockets left by crashed ones", async () => {
