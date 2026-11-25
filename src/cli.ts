@@ -637,6 +637,9 @@ async function cliMain(): Promise<void> {
 				{ apiKey: currentApiKey ?? "" },
 				{ authPath: loginAuthJsonPath },
 			)
+			// A key stored only in auth.json must drive discovery and reach the
+			// sync below, which otherwise deletes it as stale.
+			if (!currentApiKey && gatewayCredentials.source === "api-key") currentApiKey = gatewayCredentials.token
 			const oauthAccessToken = gatewayCredentials.source === "oauth" ? gatewayCredentials.token : undefined
 			const oauthOrganizationId = gatewayCredentials.source === "oauth" ? gatewayCredentials.organizationId : undefined
 			const rejectedEnvironmentKeyMessage =

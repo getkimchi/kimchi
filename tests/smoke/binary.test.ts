@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { BINARY_PATH, getAgentDir, runBinary } from "./harness.js"
+import { BINARY_PATH, getAgentDir, getModelServerUrl, runBinary } from "./harness.js"
 
 describe("binary smoke tests", () => {
 	it("binary exists and is executable", () => {
@@ -227,6 +227,19 @@ describe("binary smoke tests", () => {
 			} finally {
 				rmSync(stage, { recursive: true, force: true })
 			}
+		})
+
+		it("keeps an API key stored only in the agent dir's auth.json", { timeout: 35_000 }, () => {
+			const stored = { "kimchi-dev": { type: "api_key", key: "smoke-stored-key" } }
+			writeFileSync(join(stageDir, "auth.json"), JSON.stringify(stored))
+
+			runBinary({
+				args: ["-p", "hello"],
+				extraEnv: { KIMCHI_CODING_AGENT_DIR: stageDir, KIMCHI_BASE_URL: getModelServerUrl() },
+				timeoutMs: 30_000,
+			})
+
+			expect(JSON.parse(readFileSync(join(stageDir, "auth.json"), "utf-8"))["kimchi-dev"]).toEqual(stored["kimchi-dev"])
 		})
 
 		it("recomputes a derived dir inherited from another HOME", () => {

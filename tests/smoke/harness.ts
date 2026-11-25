@@ -111,6 +111,11 @@ export function getAgentDir(): string {
 	return join(getTempHome(), ".config", "kimchi", "harness")
 }
 
+/** Base URL of the fake model server, for runs that point KIMCHI_BASE_URL at it. */
+export function getModelServerUrl(): string {
+	return modelServerUrl
+}
+
 /**
  * Ensure the agent config dir exists and return its path.
  */
