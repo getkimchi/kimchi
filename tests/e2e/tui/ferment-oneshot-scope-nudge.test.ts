@@ -17,7 +17,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -28,6 +28,7 @@ test("--ferment-oneshot survives two text-only stops and completes scoping on th
 		terminal,
 		{
 			artifactName: "ferment-oneshot-scope-nudge",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			extraArgs: ["--ferment-oneshot=true"],
 			responses: [

@@ -23,7 +23,7 @@ import {
 	viewText,
 	waitForText,
 } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -94,6 +94,7 @@ test("plan review: model stops after propose, review dialog appears, user confir
 		terminal,
 		{
 			artifactName: "plan-review-confirm",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			responses: [
@@ -118,11 +119,11 @@ test("plan review: model stops after propose, review dialog appears, user confir
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("typed /ferment-legacy")
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			// Stage 3: intent prompt appears.
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
@@ -181,6 +182,7 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 		terminal,
 		{
 			artifactName: "plan-review-cancel",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			responses: [
@@ -216,11 +218,11 @@ test("plan review: cancel restores planning tools, model can re-propose, ferment
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("typed /ferment-legacy")
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			// Stage 3: intent prompt.
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
@@ -294,6 +296,7 @@ test("plan review: existing zero-questions scoping flow still works (no regressi
 		terminal,
 		{
 			artifactName: "plan-review-regression",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			responses: [
@@ -320,11 +323,11 @@ test("plan review: existing zero-questions scoping flow still works (no regressi
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("typed /ferment-legacy")
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			// Stage 3: intent prompt.
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })

@@ -3,7 +3,7 @@
  * under a restricting org policy.
  *
  * Policy allows default + auto (yolo disabled). The user scopes a ferment via
- * /ferment and confirms "Start execution" on the plan review — the gate then
+ * /ferment-legacy and confirms "Start execution" on the plan review — the gate then
  * asks whether to elevate to the highest allowed high mode (auto). Accepting
  * elevates the session to auto and the ferment proceeds; the plan review's
  * "auto" continuation request is honored (not degraded).
@@ -16,7 +16,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -69,7 +69,7 @@ test("ferment gate offers the highest allowed mode and proceeds on accept", asyn
 			// blocks on permission prompts; this scenario needs the session to
 			// start in default so the gate ladder actually asks. envEntries are
 			// appended after the pin, so this override wins.
-			env: { KIMCHI_PERMISSIONS: "default" },
+			env: { ...FERMENT_LEGACY_ENV, KIMCHI_PERMISSIONS: "default" },
 			responses: [
 				{
 					stream: ["I'll outline the scope."],
@@ -92,10 +92,10 @@ test("ferment gate offers the highest allowed mode and proceeds on accept", asyn
 			trace.step("ready prompt visible")
 
 			// Stage 2: start the ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			// Stage 3: intent prompt → submit intent.
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
@@ -153,7 +153,7 @@ test("ferment gate decline runs degraded with manual continuation", async ({ ter
 			// Same policy as the accept scenario: auto is the offered elevation.
 			policy: { modes: { plan: true, default: true, auto: true, yolo: false } },
 			// Start in default so the gate ladder actually asks (see accept test).
-			env: { KIMCHI_PERMISSIONS: "default" },
+			env: { ...FERMENT_LEGACY_ENV, KIMCHI_PERMISSIONS: "default" },
 			responses: [
 				{
 					stream: ["I'll outline the scope."],
@@ -176,10 +176,10 @@ test("ferment gate decline runs degraded with manual continuation", async ({ ter
 			trace.step("ready prompt visible")
 
 			// Stage 2: start the ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			// Stage 3: intent prompt → submit intent.
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
@@ -211,7 +211,7 @@ test("ferment gate decline runs degraded with manual continuation", async ({ ter
 	)
 })
 
-test("plan-only policy refuses /ferment", async ({ terminal }) => {
+test("plan-only policy refuses /ferment-legacy", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -220,7 +220,7 @@ test("plan-only policy refuses /ferment", async ({ terminal }) => {
 			// Only plan is allowed: ferment has no executable mode and must be
 			// refused outright. KIMCHI_PERMISSIONS=default clamps to plan.
 			policy: { modes: { plan: true, default: false, auto: false, yolo: false } },
-			env: { KIMCHI_PERMISSIONS: "default" },
+			env: { ...FERMENT_LEGACY_ENV, KIMCHI_PERMISSIONS: "default" },
 			responses: [{ stream: ["Session ready."] }],
 		},
 		async (_fixture, trace) => {
@@ -229,10 +229,10 @@ test("plan-only policy refuses /ferment", async ({ terminal }) => {
 			trace.step("ready prompt visible")
 
 			// Stage 2: start the ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			// Stage 3: intent prompt → submit intent.
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
@@ -252,16 +252,16 @@ test("plan-only policy refuses /ferment", async ({ terminal }) => {
 	)
 })
 
-// Regression: /ferment new "Title" used to create + activate a ferment without
+// Regression: /ferment-legacy new "Title" used to create + activate a ferment without
 // the isFermentRunnable refusal (only the bare-intent path checked the policy).
-test("plan-only policy refuses /ferment new with an inline title", async ({ terminal }) => {
+test("plan-only policy refuses /ferment-legacy new with an inline title", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "org-policy-ferment-gate-plan-only-new",
 			gitInit: true,
 			policy: { modes: { plan: true, default: false, auto: false, yolo: false } },
-			env: { KIMCHI_PERMISSIONS: "default" },
+			env: { ...FERMENT_LEGACY_ENV, KIMCHI_PERMISSIONS: "default" },
 			responses: [{ stream: ["Session ready."] }],
 		},
 		async (_fixture, trace) => {
@@ -270,16 +270,16 @@ test("plan-only policy refuses /ferment new with an inline title", async ({ term
 			trace.step("ready prompt visible")
 
 			// Stage 2: start a ferment with an inline title (skips the intent prompt).
-			terminal.write('/ferment new "Add a cache layer"')
-			await waitForText(terminal, '/ferment new "Add a cache layer"', { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write('/ferment-legacy new "Add a cache layer"')
+			await waitForText(terminal, '/ferment-legacy new "Add a cache layer"', { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
-			trace.step("ran /ferment new with inline title")
+			trace.step("ran /ferment-legacy new with inline title")
 
 			// Stage 3: the refusal — up front, before anything is created.
 			await waitForText(terminal, "Your organization's policy only allows plan mode", {
 				timeoutMs: STREAM_TIMEOUT_MS,
 			})
-			trace.step("refusal visible — /ferment new refused under a plan-only policy")
+			trace.step("refusal visible — /ferment-legacy new refused under a plan-only policy")
 
 			// Stage 4: no scoping editor prompt and no plan-review dialog.
 			expect(viewText(terminal)).not.toContain("What would you like to ferment?")

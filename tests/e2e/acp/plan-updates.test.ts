@@ -303,7 +303,10 @@ describe("ACP integration — plan updates from todo writes", () => {
 
 	it("mirrors the Ferment phase and step lifecycle through the Todo store", { timeout: 180_000 }, async () => {
 		const previousActiveFerment = process.env.KIMCHI_ACTIVE_FERMENT
+		const previousEnableResources = process.env.KIMCHI_ENABLE_RESOURCES
 		process.env.KIMCHI_ACTIVE_FERMENT = FERMENT_ID
+		// The seeded ferment is a legacy Ferment (V1), which is off by default.
+		process.env.KIMCHI_ENABLE_RESOURCES = "extensions.ferment-legacy"
 		let releasePhaseResponse = () => {}
 		const phaseResponseReady = new Promise<void>((resolve) => {
 			releasePhaseResponse = resolve
@@ -413,6 +416,8 @@ describe("ACP integration — plan updates from todo writes", () => {
 			releasePhaseResponse()
 			if (previousActiveFerment === undefined) Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
 			else process.env.KIMCHI_ACTIVE_FERMENT = previousActiveFerment
+			if (previousEnableResources === undefined) Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+			else process.env.KIMCHI_ENABLE_RESOURCES = previousEnableResources
 		}
 	})
 })

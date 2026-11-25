@@ -8,7 +8,7 @@
  * the `pendingPlanReview` from the in-memory map. Without the fix, the
  * stale entry persists and the dialog re-appears on the next `agent_end`.
  *
- * Both tests share the same `/ferment` entry flow used by
+ * Both tests share the same `/ferment-legacy` entry flow used by
  * `ferment-new-runs-planning.test.ts`, then diverge:
  *   1. Esc dismissal → user types a new turn → dialog must NOT re-appear.
  *   2. Feedback submission → user types feedback → dialog must NOT
@@ -20,7 +20,7 @@ import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -111,6 +111,7 @@ test("plan review dialog does not re-appear after Esc dismissal", async ({ termi
 		terminal,
 		{
 			artifactName: "plan-review-dismissal-esc",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			// Large context window prevents pi-mono's built-in compaction from
 			// firing mid-test and consuming scripted responses.
@@ -139,12 +140,12 @@ test("plan review dialog does not re-appear after Esc dismissal", async ({ termi
 			})
 
 			// Stage 2: enter ferment. Type then Enter separately — one-shot
-			// "/ferment\r" can race startup.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
+			// "/ferment-legacy\r" can race startup.
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("typed /ferment-legacy")
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			// Stage 3: intent prompt appears.
 			await waitForText(terminal, "would you like to ferment", {
@@ -210,7 +211,7 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 			// KIMCHI_REMOTE_RUN=0): the extra "Execute the plan in a remote
 			// workspace" menu option is what Stage 6's three keyDown presses
 			// navigate past.
-			env: { KIMCHI_REMOTE_RUN: "1" },
+			env: { ...FERMENT_LEGACY_ENV, KIMCHI_REMOTE_RUN: "1" },
 			// Large context window prevents pi-mono's built-in compaction from
 			// firing mid-test and consuming scripted responses.
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }],
@@ -238,11 +239,11 @@ test("plan review dialog does not re-appear after feedback", async ({ terminal }
 			})
 
 			// Stage 2: enter ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("typed /ferment-legacy")
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			// Stage 3: intent prompt appears.
 			await waitForText(terminal, "would you like to ferment", {

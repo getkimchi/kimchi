@@ -1,6 +1,6 @@
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -67,7 +67,7 @@ test("todo widget renders global scope with status symbols", async ({ terminal }
  * `modes: ["shared"]` (SHARED_CORE_TOOLS), they should be available in every
  * mode including ferment.
  *
- * This test starts a ferment via `/ferment`, scopes it, and then has the model
+ * This test starts a ferment via `/ferment-legacy`, scopes it, and then has the model
  * call `update_todos` during the ferment. If the tool were not visible, the
  * tool call would be rejected by the runtime and the todo widget would never
  * appear.
@@ -77,6 +77,7 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 		terminal,
 		{
 			artifactName: "todo-widget-ferment-visibility",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			responses: [
 				// Turn 1: orientation text then propose_ferment_scoping.
@@ -157,11 +158,11 @@ test("todo tools are available during ferment execution", async ({ terminal }) =
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment (same entry path as ferment-new-runs-planning).
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("typed /ferment-legacy")
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			// Stage 3: intent prompt appears.
 			await waitForText(terminal, "would you like to ferment", {

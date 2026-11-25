@@ -14,7 +14,7 @@
 
 import { expect, Key, test } from "@microsoft/tui-test"
 import { fullText, viewText, waitForText } from "./support/assertions.js"
-import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -25,6 +25,8 @@ test("plan-only policy hides execution options in the plan review menu", async (
 		terminal,
 		{
 			artifactName: "org-policy-plan-approval-plan-only",
+			// Legacy Ferment on, so its absent "Start as ferment" option is the policy's doing.
+			env: FERMENT_LEGACY_ENV,
 			extraArgs: ["--plan=true"],
 			policy: { modes: { plan: true, default: false, auto: false, yolo: false } },
 			responses: [
@@ -76,7 +78,19 @@ test("plan+default policy releases an approved plan into default mode", async ({
 					stream: [],
 					toolCalls: [{ function: { name: "submit_plan", arguments: JSON.stringify({ plan: PLAN }) } }],
 				},
-				{ stream: ["APPROVED_PLAN_EXECUTION_STARTED"] },
+				// Ferment is on by default, so Execute starts a plan execution run;
+				// blocking it ends the run after the execution turn.
+				{
+					stream: ["APPROVED_PLAN_EXECUTION_STARTED"],
+					toolCalls: [
+						{
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "blocked", reason: "Waiting for review." }),
+							},
+						},
+					],
+				},
 			],
 		},
 		async (fixture, trace) => {
@@ -84,9 +98,13 @@ test("plan+default policy releases an approved plan into default mode", async ({
 			await waitForText(terminal, "Execute the plan", { full: false })
 			trace.step("review menu offers local execution")
 			terminal.keyPress(Key.Enter)
-			await waitForText(terminal, "default → shift+tab", { full: false })
+			// The plan execution footer segment can crowd out the shift+tab hint,
+			// so match the mode with or without it.
+			await waitForText(terminal, "Plan execution started.", { full: false })
+			await waitForText(terminal, /default(?: → shift\+tab)? · basic\b/, { full: false })
 			trace.step("approved plan released plan mode into default")
 			await waitForText(terminal, "APPROVED_PLAN_EXECUTION_STARTED")
+			await waitForText(terminal, "Plan execution blocked.")
 			expect(fullText(terminal)).toContain("Preserve the public API.")
 			expect(
 				fixture.fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions")),

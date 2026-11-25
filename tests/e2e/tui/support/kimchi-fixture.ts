@@ -26,6 +26,8 @@ export const TUI_TEST_CONFIG = { shell: Shell.Bash, rows: 40, columns: 120 } as 
 /** Prompt shown once the TUI is ready for input. */
 export const PROMPT_READY = "ask anything or type / for commands"
 export const PROMPT_PREFIX = "❯ "
+/** Launch env that opts a session into the legacy Ferment (V1), which is off by default. */
+export const FERMENT_LEGACY_ENV = { KIMCHI_ENABLE_RESOURCES: "extensions.ferment-legacy" } as const
 
 // Env from run-tui-e2e.js, else derive from file location (stable regardless of cwd).
 export const REPO_ROOT = process.env.KIMCHI_REPO_ROOT

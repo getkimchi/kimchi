@@ -45,6 +45,22 @@ function stalePlanResponses() {
 	]
 }
 
+// Ferment is on by default, so approving a plan starts a plan execution run.
+// Blocking it ends the run after the execution turn instead of continuing.
+function blockPlanExecution(stream: string) {
+	return {
+		stream: [stream],
+		toolCalls: [
+			{
+				function: {
+					name: "update_ferment_v2",
+					arguments: JSON.stringify({ status: "blocked", reason: "Waiting for the user." }),
+				},
+			},
+		],
+	}
+}
+
 function chatBodies(target: AcpFixture) {
 	return target.fake.requests
 		.filter((request) => request.method === "POST" && request.url.startsWith("/openai/v1/chat/completions"))
@@ -65,7 +81,7 @@ describe("ACP integration — plan review held prompt", () => {
 			fixture = await startAcpFixture({
 				artifactName: "plan-review-execute",
 				extraArgs: ["--plan"],
-				responses: [submitPlanResponse(), { stream: ["Plan executed."] }, { stream: ["follow-up ok"] }],
+				responses: [submitPlanResponse(), blockPlanExecution("Plan executed."), { stream: ["follow-up ok"] }],
 				clientCapabilities: FULL_CAPABILITIES,
 				clientMeta: PI_META,
 			})
@@ -102,7 +118,7 @@ describe("ACP integration — plan review held prompt", () => {
 					toolResponse("bash", { command: "printf 'blocked until reconciliation\\n'" }),
 					toolResponse("mark_todo", { id: 1, status: "completed" }),
 					toolResponse("bash", { command: "printf 'executed\\n'" }),
-					{ stream: ["Plan executed with reconciled todos."] },
+					blockPlanExecution("Plan executed with reconciled todos."),
 				],
 				clientCapabilities: FULL_CAPABILITIES,
 				clientMeta: PI_META,
@@ -120,7 +136,7 @@ describe("ACP integration — plan review held prompt", () => {
 			// carry both the approval and the deferred check-in instruction.
 			const checkinTurn = bodies.findIndex((body) => body.includes("The plan was submitted for review"))
 			expect(checkinTurn).toBe(4)
-			expect(bodies[checkinTurn]).toContain("The user approved the plan")
+			expect(bodies[checkinTurn]).toContain("Implement the approved plan below")
 			expect(bodies[checkinTurn + 1]).toContain("check-in pending (input revision 1)")
 		},
 		PROMPT_TIMEOUT_MS,

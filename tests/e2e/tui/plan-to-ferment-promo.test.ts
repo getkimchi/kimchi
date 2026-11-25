@@ -5,7 +5,7 @@
  *
  * 1. "plan-to-ferment promotion — dropdown UI":
  *    Exercises the START_AS_FERMENT dropdown path end-to-end.
- *    Choosing Start as ferment must trigger the implementation turn without
+ *    Choosing Start as ferment (legacy) must trigger the implementation turn without
  *    another user message.
  *
  * 2. "plan-to-ferment promotion — side effects via submit_plan handler"
@@ -15,9 +15,13 @@
  *    The tool-swap from questionnaire → ask_user is also confirmed via the
  *    recorded request bodies (proxied by the TUI's tool-list rendering).
  *
- * 3. Normal Execute routes an approved plan through the neutral automatic run.
- * 4. Enabling that route does not affect ordinary no-plan work.
- * 5. Disabled V2 preserves legacy Execute without V2 context or status.
+ * 3. Normal Execute routes an approved plan through the neutral automatic run
+ *    (Ferment is on by default).
+ * 4. That default route does not affect ordinary no-plan work.
+ * 5. Disabled Ferment preserves the plain Execute path without Ferment context or status.
+ *
+ * Test 1 drives the legacy Ferment (V1), which is off by default, so it
+ * enables extensions.ferment-legacy for that session only.
  */
 
 import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
@@ -33,12 +37,13 @@ test.use(TUI_TEST_CONFIG)
 // ---------------------------------------------------------------------------
 // Test 1: Dropdown UI and automatic implementation handoff
 // ---------------------------------------------------------------------------
-test("plan-to-ferment promotion — Start as ferment immediately continues execution", async ({ terminal }) => {
+test("plan-to-ferment promotion — Start as ferment (legacy) immediately continues execution", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "plan-to-ferment-promo",
 			gitInit: true,
+			env: { KIMCHI_ENABLE_RESOURCES: "extensions.ferment-legacy" },
 			responses: [
 				{
 					stream: [
@@ -90,15 +95,15 @@ test("plan-to-ferment promotion — Start as ferment immediately continues execu
 			// Stage 3: dropdown appears — all three options must be visible in buffer.
 			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForText(terminal, "Rework the plan", { timeoutMs: INPUT_TIMEOUT_MS })
-			await waitForText(terminal, "Start as ferment", { timeoutMs: INPUT_TIMEOUT_MS })
+			await waitForText(terminal, "Start as ferment (legacy)", { timeoutMs: INPUT_TIMEOUT_MS })
 			trace.step("all three dropdown options visible")
 
-			// Stage 4: navigate to "Start as ferment" (index 2) and select.
+			// Stage 4: navigate to "Start as ferment (legacy)" (index 2) and select.
 			terminal.keyDown()
 			terminal.keyDown()
-			trace.step("navigated to 'Start as ferment'")
+			trace.step("navigated to 'Start as ferment (legacy)'")
 			terminal.keyPress(Key.Enter)
-			trace.step("selected 'Start as ferment'")
+			trace.step("selected 'Start as ferment (legacy)'")
 
 			// Stage 5: dropdown closes — Ferment is running under auto permissions.
 			// Status-line order is now permissions/model first, then ferment, so
@@ -227,7 +232,7 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 	)
 })
 
-test("approved plan Execute starts a neutral named Ferment V2 run when enabled", async ({ terminal }) => {
+test("approved plan Execute starts a neutral named plan execution run by default", async ({ terminal }) => {
 	const planText =
 		"# Streaming parser\n\n## Goal\nImplement a streaming think parser with incremental input and existing API compatibility.\n\n" +
 		"## Constraints\n- Preserve the existing parser API\n\n" +
@@ -238,7 +243,6 @@ test("approved plan Execute starts a neutral named Ferment V2 run when enabled",
 		{
 			artifactName: "approved-plan-execute-ferment-v2",
 			gitInit: true,
-			seedHome: enableFermentV2Mode,
 			responses: [
 				{
 					stream: [planText],
@@ -301,18 +305,19 @@ test("approved plan Execute starts a neutral named Ferment V2 run when enabled",
 			expect(new Set(requests.map((record) => record.workId))).toEqual(new Set([workId]))
 			trace.step("plan approval retained planning work identity automatically, without work commands")
 			await waitForText(terminal, "Plan execution blocked.", { timeoutMs: STREAM_TIMEOUT_MS })
-			expect(fullText(terminal)).not.toContain("Ferment V2 created.")
+			expect(fullText(terminal)).not.toContain("Ferment created.")
 			trace.step("model request carried the approved Markdown and the terminal stayed neutral")
 		},
 	)
 })
 
-test("disabled Ferment V2 keeps approved-plan Execute on the legacy path", async ({ terminal }) => {
+test("disabled Ferment keeps approved-plan Execute on the plain path", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "approved-plan-execute-v2-disabled",
 			gitInit: true,
+			seedHome: disableFerment,
 			extraArgs: ["--plan=true"],
 			responses: [
 				{
@@ -343,17 +348,16 @@ test("disabled Ferment V2 keeps approved-plan Execute on the legacy path", async
 			expect(JSON.stringify(requests)).not.toContain('"name":"update_ferment_v2"')
 			expect(fullText(terminal)).not.toContain("◈")
 			expect(fullText(terminal)).not.toContain("Plan execution started.")
-			trace.step("legacy execution continued with no V2 tools, context, or footer")
+			trace.step("plain execution continued with no Ferment tools, context, or footer")
 		},
 	)
 })
 
-test("enabling automatic plan execution leaves ordinary no-plan work untouched", async ({ terminal }) => {
+test("automatic plan execution leaves ordinary no-plan work untouched", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "ferment-v2-no-approved-plan",
-			seedHome: enableFermentV2Mode,
 			responses: [{ stream: ["This small request is complete without a plan."] }],
 		},
 		async (fixture, trace) => {
@@ -367,15 +371,15 @@ test("enabling automatic plan execution leaves ordinary no-plan work untouched",
 			expect(existsSync(join(fixture.workDir, ".kimchi", "plans"))).toBe(false)
 			expect(chatRequests(fixture.fake.requests)).toHaveLength(1)
 			expect(JSON.stringify(chatRequests(fixture.fake.requests)[0]?.body)).not.toContain("<kimchi_session_ferment_v2>")
-			trace.step("resource opt-in did not synthesize a plan or automatic run")
+			trace.step("default-on Ferment did not synthesize a plan or automatic run")
 		},
 	)
 })
 
-function enableFermentV2Mode(homeDir: string): void {
+function disableFerment(homeDir: string): void {
 	const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 	const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
-	settings.resources = { "extensions.ferment-v2": true }
+	settings.resources = { "extensions.ferment": false }
 	writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8")
 }
 
@@ -399,7 +403,7 @@ function fermentV2Snapshot(request: FakeResponseRequest): {
 } {
 	const context = collectStrings(request.body).find((value) => value.includes("<kimchi_session_ferment_v2>"))
 	const match = context?.match(/<kimchi_session_ferment_v2>\s*(\{[\s\S]*?\})\s*Persistent objective continuation/)
-	if (!match) throw new Error(`No canonical Ferment V2 context found in request: ${JSON.stringify(request.body)}`)
+	if (!match) throw new Error(`No canonical Ferment context found in request: ${JSON.stringify(request.body)}`)
 	return JSON.parse(match[1])
 }
 

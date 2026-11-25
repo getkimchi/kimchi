@@ -1,15 +1,15 @@
 /**
- * E2E TUI test: `/ferment new` runs planning and produces a scoped ferment.
+ * E2E TUI test: `/ferment-legacy new` runs planning and produces a scoped ferment.
  *
  * Flow:
  * 1. Launch TUI without --plan or --ferment-oneshot.
- * 2. User types `/ferment` → intent prompt appears.
+ * 2. User types `/ferment-legacy` → intent prompt appears.
  * 3. User submits "Add a cache layer" as the intent.
  * 4. The fake model responds with a propose_ferment_scoping tool call.
  * 5. The host shows the plan-review dialog ("Proceed with this plan?").
  * 6. User confirms → ferment is scoped with phases.
  *
- * This test covers the `/ferment` entry path (not `--plan` mode and not
+ * This test covers the `/ferment-legacy` entry path (not `--plan` mode and not
  * `--ferment-oneshot`). The `--plan → Start as ferment` path is exercised by
  * `plan-to-ferment-promo.test.ts`; `--ferment-oneshot` by
  * `oneshot-bypasses-dropdown.test.ts`.
@@ -19,7 +19,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -73,7 +73,7 @@ const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
 	],
 })
 
-test("/ferment new runs planning and produces a scoped ferment artifact", async ({ terminal }) => {
+test("/ferment-legacy new runs planning and produces a scoped ferment artifact", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
@@ -82,7 +82,7 @@ test("/ferment new runs planning and produces a scoped ferment artifact", async 
 			// Opt back into the default-on remote run (the fixture pins
 			// KIMCHI_REMOTE_RUN=0) so Stage 5's menu matches the 4-option
 			// list described below.
-			env: { KIMCHI_REMOTE_RUN: "1" },
+			env: { ...FERMENT_LEGACY_ENV, KIMCHI_REMOTE_RUN: "1" },
 			responses: [
 				// Turn 1: emit orientation text first then call propose_ferment_scoping.
 				{
@@ -108,12 +108,12 @@ test("/ferment new runs planning and produces a scoped ferment artifact", async 
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment. Type then Enter separately — one-shot
-			// "/ferment\r" can race startup (ferment-phase-review.test.ts:42-48).
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
+			// "/ferment-legacy\r" can race startup (ferment-phase-review.test.ts:42-48).
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("typed /ferment-legacy")
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			// Stage 3: intent prompt appears.
 			await waitForText(terminal, "would you like to ferment", {

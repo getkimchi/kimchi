@@ -17,7 +17,7 @@
 
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -80,6 +80,7 @@ test("stage compaction makes the next request carry the summary instead of the o
 		terminal,
 		{
 			artifactName: "ferment-stage-compaction-wire-shrink",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			// Large context window: keeps the mid-turn threshold (window − 16,384
 			// = 245,760) above the fake usage (200k) so only the stage drain fires,
@@ -208,10 +209,10 @@ test("stage compaction makes the next request carry the summary instead of the o
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			// Stage 3: intent prompt → submit.
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })

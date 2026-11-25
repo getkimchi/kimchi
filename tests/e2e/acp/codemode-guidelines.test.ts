@@ -18,13 +18,13 @@ const SCENARIOS = [
 		checkPiLeak: false,
 	},
 	{
-		// Regression: codemode's default activation used to ride on ferment's
-		// idle-profile snapshot (applied by ferment's before_agent_start in
-		// every non-worker session). With the ferment resource disabled, no
+		// Regression: codemode's default activation used to ride on the legacy
+		// ferment's idle-profile snapshot (applied by its before_agent_start in
+		// every non-worker session). With the legacy ferment resource disabled, no
 		// profile was ever applied, so the tool — and the Tool Selection rule
 		// conditioned on it — silently vanished.
 		name: "ferment-disabled",
-		settings: { resources: { "extensions.ferment": false } },
+		settings: { resources: { "extensions.ferment-legacy": false } },
 		expectCodemode: true,
 		checkPiLeak: false,
 	},

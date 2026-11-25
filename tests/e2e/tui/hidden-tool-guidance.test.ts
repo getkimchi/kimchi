@@ -1,6 +1,6 @@
 import { expect, test } from "@microsoft/tui-test"
 import { STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -28,6 +28,7 @@ test("hidden Bash rejection guides the next model turn", async ({ terminal }) =>
 		terminal,
 		{
 			artifactName: "hidden-tool-guidance",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			extraArgs: ["--ferment-oneshot=true"],

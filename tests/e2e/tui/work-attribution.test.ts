@@ -7,7 +7,13 @@ import { expect, Key, test } from "@microsoft/tui-test"
 import { check } from "proper-lockfile"
 import { fullText, viewText, waitForText } from "./support/assertions.js"
 import { type FakeResponseRequest, isWorkMatchingRequest } from "./support/fake-openai-server.js"
-import { launchKimchi, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import {
+	FERMENT_LEGACY_ENV,
+	launchKimchi,
+	PROMPT_READY,
+	runKimchiSession,
+	TUI_TEST_CONFIG,
+} from "./support/kimchi-fixture.js"
 import { readWorkNote, readWorkRecords, readWorkSummary, removeWorkNote } from "./support/work-summary.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -297,11 +303,12 @@ test("the next message recovers account tracking after its saved scope is lost",
 	)
 })
 
-test("work that /ferment starts records its account from the first planning request", async ({ terminal }) => {
+test("work that /ferment-legacy starts records its account from the first planning request", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "work-scope-ferment",
+			env: FERMENT_LEGACY_ENV,
 			account,
 			gitInit: true,
 			models,
@@ -309,9 +316,9 @@ test("work that /ferment starts records its account from the first planning requ
 		},
 		async (fixture, trace) => {
 			await waitForText(terminal, PROMPT_READY)
-			// Type then submit separately: a one-shot "/ferment\r" can race startup.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment")
+			// Type then submit separately: a one-shot "/ferment-legacy\r" can race startup.
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy")
 			terminal.submit("")
 			await waitForText(terminal, "would you like to ferment")
 			terminal.submit("Add a cache layer")

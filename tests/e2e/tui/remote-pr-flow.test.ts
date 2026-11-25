@@ -2,7 +2,7 @@
  * E2E TUI test: remote PR-flow dispatch — branch intent capture.
  *
  * Human workflow under test (one flow, two variants):
- *   /ferment → intent → scoping → plan review → "Execute the plan in a
+ *   /ferment-legacy → intent → scoping → plan review → "Execute the plan in a
  *   remote workspace" → BRANCH PICKER appears (the slugified suggestion
  *   from the ferment goal as the first item, then "Custom name…").
  *
@@ -22,7 +22,12 @@
 import { test } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { type RunKimchiSessionOptions, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import {
+	FERMENT_LEGACY_ENV,
+	type RunKimchiSessionOptions,
+	runKimchiSession,
+	TUI_TEST_CONFIG,
+} from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -48,11 +53,11 @@ const PROPOSE_SCOPING_PAYLOAD = JSON.stringify({
 	],
 })
 
-/** Drive the shared prefix: /ferment → intent → review dialog → remote workspace choice → branch picker. */
+/** Drive the shared prefix: /ferment-legacy → intent → review dialog → remote workspace choice → branch picker. */
 async function driveToBranchPrompt(terminal: Terminal): Promise<void> {
 	await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
-	terminal.write("/ferment")
-	await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
+	terminal.write("/ferment-legacy")
+	await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
 	terminal.submit("")
 	await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
 	terminal.submit("Fix the login redirect")
@@ -72,7 +77,7 @@ const SESSION_OPTIONS: RunKimchiSessionOptions = {
 	// Opt back into remote run (the fixture pins KIMCHI_REMOTE_RUN=0).
 	// Point the cloud endpoints at an unroutable address so the spawn
 	// failure is immediate + deterministic, and hermetic.
-	env: { KIMCHI_REMOTE_RUN: "1", KIMCHI_REMOTE_ENDPOINT: "http://127.0.0.1:1" },
+	env: { ...FERMENT_LEGACY_ENV, KIMCHI_REMOTE_RUN: "1", KIMCHI_REMOTE_ENDPOINT: "http://127.0.0.1:1" },
 	models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 }],
 	responses: [
 		// Turn 1: model proposes scoping; the review dialog appears.
