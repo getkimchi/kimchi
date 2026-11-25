@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { inflateSync } from "node:zlib"
 import { SKIPPED_TUI_TESTS } from "../tests/e2e/tui/skip-list.js"
+import { writeTuiAllureResult } from "./tui-allure-results.js"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const tuiCwd = resolve(repoRoot, "tests/e2e/tui")
@@ -58,19 +59,25 @@ if (debugEnabled) {
 
 process.exit(status)
 
-function runTui(runArgs) {
+function runTui(runArgs, stem) {
+	const start = Date.now()
 	const result = spawnSync(tuiTest, runArgs, { cwd: tuiCwd, stdio: "inherit", env })
+	const stop = Date.now()
+	const status = result.status ?? 1
+	if (stem && process.env.ALLURE_RESULTS) {
+		writeTuiAllureResult({ resultsDir: process.env.ALLURE_RESULTS, stem, exitCode: status, start, stop })
+	}
 	if (result.error) {
 		console.error(result.error)
 		process.exit(1)
 	}
-	return result.status ?? 1
+	return status
 }
 
 function runEach(stems) {
 	let status = 0
 	for (const stem of stems) {
-		const code = runTui([...args, stem])
+		const code = runTui([...args, stem], stem)
 		if (code !== 0) status = code
 	}
 	return status
