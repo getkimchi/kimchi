@@ -1,9 +1,14 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
-import { readReportingState as barrelReadReportingState, queueSnapshots } from "@getkimchi/kimchi-bridge/reconcile"
+import {
+	readReportingState as barrelReadReportingState,
+	setReportingEnabled as barrelSetReportingEnabled,
+	queueSnapshots,
+} from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { readPrReportingConsent, writePrReportingConsent } from "../../config.js"
 import { INFRA_BREAKER_THRESHOLD_ENV } from "../../upstream-retry-patch.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -21,7 +26,11 @@ installKimchiHostPorts()
 // Wrap the state read so the blocked-read test can gate it without touching the queue.
 vi.mock("@getkimchi/kimchi-bridge/reconcile", async (original) => {
 	const actual = await original<typeof import("@getkimchi/kimchi-bridge/reconcile")>()
-	return { ...actual, readReportingState: vi.fn(actual.readReportingState) }
+	return {
+		...actual,
+		readReportingState: vi.fn(actual.readReportingState),
+		setReportingEnabled: vi.fn(actual.setReportingEnabled),
+	}
 })
 
 vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
@@ -38,6 +47,10 @@ let directory: string
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "kimchi-reporting-extension-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", directory)
+	// The isolated home is shared by the whole file; start each test unmigrated.
+	const configPath = join(homedir(), ".config", "kimchi", "config.json")
+	mkdirSync(join(homedir(), ".config", "kimchi"), { recursive: true })
+	writeFileSync(configPath, "{}")
 	vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
 	// CI runners set these; each test opts into automation explicitly.
 	for (const name of [...CI_VARIABLES, "KIMCHI_PR_COST_REPORTING", INFRA_BREAKER_THRESHOLD_ENV]) vi.stubEnv(name, "")
@@ -299,5 +312,86 @@ describe("optional PR reporting", () => {
 		} finally {
 			mode.acp = false
 		}
+	})
+})
+
+describe("config-owned PR reporting consent", () => {
+	it("writes the config choice before the legacy state write", async () => {
+		vi.mocked(barrelSetReportingEnabled).mockRejectedValueOnce(new Error("queue locked"))
+		const api = createExtensionApi()
+		reportingExtension(api.api)
+		const commandCtx = createCommandContext()
+		await api.getRegisteredCommand("pr-reporting").handler("off", commandCtx)
+		expect(commandCtx.ui.notify).toHaveBeenCalledWith(
+			"PR reporting state could not be saved or read. Existing reports were retained.",
+			"warning",
+		)
+		// The opt-out is durable in config even though the legacy state write failed.
+		expect(readPrReportingConsent()).toBe("off")
+		expect((await readReportingState(directory)).enabled).toBe(true)
+	})
+
+	it("shows the legacy state before any choice and the config value after one", async () => {
+		const api = createExtensionApi()
+		reportingExtension(api.api)
+		const command = api.getRegisteredCommand("pr-reporting")
+		// No session_start ran: the config key is absent, so the legacy state is the source.
+		const legacyCtx = createCommandContext()
+		await command.handler("status", legacyCtx)
+		expect(legacyCtx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Enabled (SaaS default)"), "info")
+		await command.handler("off", createCommandContext())
+		const configCtx = createCommandContext()
+		await command.handler("status", configCtx)
+		expect(configCtx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Disabled (from config)"), "info")
+	})
+
+	it("seeds a telemetry-following queue from the legacy state on session start", async () => {
+		const ctx = createContext()
+		const api = trackedApi(() => ctx)
+		reportingExtension(api.api)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+		expect(readPrReportingConsent()).toBe("follow-telemetry")
+	})
+
+	it("seeds an explicit legacy opt-out as off", async () => {
+		await setReportingEnabled(directory, false)
+		const ctx = createContext()
+		const api = trackedApi(() => ctx)
+		reportingExtension(api.api)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+		expect(readPrReportingConsent()).toBe("off")
+	})
+
+	it("seeds an explicit legacy opt-in as on", async () => {
+		await setReportingEnabled(directory, true)
+		const ctx = createContext()
+		const api = trackedApi(() => ctx)
+		reportingExtension(api.api)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+		expect(readPrReportingConsent()).toBe("on")
+	})
+
+	it("does not reseed when the config already owns the choice", async () => {
+		writePrReportingConsent("on")
+		const ctx = createContext()
+		const api = trackedApi(() => ctx)
+		reportingExtension(api.api)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+		expect(readPrReportingConsent()).toBe("on")
+	})
+
+	it("does not throw on an unreadable legacy state and leaves the key absent", async () => {
+		await setReportingEnabled(directory, true)
+		writeFileSync(join(directory, "pr-cost-reporting", "state.json"), "{broken")
+		const error = vi.spyOn(console, "error").mockImplementation(() => {})
+		const ctx = createContext()
+		const api = trackedApi(() => ctx)
+		reportingExtension(api.api)
+		await expect(
+			api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx),
+		).resolves.toBeUndefined()
+		expect(readPrReportingConsent()).toBeUndefined()
+		expect(error).toHaveBeenCalled()
+		error.mockRestore()
 	})
 })

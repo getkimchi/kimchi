@@ -284,3 +284,30 @@ describe("one-time limit notices", () => {
 		])
 	})
 })
+
+describe("PR reporting consent row", () => {
+	it("keeps the legacy state as the source while the config key is absent", () => {
+		const legacy = statusText(state([], { enabled: true, followsTelemetry: true }), undefined, now)
+		expect(legacy.text).toContain("PR reporting   Enabled (SaaS default)")
+		const explicit = statusText(state([], { enabled: false, followsTelemetry: undefined }), undefined, now)
+		expect(explicit.text).toContain("PR reporting   Disabled (explicit choice)")
+	})
+
+	it("shows the config-owned choice with its source once the key exists", () => {
+		expect(
+			statusText(state([], { enabled: true }), undefined, now, [], { value: "on", telemetryEnabled: false }).text,
+		).toContain("PR reporting   Enabled (from config)")
+		expect(
+			statusText(state([], { enabled: true }), undefined, now, [], { value: "off", telemetryEnabled: true }).text,
+		).toContain("PR reporting   Disabled (from config)")
+	})
+
+	it("resolves a follow-telemetry choice to the effective telemetry state", () => {
+		expect(
+			statusText(state([]), undefined, now, [], { value: "follow-telemetry", telemetryEnabled: true }).text,
+		).toContain("PR reporting   Enabled (from config, follows telemetry)")
+		expect(
+			statusText(state([]), undefined, now, [], { value: "follow-telemetry", telemetryEnabled: false }).text,
+		).toContain("PR reporting   Disabled (from config, follows telemetry)")
+	})
+})

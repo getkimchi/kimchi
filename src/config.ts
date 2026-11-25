@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
-import { writeJson } from "./config/json.js"
+import { readJson, writeJson } from "./config/json.js"
 import { isProjectScopeAllowed } from "./project-scope-trust.js"
 import {
 	DEFAULT_REGION,
@@ -1352,6 +1352,44 @@ export function writeTelemetryEnabled(enabled: boolean, configPath?: string): vo
 		if (t.enabled !== enabled) t.consentVersion = randomUUID()
 		t.enabled = enabled
 		raw.telemetry = t
+	})
+}
+
+/** The user's PR-cost reporting choice, owned by the global config.json. */
+export type PrReportingConsent = "on" | "off" | "follow-telemetry"
+
+/**
+ * Read the `prReporting` consent key. An absent key means the choice has not
+ * been migrated or chosen yet (`undefined`, never a silent default). A config
+ * that cannot be read or holds an invalid value fails toward privacy: the
+ * error is logged and "off" is returned, so reporting never continues without
+ * readable consent.
+ */
+export function readPrReportingConsent(configPath?: string): PrReportingConsent | undefined {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	let raw: Record<string, unknown>
+	try {
+		raw = readJson(path)
+	} catch (error) {
+		console.error(
+			`kimchi: could not read PR reporting consent from ${path}: ${error instanceof Error ? error.message : String(error)}`,
+		)
+		return "off"
+	}
+	const value = raw.prReporting
+	if (value === "on" || value === "off" || value === "follow-telemetry") return value
+	if (value !== undefined) {
+		console.error(`kimchi: invalid prReporting value in ${path}; treating PR reporting as off`)
+		return "off"
+	}
+	return undefined
+}
+
+/** Persist the `prReporting` consent key in the global config.json. */
+export function writePrReportingConsent(value: PrReportingConsent, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		raw.prReporting = value
 	})
 }
 

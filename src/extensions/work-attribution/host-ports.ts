@@ -2,7 +2,7 @@ import { resolve } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { type HostPorts, setDefaultHostPorts } from "@getkimchi/kimchi-bridge/reconcile"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
-import { loadConfig, readGitToken, resolveEndpoints } from "../../config.js"
+import { loadConfig, readGitToken, readPrReportingConsent, resolveEndpoints } from "../../config.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import { readE2eSeam } from "../e2e-seam.js"
@@ -36,6 +36,9 @@ const BRIDGE_E2E_SEAMS = new Set(["KIMCHI_E2E_COST_REPORT_REFRESH_MS"])
  *   gateway URLs against exactly these bases).
  * - `orgPolicy().resourceEnabled(id)` is `isResourceEnabled(id)`.
  * - `telemetryConsent()` is `isTelemetryEnabled()`.
+ * - `reportingConsent()` is `readPrReportingConsent()` — a live read of the config-owned
+ *   `prReporting` key (undefined while unmigrated; "off" when the config is unreadable),
+ *   never a cached value, so an explicit `/pr-reporting off` applies to the next read.
  * - `metric(m)` is `trackPRCostMetric(m)`.
  * - `fetch` is the global instrumented fetch (installGlobalFetchInstrumentation
  *   patches it before any reconcile code runs).
@@ -65,6 +68,7 @@ export function kimchiHostPorts(): HostPorts {
 		endpoints: (cwd) => resolveEndpoints({ cwd }),
 		orgPolicy: () => ({ resourceEnabled: (id) => isResourceEnabled(id) }),
 		telemetryConsent: isTelemetryEnabled,
+		reportingConsent: () => readPrReportingConsent(),
 		metric: trackPRCostMetric,
 		fetch: (input, init) => fetch(input, init),
 	}

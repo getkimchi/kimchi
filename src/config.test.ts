@@ -23,6 +23,7 @@ import {
 	readClaudeCodeInstructionsNoticeSeenAt,
 	readGitToken,
 	readHideTips,
+	readPrReportingConsent,
 	readStudioOnboardingSeenAt,
 	readTelemetryConfig,
 	readTeleportCompactHintEnabled,
@@ -36,6 +37,7 @@ import {
 	writeGitToken,
 	writeHideTips,
 	writeLanguage,
+	writePrReportingConsent,
 	writeSessionModeWizardSeenAt,
 	writeStudioOnboardingSeenAt,
 	writeTelemetryEnabled,
@@ -2078,5 +2080,55 @@ describe("memoryExtraction config parsing", () => {
 
 		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }))
 		expect(loadConfig({ configPath }).memoryExtraction).toBeUndefined()
+	})
+})
+
+describe("PR reporting consent", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-pr-reporting-consent-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+		vi.restoreAllMocks()
+	})
+
+	it("round-trips each persisted choice", () => {
+		for (const value of ["on", "off", "follow-telemetry"] as const) {
+			writePrReportingConsent(value, configPath)
+			expect(readPrReportingConsent(configPath)).toBe(value)
+			expect(JSON.parse(readFileSync(configPath, "utf-8")).prReporting).toBe(value)
+		}
+	})
+
+	it("returns undefined while the key is absent, including for a missing config", () => {
+		writeFileSync(configPath, JSON.stringify({ telemetry: { enabled: false } }))
+		expect(readPrReportingConsent(configPath)).toBeUndefined()
+		expect(readPrReportingConsent(join(tempDir, "absent.json"))).toBeUndefined()
+	})
+
+	it("keeps other config keys when writing the choice", () => {
+		writeFileSync(configPath, JSON.stringify({ telemetry: { enabled: true }, deviceId: "device" }))
+		writePrReportingConsent("off", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw).toEqual({ telemetry: { enabled: true }, deviceId: "device", prReporting: "off" })
+	})
+
+	it("fails toward off and logs when the config is unreadable", () => {
+		writeFileSync(configPath, "{not json")
+		const error = vi.spyOn(console, "error").mockImplementation(() => {})
+		expect(readPrReportingConsent(configPath)).toBe("off")
+		expect(error).toHaveBeenCalledOnce()
+	})
+
+	it("fails toward off and logs when the stored value is invalid", () => {
+		writeFileSync(configPath, JSON.stringify({ prReporting: "maybe" }))
+		const error = vi.spyOn(console, "error").mockImplementation(() => {})
+		expect(readPrReportingConsent(configPath)).toBe("off")
+		expect(error).toHaveBeenCalledOnce()
 	})
 })

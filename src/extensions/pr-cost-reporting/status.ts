@@ -8,6 +8,7 @@ import {
 	type ReportingState,
 	type ServerLimit,
 } from "@getkimchi/kimchi-bridge/reconcile"
+import type { PrReportingConsent } from "../../config.js"
 
 const name = (repository: ReportingRepository) => repository.name ?? `${repository.host} repository ${repository.id}`
 const formatCount = (count: number) => count.toLocaleString("en-US")
@@ -66,16 +67,24 @@ const row = (label: string, ...values: string[]) =>
 const wrap = (text: string, first: string) =>
 	wrapTextWithAnsi(text, WIDTH - 2).map((line, index) => `${index ? "  " : first}${line}`)
 
+/** The config-owned consent choice, with telemetry's effective state resolved by the caller. */
+export interface ReportingConsentView {
+	value: PrReportingConsent
+	telemetryEnabled: boolean
+}
+
 /**
  * The `/pr-reporting status` text. `skipReason` describes this session, not the saved choice. Server limits and
  * delivery problems come first and make it a warning; skipped history alone is information, because the other
- * requests still report.
+ * requests still report. `consent` is the config-owned choice once it exists — the state.json value it replaced
+ * stays the display source until then.
  */
 export function statusText(
 	state: ReportingState,
 	skipReason: string | undefined,
 	now = Date.now(),
 	outbox: ReturnType<typeof readOutboxStatus> = [],
+	consent?: ReportingConsentView,
 ): { text: string; warning: boolean } {
 	const events = outbox.reduce(
 		(total, status) => ({
@@ -129,7 +138,13 @@ export function statusText(
 		[
 			...row(
 				"PR reporting",
-				`${state.enabled ? "Enabled" : "Disabled"} (${state.followsTelemetry ? "SaaS default" : "explicit choice"})`,
+				!consent
+					? `${state.enabled ? "Enabled" : "Disabled"} (${state.followsTelemetry ? "SaaS default" : "explicit choice"})`
+					: consent.value === "on"
+						? "Enabled (from config)"
+						: consent.value === "off"
+							? "Disabled (from config)"
+							: `${consent.telemetryEnabled ? "Enabled" : "Disabled"} (from config, follows telemetry)`,
 			),
 			...(skipReason ? row("This session", "No uploads; local attribution continues", `Reason: ${skipReason}`) : []),
 			...row(
