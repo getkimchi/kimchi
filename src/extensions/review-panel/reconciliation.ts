@@ -16,6 +16,10 @@ import {
 	type SemanticReconciliation,
 } from "./types.js"
 
+export class ReconciliationInvocationError extends Error {
+	override readonly name = "ReconciliationInvocationError"
+}
+
 function object(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
 }

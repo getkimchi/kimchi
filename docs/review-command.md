@@ -43,6 +43,13 @@ partial coverage, removes owned worktrees and the snapshot ref, and only then
 returns. ACP releases the prompt with `stopReason: "cancelled"`; TUI displays the
 partial result before returning control.
 
+Plan/read-only sessions retain full in-context review capability. The three
+submit tools and `submit_reconciliation` write coordinator-owned output (or returns
+structured results) and are accepted specially by the worker permission gate;
+they do not create or modify worktree source files or run scripts. `run_review_*`,
+`bash`, and ordinary `write`/`edit` remain denied in Plan mode. In particular,
+Plan does not suppress findings or summaries behind ordinary approval prompts.
+
 ## Trusted settings
 
 An optional `review` object in Pi's merged, trust-gated user or project settings

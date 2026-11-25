@@ -18,6 +18,18 @@ export const REVIEW_CHECK_TOOL = "run_review_check"
 export const REVIEW_COMMAND_TOOL = "run_review_command"
 export const REVIEW_COMMAND_OUTPUT_LIMIT = 32 * 1024
 
+const REVIEW_RESULT_SUBMISSION_TOOLS = new Set([
+	"submit_finding",
+	"submit_summary",
+	"submit_reply",
+	"submit_reconciliation",
+])
+
+/** Result-only tools owned by the review coordinator, never arbitrary worktree or script writes. */
+export function isReviewResultSubmissionTool(toolName: string): boolean {
+	return REVIEW_RESULT_SUBMISSION_TOOLS.has(toolName)
+}
+
 export type ReviewExecutionMode = "local" | "headless"
 export type ReviewApprovalKind = "direct-install" | "online-rerun" | "offline-unavailable"
 export type ReviewApprovalStatus = "approved" | "declined" | "unavailable" | "aborted"

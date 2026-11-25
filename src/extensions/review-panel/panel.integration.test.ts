@@ -271,6 +271,33 @@ function defaultScript(call: ScriptCall): ScriptTurn {
 	return { text: `${call.agent} complete` }
 }
 
+function reconciliationToolArguments(_requestPath: string, alias?: "action" | "decision") {
+	return {
+		schema_version: "review-reconciliation/v1",
+		findings: [
+			{
+				id: "changed-export",
+				path: "value.ts",
+				line: 2,
+				severity: "warning",
+				type: "bug",
+				description: "The changed export introduces a concrete correctness regression.",
+				suggestion: "Add the missing guard and cover the changed path.",
+				candidate_ids: ["spec-1"],
+			},
+		],
+		decisions: [
+			{
+				candidate_id: "spec-1",
+				...(alias ? { [alias]: "retained" } : { disposition: "retained" }),
+				finding: "changed-export",
+				reason: "Independent candidate in the scripted fixture.",
+			},
+		],
+		threads: [],
+	}
+}
+
 function deferred<T>() {
 	let resolve!: (value: T | PromiseLike<T>) => void
 	let reject!: (reason?: unknown) => void
@@ -541,6 +568,138 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(wrapped.state.contextDir).toBe(initial.state.contextDir)
 		expect(wrapped.state.scope.checkoutPath).toBe(initial.state.scope.checkoutPath)
 		expect(readFileSync(reviewPanelPaths(outputDir).findingsPath, "utf8")).toBe(findingsBefore)
+	})
+
+	it("allows Plan-mode result submissions while denying write and Bash tools", async () => {
+		const { ctx, requests } = await scriptedContext((call) => {
+			if (call.agent !== "reconciliation" && call.turn === 2) {
+				return {
+					toolCalls: [
+						{ name: "write", arguments: { path: "temporary.test.ts", content: "must not be written" } },
+						{
+							name: "bash",
+							arguments: {
+								command: 'node -e \'require("node:fs").writeFileSync("temporary-bash.test.ts", "blocked")\'',
+							},
+						},
+					],
+				}
+			}
+			if (call.agent !== "reconciliation" && call.turn === 3) {
+				return {
+					toolCalls: [
+						{ name: "submit_summary", arguments: { body: "Plan submissions completed", environment_gaps: [] } },
+					],
+				}
+			}
+			return defaultScript(call)
+		})
+		const result = await runReviewPanel(runOptions(ctx, await target(), { lenses: ["spec"] }))
+		expect(result.state.lenses[0]?.status).toBe("submitted")
+		expect(result.summary?.coverage?.status).toBe("complete")
+		expect(result.findings).toHaveLength(1)
+		expect(JSON.stringify(requests)).toContain("temporary.test.ts")
+		expect(JSON.stringify(requests)).toContain("temporary-bash.test.ts")
+		expect(existsSync(join(repo, "temporary.test.ts"))).toBe(false)
+		expect(existsSync(join(repo, "temporary-bash.test.ts"))).toBe(false)
+	})
+
+	it("repairs disposition naming through submit_reconciliation and ends reconciled", async () => {
+		const calls: string[] = []
+		const { ctx, requests } = await scriptedContext((call) => {
+			if (call.agent === "reconciliation") {
+				const path = /Inspect (\S+), the pinned code/.exec(JSON.stringify(call.context.messages))?.[1]
+				expect(path).toBeDefined()
+				calls.push(JSON.stringify(call.context.messages))
+				if (calls.length === 1) {
+					return { text: JSON.stringify(reconciliationToolArguments(path ?? "", "decision")) }
+				}
+				if (calls.length === 2) {
+					return { toolCalls: [{ name: "submit_reconciliation", arguments: reconciliationToolArguments(path ?? "") }] }
+				}
+				return { text: "Reconciliation repair complete" }
+			}
+			return defaultScript(call)
+		})
+		const result = await runReviewPanel(runOptions(ctx, await target(), { lenses: ["spec"], agent: { model } }))
+		expect(result.state.reconciliation.status).toBe("reconciled")
+		expect(requests.filter((request) => request.agent === "reconciliation")).toHaveLength(3)
+		expect(calls[calls.length - 1]).toContain("previous result failed strict validation")
+	})
+
+	it("retains fallback and both reasons when the repaired decision is invalid again", async () => {
+		let calls = 0
+		const { ctx, requests } = await scriptedContext((call) => {
+			if (call.agent === "reconciliation") {
+				calls += 1
+				const path = /Inspect (\S+), the pinned code/.exec(JSON.stringify(call.context.messages))?.[1]
+				if (calls === 1) return { text: JSON.stringify(reconciliationToolArguments(path ?? "", "decision")) }
+				if (calls === 2) {
+					return {
+						toolCalls: [
+							{ name: "submit_reconciliation", arguments: reconciliationToolArguments(path ?? "", "decision") },
+						],
+					}
+				}
+				return { text: "Invalid repair complete" }
+			}
+			return defaultScript(call)
+		})
+		const result = await runReviewPanel(runOptions(ctx, await target(), { lenses: ["spec"], agent: { model } }))
+		expect(result.state.reconciliation.status).toBe("fallback")
+		expect(result.state.reconciliation.reason).toContain("Initial reconciliation failed validation")
+		expect(result.state.reconciliation.reason).toContain("repair rejected or unavailable")
+		expect(result.state.reconciliation.reason).toContain("contains unsupported field decision")
+		expect(requests.filter((request) => request.agent === "reconciliation")).toHaveLength(3)
+	})
+
+	it("does not attempt reconciliation repair outside its window", async () => {
+		let verifierCalls = 0
+		const { ctx } = await scriptedContext(defaultScript)
+		const deadline = Date.now() + 1_000
+		const result = await runReviewPanel(
+			runOptions(ctx, await target(), {
+				lenses: ["spec"],
+				deadline,
+				finalWriteHeadroomMs: 0,
+				reconciliationReserveMs: 0,
+				submitGraceMs: 0,
+				cancellationGraceMs: 0,
+				spawnAgent: async ({ options }) => {
+					if (options.description === "Review writer reconciliation") {
+						verifierCalls += 1
+						await waitForDelay(1_100, options.signal)
+						return {
+							...completedRunResult(),
+							responseText: JSON.stringify({
+								schema_version: "review-reconciliation/v1",
+								findings: [],
+								decisions: [{ candidate_id: "spec-1", decision: "retained", finding: "bad", reason: "bad" }],
+								threads: [],
+							}),
+						}
+					}
+					await submitFinding(
+						{
+							path: "value.ts",
+							line: 2,
+							severity: "warning",
+							type: "bug",
+							description: "A valid candidate forces reconciliation while repair remains impossible.",
+							suggestion: "Preserve the deterministic fallback outside the repair window.",
+						},
+						{ writer: "spec", contextDir, outputDir },
+					)
+					return completedRunResult()
+				},
+			}),
+		)
+
+		expect(result.state.reconciliation.status).toBe("fallback")
+		expect(result.state.reconciliation.reason).toContain(
+			"Semantic verifier did not settle within the reconciliation window",
+		)
+		expect(verifierCalls).toBe(1)
 	})
 
 	it("stops queued launches at reserve, cancels active reviewers after grace, and stabilizes two wrap-ups", async () => {

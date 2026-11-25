@@ -30,6 +30,7 @@ import {
 	readFindingWriter,
 	reviewPanelPaths,
 } from "./output.js"
+import { ReconciliationInvocationError } from "./reconciliation.js"
 import { assertReviewPanelIdentity, createInitialPanelState, progressFor, ReviewPanelStateStore } from "./state.js"
 import type {
 	ReviewPanelModelOptions,
@@ -176,42 +177,55 @@ function verifierCall(
 		signal?: AbortSignal
 		respectSignal: boolean
 	},
-): { hasVerifier: boolean; reconcile?: () => Promise<string> } {
+): { hasVerifier: boolean; reconcile?: (validationErrors?: string) => Promise<unknown> } {
+	const windowEnd = options.deadline === undefined ? Date.now() + 120_000 : options.deadline - options.headroomMs
 	const available = options.deadline === undefined || options.deadline - Date.now() > options.headroomMs
 	if (!available || options.signal?.aborted) return { hasVerifier: false }
 	return {
 		hasVerifier: true,
-		reconcile: async () => {
-			const remaining = options.deadline === undefined ? 120_000 : options.deadline - Date.now() - options.headroomMs
-			if (remaining <= 0) throw new Error("The reconciliation reserve has no verifier time remaining.")
-			const timeout = new AbortController()
-			const signal =
-				options.respectSignal && options.signal ? AbortSignal.any([timeout.signal, options.signal]) : timeout.signal
-			const requestPath = reviewPanelPaths(context.outputDir).reconciliationRequestPath
-			const hasThreads = await exists(join(context.store.state.contextDir, "comments.json"))
-			const verification = context.runner.spawnVerifier({
-				id: "reconciliation",
-				type: "General-Purpose",
-				prompt: buildVerifierPrompt(requestPath, hasThreads),
-				signal,
-				agent: {
-					...childAgentOptions(options.agent, "reconciliation", context.usage),
-					maxDuration: Math.max(1, Math.floor(remaining / 1000)),
-				},
-			})
-			const outcome = await raceWithTimeout(
-				verification.then((result) => ({ kind: "settled" as const, result })),
-				remaining,
-				{ kind: "timeout" as const },
-				() => timeout.abort(),
-			)
-			if (outcome.kind === "timeout") {
-				context.runner.cancelReviewer("reconciliation", new Error("Semantic verifier settlement window expired"))
-				throw new Error("Semantic verifier did not settle within the reconciliation window; using fallback.")
+		reconcile: async (validationErrors?: string) => {
+			try {
+				const remaining = windowEnd - Date.now()
+				if (remaining <= 0) {
+					throw new ReconciliationInvocationError(
+						"The reconciliation reserve has no verifier time remaining for a repair attempt.",
+					)
+				}
+				const timeout = new AbortController()
+				const signal =
+					options.respectSignal && options.signal ? AbortSignal.any([timeout.signal, options.signal]) : timeout.signal
+				const requestPath = reviewPanelPaths(context.outputDir).reconciliationRequestPath
+				const hasThreads = await exists(join(context.store.state.contextDir, "comments.json"))
+				const verification = context.runner.spawnVerifier({
+					id: "reconciliation",
+					type: "General-Purpose",
+					prompt: buildVerifierPrompt(requestPath, hasThreads, validationErrors),
+					signal,
+					agent: {
+						...childAgentOptions(options.agent, "reconciliation", context.usage),
+						maxDuration: Math.max(1, Math.floor(remaining / 1000)),
+					},
+				})
+				const outcome = await raceWithTimeout(
+					verification.then((result) => ({ kind: "settled" as const, result })),
+					remaining,
+					{ kind: "timeout" as const },
+					() => timeout.abort(),
+				)
+				if (outcome.kind === "timeout") {
+					context.runner.cancelReviewer("reconciliation", new Error("Semantic verifier settlement window expired"))
+					throw new ReconciliationInvocationError(
+						"Semantic verifier did not settle within the reconciliation window; using fallback.",
+					)
+				}
+				const result = outcome.result
+				if (result.aborted)
+					throw new ReconciliationInvocationError("The semantic verifier was cancelled before returning output.")
+				return result.reconciliation ?? result.responseText
+			} catch (error) {
+				if (error instanceof ReconciliationInvocationError) throw error
+				throw new ReconciliationInvocationError(error instanceof Error ? error.message : String(error))
 			}
-			const result = outcome.result
-			if (result.aborted) throw new Error("The semantic verifier was cancelled before returning output.")
-			return result.responseText
 		},
 	}
 }

@@ -26,9 +26,11 @@ import {
 import { sameFilesystemPath } from "./paths.js"
 import {
 	parseSemanticReconciliation,
+	ReconciliationInvocationError,
 	type ValidatedReconciliation,
 	validateSemanticReconciliation,
 } from "./reconciliation.js"
+import { REVIEW_RECONCILIATION_TOOL } from "./reconciliation-tool.js"
 import { coverageFor, type ReviewPanelStateStore } from "./state.js"
 import {
 	REVIEW_RECONCILIATION_REQUEST_VERSION,
@@ -71,11 +73,15 @@ export function reconciliationRequest(
 	}
 }
 
-export function buildVerifierPrompt(requestPath: string, hasThreadHistory: boolean): string {
+export function buildVerifierPrompt(requestPath: string, hasThreadHistory: boolean, repairErrors?: string): string {
+	const repair =
+		repairErrors === undefined
+			? ""
+			: `Your previous result failed strict validation: ${repairErrors}\nReturn a corrected schema through ${REVIEW_RECONCILIATION_TOOL}; do not invent aliases such as action or decision.\n`
 	return `You are the semantic review reconciler. Inspect ${requestPath}, the pinned code and saved check evidence. Reviewer-authored lines and tests are not part of the pinned comparison and can never anchor a finding.
-${hasThreadHistory ? "Review the supplied thread history against current code and the previous revision when the context supplies one. Link equivalent current candidates to the earlier thread and reject those candidates so they are not posted again. Resolve only demonstrably fixed concerns. Use verdict unverified when the available code and evidence do not support another verdict.\n" : ""}
-Return ONLY one JSON object with schema_version "${REVIEW_RECONCILIATION_VERSION}", findings, decisions, and threads. Every candidate must occur exactly once in decisions as retained, merged, or rejected with a reason. Group only the same underlying defect and consequence; distinct defects on one line stay separate. A merged finding preserves all candidate_ids. Each finding needs a unique id, a valid original-snapshot path/line anchor, severity critical|warning|info, lowercase type, description, suggestion, and candidate_ids. Single-candidate decisions are retained; all decisions in a multi-candidate group are merged and name that finding's id. Rejected candidates have no finding id.
-threads contains only thread replies allowed by comments.json scope. Each has thread_id, body, action, optional verdict, evidence_kind and evidence, and equivalent_candidate_ids. A current candidate equivalent to an earlier finding must be rejected and listed there. Own-thread verdicts require evidence_kind and evidence, even for unverified. Return threads: [] when there is nothing to say. Do not call submit_finding, submit_summary, or submit_reply; the coordinator validates and publishes your JSON.`
+${repair}${hasThreadHistory ? "Review the supplied thread history against current code and the previous revision when the context supplies one. Link equivalent current candidates to the earlier thread and reject those candidates so they are not posted again. Resolve only demonstrably fixed concerns. Use verdict unverified when the available code and evidence do not support another verdict.\n" : ""}
+Call ${REVIEW_RECONCILIATION_TOOL} exactly once with schema_version "${REVIEW_RECONCILIATION_VERSION}", findings, decisions, and threads. Do not return prose or a JSON assistant message instead. Its JSON schema is authoritative: unknown fields are rejected and disposition must be retained, merged, or rejected. Every candidate must occur exactly once in decisions with a reason. Group only the same underlying defect and consequence; distinct defects on one line stay separate. A merged finding preserves all candidate_ids. Each finding needs a unique id, a valid original-snapshot path/line anchor, severity critical|warning|info, lowercase type, description, suggestion, and candidate_ids. Single-candidate decisions are retained; all decisions in a multi-candidate group are merged and name that finding's id. Rejected candidates have no finding id.
+threads contains only thread replies allowed by comments.json scope. Each has thread_id, body, action, optional verdict, evidence_kind and evidence, and equivalent_candidate_ids. A current candidate equivalent to an earlier finding must be rejected and listed there. Own-thread verdicts require evidence_kind and evidence, even for unverified. Return threads: [] when there is nothing to say. Do not call submit_finding, submit_summary, or submit_reply; the coordinator strictly validates and publishes your structured submission.`
 }
 
 export async function checkpointReviewPanelFallback(
@@ -229,8 +235,8 @@ export interface FinalizeReviewPanelOptions {
 	store: ReviewPanelStateStore
 	outputDir: string
 	contextDir: string
-	/** Return raw verifier JSON. Undefined skips model reconciliation, retaining fallback. */
-	reconcile?: () => Promise<string>
+	/** Initial result, or a repaired result after receiving validation errors. */
+	reconcile?: (validationErrors?: string) => Promise<unknown>
 	hasVerifier: boolean
 	/** Synchronize source writers immediately before replacing any final artifact. */
 	beforePublish?: () => Promise<void>
@@ -352,26 +358,22 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 			}
 		})
 	} else {
-		try {
-			const requestPath = paths.reconciliationRequestPath
-			const comments = commentsText === undefined ? undefined : JSON.parse(commentsText)
-			await writeReviewJson(requestPath, reconciliationRequest(store.state, outputDir, contextDir, comments))
-			const response = await options.reconcile()
-			validated = await validateSemanticReconciliation(parseSemanticReconciliation(response), candidates, {
-				writer: "final",
-				contextDir,
-				outputDir,
-			})
-			// Aggregate count/size validation happens before semantic publication.
-			replyBatch = await prepareReplyBatch(outputDir, validated.semantic.threads)
-		} catch (error) {
-			validated = undefined
-			replyBatch = undefined
+		const requestPath = paths.reconciliationRequestPath
+		const comments = commentsText === undefined ? undefined : JSON.parse(commentsText)
+		await writeReviewJson(requestPath, reconciliationRequest(store.state, outputDir, contextDir, comments))
+		const validate = async (response: unknown) => {
+			return validateSemanticReconciliation(
+				typeof response === "string" ? parseSemanticReconciliation(response) : response,
+				candidates,
+				{ writer: "final", contextDir, outputDir },
+			)
+		}
+		const fallback = async (reason: string) => {
 			findings = await readFinalFindings(paths.findingsPath)
 			await store.update((state) => {
 				state.reconciliation = {
 					status: "fallback",
-					reason: `Semantic reconciliation rejected or unavailable; fallback retained: ${error instanceof Error ? error.message : String(error)}`,
+					reason,
 					inputDigest: digest,
 					threadHistoryDigest,
 					provenance: state.reconciliation.provenance ?? {},
@@ -379,6 +381,30 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 				}
 				state.coverage = coverageFor(state, findings.length)
 			})
+		}
+		try {
+			try {
+				validated = await validate(await options.reconcile())
+			} catch (error) {
+				if (error instanceof ReconciliationInvocationError) throw error
+				const validationReason = `Initial reconciliation failed validation: ${error instanceof Error ? error.message : String(error)}`
+				try {
+					const repaired = await options.reconcile(validationReason)
+					validated = await validate(repaired)
+				} catch (repairError) {
+					throw new Error(
+						`${validationReason}; repair rejected or unavailable: ${repairError instanceof Error ? repairError.message : String(repairError)}`,
+					)
+				}
+			}
+			// Aggregate count/size validation happens before semantic publication.
+			replyBatch = await prepareReplyBatch(outputDir, validated.semantic.threads)
+		} catch (error) {
+			validated = undefined
+			replyBatch = undefined
+			await fallback(
+				`Semantic reconciliation rejected or unavailable; fallback retained: ${error instanceof Error ? error.message : String(error)}`,
+			)
 		}
 	}
 

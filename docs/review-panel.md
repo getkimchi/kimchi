@@ -160,8 +160,14 @@ work around provenance size.
 The verifier gets a fresh stage 3 verifier worktree plus the saved candidate,
 worktree, command, routine-check, and optional comments paths. Thread history,
 including the previous revision when supplied, is also embedded in the
-reconciliation request. It must return one `review-reconciliation/v1` JSON
-object with `findings`, `decisions`, and `threads`.
+reconciliation request. It must submit a structured argument set through the
+dedicated `submit_reconciliation` tool, whose JSON schema matches
+`review-reconciliation/v1` with `findings`, `decisions`, and `threads`. The
+coordinator validates that schema and every field name exactly; unknown fields
+and aliases such as `action` or `decision` in place of `disposition` are not
+accepted. A validation failure gets one repair prompt carrying the validation
+errors, within the original verification window (`D − finalWriteHeadroomMs`).
+Operational verifier failures and expired windows get no repair attempt.
 
 Code rejects the entire semantic result unless:
 
