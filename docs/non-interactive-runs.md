@@ -12,6 +12,8 @@ The prompt can come from any of these:
 - An `@file` argument: `kimchi --print @prompt.md`.
 - Piped stdin: `echo "explain this repo" | kimchi --print`.
 
+An empty positional prompt (`kimchi --print ""`) or an empty `@file` is not a prompt, and the run exits `2`.
+
 A slash command from any of these sources, such as `echo /language | kimchi --print`, counts as a prompt. It exits `0` when the agent does not run.
 
 ## What counts as an answer
@@ -56,7 +58,7 @@ This is a change for existing automation: a JSON run with no prompt or no final 
 
 ## Troubleshooting
 
-- Exit `2`: a flag such as `--auto` may have taken the prompt as its value. Put the prompt before the flags, or write the flag as `--auto=true`.
+- Exit `2`: a flag such as `--auto` may have taken the prompt as its value, or the prompt was empty. Put the prompt before the flags, or write the flag as `--auto=true`.
 - Exit `3` with a blocked tool: a permission rule, the permission mode, a hook or a disabled resource blocked a tool, and the model gave no answer after that. Allow the tool, then rerun.
 - Exit `3` because an extension handled the prompt: a hook or an extension stopped the prompt before the agent ran. Check your hooks, or rerun with `--mode json`.
 - Exit `3` after an empty answer: open the session file, or rerun with `--mode json`, to see the steps.

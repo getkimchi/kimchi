@@ -12,6 +12,7 @@ export interface RunOutcomeTracker {
 	earlyObserver(pi: ExtensionAPI): void
 	/** Registered late, so it reads the branch after other `agent_settled` handlers. */
 	extension(pi: ExtensionAPI): void
+	notePrompt(): void
 	getSnapshot(): RunOutcomeSnapshot
 }
 
@@ -32,10 +33,17 @@ function isPutRecord(record: FermentV2Record): boolean {
 
 /**
  * Observes top-level print/json sessions so the CLI can detect runs that end
- * without a result. Worker sessions never touch this state.
+ * without a result. notePrompt is driven by the prompt wrapper in cli.ts.
+ * Worker sessions never touch this state.
  */
 export function createRunOutcomeTracker(): RunOutcomeTracker {
-	let state: RunOutcomeSnapshot = { active: false, inputSeen: false, runSeen: false, aborted: false }
+	let state: RunOutcomeSnapshot = {
+		active: false,
+		promptSeen: false,
+		inputSeen: false,
+		runSeen: false,
+		aborted: false,
+	}
 	// A blocked call gets a `tool_call` but never reaches afterToolCall, so it has no `tool_result`.
 	const callsAwaitingResult = new Set<string>()
 	// A live record written before the current prompt does not mean Ferment V2 drives this run.
@@ -115,6 +123,10 @@ export function createRunOutcomeTracker(): RunOutcomeTracker {
 					...(sessionPath ? { sessionPath } : {}),
 				}
 			})
+		},
+
+		notePrompt(): void {
+			if (!isAgentWorker()) state = { ...state, promptSeen: true }
 		},
 
 		getSnapshot(): RunOutcomeSnapshot {

@@ -7,7 +7,6 @@ import {
 	KIMCHI_NO_PROMPT_EXIT_CODE,
 	KIMCHI_NO_RESULT_EXIT_CODE,
 	type MessageLikeSessionEntry,
-	type PromptSources,
 	type RunOutcomeClassification,
 	type RunOutcomeSnapshot,
 } from "./run-outcome.js"
@@ -57,70 +56,46 @@ describe("classifyRunOutcome", () => {
 	it("classifies an inactive tracker as ok", () => {
 		const snapshot: RunOutcomeSnapshot = {
 			active: false,
+			promptSeen: false,
 			inputSeen: false,
 			runSeen: false,
 			aborted: false,
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
-		expect(result).toEqual({ kind: "ok" })
+		expect(classifyRunOutcome(snapshot)).toEqual({ kind: "ok" })
 	})
 
-	it("classifies no parsed prompt, no input, and no run as no-prompt", () => {
+	it("classifies no prompt call, no input and no run as no-prompt", () => {
 		const snapshot: RunOutcomeSnapshot = {
 			active: true,
+			promptSeen: false,
 			inputSeen: false,
 			runSeen: false,
 			aborted: false,
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
-		expect(result).toEqual({ kind: "no-prompt" })
+		expect(classifyRunOutcome(snapshot)).toEqual({ kind: "no-prompt" })
 	})
 
-	it("classifies a parsed extension command with no input or run as ok", () => {
+	it("classifies a prompt call with no input or run as ok", () => {
 		const snapshot: RunOutcomeSnapshot = {
 			active: true,
+			promptSeen: true,
 			inputSeen: false,
 			runSeen: false,
 			aborted: false,
 		}
-		const args: PromptSources = { messages: ["/cmd"], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
-		expect(result).toEqual({ kind: "ok" })
+		expect(classifyRunOutcome(snapshot)).toEqual({ kind: "ok" })
 	})
 
-	it("classifies a parsed at-file with no input or run as ok", () => {
+	it("classifies input an extension handled as no-result", () => {
 		const snapshot: RunOutcomeSnapshot = {
 			active: true,
-			inputSeen: false,
-			runSeen: false,
-			aborted: false,
-		}
-		const args: PromptSources = { messages: [], fileArgs: ["prompt.txt"], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
-		expect(result).toEqual({ kind: "ok" })
-	})
-
-	it("classifies text piped on stdin with no input or run as ok", () => {
-		// A stdin `/command` runs before pi emits `input`, so only the stdin probe sees it.
-		const snapshot: RunOutcomeSnapshot = { active: true, inputSeen: false, runSeen: false, aborted: false }
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: true }
-		expect(classifyRunOutcome(snapshot, args)).toEqual({ kind: "ok" })
-	})
-
-	it.each([
-		["a positional prompt", { messages: ["hello"], fileArgs: [], stdinHasText: false }],
-		["a stdin prompt", { messages: [], fileArgs: [], stdinHasText: true }],
-	])("classifies input an extension handled for %s as no-result", (_label, args: PromptSources) => {
-		const snapshot: RunOutcomeSnapshot = {
-			active: true,
+			promptSeen: true,
 			inputSeen: true,
 			runSeen: false,
 			aborted: false,
 			sessionPath: "/tmp/s.jsonl",
 		}
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toEqual({ kind: "no-result", lastEvent: { kind: "input-handled" }, sessionPath: "/tmp/s.jsonl" })
 		if (result.kind !== "no-result") throw new Error("Expected no-result")
 		const diagnostic = formatRunOutcomeDiagnostic(result)
@@ -133,11 +108,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createAssistantMessage([{ type: "text", text: "done" }]),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toEqual({ kind: "ok" })
 	})
 
@@ -146,11 +121,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createAssistantMessage([{ type: "text", text: "   \n" }]),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toMatchObject({ kind: "no-result" })
 	})
 
@@ -159,11 +134,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createAssistantMessage([]),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toMatchObject({ kind: "no-result" })
 	})
 
@@ -172,11 +147,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createAssistantMessage([{ type: "thinking", thinking: "hmm..." }]),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toMatchObject({ kind: "no-result" })
 	})
 
@@ -185,11 +160,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createAssistantMessage([{ type: "toolCall", id: "call-1", name: "read", arguments: {} }]),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toMatchObject({ kind: "no-result" })
 	})
 
@@ -198,14 +173,14 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createAssistantMessage([
 				{ type: "thinking", thinking: "hmm..." },
 				{ type: "text", text: "done" },
 			]),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toEqual({ kind: "ok" })
 	})
 
@@ -214,11 +189,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createAssistantMessage([], "error"),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toEqual({ kind: "ok" })
 	})
 
@@ -227,11 +202,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createAssistantMessage([], "aborted"),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toEqual({ kind: "ok" })
 	})
 
@@ -240,11 +215,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createAssistantMessage([{ type: "text", text: "partial" }], "length"),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toEqual({ kind: "ok" })
 	})
 
@@ -253,11 +228,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createToolResultMessage(),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toMatchObject({
 			kind: "no-result",
 			lastEvent: { kind: "final-message", role: "toolResult" },
@@ -271,11 +246,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createCustomMessage("output"),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toMatchObject({
 			kind: "no-result",
 			lastEvent: { kind: "final-message", role: "custom" },
@@ -287,11 +262,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: true,
 			finalEntry: createAssistantMessage([]),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toEqual({ kind: "ok" })
 	})
 
@@ -300,12 +275,12 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			blockedTool: { toolName: "write", reason: "Denied by rule: write" },
 			finalEntry: createAssistantMessage([]),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toMatchObject({
 			kind: "no-result",
 			lastEvent: { kind: "blocked-tool", toolName: "write", reason: "Denied by rule: write" },
@@ -383,12 +358,12 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			blockedTool: { toolName: "write", reason: "Denied" },
 			finalEntry: createAssistantMessage([{ type: "text", text: "Here is the answer" }]),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toEqual({ kind: "ok" })
 	})
 
@@ -397,12 +372,12 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			blockedTool: { toolName: "write", reason: "Denied" },
 			finalEntry: createAssistantMessage([]),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toMatchObject({
 			kind: "no-result",
 			lastEvent: { kind: "blocked-tool" },
@@ -414,11 +389,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createAssistantMessage([], "stop"),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 		expect(result).toMatchObject({
 			kind: "no-result",
 			lastEvent: { kind: "final-message", role: "assistant", stopReason: "stop" },
@@ -438,11 +413,11 @@ describe("classifyRunOutcome", () => {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			finalEntry: createAssistantMessage([{ type: "thinking", thinking: secretInFinal }]),
 		}
-		const args: PromptSources = { messages: [], fileArgs: [], stdinHasText: false }
-		const result = classifyRunOutcome(snapshot, args)
+		const result = classifyRunOutcome(snapshot)
 
 		// Should be no-result due to empty text
 		expect(result).toMatchObject({ kind: "no-result" })
@@ -460,15 +435,22 @@ describe("classifyRunOutcome with Ferment V2", () => {
 			active: true,
 			inputSeen: true,
 			runSeen: true,
+			promptSeen: true,
 			aborted: false,
 			fermentV2Owned: true,
 			sessionPath: "/tmp/s.jsonl",
 		}
-		expect(classifyRunOutcome(snapshot, { messages: ["p"], fileArgs: [], stdinHasText: false })).toEqual({ kind: "ok" })
+		expect(classifyRunOutcome(snapshot)).toEqual({ kind: "ok" })
 	})
 })
 
 describe("formatRunOutcomeDiagnostic", () => {
+	it("no-prompt diagnostic mentions an empty prompt or empty @file", () => {
+		expect(formatRunOutcomeDiagnostic({ kind: "no-prompt" })).toContain(
+			"An empty prompt or an empty @file does not count as a prompt.",
+		)
+	})
+
 	it("formats no-prompt with correct first line and Bug A advice", () => {
 		const outcome = { kind: "no-prompt" as const }
 		const diagnostic = formatRunOutcomeDiagnostic(outcome)
@@ -476,8 +458,9 @@ describe("formatRunOutcomeDiagnostic", () => {
 		expect(lines[0]).toBe(
 			`KIMCHI_NO_PROMPT: no prompt reached the agent; exiting with code ${KIMCHI_NO_PROMPT_EXIT_CODE}.`,
 		)
-		expect(lines[1]).toBe("A flag such as --auto may have taken the prompt as its value.")
-		expect(lines[2]).toBe("Put the prompt before the flags, or write the flag as --auto=true.")
+		expect(lines[1]).toBe("An empty prompt or an empty @file does not count as a prompt.")
+		expect(lines[2]).toBe("A flag such as --auto may have taken the prompt as its value.")
+		expect(lines[3]).toBe("Put the prompt before the flags, or write the flag as --auto=true.")
 		expect(lines.length).toBeLessThanOrEqual(5)
 	})
 

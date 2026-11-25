@@ -1,4 +1,4 @@
-import type { Args, SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { SessionEntry } from "@earendil-works/pi-coding-agent"
 
 export const KIMCHI_NO_PROMPT_EXIT_CODE = 2
 export const KIMCHI_NO_RESULT_EXIT_CODE = 3
@@ -12,6 +12,7 @@ export interface BlockedToolOutcome {
 
 export interface RunOutcomeSnapshot {
 	active: boolean
+	promptSeen: boolean
 	inputSeen: boolean
 	runSeen: boolean
 	aborted: boolean
@@ -21,9 +22,6 @@ export interface RunOutcomeSnapshot {
 	blockedTool?: BlockedToolOutcome
 	sessionPath?: string
 }
-
-/** Everywhere a prompt can come from. pi runs a leading `/command` before any extension event, so stdin is checked directly. */
-export type PromptSources = Pick<Args, "messages" | "fileArgs"> & { stdinHasText: boolean }
 
 export type RunOutcomeLastEvent =
 	| { kind: "blocked-tool"; toolName: string; reason: string }
@@ -35,10 +33,6 @@ export type RunOutcomeClassification =
 	| { kind: "ok" }
 	| { kind: "no-prompt" }
 	| { kind: "no-result"; lastEvent: RunOutcomeLastEvent; sessionPath?: string }
-
-function hasPromptSource(sources: PromptSources): boolean {
-	return sources.messages.length > 0 || sources.fileArgs.length > 0 || sources.stdinHasText
-}
 
 function finalEntryEvent(entry: MessageLikeSessionEntry | undefined): RunOutcomeLastEvent | undefined {
 	if (!entry) return { kind: "none" }
@@ -55,14 +49,14 @@ function finalEntryEvent(entry: MessageLikeSessionEntry | undefined): RunOutcome
  * Applies pi's print-mode rule: only the last message-like entry counts as the
  * answer. Never copies model text into the result.
  */
-export function classifyRunOutcome(snapshot: RunOutcomeSnapshot, sources: PromptSources): RunOutcomeClassification {
+export function classifyRunOutcome(snapshot: RunOutcomeSnapshot): RunOutcomeClassification {
 	if (!snapshot.active) return { kind: "ok" }
 
 	let lastEvent: RunOutcomeLastEvent | undefined
 	if (!snapshot.runSeen) {
-		// Commands never emit `input`, so input without a run means an extension swallowed the prompt.
 		if (snapshot.inputSeen) lastEvent = { kind: "input-handled" }
-		else if (!hasPromptSource(sources)) return { kind: "no-prompt" }
+		// pi calls prompt for `/commands` too, but commands never emit `input`.
+		else if (!snapshot.promptSeen) return { kind: "no-prompt" }
 		else return { kind: "ok" }
 	} else {
 		if (snapshot.aborted || snapshot.fermentV2Owned) return { kind: "ok" }
@@ -102,6 +96,7 @@ export function formatRunOutcomeDiagnostic(outcome: Exclude<RunOutcomeClassifica
 	if (outcome.kind === "no-prompt") {
 		return [
 			`KIMCHI_NO_PROMPT: no prompt reached the agent; exiting with code ${KIMCHI_NO_PROMPT_EXIT_CODE}.`,
+			"An empty prompt or an empty @file does not count as a prompt.",
 			"A flag such as --auto may have taken the prompt as its value.",
 			"Put the prompt before the flags, or write the flag as --auto=true.",
 		].join("\n")

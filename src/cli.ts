@@ -220,11 +220,11 @@ import { IS_ACP_MODE } from "./modes/acp/state.js"
 import { injectOllamaProvider, readOllamaModelMetadata, resolveOllamaHost } from "./ollama.js"
 import { initOrgPolicy } from "./org-policy.js"
 import { syncPiAuth } from "./pi-auth.js"
-import { watchPipedStdinText } from "./piped-stdin-probe.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
 import { classifyRunOutcome } from "./run-outcome.js"
+import { observeAgentSessionPrompts } from "./run-outcome-prompt-patch.js"
 import { runSetupWizard, shouldRunSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { applyTelemetryPolicy } from "./telemetry-policy.js"
@@ -346,6 +346,7 @@ async function cliMain(): Promise<void> {
 	const infrastructureErrorTracker = createInfrastructureErrorTracker()
 	// Detects print/json runs that end without a prompt or final answer.
 	const runOutcomeTracker = createRunOutcomeTracker()
+	if (!IS_ACP_MODE) observeAgentSessionPrompts(AgentSession.prototype, runOutcomeTracker.notePrompt)
 
 	// --- Org policy ---
 	// Resolve the organization's harness policy (permission modes, usage
@@ -1110,8 +1111,6 @@ async function cliMain(): Promise<void> {
 				imagePayloadBudgetExtension,
 			]
 
-			// Installed before pi attaches its stdin reader inside main().
-			const pipedStdin = IS_ACP_MODE ? undefined : watchPipedStdinText()
 			if (IS_ACP_MODE) {
 				const { runAcpMode } = await import("./modes/acp/server.js")
 				await runAcpMode({
@@ -1135,12 +1134,7 @@ async function cliMain(): Promise<void> {
 				process.exit,
 				Boolean(process.exitCode) || hasPrintFlag(rawArgs),
 			)
-			applyPostMainRunOutcomeExitPolicy(
-				classifyRunOutcome(runOutcomeTracker.getSnapshot(), {
-					...parsePiArgs(piArgs),
-					stdinHasText: pipedStdin?.hasText() ?? false,
-				}),
-			)
+			applyPostMainRunOutcomeExitPolicy(classifyRunOutcome(runOutcomeTracker.getSnapshot()))
 		}
 	} catch (err) {
 		await drainPreSessionTelemetry()

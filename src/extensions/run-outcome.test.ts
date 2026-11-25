@@ -110,6 +110,36 @@ describe("createRunOutcomeTracker", () => {
 		expect(tracker.getSnapshot().blockedTool).toBeUndefined()
 	})
 
+	it("reports promptSeen after notePrompt in print mode", async () => {
+		const { harness, tracker, ctx } = setup("print")
+		await harness.emit("session_start", start, ctx)
+
+		tracker.notePrompt()
+
+		expect(tracker.getSnapshot().promptSeen).toBe(true)
+	})
+
+	it("notes a prompt even when its text is whitespace", async () => {
+		const { harness, tracker, ctx } = setup("print")
+		await harness.emit("session_start", start, ctx)
+
+		tracker.notePrompt()
+
+		expect(classifyRunOutcome(tracker.getSnapshot())).not.toEqual({ kind: "no-prompt" })
+	})
+
+	it("ignores prompts from agent workers", async () => {
+		const { harness, tracker, ctx } = setup("print")
+		await harness.emit("session_start", start, ctx)
+
+		await runAsAgentWorker(async () => {
+			tracker.notePrompt()
+		})
+
+		expect(tracker.getSnapshot().promptSeen).toBe(false)
+		expect(classifyRunOutcome(tracker.getSnapshot())).toEqual({ kind: "no-prompt" })
+	})
+
 	it("ignores events when KIMCHI_SUBAGENT is set", async () => {
 		process.env.KIMCHI_SUBAGENT = "1"
 		for (const mode of ["print", "json"] as const) {
@@ -141,20 +171,21 @@ describe("createRunOutcomeTracker", () => {
 		await harness.emit("session_start", start, ctx)
 		await harness.emit("input", input, ctx)
 		expect(tracker.getSnapshot()).toMatchObject({ inputSeen: true, runSeen: false })
-		expect(
-			classifyRunOutcome(tracker.getSnapshot(), { messages: ["hi"], fileArgs: [], stdinHasText: false }),
-		).toMatchObject({ kind: "no-result", lastEvent: { kind: "input-handled" } })
+		tracker.notePrompt()
+		expect(classifyRunOutcome(tracker.getSnapshot())).toMatchObject({
+			kind: "no-result",
+			lastEvent: { kind: "input-handled" },
+		})
 	})
 
 	it("does not classify an aborted agent_settled as no-result", async () => {
 		const { harness, tracker, ctx } = setup("print", [assistantEntry("a", "")])
 		await harness.emit("session_start", start, ctx)
 		await harness.emit("agent_settled", settled(true), ctx)
+		tracker.notePrompt()
 		const snapshot = tracker.getSnapshot()
 		expect(snapshot).toMatchObject({ runSeen: true, aborted: true })
-		expect(classifyRunOutcome(snapshot, { messages: ["p"], fileArgs: [], stdinHasText: false })).toEqual({
-			kind: "ok",
-		})
+		expect(classifyRunOutcome(snapshot)).toEqual({ kind: "ok" })
 	})
 
 	it("does not let a subagent session overwrite the top-level outcome", async () => {

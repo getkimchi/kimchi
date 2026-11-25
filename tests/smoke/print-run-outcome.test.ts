@@ -242,6 +242,54 @@ describe("non-interactive run outcome guard (compiled binary)", () => {
 		)
 	})
 
+	it("empty positional prompt exits 2 in text mode", TIMEOUT, async () => {
+		const { result } = await runKimchi({ args: ["--print", ...MODEL_ARGS, ""] })
+		expect(result.timedOut, result.failure).toBe(false)
+		expect(result.code, result.failure).toBe(KIMCHI_NO_PROMPT_EXIT_CODE)
+		expect(result.stdout, result.failure).toBe("")
+		expect(result.stderr, result.failure).toContain(NO_PROMPT_MARKER)
+		expect(result.stderr, result.failure).toContain("An empty prompt or an empty @file does not count as a prompt.")
+		expectTextOutcomeEquivalence(result)
+	})
+
+	it("empty positional prompt exits 2 in JSON mode and emits only the header", TIMEOUT, async () => {
+		const { result } = await runKimchi({ args: ["--print", "--mode", "json", ...MODEL_ARGS, ""] })
+		expect(result.timedOut, result.failure).toBe(false)
+		expect(result.code, result.failure).toBe(KIMCHI_NO_PROMPT_EXIT_CODE)
+		const lines = result.stdout.split("\n").filter((line) => line.trim().length > 0)
+		expect(lines, result.failure).toHaveLength(1)
+		expect(JSON.parse(lines[0] ?? "").type, result.failure).toBe("session")
+		expect(result.stderr, result.failure).toContain(NO_PROMPT_MARKER)
+		expect(result.stderr, result.failure).toContain("An empty prompt or an empty @file does not count as a prompt.")
+	})
+
+	it("empty at-file prompt exits 2 in text mode", TIMEOUT, async () => {
+		const { result } = await runKimchi({
+			args: ["--print", ...MODEL_ARGS, "@empty.md"],
+			prepare: (workDir) => writeFileSync(join(workDir, "empty.md"), ""),
+		})
+		expect(result.timedOut, result.failure).toBe(false)
+		expect(result.code, result.failure).toBe(KIMCHI_NO_PROMPT_EXIT_CODE)
+		expect(result.stdout, result.failure).toBe("")
+		expect(result.stderr, result.failure).toContain(NO_PROMPT_MARKER)
+		expect(result.stderr, result.failure).toContain("An empty prompt or an empty @file does not count as a prompt.")
+		expectTextOutcomeEquivalence(result)
+	})
+
+	it("empty at-file prompt exits 2 in JSON mode and emits only the header", TIMEOUT, async () => {
+		const { result } = await runKimchi({
+			args: ["--print", "--mode", "json", ...MODEL_ARGS, "@empty.md"],
+			prepare: (workDir) => writeFileSync(join(workDir, "empty.md"), ""),
+		})
+		expect(result.timedOut, result.failure).toBe(false)
+		expect(result.code, result.failure).toBe(KIMCHI_NO_PROMPT_EXIT_CODE)
+		const lines = result.stdout.split("\n").filter((line) => line.trim().length > 0)
+		expect(lines, result.failure).toHaveLength(1)
+		expect(JSON.parse(lines[0] ?? "").type, result.failure).toBe("session")
+		expect(result.stderr, result.failure).toContain(NO_PROMPT_MARKER)
+		expect(result.stderr, result.failure).toContain("An empty prompt or an empty @file does not count as a prompt.")
+	})
+
 	it("prompt only from piped stdin succeeds", TIMEOUT, async () => {
 		const { result } = await runKimchi({
 			args: ["--print", ...MODEL_ARGS],
