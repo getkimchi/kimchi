@@ -1582,6 +1582,7 @@ describe("messageSubagent (send_message to a subagent)", () => {
 
 		expect(await messageSubagent(id, "also list the tests")).toContain("resumes in the background")
 		expect(manager.resume).toHaveBeenCalledWith(id, "also list the tests", { maxTurns: getDefaultMaxTurns() })
+		// The usual background-agent completion wake; send_message runs only in TUI sessions, so no ACP client has to opt in.
 		await vi.waitFor(() =>
 			expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "subagent-notification" }), {
 				deliverAs: "followUp",

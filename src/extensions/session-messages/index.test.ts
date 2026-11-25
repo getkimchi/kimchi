@@ -12,6 +12,9 @@ import { CROSS_SESSION_MESSAGE_TYPE, createSessionMessagesExtension } from "./in
 
 vi.mock("../agents/index.js", () => ({ listSubagents: vi.fn(), messageSubagent: vi.fn() }))
 
+/** Delivery options: a TUI-only wake, since session_start skips other modes, so no ACP client has to opt in. */
+const STEER_AND_WAKE = { deliverAs: "steer", triggerTurn: true }
+
 const dirs: string[] = []
 const running: Array<() => Promise<unknown>> = []
 
@@ -80,7 +83,7 @@ describe("session-messages", () => {
 				display: true,
 				details: { from: "alpha [aaaaa1]" },
 			},
-			{ deliverAs: "steer", triggerTurn: true },
+			STEER_AND_WAKE,
 		)
 
 		expect(await beta.run("send_message", { to: "alpha [aaaaa1]", message: "Tests pass." })).toContain(
@@ -88,7 +91,7 @@ describe("session-messages", () => {
 		)
 		expect(alpha.harness.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ content: expect.stringContaining('from="beta [bbbbb2]">\nTests pass.') }),
-			{ deliverAs: "steer", triggerTurn: true },
+			STEER_AND_WAKE,
 		)
 	})
 

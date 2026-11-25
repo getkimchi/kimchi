@@ -179,6 +179,8 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 						display: true,
 						details: { from: request.from },
 					},
+					// No ACP opt-in gate needed: session_start registers nothing outside the TUI,
+					// so this wake never reaches an ACP or RPC client.
 					{ deliverAs: "steer", triggerTurn: true },
 				)
 			const mode = permissionMode(ctx)
