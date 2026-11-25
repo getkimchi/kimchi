@@ -3,12 +3,13 @@ import { suitesToRun } from "./ci-changes.js"
 
 describe("suitesToRun", () => {
 	it("skips every suite when nothing changed", () => {
-		expect(suitesToRun([])).toEqual({ tui: false })
+		expect(suitesToRun([])).toEqual({ tui: false, acp: false })
 	})
 
 	it("skips every suite for a docs-only change", () => {
 		expect(suitesToRun(["docs/ferment.md", "README.md", ".github/pull_request_template.md", "LICENSE"])).toEqual({
 			tui: false,
+			acp: false,
 		})
 	})
 
@@ -33,6 +34,18 @@ describe("suitesToRun", () => {
 	it("runs TUI for its own tests and support files", () => {
 		expect(suitesToRun(["tests/e2e/tui/side-chat.test.ts"]).tui).toBe(true)
 		expect(suitesToRun(["tests/e2e/tui/support/fixture.ts"]).tui).toBe(true)
+	})
+
+	it("runs ACP but not TUI for an ACP test change", () => {
+		expect(suitesToRun(["tests/e2e/acp/run-boundary.test.ts"])).toEqual({ tui: false, acp: true })
+	})
+
+	it("runs TUI but not ACP for a TUI test change", () => {
+		expect(suitesToRun(["tests/e2e/tui/side-chat.test.ts"])).toEqual({ tui: true, acp: false })
+	})
+
+	it("runs ACP for TUI support files, which ACP fixtures import", () => {
+		expect(suitesToRun(["tests/e2e/tui/support/fixture.ts"]).acp).toBe(true)
 	})
 
 	it("runs TUI when one file of a mixed change matters", () => {

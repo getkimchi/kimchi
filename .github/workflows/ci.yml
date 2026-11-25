@@ -27,6 +27,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       tui: ${{ steps.decide.outputs.tui }}
+      acp: ${{ steps.decide.outputs.acp }}
     steps:
       # Depth 2 gives the PR merge commit and its first parent, the base.
       - uses: actions/checkout@v4
@@ -135,6 +136,22 @@ jobs:
       failure-artifacts: |
         *.tui-e2e.log
         **/tui-traces/**
+
+  # Advisory: the gate does not wait for it. It also runs in the merge queue,
+  # because PR-time runs miss combinations created when master moves on.
+  acp-e2e:
+    needs: [changes, build]
+    if: needs.changes.outputs.acp == 'true'
+    uses: ./.github/workflows/_test-suite.yml
+    with:
+      name: acp-e2e
+      timeout-minutes: 15
+      use-build: true
+      search-tools: true
+      command: KIMCHI_PROXY_HELPER="$PWD/bin/proxy-helper" pnpm exec vitest run --config tests/e2e/acp/vitest.config.ts
+      failure-artifacts: |
+        *.acp-e2e.log
+        **/acp-traces/**
 
   # Tripwire for ACP wire-compat regressions (docs/acp-compat.md). It diffs
   # against the PR base, so it runs on pull requests only. It is advisory: the

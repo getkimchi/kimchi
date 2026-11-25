@@ -28,6 +28,15 @@ const NOT_CODE = [
 // least one changed file is outside its list.
 export const SUITE_IGNORES = {
 	tui: [...NOT_CODE, "src/**/*.test.ts", "tests/unit/**", "tests/smoke/**", "tests/e2e/acp/**", "tests/e2e/mcp/**"],
+	// ACP fixtures import tests/e2e/tui/support/, so only the TUI test files are ignored.
+	acp: [
+		...NOT_CODE,
+		"src/**/*.test.ts",
+		"tests/unit/**",
+		"tests/smoke/**",
+		"tests/e2e/tui/*.test.ts",
+		"tests/e2e/mcp/**",
+	],
 }
 
 export function suitesToRun(changedFiles) {
