@@ -63,13 +63,13 @@ function runTui(runArgs, stem) {
 	const start = Date.now()
 	// Artifact names are unique per attempt, so a before/after snapshot avoids
 	// both stale logs and same-millisecond mtime boundary errors.
-	const failLogsBefore = new Set(stem ? findFailLogs(stem) : [])
+	const failLogsBefore = new Set(stem ? findFailLogs() : [])
 	const result = spawnSync(tuiTest, runArgs, { cwd: tuiCwd, stdio: "inherit", env })
 	const stop = Date.now()
 	const status = result.status ?? 1
 	if (stem && process.env.ALLURE_RESULTS) {
 		try {
-			const failLogPaths = findFailLogs(stem).filter((path) => !failLogsBefore.has(path))
+			const failLogPaths = findFailLogs().filter((path) => !failLogsBefore.has(path))
 			writeTuiAllureResult({
 				resultsDir: process.env.ALLURE_RESULTS,
 				stem,
@@ -96,9 +96,9 @@ function testStemFromArgs(runArgs) {
 	return filter ? basename(filter).replace(/\.test\.ts$/, "") : undefined
 }
 
-function findFailLogs(stem) {
+function findFailLogs() {
 	return readdirSync(repoRoot)
-		.filter((name) => name.startsWith(stem) && name.includes(".fail.") && name.endsWith(".tui-e2e.log"))
+		.filter((name) => name.includes(".fail.") && name.endsWith(".tui-e2e.log"))
 		.map((name) => join(repoRoot, name))
 		.sort()
 }

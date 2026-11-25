@@ -22,6 +22,7 @@ const githubExpression = (expression: string) => `\${{ ${expression} }}`
 const allureSetupAction = "allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db"
 
 interface FakeFailureLog {
+	artifactName?: string
 	content?: string
 	size?: number
 }
@@ -59,6 +60,7 @@ function createTuiRunnerFixture({
 	writeFileSync(join(root, "tests", "e2e", "tui", "skip-list.js"), "export const SKIPPED_TUI_TESTS = []\n")
 	writeFileSync(join(root, "tests", "e2e", "tui", "alpha.test.ts"), "")
 	writeFileSync(join(root, "tests", "e2e", "tui", "beta.test.ts"), "")
+	if (failureLogs["bash-commands"]) writeFileSync(join(root, "tests", "e2e", "tui", "bash-commands.test.ts"), "")
 	const fakeRunner = join(root, "node_modules", ".bin", "tui-test")
 	if (!missingRunner) {
 		writeFileSync(
@@ -72,7 +74,10 @@ function createTuiRunnerFixture({
 				`const failureLogs = ${JSON.stringify(failureLogs)}`,
 				`const exitCodes = ${JSON.stringify(exitCodes)}`,
 				"for (const [index, log] of (failureLogs[stem] ?? []).entries()) {",
-				"\tconst name = `${stem}-attempt-${index}.fail.${process.pid}-${Date.now()}.tui-e2e.log`",
+				// biome-ignore lint/suspicious/noTemplateCurlyInString: placeholders belong to emitted fake-runner source
+				"\tconst artifactName = log.artifactName ?? `${stem}-attempt-${index}`",
+				// biome-ignore lint/suspicious/noTemplateCurlyInString: placeholders belong to emitted fake-runner source
+				"\tconst name = `${artifactName}.fail.${process.pid}-${Date.now()}-${index + 1}.tui-e2e.log`",
 				`\twriteFileSync(join(${JSON.stringify(root)}, name), log.content ?? "x".repeat(log.size ?? 0))`,
 				"}",
 				"process.exit(exitCodes[stem] ?? 0)",
@@ -188,6 +193,28 @@ describe("successful TUI results", () => {
 			expect(result.attachments.map((attachment) => readFileSync(join(resultsDir, attachment.source), "utf8"))).toEqual(
 				[firstLog, secondLog],
 			)
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true })
+		}
+	})
+
+	it.skipIf(process.platform === "win32")("attributes fail logs whose artifact names differ from the file stem", () => {
+		const log = "# Kimchi TUI E2E Artifact\n\n## Error\n\nError: bash card failed\n\n## Scenario Steps\n"
+		const fixture = createTuiRunnerFixture({
+			exitCodes: {},
+			failureLogs: { "bash-commands": [{ artifactName: "bash-card-layout", content: log }] },
+		})
+		try {
+			const resultsDir = fixture.resultsDir("allure-different-artifact-name")
+			expect(fixture.run(resultsDir).status).toBe(0)
+			const result = requireResult(
+				readResults(resultsDir).find((candidate) => candidate.name === "bash-commands"),
+				"bash-commands",
+			)
+			expect(result.statusDetails).toEqual({ flaky: true, message: "passed after 1 failed attempt" })
+			expect(result.attachments).toHaveLength(1)
+			expect(result.attachments[0].name).toMatch(/^bash-card-layout\.fail\..+-1\.tui-e2e\.log$/)
+			expect(readFileSync(join(resultsDir, result.attachments[0].source), "utf8")).toBe(log)
 		} finally {
 			rmSync(fixture.root, { recursive: true, force: true })
 		}
