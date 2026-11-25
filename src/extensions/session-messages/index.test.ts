@@ -275,7 +275,12 @@ describe("session-messages", () => {
 
 		// Yes stops that subagent and tells the agent where the work can go instead.
 		expect(await startSubagent(alpha, "Fix checkout rounding")).toEqual([
-			{ block: true, reason: expect.stringContaining('send_message to "beta [bbbbb2]"') },
+			{
+				block: true,
+				reason: expect.stringContaining(
+					'If “Fix checkout rounding” is related to that session\'s work, send it with send_message to "beta [bbbbb2]"; if it is unrelated, start this subagent again.',
+				),
+			},
 		])
 		expect(alpha.ctx.ui.confirm).toHaveBeenCalledWith(
 			OFFER_TITLE,
@@ -287,7 +292,7 @@ describe("session-messages", () => {
 		expect(savedPreference(dir)).toBe(true)
 		// The rest of that turn's subagents wait too, so the agent picks where each one goes.
 		expect(await startSubagent(alpha)).toEqual([
-			{ block: true, reason: expect.stringContaining('send_message to "beta [bbbbb2]"') },
+			{ block: true, reason: expect.stringContaining("If “Count the TODOs” is related to that session's work") },
 		])
 		await alpha.harness.emit("turn_end", { type: "turn_end" }, alpha.ctx)
 		expect(await startSubagent(alpha)).toEqual([undefined])

@@ -224,7 +224,19 @@ export function createSessionMessagesExtension(
 		let self: { ref: string; path: string; ctx: ExtensionContext; repository: string; startedAt: number } | undefined
 		let toolsRegistered = false
 		/** After a yes, the rest of that turn's subagents wait too, so the agent picks where each one goes. */
-		let handOver: ToolCallEventResult | undefined
+		let handOverTo: SessionInfo[] | undefined
+
+		/** Worded as the user's choice with one plain fork: read as a refusal, models did the work themselves. */
+		const hold = (peers: SessionInfo[], task: unknown): ToolCallEventResult => {
+			const names = peers.map((peer) => `“${peer.name}”`).join(" or ")
+			const addresses = peers.map((peer) => `"${address(peer)}"`).join(" or ")
+			const work = typeof task === "string" && task.trim() ? `“${task.trim()}”` : "this task"
+			const whose = peers.length === 1 ? "that session's" : "those sessions'"
+			return {
+				block: true,
+				reason: `Held, not failed: your user just agreed to ask ${names} (open in this repository) instead of starting subagents for related work. If ${work} is related to ${whose} work, send it with send_message to ${addresses}; if it is unrelated, start this subagent again.`,
+			}
+		}
 
 		const describe = (): SessionInfo | undefined =>
 			self && {
@@ -240,7 +252,7 @@ export function createSessionMessagesExtension(
 		 * Asks once, when it matters: the agent is about to start a subagent while another live session works in
 		 * the same repository. Yes stops that subagent, so the agent can hand the work over; no lets it start.
 		 */
-		async function offer(ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
+		async function offer(task: unknown, ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
 			const me = self
 			if (!me || readPreference() !== undefined) return undefined
 			const peers = (await listPeers(dir, me.ref)).filter((peer) => peer.repository === me.repository)
@@ -264,14 +276,8 @@ export function createSessionMessagesExtension(
 			}
 			if (readPreference() !== true) return undefined
 			registerTools()
-			// Worded as the user's choice: read as a refusal, models did the work themselves instead.
-			const names = peers.map((peer) => `“${peer.name}”`).join(" or ")
-			const addresses = peers.map((peer) => `"${address(peer)}"`).join(" or ")
-			handOver = {
-				block: true,
-				reason: `Held, not failed: your user just agreed to ask ${names} (open in this repository) instead of starting subagents for work ${peers.length === 1 ? "it already knows" : "they already know"}. Send that work with send_message to ${addresses}; start the subagent again for anything else.`,
-			}
-			return handOver
+			handOverTo = peers
+			return hold(peers, task)
 		}
 		const permissionMode = (ctx: ExtensionContext) =>
 			getPermissionMode(ctx.sessionManager.getSessionId())?.mode ?? "default"
@@ -349,13 +355,13 @@ export function createSessionMessagesExtension(
 
 		pi.on("tool_call", (event, ctx) => {
 			if (event.toolName !== "Agent") return undefined
-			if (handOver) return handOver
+			if (handOverTo) return hold(handOverTo, event.input.description)
 			// A failed question must never stop the subagent.
-			return offer(ctx).catch(() => undefined)
+			return offer(event.input.description, ctx).catch(() => undefined)
 		})
 
 		pi.on("turn_end", () => {
-			handOver = undefined
+			handOverTo = undefined
 		})
 
 		pi.on("session_shutdown", () => {
