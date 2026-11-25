@@ -248,15 +248,16 @@ import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
 import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
 import { SubagentConfigReporter } from "./subagent-config.js"
+import { hasConfirmedModelSelection, type RecoveredSubagent } from "./subagent-recovery.js"
+import { SubagentRegistry, type SubagentRoute } from "./subagent-registry.js"
+import { SUBAGENT_TOOL_ID_ENTRY_TYPE, SubagentToolIdHistory } from "./subagent-tool-ids.js"
 import {
 	absoluteSubagentCwd,
 	clientSupportsSubagents,
 	presentAgentToolCall,
 	type SubagentSessionCreatedEvent,
-	subagentAnnouncement,
 	subagentPromptMessages,
 	subagentSessionCreatedExtension,
-	subagentStateUpdate,
 	withSubagentSessionLink,
 } from "./subagents.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
@@ -375,6 +376,9 @@ export type AcpSessionLister = (params: ListSessionsRequest) => Promise<PiSessio
  * tests can stub disk access.
  */
 export type AcpSessionLoader = (params: SessionLoaderParams) => Promise<AgentSession>
+/** Read-only construction from a locally recovered association, not direct child load/resume. */
+export type AcpSubagentReplayResult = AgentSession | { session: AgentSession; modelFallbackMessage?: string }
+export type AcpSubagentReplayLoader = (association: RecoveredSubagent) => Promise<AcpSubagentReplayResult>
 
 export interface RunAcpOptions {
 	extensionFactories: InlineExtension[]
@@ -395,6 +399,8 @@ export interface RunAcpOptions {
 	sessionLister?: AcpSessionLister
 	/** Override for tests. Defaults to {@link defaultSessionLoader}. */
 	sessionLoader?: AcpSessionLoader
+	/** Override for tests. Defaults to {@link defaultSubagentReplayLoader}. */
+	subagentReplayLoader?: AcpSubagentReplayLoader
 	/**
 	 * Isolated MCP probe used by `_kimchi.dev/probe_mcp_server`. Injected so
 	 * tests can stub it; production uses the upstream-adapter-backed probe.
@@ -579,6 +585,8 @@ type SessionRecord = {
 	 * ACP id, so collisions across compaction boundaries are disambiguated.
 	 */
 	toolCallIdMap: Map<string, string>
+	/** Child-local mappings required to replay ACP tool identity deterministically. */
+	childToolIdHistory?: SubagentToolIdHistory
 	/**
 	 * Background bash processes still running for this session, keyed by their
 	 * process-registry handle — each mapped to the ACP toolCallId whose
@@ -620,19 +628,21 @@ type SessionRecord = {
 	subagentParentSessionId?: string
 }
 
-type SubagentRoute = {
-	parentSessionId: string
-	parentToolCallId: string
-	record: SessionRecord
-	configReporter: SubagentConfigReporter
-	cleanupInteraction: () => void
-}
-
-function createProjectionSessionRecord(session: AgentSession, cwd: string, parentSessionId: string): SessionRecord {
-	return {
+function createProjectionSessionRecord(
+	session: AgentSession,
+	cwd: string,
+	parentSessionId: string,
+	mode: "live" | "replay" = "live",
+): SessionRecord {
+	const childToolIdHistory =
+		mode === "live"
+			? new SubagentToolIdHistory((data) => session.sessionManager.appendCustomEntry(SUBAGENT_TOOL_ID_ENTRY_TYPE, data))
+			: SubagentToolIdHistory.fromEntries(session.sessionManager.getBranch())
+	const record: SessionRecord = {
 		session,
 		unsubscribe: () => {},
 		cwd,
+		childToolIdHistory,
 		nextBlockId: 0,
 		contentIndexToBlockId: new Map(),
 		streamDesanitizers: new Map(),
@@ -645,6 +655,8 @@ function createProjectionSessionRecord(session: AgentSession, cwd: string, paren
 		steerEchoRewrites: [],
 		subagentParentSessionId: parentSessionId,
 	}
+	record.nextToolCallId = childToolIdHistory.nextSequenceFloor()
+	return record
 }
 
 /** Options for {@link KimchiAcpAgent.disposeSessionRecord}. */
@@ -681,9 +693,8 @@ const SET_MODEL_COMPAT_METHOD = "session/set_model"
 
 export class KimchiAcpAgent {
 	private sessions = new Map<string, SessionRecord>()
-	/** Announced native children are readable projections, not directly addressable ACP sessions. */
-	private subagentRoutes = new Map<string, SubagentRoute>()
-	private subagentIdsByParentTool = new Map<string, Map<string, string>>()
+	private pendingSubagentEvents = new Map<string, SubagentSessionCreatedEvent[]>()
+	private readonly subagentRegistry: SubagentRegistry<SessionRecord>
 	private rootUiCleanups = new Map<string, () => void>()
 	private readonly commandsRefresher = createCommandsRefresher({
 		sessions: () => this.sessions,
@@ -695,6 +706,7 @@ export class KimchiAcpAgent {
 	private readonly skillWatcher: SkillWatcher
 	private readonly sessionLister: AcpSessionLister
 	private readonly sessionLoader: AcpSessionLoader
+	private readonly subagentReplayLoader: AcpSubagentReplayLoader
 	private readonly mcpProbe: McpProbe | undefined
 	private readonly sso: SsoFlowManager
 	private readonly permissionsEnvFlag = process.env[PERMISSIONS_ENV_KEY]
@@ -747,6 +759,30 @@ export class KimchiAcpAgent {
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader =
 			options.sessionLoader ?? defaultSessionLoader(options, (event) => this.onSubagentSessionCreated(event))
+		this.subagentReplayLoader = options.subagentReplayLoader ?? defaultSubagentReplayLoader(options)
+		this.subagentRegistry = new SubagentRegistry<SessionRecord>({
+			enabled: () => clientSupportsSubagents(this.clientCapabilities),
+			send: (params) => this.send(params),
+			rootExists: (sessionId) => this.sessions.has(sessionId),
+			loadRecovered: async (association) => {
+				const result = await this.subagentReplayLoader(association)
+				const session = "session" in result ? result.session : result
+				const fallback = "session" in result ? result.modelFallbackMessage : undefined
+				try {
+					return this.createSubagentReplayProjection(session, association, fallback)
+				} catch (error) {
+					const resources = session.resourceLoader as { dispose?: () => void } | undefined
+					resources?.dispose?.()
+					session.dispose()
+					throw error
+				}
+			},
+			projectReplay: (association, session) => this.createSubagentReplayProjection(session, association),
+			replay: (_parent, _association, projection, replayHistory) => {
+				this.seedBlockCounterFromBranch(projection.record.session, projection.record)
+				if (replayHistory) this.replayTranscript(projection.record.session, projection.record)
+			},
+		})
 		this.mcpProbe = options.mcpProbe
 		this.sso = ssoManager ?? new SsoFlowManager(SSO_FLOW_MANAGER_DEPS)
 		this.skillWatcher = createSkillWatcher({
@@ -1150,9 +1186,10 @@ export class KimchiAcpAgent {
 			this.skillWatcher.addSession(record)
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
-			this.releaseSubagentRoute(sessionId)
+			this.subagentRegistry.release(sessionId)
 			this.sessions.set(sessionId, record)
 
+			this.flushPendingSubagentEvents(sessionId)
 			this.startPlanTracker(record, sessionId)
 
 			this.scheduleAvailableCommandsUpdate(sessionId)
@@ -1377,38 +1414,52 @@ export class KimchiAcpAgent {
 	private async loadSessionInternal(params: LoadSessionRequest, replayHistory: boolean): Promise<LoadSessionResponse> {
 		const sessionId = params.sessionId
 		this.rejectSubagentMutation(sessionId)
-		const existing = this.sessions.get(sessionId)
-		if (existing) {
-			// Mid-turn attach is opt-in; clients passing the flag declared the
-			// previous connection dead, so attach and replay instead of rejecting.
-			// Everyone else keeps the strict guard.
-			if (existing.turn && params._meta?.[ACP_REATTACH_MID_TURN_META_KEY] !== true) {
-				throw RequestError.invalidRequest(undefined, `session ${sessionId} has a turn in progress; cancel it first`)
-			}
-			if (replayHistory) this.replayTranscript(existing.session)
-			this.scheduleAvailableCommandsUpdate(sessionId)
-			this.scheduleProjectTrustUpdate(sessionId)
-
-			const configOptions = buildConfigOptions(existing.session, this.getInitialPermissionMode(existing.session).mode)
-			return {
-				configOptions,
-			}
-		}
-		// Coalesce only across identical intents: concurrent load + resume of
-		// the same id must each run with their own replayHistory decision,
-		// otherwise the second caller inherits the first's replay behavior.
-		const coalesceKey = `${sessionId}:${replayHistory ? "load" : "resume"}`
-		const loading = this.loadingSessions.get(coalesceKey)
-		if (loading) return loading
-
-		const loadingPromise = this.loadSessionFresh(params, replayHistory)
-		this.loadingSessions.set(coalesceKey, loadingPromise)
+		const recovery = this.subagentRegistry.begin(sessionId)
 		try {
-			return await loadingPromise
-		} finally {
-			if (this.loadingSessions.get(coalesceKey) === loadingPromise) {
-				this.loadingSessions.delete(coalesceKey)
+			const existing = this.sessions.get(sessionId)
+			if (existing) {
+				// Mid-turn attach is opt-in; clients passing the flag declared the
+				// previous connection dead, so attach and replay instead of rejecting.
+				// Everyone else keeps the strict guard.
+				if (existing.turn && params._meta?.[ACP_REATTACH_MID_TURN_META_KEY] !== true) {
+					throw RequestError.invalidRequest(undefined, `session ${sessionId} has a turn in progress; cancel it first`)
+				}
+				await this.subagentRegistry.replay(existing.session, replayHistory)
+				if (replayHistory) this.replayTranscript(existing.session)
+				this.scheduleAvailableCommandsUpdate(sessionId)
+				this.scheduleProjectTrustUpdate(sessionId)
+
+				const configOptions = buildConfigOptions(existing.session, this.getInitialPermissionMode(existing.session).mode)
+				const response = { configOptions }
+				this.subagentRegistry.complete(sessionId, recovery)
+				return response
 			}
+			// Coalesce only across identical intents: concurrent load + resume of
+			// the same id must each run with their own replayHistory decision,
+			// otherwise the second caller inherits the first's replay behavior.
+			const coalesceKey = `${sessionId}:${replayHistory ? "load" : "resume"}`
+			const loading = this.loadingSessions.get(coalesceKey)
+			if (loading) {
+				const response = await loading
+				this.subagentRegistry.complete(sessionId, recovery)
+				return response
+			}
+
+			const loadingPromise = this.loadSessionFresh(params, replayHistory)
+			this.loadingSessions.set(coalesceKey, loadingPromise)
+			try {
+				const response = await loadingPromise
+				this.subagentRegistry.complete(sessionId, recovery)
+				return response
+			} finally {
+				if (this.loadingSessions.get(coalesceKey) === loadingPromise) {
+					this.loadingSessions.delete(coalesceKey)
+				}
+			}
+		} catch (error) {
+			this.subagentRegistry.discard(sessionId, recovery)
+			this.subagentRegistry.clearRecovered(sessionId)
+			throw error
 		}
 	}
 
@@ -1484,9 +1535,10 @@ export class KimchiAcpAgent {
 			this.skillWatcher.addSession(record)
 
 			record.unsubscribe = session.subscribe((event) => this.onSessionEvent(sessionId, event))
-			this.releaseSubagentRoute(sessionId)
+			this.subagentRegistry.release(sessionId)
 			this.sessions.set(sessionId, record)
 
+			this.flushPendingSubagentEvents(sessionId)
 			this.startPlanTracker(record, sessionId)
 
 			// Seed the block counter from the persisted branch so replay emits the
@@ -1505,6 +1557,7 @@ export class KimchiAcpAgent {
 			const configOptions = buildConfigOptions(session, initialMode.mode)
 			// Same seeding as newSession (see there) — a resumed Auto session
 			// hydrates its pick before this point, so the label is already final.
+			await this.subagentRegistry.replay(session, replayHistory)
 			record.lastModelOptionName = autoOptionName(configOptions)
 			return {
 				configOptions,
@@ -1524,6 +1577,7 @@ export class KimchiAcpAgent {
 				existing.unsubscribe()
 			}
 			await this.disposeOrphanSession(session)
+			this.subagentRegistry.cleanup(sessionId)
 			throw err
 		}
 	}
@@ -1887,9 +1941,11 @@ export class KimchiAcpAgent {
 	}
 
 	async cancel(params: CancelNotification): Promise<void> {
-		// Child cancellation is not advertised in this wave. The draft requires
-		// unsupported child cancellation to be an ignored notification.
-		if (this.subagentRoutes.has(params.sessionId)) return
+		if (this.subagentRegistry.canAcceptCancellation(params.sessionId)) {
+			await this.subagentRegistry.stop(params.sessionId)
+			return
+		}
+		if (this.subagentRegistry.has(params.sessionId)) return
 		const entry = this.sessions.get(params.sessionId)
 		if (!entry) return
 		if (entry.turn) entry.turn.cancelled = true
@@ -1911,6 +1967,7 @@ export class KimchiAcpAgent {
 		const droppedQueue = this.drainQueue(entry)
 		notifyDroppedQueue(this.conn, params.sessionId, droppedQueue, "cancelled")
 		await entry.session.abort()
+		await this.subagentRegistry.stopParent(params.sessionId, false)
 		// Held plan-review turn still in the review pause: abort() above was a
 		// no-op (nothing is streaming) and no agent_settled is coming — finalize
 		// here. Held-executing turns finalize via agent_settled after the abort.
@@ -2100,6 +2157,30 @@ export class KimchiAcpAgent {
 		return this.shutdownPromise
 	}
 
+	private createSubagentReplayProjection(session: AgentSession, association: RecoveredSubagent, fallback?: string) {
+		const model =
+			fallback || !hasConfirmedModelSelection(session.sessionManager.getBranch()) ? undefined : session.model
+		const record = createProjectionSessionRecord(session, association.cwd, association.parentSessionId, "replay")
+		const configReporter = new SubagentConfigReporter(
+			{
+				model,
+				modelRuntime: session.modelRuntime,
+				routedModel: session.routedModel,
+				sessionId: session.sessionId,
+				sessionManager: session.sessionManager,
+				modelRegistry: getSessionModelRegistry(session),
+				thinkingLevel: session.thinkingLevel,
+			},
+			{
+				buildPermissionsConfigOption,
+				buildModelConfigOption,
+				buildThinkingConfigOption,
+				getEffectivePermissionMode: () => this.getInitialPermissionMode(session).mode,
+			},
+		)
+		return { record, configReporter }
+	}
+
 	private async doShutdown(_cause: "signal" | "disconnect"): Promise<void> {
 		this.commandsRefresher.cancel()
 		this.skillWatcher.close()
@@ -2110,9 +2191,12 @@ export class KimchiAcpAgent {
 		// resolves — in that window a pending PromptResponse would otherwise hang
 		// until process exit. Reject symmetrically so the caller's await settles.
 		for (const entry of this.sessions.values()) {
-			this.releaseSubagentRoutes(entry.session.sessionId)
 			if (entry.turn) this.failTurn(entry, new Error("acp agent shutting down"))
 			cancelPendingPrompts(entry)
+			if (entry.unsolicitedTurn) entry.unsolicitedTurn.cancelled = true
+			else entry.unsolicitedCancelRequested = true
+			await this.subagentRegistry.stopParent(entry.session.sessionId, true)
+			this.cleanupSubagentsForParent(entry.session.sessionId)
 			unregisterAcpPrompter(entry.session.sessionId, entry.ownPrompter)
 			if (unregisterSessionPermissionFlagController(entry.session.sessionId, entry.ownFlagController)) {
 				clearPermissionModeEnv(entry.session.sessionId)
@@ -2129,7 +2213,12 @@ export class KimchiAcpAgent {
 		const entry = this.sessions.get(sessionId)
 		if (!entry) return
 		this.sessions.delete(sessionId)
-		this.releaseSubagentRoutes(sessionId)
+		cancelPendingPrompts(entry)
+		if (entry.turn) entry.turn.cancelled = true
+		if (entry.unsolicitedTurn) entry.unsolicitedTurn.cancelled = true
+		else entry.unsolicitedCancelRequested = true
+		await this.subagentRegistry.stopParent(sessionId, true)
+		this.cleanupSubagentsForParent(sessionId)
 		clearRatingWindow(sessionId)
 		const droppedQueue = this.drainQueue(entry)
 		notifyDroppedQueue(this.conn, sessionId, droppedQueue, "shutdown")
@@ -2138,9 +2227,6 @@ export class KimchiAcpAgent {
 			clearPermissionModeEnv(sessionId)
 		}
 		entry.unsubscribe()
-		// Prompts parked behind an unsolicited run own no turn yet: resolve them
-		// as cancelled rather than leaving the client's request unanswered.
-		cancelPendingPrompts(entry)
 		if (entry.turn) entry.turn.cancelled = true
 		// Abort whatever is running — a prompt's turn or an unsolicited run (a
 		// background exit waking the agent) — so nothing keeps streaming
@@ -2489,7 +2575,7 @@ export class KimchiAcpAgent {
 	 * (token vaults, etc.) for a session that did start.
 	 */
 	private rejectSubagentMutation(sessionId: unknown): void {
-		if (typeof sessionId === "string" && this.subagentRoutes.has(sessionId)) {
+		if (typeof sessionId === "string" && this.subagentRegistry.has(sessionId)) {
 			throw RequestError.invalidParams(undefined, `subagent session ${sessionId} is read-only`)
 		}
 	}
@@ -2507,7 +2593,6 @@ export class KimchiAcpAgent {
 	}
 
 	private async disposeSessionRecord(entry: SessionRecord, opts: DisposeSessionRecordOpts = {}): Promise<void> {
-		this.releaseSubagentRoutes(entry.session.sessionId)
 		setSnapshotArtifactsOptIn(entry.session.sessionManager, false)
 		if (entry.turn) releaseTurnArtifactSnapshots(entry.turn)
 		if (entry.unsolicitedTurn) releaseTurnArtifactSnapshots(entry.unsolicitedTurn)
@@ -2528,30 +2613,9 @@ export class KimchiAcpAgent {
 		this.skillWatcher?.removeSession(entry)
 	}
 
-	/** Detach one native child projection and any parent tool link to it. */
-	private releaseSubagentRoute(sessionId: string): void {
-		const route = this.subagentRoutes.get(sessionId)
-		if (!route) return
-		route.record.planTracker?.stop()
-		route.record.unsubscribe()
-		route.configReporter.dispose()
-		route.cleanupInteraction()
-		this.subagentRoutes.delete(sessionId)
-		const byTool = this.subagentIdsByParentTool.get(route.parentSessionId)
-		if (byTool?.get(route.parentToolCallId) === sessionId) byTool.delete(route.parentToolCallId)
-		if (byTool?.size === 0) this.subagentIdsByParentTool.delete(route.parentSessionId)
-	}
-
-	/** Parent disposal must not leave child observers writing into its stream. */
-	private releaseSubagentRoutes(parentSessionId: string): void {
-		for (const [sessionId, route] of this.subagentRoutes) {
-			if (route.parentSessionId === parentSessionId) this.releaseSubagentRoute(sessionId)
-		}
-	}
-
 	/** Orchestrator queue consumption is an inter-session message, not a human-user echo. */
 	private projectSubagentQueue(
-		route: SubagentRoute,
+		route: SubagentRoute<SessionRecord>,
 		event: Extract<AgentSessionEvent, { type: "queue_update" }>,
 	): void {
 		const entry = route.record
@@ -2575,29 +2639,24 @@ export class KimchiAcpAgent {
 		// This projection is deliberately one-level: only root sessions observe its
 		// creation events. Nested Agent calls need no linked SessionReference.
 		const parent = this.sessions.get(event.parentSessionId)
-		const existingRoute = this.subagentRoutes.get(event.sessionId)
+		const existingRoute = this.subagentRegistry.getLive(event.sessionId)
 		if (event.phase === "resumed") {
 			if (existingRoute?.parentSessionId !== event.parentSessionId) return
 			for (const message of subagentPromptMessages(event.parentSessionId, event)) this.send(message)
 			return
 		}
-		if (!parent || this.sessions.has(event.sessionId) || existingRoute) return
+		if (!parent) {
+			const pending = this.pendingSubagentEvents.get(event.parentSessionId) ?? []
+			pending.push(event)
+			this.pendingSubagentEvents.set(event.parentSessionId, pending)
+			return
+		}
+		if (this.sessions.has(event.sessionId) || this.subagentRegistry.has(event.sessionId) || existingRoute) return
 		const session = event.agentSession ?? this.subagentSessionResolver(event.agentId)
 		if (!session || session.sessionId !== event.sessionId || event.parentSessionId !== parent.session.sessionId) return
 
 		const cwd = absoluteSubagentCwd(event.cwd, parent.cwd)
 		const record = createProjectionSessionRecord(session, cwd, event.parentSessionId)
-		let byTool = this.subagentIdsByParentTool.get(event.parentSessionId)
-		if (!byTool) {
-			byTool = new Map()
-			this.subagentIdsByParentTool.set(event.parentSessionId, byTool)
-		}
-		byTool.set(event.toolCallId, event.sessionId)
-
-		// Ordering is part of the protocol: every child notification and every
-		// parent link is downstream of this parent-envelope announcement.
-		this.send(subagentAnnouncement(event.parentSessionId, event, cwd))
-
 		const configReporter = new SubagentConfigReporter(session, {
 			buildPermissionsConfigOption,
 			buildModelConfigOption,
@@ -2619,38 +2678,41 @@ export class KimchiAcpAgent {
 				record.cwd,
 			),
 			onRequiresActionChange: (waiting) => {
-				if (waiting) {
-					this.send({
-						sessionId: event.parentSessionId,
-						update: {
-							sessionUpdate: "subagent_update",
-							sessionId: event.sessionId,
-							state: { state: "requires_action" },
-						},
-					})
-				} else if (record.turn || record.unsolicitedTurn) {
-					this.send(subagentStateUpdate(event.parentSessionId, event.sessionId, "running"))
+				if (waiting) this.subagentRegistry.publishState(event.sessionId, { state: "requires_action" })
+				else if (record.turn || record.unsolicitedTurn) {
+					this.subagentRegistry.publishState(event.sessionId, { state: "running" })
 				}
 			},
 		})
-		this.subagentRoutes.set(event.sessionId, {
+		this.subagentRegistry.register(event, {
 			parentSessionId: event.parentSessionId,
 			parentToolCallId: event.toolCallId,
 			record,
 			configReporter,
 			cleanupInteraction,
+			background: event.background,
+			abort: event.abort,
 		})
-		configReporter.publishInitial((params) => this.send(params))
-		for (const message of subagentPromptMessages(event.parentSessionId, event)) this.send(message)
 		record.unsubscribe = session.subscribe((childEvent) => this.onSessionEvent(event.sessionId, childEvent))
 		this.startPlanTracker(record, event.sessionId)
 	}
 
+	private flushPendingSubagentEvents(parentSessionId: string): void {
+		const pending = this.pendingSubagentEvents.get(parentSessionId)
+		this.pendingSubagentEvents.delete(parentSessionId)
+		for (const event of pending ?? []) this.onSubagentSessionCreated(event)
+	}
+
+	private cleanupSubagentsForParent(parentSessionId: string): void {
+		this.pendingSubagentEvents.delete(parentSessionId)
+		this.subagentRegistry.cleanup(parentSessionId)
+	}
+
 	private onSessionEvent(sessionId: string, event: AgentSessionEvent): void {
-		const route = this.subagentRoutes.get(sessionId)
+		const route = this.subagentRegistry.getLive(sessionId)
 		const entry = this.sessions.get(sessionId) ?? route?.record
 		if (!entry) return
-		route?.configReporter.publishChanged((params) => this.send(params))
+		if (route) this.subagentRegistry.publishConfig(sessionId)
 		// The active run's bookkeeping: the prompt-owned turn, or — for an
 		// unsolicited run (no prompt in flight, e.g. a background-bash
 		// completion notification waking an idle agent) — its passive context.
@@ -2721,6 +2783,7 @@ export class KimchiAcpAgent {
 				const runStartReason = takePendingRunReason(sessionId)
 				const wakeCancel = entry.unsolicitedCancelRequested === true
 				entry.unsolicitedCancelRequested = false
+				if (route) route.cancelRequested = false
 				if (!entry.turn && !entry.unsolicitedTurn) {
 					entry.unsolicitedTurn = createTurnContext()
 					// Announce the agent-initiated run BEFORE its streamed output
@@ -2729,7 +2792,7 @@ export class KimchiAcpAgent {
 					// completion guard hold its turn open — never reach here — and
 					// must not learn about runs it cannot present.
 					if (route) {
-						this.send(subagentStateUpdate(route.parentSessionId, sessionId, "running"))
+						this.subagentRegistry.publishState(sessionId, { state: "running" })
 					} else if (getBackgroundRunsPermitted()) {
 						emitRunStart(this.conn, sessionId, runStartReason)
 					}
@@ -2789,7 +2852,10 @@ export class KimchiAcpAgent {
 						refused: unsolicited.refused,
 					})
 					if (route) {
-						this.send(subagentStateUpdate(route.parentSessionId, sessionId, "idle", stopReason))
+						this.subagentRegistry.publishState(sessionId, {
+							state: "idle",
+							stopReason: route.cancelRequested ? "cancelled" : stopReason,
+						})
 					} else if (getBackgroundRunsPermitted()) {
 						emitRunEnd(this.conn, sessionId, stopReason)
 					}
@@ -3352,7 +3418,10 @@ export class KimchiAcpAgent {
 	// Notifications go straight from this method to conn.sessionUpdate; we do
 	// NOT replay through the AgentSession event emitter, so extensions like
 	// telemetryExtension don't double-count historical turns.
-	private replayTranscript(session: AgentSession): void {
+	private replayTranscript(
+		session: AgentSession,
+		record: SessionRecord | undefined = this.sessions.get(session.sessionId),
+	): void {
 		const sessionId = session.sessionId
 		const entries = session.sessionManager.getBranch()
 		const toolResults = collectToolResults(entries)
@@ -3367,9 +3436,12 @@ export class KimchiAcpAgent {
 		const flushTurnArtifacts = () => {
 			// verifyExists:false: replayed artifacts keep pointing at files that may
 			// legitimately be gone (detection already skipped the on-disk check).
-			for (const update of artifactBuffer.flush(this.sessions.get(sessionId)?.emittedModelMeta, {
-				verifyExists: false,
-			})) {
+			for (const update of artifactBuffer.flush(
+				record?.emittedModelMeta ?? this.sessions.get(sessionId)?.emittedModelMeta,
+				{
+					verifyExists: false,
+				},
+			)) {
 				this.send({ sessionId, update })
 			}
 		}
@@ -3428,7 +3500,7 @@ export class KimchiAcpAgent {
 					toolResults,
 					replayWaitTargets,
 					settles,
-					this.sessions.get(sessionId),
+					record,
 					modelAttributionFrom(msg),
 				)
 				if (lastTextBlockId !== undefined) {
@@ -3634,6 +3706,8 @@ export class KimchiAcpAgent {
 					if (seqN !== undefined && Number.isSafeInteger(seqN))
 						record.nextToolCallId = Math.max(record.nextToolCallId, seqN + 1)
 				}
+				const preservedToolId = record?.childToolIdHistory?.takeForReplay(upstreamId)
+				if (record && preservedToolId !== undefined) record.toolCallIdMap.set(upstreamId, preservedToolId)
 				const acpToolCallId = heldAcpId
 					? heldAcpId.acpToolCallId
 					: record
@@ -3705,7 +3779,7 @@ export class KimchiAcpAgent {
 	private publishModelOptionIfChanged(sessionId: string, entry: SessionRecord): void {
 		// Child snapshots have one authoritative publisher which also includes
 		// routed physical reasoning and the child's own permission state.
-		if (this.subagentRoutes.has(sessionId)) return
+		if (this.subagentRegistry.has(sessionId)) return
 		const configOptions = buildConfigOptions(entry.session, this.getInitialPermissionMode(entry.session).mode)
 		const autoName = autoOptionName(configOptions)
 		if (!autoName || autoName === entry.lastModelOptionName) return
@@ -3714,7 +3788,7 @@ export class KimchiAcpAgent {
 	}
 
 	private subagentSessionForTool(parentSessionId: string, toolCallId: string): string | undefined {
-		return this.subagentIdsByParentTool.get(parentSessionId)?.get(toolCallId)
+		return this.subagentRegistry.childForTool(parentSessionId, toolCallId, toolCallId)
 	}
 
 	private agentContent(
@@ -3771,6 +3845,7 @@ export class KimchiAcpAgent {
 		if (acpId === undefined) {
 			acpId = buildToolCallId(toolName, record.nextToolCallId++)
 			record.toolCallIdMap.set(key, acpId)
+			record.childToolIdHistory?.record(piToolCallId, acpId)
 		}
 		return acpId
 	}
@@ -3798,9 +3873,7 @@ export class KimchiAcpAgent {
 		piToolCallId: string,
 		opts: RetireToolCallOpts = {},
 	): void {
-		const byTool = this.subagentIdsByParentTool.get(record.session.sessionId)
-		byTool?.delete(piToolCallId)
-		if (byTool?.size === 0) this.subagentIdsByParentTool.delete(record.session.sessionId)
+		this.subagentRegistry.retireTool(record.session.sessionId, piToolCallId)
 		record.toolCallIdMap.delete(piToolCallId)
 		turn.announcedToolCallIds.delete(piToolCallId)
 		turn.lastStreamedContent.delete(piToolCallId)
@@ -4635,7 +4708,7 @@ function resolveSessionPathById(sessionDir: string, sessionId: string): string |
 
 const SESSION_HEADER_PEEK_BYTES = 8 * 1024
 
-function parseSessionHeader(raw: string): Pick<SessionHeader, "id" | "cwd"> | null {
+function parseSessionHeader(raw: string): Pick<SessionHeader, "id" | "cwd" | "parentSession"> | null {
 	for (const line of raw.split("\n")) {
 		const trimmed = line.trim()
 		if (!trimmed) continue
@@ -4646,9 +4719,13 @@ function parseSessionHeader(raw: string): Pick<SessionHeader, "id" | "cwd"> | nu
 			continue
 		}
 		if (!entry || typeof entry !== "object" || (entry as { type?: unknown }).type !== "session") continue
-		const header = entry as { id?: unknown; cwd?: unknown }
+		const header = entry as { id?: unknown; cwd?: unknown; parentSession?: unknown }
 		if (typeof header.id !== "string" || typeof header.cwd !== "string") return null
-		return { id: header.id, cwd: header.cwd }
+		return {
+			id: header.id,
+			cwd: header.cwd,
+			parentSession: typeof header.parentSession === "string" ? header.parentSession : undefined,
+		}
 	}
 	return null
 }
@@ -4667,7 +4744,7 @@ function readSessionHeaderPeek(sessionPath: string): { raw: string; complete: bo
 	}
 }
 
-function readSessionHeader(sessionPath: string): Pick<SessionHeader, "id" | "cwd"> | null {
+function readSessionHeader(sessionPath: string): Pick<SessionHeader, "id" | "cwd" | "parentSession"> | null {
 	const peek = readSessionHeaderPeek(sessionPath)
 	const parseablePeek = peek.complete ? peek.raw : peek.raw.slice(0, Math.max(0, peek.raw.lastIndexOf("\n") + 1))
 	const header = parseSessionHeader(parseablePeek)
@@ -4835,7 +4912,7 @@ export function defaultSessionLoader(
 			bindSessionScopedOAuth(session, options.agentDir)
 			return session
 		}
-		let header: Pick<SessionHeader, "id" | "cwd"> | null
+		let header: Pick<SessionHeader, "id" | "cwd" | "parentSession"> | null
 		try {
 			header = readSessionHeader(sessionPath)
 		} catch (err) {
@@ -4860,6 +4937,9 @@ export function defaultSessionLoader(
 		// load.
 		if (header.cwd !== cwd) {
 			throw RequestError.invalidParams(undefined, `session cwd ${header.cwd} does not match requested cwd ${cwd}`)
+		}
+		if (header.parentSession) {
+			throw RequestError.invalidParams(undefined, `subagent session ${params.sessionId} is read-only`)
 		}
 		let sessionManager: SessionManager
 		try {
@@ -4924,6 +5004,32 @@ async function createSsoAwareModelRuntime(agentDir: string) {
  */
 function bindSessionScopedOAuth(session: AgentSession, agentDir: string): void {
 	installKimchiOAuth(session.modelRuntime, join(agentDir, "auth.json"), session.modelRuntime)
+}
+
+/** Open a recovered child for parent-owned history projection. Unlike a
+ * direct child load request this never binds extensions or registers a live
+ * ACP session. The caller supplies only a locally persisted association. */
+export function defaultSubagentReplayLoader(options: RunAcpOptions): AcpSubagentReplayLoader {
+	return async (association: RecoveredSubagent): Promise<AcpSubagentReplayResult> => {
+		const header = readSessionHeader(association.sessionFile)
+		if (!header || header.id !== association.sessionId || !header.parentSession) {
+			throw RequestError.invalidParams(undefined, `invalid recovered subagent session ${association.sessionId}`)
+		}
+		const cwd = header.cwd
+		const modelRuntime = await createSsoAwareModelRuntime(options.agentDir)
+		const { settingsManager, resourceLoader } = await createSessionSettings(cwd, options, { mcpServers: [] })
+		const sessionManager = SessionManager.open(association.sessionFile)
+		const { session, modelFallbackMessage } = await createAgentSession({
+			cwd,
+			agentDir: options.agentDir,
+			settingsManager,
+			resourceLoader,
+			sessionManager,
+			modelRuntime,
+		})
+		bindSessionScopedOAuth(session, options.agentDir)
+		return { session, modelFallbackMessage }
+	}
 }
 
 /** Exported for tests: the production session factory used by {@link KimchiAcpAgent}. */
