@@ -111,6 +111,7 @@ interface Harness {
 interface HarnessOptions {
 	parkDiscovery?: () => Promise<boolean>
 	lateContributedDir?: string
+	skillOptions?: { noSkills?: boolean; additionalSkillPaths?: string[] }
 }
 
 async function setupHarness(opts: HarnessOptions = {}): Promise<Harness> {
@@ -157,12 +158,14 @@ async function setupHarness(opts: HarnessOptions = {}): Promise<Harness> {
 		settingsManager,
 		extensionFactories: [extension],
 		eventBus: bus,
+		...opts.skillOptions,
 	})
 	const loader = new AcpSessionResourceLoader({
 		mainLoader,
 		cwd,
 		agentDir,
 		settingsManager,
+		skillOptions: opts.skillOptions,
 		baseAppend: () => ["base append"],
 	})
 	// Mirrors createSessionSettings: the loader is loaded before the session
@@ -269,6 +272,23 @@ describe("AcpSessionResourceLoader — real-loader skill refresh", () => {
 			h.session.setActiveToolsByName(h.session.getActiveToolNames())
 			expect(h.session.systemPrompt).toContain("prompt-skill")
 			expect(h.session.systemPrompt).toContain("base append")
+		} finally {
+			await dispose(h)
+		}
+	})
+
+	it("keeps --no-skills and --skill on a refresh", async () => {
+		const explicitSkills = makeTmpDir()
+		writeSkill(explicitSkills, "explicit-skill", "From --skill")
+		const h = await setupHarness({ skillOptions: { noSkills: true, additionalSkillPaths: [explicitSkills] } })
+		try {
+			writeSkill(h.settingsSkills, "late-settings-skill", "Hidden by --no-skills")
+			await h.loader.refreshSkills(h.session)
+
+			const names = skillNames(h.loader)
+			expect(names).toContain("explicit-skill")
+			expect(names).not.toContain("settings-skill")
+			expect(names).not.toContain("late-settings-skill")
 		} finally {
 			await dispose(h)
 		}

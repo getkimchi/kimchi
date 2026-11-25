@@ -1137,6 +1137,7 @@ async function cliMain(): Promise<void> {
 
 			if (IS_ACP_MODE) {
 				const { runAcpMode } = await import("./modes/acp/server.js")
+				const parsedPiArgs = parsePiArgs(piArgs)
 				await runAcpMode({
 					extensionFactories,
 					agentDir,
@@ -1146,7 +1147,11 @@ async function cliMain(): Promise<void> {
 								mcpProbe: new UpstreamMcpProbe(),
 							}
 						: {}),
-					appendSystemPrompt: parsePiArgs(piArgs).appendSystemPrompt,
+					appendSystemPrompt: parsedPiArgs.appendSystemPrompt,
+					systemPrompt: parsedPiArgs.systemPrompt,
+					noSkills: parsedPiArgs.noSkills,
+					// Relative to where the server was started, as Pi's own CLI resolves them.
+					additionalSkillPaths: parsedPiArgs.skills?.map((path) => resolve(path)),
 				})
 			} else {
 				// Delegate to pi-mono's CLI main function, injecting the kimchi extension

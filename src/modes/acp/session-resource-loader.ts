@@ -46,6 +46,7 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 	private readonly discoveryCwd: string
 	private readonly discoveryAgentDir: string
 	private readonly discoverySettingsManager: SettingsManager
+	private readonly discoverySkillOptions: { noSkills?: boolean; additionalSkillPaths?: string[] }
 	private readonly baseAppend: () => string[]
 	/**
 	 * Committed skills snapshot — served by `getSkills()` once set. Undefined
@@ -70,6 +71,8 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 		cwd: string
 		agentDir: string
 		settingsManager: SettingsManager
+		/** The main loader's `--no-skills` / `--skill` options, so a refresh finds the same skills. */
+		skillOptions?: { noSkills?: boolean; additionalSkillPaths?: string[] }
 		/** ACP append base (CLI flag + `_meta["kimchi.dev"].appendSystemPrompt`). */
 		baseAppend: () => string[]
 	}) {
@@ -77,6 +80,7 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 		this.discoveryCwd = options.cwd
 		this.discoveryAgentDir = options.agentDir
 		this.discoverySettingsManager = options.settingsManager
+		this.discoverySkillOptions = options.skillOptions ?? {}
 		this.baseAppend = options.baseAppend
 	}
 
@@ -213,6 +217,7 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 			cwd: this.discoveryCwd,
 			agentDir: this.discoveryAgentDir,
 			settingsManager: this.discoverySettingsManager,
+			...this.discoverySkillOptions,
 			// Resources-only: no extension loading, no inline factories, no
 			// additional extension paths — the live set stays on the main loader.
 			noExtensions: true,

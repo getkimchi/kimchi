@@ -393,6 +393,10 @@ export interface RunAcpOptions {
 	 * `_meta["kimchi.dev"].appendSystemPrompt`, meta content is appended after this.
 	 */
 	appendSystemPrompt?: string[]
+	/** `--system-prompt`, `--no-skills` and `--skill` from the CLI, applied to every session's loaders. */
+	systemPrompt?: string
+	noSkills?: boolean
+	additionalSkillPaths?: string[]
 	/** Override for tests. Defaults to the pi-coding-agent-backed factory. */
 	sessionFactory?: AcpSessionFactory
 	/** Test seam for fabricated lifecycle events without a native session payload. */
@@ -4294,10 +4298,13 @@ async function createSessionSettings(
 	// snapshots that skill refreshes recompute without extension reloads, and
 	// computes the append prompt per call so a committed skills snapshot is
 	// reflected on the next prompt rebuild (see session-resource-loader.ts).
+	const skillOptions = { noSkills: options.noSkills, additionalSkillPaths: options.additionalSkillPaths }
 	const mainLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir: options.agentDir,
 		settingsManager,
+		systemPrompt: options.systemPrompt,
+		...skillOptions,
 		extensionFactories: [
 			...options.extensionFactories,
 			...(mcpExtension ? [mcpExtension] : []),
@@ -4309,6 +4316,7 @@ async function createSessionSettings(
 		cwd,
 		agentDir: options.agentDir,
 		settingsManager,
+		skillOptions,
 		baseAppend: () => resolveAcpAppendSystemPrompt(params, options) ?? [],
 	})
 	await resourceLoader.reload()
