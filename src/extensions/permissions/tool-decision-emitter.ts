@@ -27,7 +27,7 @@ export function emitToolDecision(
 ): void {
 	const payload: PermissionToolDecisionPayload = {
 		toolCallId: event.toolCallId,
-		toolName: event.toolName.toLowerCase(),
+		toolName: event.toolName,
 		decision,
 		sourceDetail,
 		permissionMode,

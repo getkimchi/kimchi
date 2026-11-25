@@ -1,11 +1,10 @@
 /**
  * Read-only qualification for MCP tools.
  *
- * Planning mode admits read-only MCP direct tools and uses this same
- * qualification for nested gateway calls. The gateway itself receives separate
- * argument-aware authorization in index.ts; script and namespace proxies stay
- * blocked. Direct-tool classification follows the MCP spec first and a name
- * convention second:
+ * Planning mode admits read-only MCP direct tools. Gateway resolution and
+ * nested-call authorization live in call-catalog.ts; this file supplies
+ * evidence classification and candidate collection. Direct-tool classification
+ * follows the MCP spec first and a name convention second:
  *
  * - `annotations.readOnlyHint === true` qualifies the tool, always.
  * - When the server publishes NO annotations at all, a name-prefix convention
@@ -21,21 +20,16 @@
  */
 
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
-import {
-	computeServerHash,
-	isServerCacheValid,
-	loadMetadataCache,
-	reconstructToolMetadata,
-} from "pi-mcp-adapter/metadata-cache"
+import { computeServerHash, isServerCacheValid, reconstructToolMetadata } from "pi-mcp-adapter/metadata-cache"
 import {
 	formatServerNamespace,
 	formatToolName,
-	getServerPrefix,
-	getToolNameCandidates,
 	isServerDisabled,
 	type McpConfig,
+	type MetadataCache,
 	resolveToolPrefix,
 	type ServerCacheEntry,
+	type ServerEntry,
 	type ToolMetadata,
 	type ToolPrefix,
 } from "pi-mcp-adapter/types"
@@ -45,32 +39,57 @@ const READ_ONLY_NAME_PREFIXES = /^(get|search|list|read|fetch)/
 /** Process-level dedupe for convention promotions — audit signal, not noise. */
 const warnedConventionPromotions = new Set<string>()
 
-export function isReadOnlyQualifiedMcpTool(originalName: string, annotations?: ToolAnnotations | null): boolean {
-	if (annotations?.readOnlyHint === true) return true
-	if (annotations === undefined || annotations === null) {
-		if (READ_ONLY_NAME_PREFIXES.test(originalName)) {
-			if (!warnedConventionPromotions.has(originalName)) {
-				warnedConventionPromotions.add(originalName)
-				console.warn(`[mcp] Tool "${originalName}" promoted to read-only via name convention (no annotations)`)
-			}
-			return true
-		}
+export type ReadOnlyEvidence =
+	| "annotation_true"
+	| "annotation_false"
+	| "none"
+	| "unannotated"
+	| "name_convention"
+	| "resource"
+
+export function getMcpReadOnlyEvidence(
+	originalName: string,
+	annotations?: ToolAnnotations | null,
+): Exclude<ReadOnlyEvidence, "resource"> {
+	if (annotations?.readOnlyHint === true) return "annotation_true"
+	if (annotations?.readOnlyHint === false) return "annotation_false"
+	if (annotations !== undefined && annotations !== null) return "none"
+	if (!READ_ONLY_NAME_PREFIXES.test(originalName)) return "unannotated"
+	if (!warnedConventionPromotions.has(originalName)) {
+		warnedConventionPromotions.add(originalName)
+		console.warn(`[mcp] Tool "${originalName}" promoted to read-only via name convention (no annotations)`)
 	}
-	return false
+	return "name_convention"
 }
 
-interface McpToolCandidate {
+export function isReadOnlyEvidence(evidence: ReadOnlyEvidence): boolean {
+	return evidence === "annotation_true" || evidence === "name_convention" || evidence === "resource"
+}
+
+export function isReadOnlyQualifiedMcpTool(originalName: string, annotations?: ToolAnnotations | null): boolean {
+	return isReadOnlyEvidence(getMcpReadOnlyEvidence(originalName, annotations))
+}
+
+export interface McpToolCandidate {
 	serverName: string
 	prefix: ToolPrefix
 	tool: ToolMetadata
-	readOnly: boolean
+	evidence: ReadOnlyEvidence
 }
 
-function collectMcpToolCandidates(
+export function isPrivateEntryUsable(entry: ServerCacheEntry, definition: ServerEntry): boolean {
+	try {
+		return entry.cacheScope === "private" && entry.configHash === computeServerHash(definition)
+	} catch {
+		return false
+	}
+}
+
+export function collectMcpToolCandidates(
 	config: McpConfig,
+	cache: MetadataCache | null,
 	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
 ): McpToolCandidate[] {
-	const cache = loadMetadataCache()
 	if (!cache?.servers && !privateCatalogs?.size) return []
 	const candidates: McpToolCandidate[] = []
 	const reserved = new Set([
@@ -81,11 +100,7 @@ function collectMcpToolCandidates(
 	for (const [serverName, definition] of Object.entries(config.mcpServers)) {
 		if (isServerDisabled(definition)) continue
 		const sessionEntry = privateCatalogs?.get(serverName)
-		if (
-			sessionEntry &&
-			(sessionEntry.cacheScope !== "private" || sessionEntry.configHash !== computeServerHash(definition))
-		)
-			continue
+		if (sessionEntry && !isPrivateEntryUsable(sessionEntry, definition)) continue
 		// Match the adapter's own in-memory direct-tool projection: session-only
 		// cache hints are not revalidated against the persistent cache contract.
 		let entry = cache?.servers[serverName]
@@ -118,12 +133,12 @@ function collectMcpToolCandidates(
 				serverName,
 				prefix,
 				tool,
-				readOnly:
-					sourceResource !== undefined ||
-					(nameCounts.get(tool.name) === 1 &&
-						tool.resourceUri === undefined &&
-						source !== undefined &&
-						isReadOnlyQualifiedMcpTool(source.name, source.annotations)),
+				evidence:
+					sourceResource !== undefined
+						? "resource"
+						: nameCounts.get(tool.name) === 1 && tool.resourceUri === undefined && source !== undefined
+							? getMcpReadOnlyEvidence(source.name, source.annotations)
+							: "unannotated",
 			})
 		}
 	}
@@ -138,73 +153,13 @@ function collectMcpToolCandidates(
  * registered tools before exposing them to the planning profile. With
  * `server`, only that server's tools qualify, as for a gateway call naming it.
  */
-export function collectReadOnlyMcpWireNames(
-	config: McpConfig,
-	server?: string,
-	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
-): string[] {
+export function collectReadOnlyMcpWireNames(candidates: readonly McpToolCandidate[], server?: string): string[] {
 	const qualified = new Map<string, boolean>()
-	for (const { serverName, tool, readOnly } of collectMcpToolCandidates(config, privateCatalogs)) {
-		qualified.set(tool.name, (server === undefined || serverName === server) && !qualified.has(tool.name) && readOnly)
+	for (const { serverName, tool, evidence } of candidates) {
+		qualified.set(
+			tool.name,
+			(server === undefined || serverName === server) && !qualified.has(tool.name) && isReadOnlyEvidence(evidence),
+		)
 	}
 	return [...qualified].filter(([, readOnly]) => readOnly).map(([name]) => name)
-}
-
-function hasSingleReadOnlyMatch(candidates: McpToolCandidate[]): boolean {
-	return candidates.length === 1 && candidates[0]?.readOnly === true
-}
-
-function resolveServerGatewayTool(candidates: McpToolCandidate[], toolName: string, serverName: string): boolean {
-	const scoped = candidates.filter((candidate) => candidate.serverName === serverName)
-	const exact = scoped.filter((candidate) => candidate.tool.name === toolName)
-	if (exact.length > 0) return hasSingleReadOnlyMatch(exact)
-	return hasSingleReadOnlyMatch(
-		scoped.filter((candidate) =>
-			getToolNameCandidates(candidate.tool.originalName, serverName, candidate.prefix).has(toolName),
-		),
-	)
-}
-
-function prefixedServerScope(config: McpConfig, toolName: string): string | undefined {
-	const candidates = Object.entries(config.mcpServers)
-		.filter(([, definition]) => !isServerDisabled(definition))
-		.map(([serverName, definition]) => ({
-			serverName,
-			prefix: getServerPrefix(serverName, resolveToolPrefix(definition, config.settings?.toolPrefix)),
-		}))
-		.filter(({ prefix }) => prefix.length > 0 && toolName.startsWith(`${prefix}_`))
-		.sort((a, b) => b.prefix.length - a.prefix.length)
-	if (candidates.length === 0) return undefined
-	const longest = candidates[0]?.prefix.length
-	const best = candidates.filter(({ prefix }) => prefix.length === longest)
-	return best.length === 1 ? best[0]?.serverName : undefined
-}
-
-/**
- * Whether a gateway tool argument resolves to one read-only tool using the
- * adapter's displayed/original/legacy name semantics. Exact displayed names
- * win over original names, followed by prefixed-server and candidate aliases;
- * every ambiguity, stale metadata entry, and cross-server collision fails closed.
- */
-export function isReadOnlyQualifiedMcpGatewayTool(
-	config: McpConfig,
-	toolName: string,
-	server?: string,
-	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
-): boolean {
-	const candidates = collectMcpToolCandidates(config, privateCatalogs)
-	if (server !== undefined) return resolveServerGatewayTool(candidates, toolName, server)
-
-	const exact = candidates.filter((candidate) => candidate.tool.name === toolName)
-	if (exact.length > 0) return hasSingleReadOnlyMatch(exact)
-	const original = candidates.filter((candidate) => candidate.tool.originalName === toolName)
-	if (original.length > 0) return hasSingleReadOnlyMatch(original)
-
-	const scopedServer = prefixedServerScope(config, toolName)
-	if (scopedServer !== undefined) return resolveServerGatewayTool(candidates, toolName, scopedServer)
-	return hasSingleReadOnlyMatch(
-		candidates.filter((candidate) =>
-			getToolNameCandidates(candidate.tool.originalName, candidate.serverName, candidate.prefix).has(toolName),
-		),
-	)
 }

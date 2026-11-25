@@ -123,10 +123,11 @@ export function loadKimchiMcpConfig(
 		// project files, project host imports, and project package declarations
 		// cannot enter the effective config. The resulting config must be passed to
 		// createMcpAdapter() programmatically; otherwise it would rediscover the real
-		// session cwd during initialization.
+		// session cwd during initialization. Use the same user-layer file as the
+		// project path below, so both layers match when the project adds nothing.
 		const userConfigCwd = join(getAgentDir(), ".kimchi-mcp-user-config")
 		return {
-			config: loadUpstreamMcpConfig(undefined, userConfigCwd),
+			config: loadUpstreamMcpConfig(getSharedMcpConfigPath(), userConfigCwd),
 			useProgrammaticConfig: true,
 			warnings: [],
 		}
@@ -134,7 +135,9 @@ export function loadKimchiMcpConfig(
 	// piConfig.mcpProjectConfigDir makes the legacy .kimchi layer upstream's
 	// normal project source, including its management UI and persistence paths.
 	const configPath = options.overridePath
-	const discovered = loadUpstreamMcpConfig(configPath, cwd)
+	// Discover with the same user-layer path the adapter is handed (index.ts falls back to the shared file), so
+	// Kimchi's trust decision and call lookup see the config the adapter loads.
+	const discovered = loadUpstreamMcpConfig(configPath ?? getSharedMcpConfigPath(), cwd)
 	if (!configPath) return { config: discovered, warnings: [] }
 
 	// pi-mcp-adapter treats configPath as a global layer, below its standard
