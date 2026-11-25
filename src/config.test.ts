@@ -1888,18 +1888,18 @@ describe("firstRunSettingsDefaults", () => {
 			theme: "kimchi-minimal",
 			retry: RETRY_DEFAULTS,
 			hideThinkingBlock: true,
-			collapseWork: "all",
+			collapseWork: "off",
 		})
 	})
 
 	it("keeps collapseWork at the read-time fallback so /settings shows it", () => {
-		expect(firstRunSettingsDefaults().collapseWork).toBe("all")
+		expect(firstRunSettingsDefaults().collapseWork).toBe("off")
 	})
 
 	it("returns a fresh object each call so callers cannot corrode the defaults", () => {
 		const first = firstRunSettingsDefaults()
-		first.collapseWork = "off"
-		expect(firstRunSettingsDefaults().collapseWork).toBe("all")
+		first.collapseWork = "all"
+		expect(firstRunSettingsDefaults().collapseWork).toBe("off")
 	})
 
 	it("deep-copies the retry defaults so nested mutations cannot corrode them", () => {

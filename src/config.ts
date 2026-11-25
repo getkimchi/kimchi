@@ -173,9 +173,9 @@ export function upgradeLegacyRetrySettings(retry: unknown): RetrySettings | unde
  * This is the explicit, visible default set for new users: once the file
  * exists these values are never rewritten (see the `ensure*` helpers below,
  * which only fill gaps for files predating a given key). `collapseWork` is
- * seeded as `"all"` so a fresh install shows "Collapse work: all" in
+ * seeded as `"off"` so a fresh install shows "Collapse work: off" in
  * settings.json and in the `/settings` panel; readers already fall back to
- * `"all"` when the key is absent, so this only makes the default explicit.
+ * `"off"` when the key is absent, so this only makes the default explicit.
  */
 export function firstRunSettingsDefaults(): Record<string, unknown> {
 	return {
@@ -185,7 +185,7 @@ export function firstRunSettingsDefaults(): Record<string, unknown> {
 		// `retry.provider.timeoutMs`) can't corrupt the shared defaults.
 		retry: structuredClone(RETRY_DEFAULTS),
 		hideThinkingBlock: true,
-		collapseWork: "all",
+		collapseWork: "off",
 	}
 }
 
