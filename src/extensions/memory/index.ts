@@ -14,7 +14,7 @@
  *     digest is reused verbatim; an empty, failed, or timed-out result selects
  *     the constant notice-only prefix and never retries prefix injection.
  *     Late facts arrive through progressive recall's conversation-tail
- *     messages instead. Compaction or a memory toggle starts a new epoch.
+ *     messages instead. Compaction, a memory toggle, or a successful /memory reset starts a new epoch.
  *   - `memory_search` is the pull-based supplement for anything the digest
  *     did not surface.
  *   - In-session management: the `/memory` command (same grammar as the
