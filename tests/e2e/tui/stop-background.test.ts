@@ -1,6 +1,6 @@
 // Esc never stops background work by itself. When Esc finds work still
 // running, Kimchi asks, and only a deliberate "Stop all" ends it.
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, Key, test } from "@microsoft/tui-test"
 import {
@@ -11,7 +11,7 @@ import {
 	waitForTurnToSettle,
 } from "./support/assertions.js"
 import type { FakeResponseRequest } from "./support/fake-openai-server.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { harnessSettingsPath, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -68,6 +68,14 @@ function agentTurnCount(requests: readonly FakeResponseRequest[]): number {
 	).length
 }
 
+// The command test checks the final state on the bash card. Collapsed work
+// folds that card into a summary line, so keep cards visible.
+function disableCollapseWork(homeDir: string): void {
+	const path = harnessSettingsPath(homeDir)
+	const settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
+	writeFileSync(path, JSON.stringify({ ...settings, collapseWork: "off" }, null, "\t"))
+}
+
 const BASH_COMMAND = 'echo "$$" > shell.pid; sleep 300 & echo "$!" > child.pid; wait'
 
 const waitOnBackgroundCommand = [
@@ -82,7 +90,11 @@ const waitOnBackgroundCommand = [
 test("Esc during a wait on a background command asks, and Stop all ends it", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
-		{ artifactName: "stop-background-command", responses: waitOnBackgroundCommand },
+		{
+			artifactName: "stop-background-command",
+			seedHome: (homeDir) => disableCollapseWork(homeDir),
+			responses: waitOnBackgroundCommand,
+		},
 		async (fixture, trace) => {
 			const pids: number[] = []
 			try {
