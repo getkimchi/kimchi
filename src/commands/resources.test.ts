@@ -57,9 +57,9 @@ describe("runResources org-policy refusals", () => {
 	it("enable on an unlocked resource still works", async () => {
 		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
 
-		await expect(runResources(["enable", "extensions.ferment-v2"])).resolves.toBe(0)
+		await expect(runResources(["enable", "extensions.ferment-legacy"])).resolves.toBe(0)
 
-		expect(log).toHaveBeenCalledWith("extensions.ferment-v2: enabled")
+		expect(log).toHaveBeenCalledWith("extensions.ferment-legacy: enabled")
 	})
 
 	it("the list marks org-locked entries", async () => {

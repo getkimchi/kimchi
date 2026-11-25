@@ -1,4 +1,5 @@
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
+import { FERMENT_LEGACY_RESOURCE_ID } from "../extensions/ferment/resource.js"
 import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
 import { KIMCHI_MCP_GATEWAY_RESOURCE_ID } from "../extensions/mcp/gateway.js"
 import { MEMORY_RESOURCE_ID } from "../extensions/memory/config.js"
@@ -91,14 +92,6 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		kind: "extensions",
 		label: "Agent rules",
 		description: "Load project rules from .agents/rules (.mdc files with globs and alwaysApply).",
-		defaultEnabled: true,
-		restartRequired: true,
-	},
-	{
-		id: "extensions.ferment",
-		kind: "extensions",
-		label: "Ferment",
-		description: "Enable guided project workflow tools.",
 		defaultEnabled: true,
 		restartRequired: true,
 	},
@@ -206,9 +199,18 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 	{
 		id: FERMENT_V2_RESOURCE_ID,
 		kind: "extensions",
+		label: "Ferment",
+		description: "Persistent objectives with guarded automatic continuation.",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	// Old extensions.ferment-v2 overrides stay inert on purpose (same as side-chat-pill, #1774).
+	{
+		id: FERMENT_LEGACY_RESOURCE_ID,
+		kind: "extensions",
 		experimental: true,
-		label: "Ferment V2",
-		description: "Enable persistent objectives with guarded automatic continuation.",
+		label: "Ferment (legacy)",
+		description: "Legacy Ferment (V1) with phases and workers. Will be removed.",
 		defaultEnabled: false,
 		restartRequired: true,
 	},

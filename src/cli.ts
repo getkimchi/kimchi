@@ -103,6 +103,7 @@ import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import feedbackExtension from "./extensions/feedback/index.js"
 import fermentExtension from "./extensions/ferment/index.js"
+import { FERMENT_LEGACY_RESOURCE_ID } from "./extensions/ferment/resource.js"
 import { FERMENT_V2_RESOURCE_ID } from "./extensions/ferment-v2/constants.js"
 import fermentV2Extension from "./extensions/ferment-v2/index.js"
 import helpExtension from "./extensions/help.js"
@@ -1010,7 +1011,7 @@ async function cliMain(): Promise<void> {
 				ideAdapterExtension,
 				// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 				...enabledExtensionFactories([
-					{ id: "extensions.ferment", factory: fermentExtension },
+					{ id: FERMENT_LEGACY_RESOURCE_ID, factory: fermentExtension },
 				] satisfies ManagedExtensionFactory[]),
 				questionnaireExtension,
 				// Backend-routed virtual models (`auto`, `auto-beta`, …) learn + display

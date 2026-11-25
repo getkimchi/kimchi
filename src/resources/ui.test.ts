@@ -81,14 +81,14 @@ describe("ResourceManagerComponent", () => {
 		const experimentalTab = component.render(160).join("\n")
 
 		expect(experimentalTab).toContain("Experimental")
-		expect(experimentalTab).toContain("extensions.ferment-v2")
-		expect(isResourceEnabled("extensions.ferment-v2")).toBe(false)
+		expect(experimentalTab).toContain("extensions.ferment-legacy")
+		expect(isResourceEnabled("extensions.ferment-legacy")).toBe(false)
 
 		component.handleInput(" ")
 
-		expect(isResourceEnabled("extensions.ferment-v2")).toBe(true)
+		expect(isResourceEnabled("extensions.ferment-legacy")).toBe(true)
 		const extensions = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "extensions")
-		expect(extensions.render(160).join("\n")).not.toContain("extensions.ferment-v2")
+		expect(extensions.render(160).join("\n")).not.toContain("extensions.ferment-legacy")
 	})
 
 	it("org-locked resources show an org-locked value and cannot be toggled", async () => {

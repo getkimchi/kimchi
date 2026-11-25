@@ -86,7 +86,7 @@ describe("handleListResources", () => {
 		const memory = result.resources.find((r) => r.id === "extensions.memory")
 		expect(memory).toMatchObject({ orgPolicy: "ON", locked: false, enabled: true })
 		// Unmentioned resources carry no policy fields.
-		const ferment = result.resources.find((r) => r.id === "extensions.ferment-v2")
+		const ferment = result.resources.find((r) => r.id === "extensions.ferment-legacy")
 		expect(ferment?.orgPolicy).toBeUndefined()
 		expect(ferment?.locked).toBe(false)
 	})

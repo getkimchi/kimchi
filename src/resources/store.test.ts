@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -29,21 +29,21 @@ describe("KIMCHI_ENABLE_RESOURCES", () => {
 	})
 
 	it("enables a default-disabled resource", () => {
-		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(false)
-		process.env.KIMCHI_ENABLE_RESOURCES = "extensions.ferment-v2"
-		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(true)
+		expect(isResourceEnabled("extensions.ferment-legacy", settingsPath)).toBe(false)
+		process.env.KIMCHI_ENABLE_RESOURCES = "extensions.ferment-legacy"
+		expect(isResourceEnabled("extensions.ferment-legacy", settingsPath)).toBe(true)
 	})
 
 	it("takes multiple comma-separated ids, whitespace-tolerant", () => {
-		process.env.KIMCHI_ENABLE_RESOURCES = "extensions.memory, extensions.ferment-v2"
+		process.env.KIMCHI_ENABLE_RESOURCES = "extensions.memory, extensions.ferment-legacy"
 		expect(isResourceEnabled("extensions.memory", settingsPath)).toBe(true)
-		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(true)
+		expect(isResourceEnabled("extensions.ferment-legacy", settingsPath)).toBe(true)
 	})
 
 	it("drops malformed entries without failing the session", () => {
 		process.env.KIMCHI_ENABLE_RESOURCES = ",not a resource id,,extensions.memory,"
 		expect(isResourceEnabled("extensions.memory", settingsPath)).toBe(true)
-		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(false)
+		expect(isResourceEnabled("extensions.ferment-legacy", settingsPath)).toBe(false)
 	})
 
 	it("a persistent disable wins over the env enable", () => {
@@ -84,8 +84,8 @@ describe("org resource policy", () => {
 		expect(isResourceLocked("tools.web_search")).toBe(true)
 		expect(isResourceLocked("extensions.memory")).toBe(false)
 		// Resources the map does not mention are neither policied nor locked.
-		expect(getResourcePolicy("extensions.ferment-v2")).toBeUndefined()
-		expect(isResourceLocked("extensions.ferment-v2")).toBe(false)
+		expect(getResourcePolicy("extensions.ferment-legacy")).toBeUndefined()
+		expect(isResourceLocked("extensions.ferment-legacy")).toBe(false)
 	})
 
 	it("FORCE_OFF beats a pre-existing local override and the env enable", async () => {
@@ -114,14 +114,14 @@ describe("org resource policy", () => {
 	})
 
 	it("OFF is a soft default: the env var and a local enable still win", async () => {
-		await setOrgPolicyForTests({ resources: { "extensions.ferment-v2": "OFF" } })
+		await setOrgPolicyForTests({ resources: { "extensions.ferment-legacy": "OFF" } })
 
-		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(false)
-		process.env.KIMCHI_ENABLE_RESOURCES = "extensions.ferment-v2"
-		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(true)
+		expect(isResourceEnabled("extensions.ferment-legacy", settingsPath)).toBe(false)
+		process.env.KIMCHI_ENABLE_RESOURCES = "extensions.ferment-legacy"
+		expect(isResourceEnabled("extensions.ferment-legacy", settingsPath)).toBe(true)
 		delete process.env.KIMCHI_ENABLE_RESOURCES
-		setResourceOverride("extensions.ferment-v2", true, settingsPath)
-		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(true)
+		setResourceOverride("extensions.ferment-legacy", true, settingsPath)
+		expect(isResourceEnabled("extensions.ferment-legacy", settingsPath)).toBe(true)
 	})
 
 	it("entries for unknown resource ids do not affect known resources", async () => {
@@ -129,7 +129,7 @@ describe("org resource policy", () => {
 
 		// Unknown ids are inert in practice: nothing in the harness consults
 		// them. If something did ask, the org's answer still applies.
-		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(false)
+		expect(isResourceEnabled("extensions.ferment-legacy", settingsPath)).toBe(false)
 		expect(getResourcePolicy("tools.future_thing")).toBe("FORCE_ON")
 		expect(isResourceEnabled("tools.future_thing", settingsPath)).toBe(true)
 	})
@@ -147,9 +147,30 @@ describe("org resource policy", () => {
 		expect(getResourceOverride("tools.web_search", settingsPath)).toBe(true)
 	})
 
+	it("org FORCE_OFF on extensions.ferment disables Ferment", async () => {
+		expect(isResourceEnabled("extensions.ferment", settingsPath)).toBe(true)
+		await setOrgPolicyForTests({ resources: { "extensions.ferment": "FORCE_OFF" } })
+
+		expect(isResourceEnabled("extensions.ferment", settingsPath)).toBe(false)
+		expect(isResourceLocked("extensions.ferment")).toBe(true)
+	})
+
 	it("without a policy the store behaves as before", () => {
 		expect(isResourceEnabled("tools.web_search", settingsPath)).toBe(true)
 		expect(isResourceEnabled("extensions.memory", settingsPath)).toBe(false)
-		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(false)
+		expect(isResourceEnabled("extensions.ferment-legacy", settingsPath)).toBe(false)
+	})
+})
+
+describe("retired extensions.ferment-v2 id", () => {
+	it("ignores a stale extensions.ferment-v2 override", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "kimchi-resources-stale-"))
+		const settingsPath = join(tempDir, "settings.json")
+		try {
+			writeFileSync(settingsPath, JSON.stringify({ resources: { "extensions.ferment-v2": false } }))
+			expect(isResourceEnabled("extensions.ferment", settingsPath)).toBe(true)
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true })
+		}
 	})
 })
