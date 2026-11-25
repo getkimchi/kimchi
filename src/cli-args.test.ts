@@ -249,6 +249,16 @@ describe("isExperimentalFeaturesArg", () => {
 })
 
 describe("hasFermentOneshotArg (Chunk 7 gate composition)", () => {
+	it.each([
+		[["--ferment-oneshot"], true],
+		[["--ferment-oneshot=true"], true],
+		[["--ferment-oneshot=false"], false],
+		[["--print"], false],
+	])("agrees with the parsed value for %j", (args, expected) => {
+		expect(() => parseCliArgs(args)).not.toThrow()
+		expect(hasFermentOneshotArg(args)).toBe(expected)
+	})
+
 	it("returns true for the bare flag", () => {
 		expect(hasFermentOneshotArg(["--ferment-oneshot"])).toBe(true)
 	})
@@ -362,6 +372,16 @@ describe("resolveBashProcessLimitSeconds", () => {
 })
 
 describe("boolean =-form normalization", () => {
+	it.each(["ferment-oneshot", "init-git", "memory", "help"])("rejects an invalid explicit value for --%s", (name) => {
+		expect(() => parseCliArgs([`--${name}=junk`])).toThrow(
+			`--${name} expects a boolean (=true or =false); got --${name}="junk"`,
+		)
+	})
+
+	it("does not cache non-session booleans after validating them", () => {
+		expect(parseCliArgs(["--init-git=true", "--ferment-oneshot=false"]).options).toEqual({})
+	})
+
 	it('enables --yolo=true (previously the string "true" — silently ignored)', () => {
 		populateCliArgs(["--yolo=true", "fix tests"])
 		expect(getParsedCliArgs().options.yolo).toBe(true)

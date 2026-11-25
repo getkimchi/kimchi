@@ -352,19 +352,22 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 		strict: false,
 		allowPositionals: true,
 	})
+	// node:util parseArgs with strict:false returns the raw string for
+	// `--flag=value` even when the flag is declared boolean. Validate every
+	// catalogued boolean, not only cached ones, so a typo such as
+	// --ferment-oneshot=junk fails early instead of reaching a gate that
+	// does not parse it.
+	for (const [name, def] of Object.entries(CLI_OPTIONS)) {
+		const value = values[name]
+		if (def.type === "boolean" && typeof value === "string" && value !== "true" && value !== "false") {
+			throw new Error(`--${name} expects a boolean (=true or =false); got --${name}=${JSON.stringify(value)}`)
+		}
+	}
 	const options: SessionCliArgs["options"] = {}
 	for (const key of CACHEABLE_OPTION_NAMES) {
 		let value = values[key]
 		if (value === undefined) continue
-		// node:util parseArgs with strict:false returns the raw string for
-		// `--flag=value` even when the flag is declared boolean. For boolean
-		// flags, accept only the explicit =true/=false forms — anything else
-		// (e.g. --memory=1) would store a string into a boolean-typed option,
-		// making `=== true` and truthiness checks disagree.
 		if (CLI_OPTIONS[key]?.type === "boolean" && typeof value === "string") {
-			if (value !== "true" && value !== "false") {
-				throw new Error(`--${key} expects a boolean (=true or =false); got --${key}=${JSON.stringify(value)}`)
-			}
 			value = value === "true"
 		}
 		;(options as Record<string, unknown>)[key] = value
