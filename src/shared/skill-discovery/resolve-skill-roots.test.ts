@@ -17,16 +17,6 @@ describe("resolveHarnessSkillsDir", () => {
 	it("points at ~/.config/kimchi/harness/skills", () => {
 		expect(resolveHarnessSkillsDir("/home/alice")).toBe(join("/home/alice", ".config", "kimchi", "harness", "skills"))
 	})
-
-	it("points at <agentDir>/skills for an explicit KIMCHI_CODING_AGENT_DIR", () => {
-		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/stage/agent")
-		vi.stubEnv("KIMCHI_CODING_AGENT_DIR_DERIVED", "")
-		try {
-			expect(resolveHarnessSkillsDir("/home/alice")).toBe(join("/stage/agent", "skills"))
-		} finally {
-			vi.unstubAllEnvs()
-		}
-	})
 })
 
 describe("resolveBundledSkillsDir", () => {

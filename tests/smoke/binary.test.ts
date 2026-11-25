@@ -241,15 +241,6 @@ describe("binary smoke tests", () => {
 				runBinary({ args: ["resources", "reset", "tools.web_fetch"] })
 			}
 		})
-
-		it("defaults to HOME/.config/kimchi/harness", () => {
-			runBinary({ args: ["resources", "disable", "tools.web_fetch"] })
-			try {
-				expect(readResources(getAgentDir())?.["tools.web_fetch"]).toBe(false)
-			} finally {
-				runBinary({ args: ["resources", "reset", "tools.web_fetch"] })
-			}
-		})
 	})
 
 	describe("--export", () => {

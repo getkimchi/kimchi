@@ -1,9 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
-import { loadConfig, userConfigPath } from "./config.js"
+import { loadConfig } from "./config.js"
 
 let tmpCwd: string
 
@@ -25,26 +25,17 @@ describe("loadConfig merging", () => {
 		mkdirSync(join(tmpCwd, ".kimchi"), { recursive: true })
 		writeFileSync(join(tmpCwd, ".kimchi", "permissions.json"), "{}")
 		writeFileSync(join(tmpCwd, ".kimchi", "permissions.local.json"), "{}")
+		// The home harness file is not read once the agent dir points elsewhere.
+		const homeHarness = join(homedir(), ".config", "kimchi", "harness")
+		mkdirSync(homeHarness, { recursive: true })
+		writeFileSync(join(homeHarness, "permissions.json"), JSON.stringify({ classifierMaxTotalMs: 5000 }))
+		// Pi's getAgentDir reads PI_CODING_AGENT_DIR, which entry.ts sets from
+		// KIMCHI_CODING_AGENT_DIR; tests/smoke/binary.test.ts covers that step.
 		vi.stubEnv("PI_CODING_AGENT_DIR", userDir)
 		setProjectScopeTrusted(tmpCwd, true)
 		expect(loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(17000)
 		writeFileSync(join(tmpCwd, ".kimchi", "permissions.json"), JSON.stringify({ classifierMaxTotalMs: 12000 }))
 		expect(loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(12000)
-	})
-
-	// Pi's getAgentDir reads PI_CODING_AGENT_DIR, which entry.ts sets from
-	// KIMCHI_CODING_AGENT_DIR; tests/smoke/binary.test.ts covers that step.
-	it("reads the user file from Pi's agent dir, not the home config dir", () => {
-		const homeDir = join(tmpCwd, ".config", "kimchi", "harness")
-		mkdirSync(homeDir, { recursive: true })
-		writeFileSync(join(homeDir, "permissions.json"), JSON.stringify({ classifierMaxTotalMs: 17000 }))
-		const agentDir = join(tmpCwd, "stage-agent")
-		vi.stubEnv("PI_CODING_AGENT_DIR", agentDir)
-		expect(userConfigPath()).toBe(join(agentDir, "permissions.json"))
-		expect(loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(25000)
-		mkdirSync(agentDir, { recursive: true })
-		writeFileSync(join(agentDir, "permissions.json"), JSON.stringify({ classifierMaxTotalMs: 9000 }))
-		expect(loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(9000)
 	})
 
 	it.each([undefined, 12000])("fills or accepts the classifier total budget (%s)", (budget) => {

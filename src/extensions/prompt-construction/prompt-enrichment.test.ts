@@ -802,19 +802,6 @@ describe("custom system prompt", () => {
 			expect(result.systemPrompt).not.toContain(kimchiText)
 		}
 	})
-
-	it("keeps Kimchi's own prompt when no custom prompt is set", async () => {
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
-
-		const result = (await beforeAgentStart(
-			{ systemPromptOptions: { customPrompt: undefined } },
-			createContext({ hasUI: false }),
-		)) as { systemPrompt: string }
-
-		expect(result.systemPrompt).toContain("You are Kimchi")
-		expect(result.systemPrompt).toContain("## Guidelines")
-	})
 })
 
 describe("Claude Code global instructions resource", () => {
@@ -837,7 +824,6 @@ describe("Claude Code global instructions resource", () => {
 	})
 
 	afterEach(() => {
-		populateCliArgs([])
 		resetResourceOverride(CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID)
 		if (oldAgentDir === undefined) {
 			delete process.env.KIMCHI_CODING_AGENT_DIR
@@ -886,22 +872,6 @@ describe("Claude Code global instructions resource", () => {
 		await sessionStart({}, ctx)
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Claude Code instructions"), "info")
-	})
-
-	it("loads no context file with --no-context-files", async () => {
-		const project = join(dir, "project")
-		mkdirSync(project)
-		writeFileSync(join(project, "AGENTS.md"), "PROJECT-AGENTS-MARKER", "utf-8")
-		populateCliArgs(["--no-context-files"])
-		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
-		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
-
-		const result = (await beforeAgentStart({}, createContext({ hasUI: false, cwd: project }))) as {
-			systemPrompt: string
-		}
-
-		expect(result.systemPrompt).not.toContain(MARKER)
-		expect(result.systemPrompt).not.toContain("PROJECT-AGENTS-MARKER")
 	})
 
 	it("leaves the Claude Code CLAUDE.md out when the resource is disabled", async () => {

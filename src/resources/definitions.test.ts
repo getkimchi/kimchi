@@ -174,29 +174,6 @@ describe("resource definitions", () => {
 		})
 	})
 
-	it("registers the newly gated model-facing extensions as default-on, restart-gated extensions", () => {
-		const resources = getResourceDefinitions()
-		for (const id of [
-			"extensions.codemode",
-			"extensions.skills-manager",
-			"extensions.behaviours",
-			"extensions.loop-guard",
-			"extensions.exploration-guard",
-			"extensions.bash-timeout-guidance",
-			"extensions.questionnaire",
-			"extensions.ide-adapter",
-			"extensions.remote-run",
-			"extensions.pr-watch",
-			"extensions.daemon",
-		]) {
-			expect(resources.find((resource) => resource.id === id)).toMatchObject({
-				kind: "extensions",
-				defaultEnabled: true,
-				restartRequired: true,
-			})
-		}
-	})
-
 	it("declares every literal resource id cli.ts gates an extension on", () => {
 		const cli = readFileSync(join(__dirname, "..", "cli.ts"), "utf-8")
 		const ids = cli

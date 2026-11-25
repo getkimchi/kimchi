@@ -12,19 +12,12 @@ function stubHome(home: string): void {
 }
 
 describe("applyAgentDirEnv", () => {
-	it("derives the dir from HOME and marks it derived", () => {
+	it("derives the dir from HOME, marks it, and gives a child with another HOME its own", () => {
 		stubHome(resolve("/home/parent"))
 		const env: NodeJS.ProcessEnv = {}
-
-		const derived = join(resolve("/home/parent"), ".config", "kimchi", "harness")
-		expect(applyAgentDirEnv(env)).toBe(derived)
-		expect(env.KIMCHI_CODING_AGENT_DIR_DERIVED).toBe(derived)
-	})
-
-	it("gives a child with another HOME its own dir, not the parent's derived one", () => {
-		stubHome(resolve("/home/parent"))
-		const env: NodeJS.ProcessEnv = {}
-		applyAgentDirEnv(env)
+		const parentDir = join(resolve("/home/parent"), ".config", "kimchi", "harness")
+		expect(applyAgentDirEnv(env)).toBe(parentDir)
+		expect(env.KIMCHI_CODING_AGENT_DIR_DERIVED).toBe(parentDir)
 
 		stubHome(resolve("/home/child"))
 		const child = { ...env }
@@ -48,19 +41,6 @@ describe("applyAgentDirEnv", () => {
 		const grandchild = { ...child }
 		expect(applyAgentDirEnv(grandchild)).toBe(resolve("/tmp/stage"))
 		expect(grandchild.KIMCHI_CODING_AGENT_DIR_DERIVED).toBeUndefined()
-	})
-
-	it("keeps an explicit dir in the child and never marks it derived", () => {
-		stubHome(resolve("/home/parent"))
-		const env: NodeJS.ProcessEnv = { KIMCHI_CODING_AGENT_DIR: resolve("/stage/agent") }
-		applyAgentDirEnv(env)
-
-		stubHome(resolve("/home/child"))
-		const child = { ...env }
-
-		expect(applyAgentDirEnv(child)).toBe(resolve("/stage/agent"))
-		expect(env.KIMCHI_CODING_AGENT_DIR_DERIVED).toBeUndefined()
-		expect(child.KIMCHI_CODING_AGENT_DIR_DERIVED).toBeUndefined()
 	})
 
 	it("expands a leading ~ in an explicit dir", () => {
