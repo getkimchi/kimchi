@@ -5,6 +5,7 @@ import type { Api, AssistantMessage, Model, ToolResultMessage } from "@earendil-
 import { type ExtensionAPI, loadSkillsFromDir, type ToolInfo } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
+import { populateCliArgs } from "../../cli-args.js"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
@@ -751,6 +752,51 @@ describe("append system prompt", () => {
 	})
 })
 
+describe("custom system prompt", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+	})
+
+	it("replaces Kimchi's own text with systemPromptOptions.customPrompt and keeps tools and environment", async () => {
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{ systemPromptOptions: { customPrompt: "You are the stage reviewer.", appendSystemPrompt: "Appended last." } },
+			createContext({ hasUI: false }),
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt.startsWith("You are the stage reviewer.")).toBe(true)
+		expect(result.systemPrompt.endsWith("Appended last.")).toBe(true)
+		expect(result.systemPrompt).toContain("## Available Tools")
+		expect(result.systemPrompt).toContain("## Environment")
+		for (const kimchiText of [
+			"You are Kimchi",
+			"## Language",
+			"## Guidelines",
+			"## Factual Accuracy",
+			"## Tool Selection",
+		]) {
+			expect(result.systemPrompt).not.toContain(kimchiText)
+		}
+	})
+
+	it("keeps Kimchi's own prompt when no custom prompt is set", async () => {
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{ systemPromptOptions: { customPrompt: undefined } },
+			createContext({ hasUI: false }),
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt).toContain("You are Kimchi")
+		expect(result.systemPrompt).toContain("## Guidelines")
+	})
+})
+
 describe("Claude Code global instructions resource", () => {
 	const MARKER = "CLAUDE-CODE-GLOBAL-MARKER"
 	let dir: string
@@ -771,6 +817,7 @@ describe("Claude Code global instructions resource", () => {
 	})
 
 	afterEach(() => {
+		populateCliArgs([])
 		resetResourceOverride(CLAUDE_CODE_INSTRUCTIONS_RESOURCE_ID)
 		if (oldAgentDir === undefined) {
 			delete process.env.KIMCHI_CODING_AGENT_DIR
@@ -819,6 +866,22 @@ describe("Claude Code global instructions resource", () => {
 		await sessionStart({}, ctx)
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Claude Code instructions"), "info")
+	})
+
+	it("loads no context file with --no-context-files", async () => {
+		const project = join(dir, "project")
+		mkdirSync(project)
+		writeFileSync(join(project, "AGENTS.md"), "PROJECT-AGENTS-MARKER", "utf-8")
+		populateCliArgs(["--no-context-files"])
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart({}, createContext({ hasUI: false, cwd: project }))) as {
+			systemPrompt: string
+		}
+
+		expect(result.systemPrompt).not.toContain(MARKER)
+		expect(result.systemPrompt).not.toContain("PROJECT-AGENTS-MARKER")
 	})
 
 	it("leaves the Claude Code CLAUDE.md out when the resource is disabled", async () => {

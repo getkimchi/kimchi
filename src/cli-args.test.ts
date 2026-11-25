@@ -43,6 +43,16 @@ describe("value-flag parsing", () => {
 	})
 })
 
+describe("Pi resource switches", () => {
+	it.each(["--no-context-files", "-nc"])("reads %s with Pi's parser", (flag) => {
+		expect(parseCliArgs(["-p", "hi", flag]).options["no-context-files"]).toBe(true)
+	})
+
+	it("leaves the switches unset by default", () => {
+		expect(parseCliArgs(["-p", "hi"]).options["no-context-files"]).toBeUndefined()
+	})
+})
+
 describe("getCliModeArg", () => {
 	it("reads --mode value", () => {
 		expect(getCliModeArg(["--model", "cast/gpt-5", "--mode", "json"])).toBe("json")

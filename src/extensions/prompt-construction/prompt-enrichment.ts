@@ -805,10 +805,11 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 				sessionId,
 				hasUserLoop: hasUserLoop(),
 				language: pinnedLanguage,
+				customPrompt: event.systemPromptOptions?.customPrompt?.trim(),
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would
-			// silently drop --append-system-prompt flag values (and SYSTEM/
+			// silently drop --append-system-prompt flag values (and
 			// APPEND_SYSTEM.md content) collected by pi's resource loader.
 			// Re-append them so per-session prompt extensions keep working,
 			// e.g. orchestrators embedding kimchi as a managed agent.

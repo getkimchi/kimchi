@@ -14,12 +14,15 @@
  * gitignored overrides.
  *
  * Files are returned in root → cwd order (ancestors first).
+ *
+ * Pi's `--no-context-files` turns all of it off, as it does Pi's own loader.
  */
 
 import { existsSync, readFileSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { getParsedCliArgs } from "../../cli-args.js"
 
 export interface ContextFile {
 	path: string
@@ -76,6 +79,7 @@ function loadContextFileFromDir(dir: string, alreadyLoaded: readonly ContextFile
  * Primary files that repeat one of `alreadyLoaded` are skipped.
  */
 export function loadProjectContextFiles(cwd: string, alreadyLoaded: readonly ContextFile[] = []): ContextFile[] {
+	if (getParsedCliArgs().options["no-context-files"]) return []
 	const files: ContextFile[] = []
 
 	let dir = resolve(cwd)
@@ -161,6 +165,7 @@ function readGlobalContextFiles(options: GlobalContextFileOptions): { files: Con
 
 /** Global files, then project files that do not repeat them. */
 export function loadContextFiles(cwd: string, options: GlobalContextFileOptions): ContextFile[] {
+	if (getParsedCliArgs().options["no-context-files"]) return []
 	const { files, sources } = readGlobalContextFiles(options)
 	return [...files, ...loadProjectContextFiles(cwd, sources)]
 }

@@ -12,6 +12,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 	return { ...actual, getAgentDir: () => FAKE_AGENT_DIR }
 })
 
+import { populateCliArgs } from "../../cli-args.js"
 import { loadContextFiles, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 
 describe("loadProjectContextFiles", () => {
@@ -331,6 +332,18 @@ describe("loadContextFiles with a global AGENTS.local.md", () => {
 	it("skips a project symlink to the global AGENTS.md", () => {
 		symlinkSync(globalAgents, join(nested, "AGENTS.md"))
 		expect(load()).toEqual([mergedGlobal])
+	})
+
+	it("loads nothing with --no-context-files", () => {
+		writeFileSync(join(nested, "AGENTS.md"), "project rules")
+		populateCliArgs(["--no-context-files"])
+		try {
+			expect(loadContextFiles(nested, { includeClaudeCodeInstructions: true })).toEqual([])
+			expect(loadProjectContextFiles(nested)).toEqual([])
+		} finally {
+			populateCliArgs([])
+		}
+		expect(load()).toHaveLength(2)
 	})
 
 	it("keeps the project AGENTS.local.md of a skipped copy", () => {
