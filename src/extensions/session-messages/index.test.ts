@@ -271,6 +271,11 @@ describe("session-messages", () => {
 		)
 		expect(alpha.ctx.ui.notify).toHaveBeenCalledWith(ENABLED_NOTICE, "info")
 		expect(savedPreference(dir)).toBe(true)
+		// The rest of that turn's subagents wait too, so the agent picks where each one goes.
+		expect(await startSubagent(alpha)).toEqual([
+			{ block: true, reason: expect.stringContaining("beta [bbbbb2] works in this repository") },
+		])
+		await alpha.harness.emit("turn_end", { type: "turn_end" }, alpha.ctx)
 		expect(await startSubagent(alpha)).toEqual([undefined])
 		expect(alpha.ctx.ui.confirm).toHaveBeenCalledTimes(1)
 		expect(beta.ctx.ui.confirm).not.toHaveBeenCalled()

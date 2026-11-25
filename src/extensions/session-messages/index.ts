@@ -217,6 +217,8 @@ export function createSessionMessagesExtension(
 		let server: net.Server | undefined
 		let self: { ref: string; path: string; ctx: ExtensionContext; repository: string; startedAt: number } | undefined
 		let toolsRegistered = false
+		/** After a yes, the rest of that turn's subagents wait too, so the agent picks where each one goes. */
+		let handOver: ToolCallEventResult | undefined
 
 		const describe = (): SessionInfo | undefined =>
 			self && {
@@ -257,10 +259,11 @@ export function createSessionMessagesExtension(
 			if (readPreference() !== true) return undefined
 			registerTools()
 			const sessions = peers.map(address).join(", ")
-			return {
+			handOver = {
 				block: true,
 				reason: `Not started: session messages are on now, and ${sessions} ${peers.length === 1 ? "works" : "work"} in this repository. If this is that session's work, send it there with send_message; otherwise start the subagent again.`,
 			}
+			return handOver
 		}
 		const permissionMode = (ctx: ExtensionContext) =>
 			getPermissionMode(ctx.sessionManager.getSessionId())?.mode ?? "default"
@@ -338,8 +341,13 @@ export function createSessionMessagesExtension(
 
 		pi.on("tool_call", (event, ctx) => {
 			if (event.toolName !== "Agent") return undefined
+			if (handOver) return handOver
 			// A failed question must never stop the subagent.
 			return offer(ctx).catch(() => undefined)
+		})
+
+		pi.on("turn_end", () => {
+			handOver = undefined
 		})
 
 		pi.on("session_shutdown", () => {
