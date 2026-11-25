@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
+import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { z } from "zod"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { DEFAULT_CONFIG, PERMISSION_MODES } from "./constants.js"
@@ -32,7 +32,6 @@ export interface LoadConfigOptions {
 	cliDeny?: string[]
 }
 
-const USER_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "harness", "permissions.json")
 const PROJECT_CONFIG_SUFFIX = join(".kimchi", "permissions.json")
 const LOCAL_CONFIG_SUFFIX = join(".kimchi", "permissions.local.json")
 
@@ -68,7 +67,8 @@ function readConfigFile(path: string): {
 export function loadConfig(options: LoadConfigOptions): { loaded: LoadedConfig; errors: string[] } {
 	const errors: string[] = []
 
-	const userRead = readConfigFile(USER_CONFIG_PATH)
+	const userPath = userConfigPath()
+	const userRead = readConfigFile(userPath)
 	if (userRead.error) errors.push(userRead.error)
 
 	// Project and local files are gated on project trust: an untrusted repo's
@@ -119,7 +119,7 @@ export function loadConfig(options: LoadConfigOptions): { loaded: LoadedConfig; 
 			cli: options.cliDeny ?? [],
 		},
 		paths: {
-			user: userRead.data ? USER_CONFIG_PATH : undefined,
+			user: userRead.data ? userPath : undefined,
 			project: projectRead.data ? projectPath : undefined,
 			local: localRead.data ? localPath : undefined,
 			cliOverride: cliRead.data && cliPath ? resolve(cliPath) : undefined,
@@ -130,7 +130,7 @@ export function loadConfig(options: LoadConfigOptions): { loaded: LoadedConfig; 
 }
 
 export function userConfigPath(): string {
-	return USER_CONFIG_PATH
+	return resolve(getAgentDir(), "permissions.json")
 }
 
 export function projectConfigPath(cwd: string): string {

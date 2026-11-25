@@ -31,8 +31,8 @@ describe("unit test home isolation", () => {
 	})
 
 	it("kimchi config paths captured at module import time resolve into the isolated home", () => {
-		// src/config.ts captures AGENT_CONFIG_DIR from homedir() at import time.
-		expect(getAgentConfigDir()).toBe(join(homedir(), ".config", "kimchi", "harness"))
+		// The isolated-home setup points KIMCHI_CODING_AGENT_DIR into the fake home.
+		expect(getAgentConfigDir()).toBe(join(homedir(), "agent"))
 		expect(isInsideDir(homedir(), getAgentConfigDir())).toBe(true)
 	})
 })

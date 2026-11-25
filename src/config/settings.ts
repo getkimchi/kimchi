@@ -1,11 +1,10 @@
-import { homedir } from "node:os"
 import { join } from "node:path"
+import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { readJson, readJsonCached, writeJson } from "./json.js"
 
 type Satisfies<T> = (value: unknown) => value is T
 
-const HARNESS_CONFIG_BASE_DIR = join(homedir(), ".config", "kimchi", "harness")
-const HARNESS_SETTINGS_PATH = join(HARNESS_CONFIG_BASE_DIR, "settings.json")
+const HARNESS_SETTINGS_PATH = join(getAgentDir(), "settings.json")
 
 export function getConfigSetting<T>(
 	config: Record<string, unknown>,

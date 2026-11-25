@@ -1,6 +1,12 @@
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
-import type { ExtensionContext, ReadonlyFooterDataProvider, SessionEntry, Theme } from "@earendil-works/pi-coding-agent"
+import {
+	type ExtensionContext,
+	getAgentDir,
+	type ReadonlyFooterDataProvider,
+	type SessionEntry,
+	type Theme,
+} from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { hyperlink, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
@@ -85,7 +91,7 @@ interface CompactionContext {
 	semantic: (color: string, s: string) => string
 }
 
-const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
+const HARNESS_SETTINGS_PATH = join(getAgentDir(), "settings.json")
 
 // ── Assistant-usage totals memoization ─────────────────────────────────────
 // The session journal is append-only and its entries are immutable

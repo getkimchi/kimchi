@@ -51,7 +51,9 @@ if (existsSync(oauthTemplateDir)) {
 }
 
 const inheritedPiAgentDir = process.env.PI_CODING_AGENT_DIR
-const agentDir = resolve(homedir(), ".config", "kimchi", "harness")
+const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	? resolve(process.env.KIMCHI_CODING_AGENT_DIR)
+	: resolve(homedir(), ".config", "kimchi", "harness")
 process.env.KIMCHI_CODING_AGENT_DIR = agentDir
 if (inheritedPiAgentDir && !process.env.KIMCHI_ORIGINAL_PI_CODING_AGENT_DIR) {
 	process.env.KIMCHI_ORIGINAL_PI_CODING_AGENT_DIR = inheritedPiAgentDir

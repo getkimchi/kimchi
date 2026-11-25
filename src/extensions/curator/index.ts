@@ -1,6 +1,10 @@
-import { homedir } from "node:os"
 import { join } from "node:path"
-import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	getAgentDir,
+	type MessageRenderer,
+} from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
 import { getEffectiveModel } from "../auto-model/state.js"
@@ -48,7 +52,7 @@ export function computeIdleSeconds(state: CuratorState, now: Date): number {
 export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExtensionOptions): void {
 	if (isSubagent()) return
 	pi.registerMessageRenderer(CURATOR_NOTIFICATION_TYPE, curatorNotificationRenderer)
-	const skillsDir = options?.skillsDir ?? join(homedir(), ".config", "kimchi", "harness", "skills")
+	const skillsDir = options?.skillsDir ?? join(getAgentDir(), "skills")
 	const statePath = getStateFilePath(skillsDir)
 	const manager = new SkillManager(skillsDir)
 	const tracker = new UsageTracker(skillsDir)

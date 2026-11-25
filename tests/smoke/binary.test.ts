@@ -190,6 +190,39 @@ describe("binary smoke tests", () => {
 		})
 	})
 
+	describe("agent dir", () => {
+		let stageDir: string
+
+		beforeEach(() => {
+			stageDir = mkdtempSync(join(tmpdir(), "kimchi-smoke-agent-dir-"))
+		})
+
+		afterEach(() => {
+			rmSync(stageDir, { recursive: true, force: true })
+		})
+
+		const readResources = (dir: string) =>
+			existsSync(join(dir, "settings.json"))
+				? JSON.parse(readFileSync(join(dir, "settings.json"), "utf-8")).resources
+				: undefined
+
+		it("keeps an inherited KIMCHI_CODING_AGENT_DIR", () => {
+			runBinary({ args: ["resources", "disable", "tools.web_fetch"], extraEnv: { KIMCHI_CODING_AGENT_DIR: stageDir } })
+
+			expect(readResources(stageDir)).toEqual({ "tools.web_fetch": false })
+			expect(readResources(getAgentDir())?.["tools.web_fetch"]).toBeUndefined()
+		})
+
+		it("defaults to HOME/.config/kimchi/harness", () => {
+			runBinary({ args: ["resources", "disable", "tools.web_fetch"] })
+			try {
+				expect(readResources(getAgentDir())?.["tools.web_fetch"]).toBe(false)
+			} finally {
+				runBinary({ args: ["resources", "reset", "tools.web_fetch"] })
+			}
+		})
+	})
+
 	describe("--export", () => {
 		const fixtureSrc = resolve("tests/smoke/fixtures/session.jsonl")
 		let workDir: string

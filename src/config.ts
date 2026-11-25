@@ -24,7 +24,6 @@ import {
 import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
-const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
 
 let startupApiKey: string | undefined
 
@@ -830,7 +829,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 
 	return {
 		apiKey: getEnvironmentApiKey() || extras.apiKey || "",
-		agentConfigDir: AGENT_CONFIG_DIR,
+		agentConfigDir: getAgentConfigDir(),
 		region,
 		selfHostedEndpoints,
 		llmEndpoint: envLlmBaseUrl ? openAiBaseUrl(gateway) : (extras.llmEndpoint ?? openAiBaseUrl(gateway)),
@@ -1067,7 +1066,7 @@ export function getApiKeyMismatchWarning(savedKey = getSavedApiKey()): string | 
 }
 
 export function getAgentConfigDir(): string {
-	return AGENT_CONFIG_DIR
+	return process.env.KIMCHI_CODING_AGENT_DIR || resolve(homedir(), ".config", "kimchi", "harness")
 }
 
 function updateConfigFile(
