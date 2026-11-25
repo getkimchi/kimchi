@@ -5,8 +5,6 @@ export const KIMCHI_NO_RESULT_EXIT_CODE = 3
 
 export type MessageLikeSessionEntry = Extract<SessionEntry, { type: "message" | "custom_message" }>
 
-const BLOCK_REASON_MAX_LENGTH = 160
-
 export interface BlockedToolOutcome {
 	toolName: string
 	reason: string
@@ -85,9 +83,7 @@ function describeLastEvent(lastEvent: RunOutcomeLastEvent): string {
 	switch (lastEvent.kind) {
 		case "blocked-tool": {
 			const collapsed = lastEvent.reason.replace(/\s+/g, " ").trim()
-			const reason =
-				collapsed.length > BLOCK_REASON_MAX_LENGTH ? `${collapsed.slice(0, BLOCK_REASON_MAX_LENGTH)}...` : collapsed
-			return `The agent tried to call tool '${lastEvent.toolName}' but it was blocked: ${reason}.`
+			return `The agent tried to call tool '${lastEvent.toolName}' but it was blocked: ${collapsed || "(no reason recorded)"}.`
 		}
 		case "final-message": {
 			const entryText = lastEvent.role === "custom" ? "a custom message" : `an entry with role '${lastEvent.role}'`

@@ -323,6 +323,7 @@ describe("classifyRunOutcome", () => {
 				lastEvent: { kind: "blocked-tool" as const, toolName: "bash", reason },
 				sessionPath: "/tmp/s.jsonl",
 			}) satisfies Exclude<RunOutcomeClassification, { kind: "ok" } | { kind: "no-prompt" }>
+		const diagnosticFor = (reason: string) => formatRunOutcomeDiagnostic(blockOutcome(reason))
 
 		it("keeps the complete real no-UI classifier reason", () => {
 			const reason =
@@ -332,18 +333,20 @@ describe("classifyRunOutcome", () => {
 			expect(diagnostic).not.toContain("...")
 		})
 
-		it("truncates a long reason to 160 characters and appends an ellipsis", () => {
-			const diagnostic = formatRunOutcomeDiagnostic(blockOutcome(`Blocked: ${"x".repeat(300)}`))
-			expect(diagnostic).toContain(`blocked: Blocked: ${"x".repeat(151)}....`)
-			expect(diagnostic).not.toContain("x".repeat(152))
+		it("prints a long reason in full", () => {
+			const reason = `Blocked: ${"x".repeat(400)}`
+			expect(diagnosticFor(reason)).toContain(`blocked: ${reason}.`)
 		})
 
-		it("does not append an ellipsis at exactly 160 characters", () => {
-			const reason = `Blocked: ${"y".repeat(151)}`
-			expect(reason).toHaveLength(160)
-			const diagnostic = formatRunOutcomeDiagnostic(blockOutcome(reason))
+		it("does not split a surrogate pair in a long reason", () => {
+			const reason = `${"x".repeat(159)}😀 tail`
+			const diagnostic = diagnosticFor(reason)
 			expect(diagnostic).toContain(`blocked: ${reason}.`)
-			expect(diagnostic).not.toContain("...")
+			expect(diagnostic).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/)
+		})
+
+		it.each(["", "   \n\t "])("shows a fallback when the reason is empty (%j)", (reason) => {
+			expect(diagnosticFor(reason)).toContain("blocked: (no reason recorded).")
 		})
 
 		it("collapses multiline reasons and keeps at most five lines", () => {
