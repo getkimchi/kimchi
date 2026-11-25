@@ -214,7 +214,7 @@ describe("subagent registry and child projection", () => {
 		const event = childEvent("parent", child)
 		createChild(agent, event)
 
-		expect(updates).toHaveLength(4)
+		expect(updates).toHaveLength(5)
 		expect(updates[0]?.sessionId).toBe("parent")
 		expect(update(updates[0] as SessionNotification)).toMatchObject({
 			sessionUpdate: "subagent_update",
@@ -225,22 +225,26 @@ describe("subagent registry and child projection", () => {
 			state: { state: "running" },
 		})
 		expect(update(updates[0] as SessionNotification).capabilities).not.toHaveProperty("cancel")
+		expect(updates[1]?.sessionId).toBe("native-child")
 		expect(update(updates[1] as SessionNotification)).toMatchObject({
+			sessionUpdate: "config_option_update",
+		})
+		expect(update(updates[2] as SessionNotification)).toMatchObject({
 			sessionUpdate: "session_message",
 			senderSessionId: "parent",
 			recipientSessionId: "native-child",
 		})
-		expect(updates[2]?.sessionId).toBe("native-child")
-		expect(update(updates[3] as SessionNotification)).toMatchObject({
+		expect(updates[3]?.sessionId).toBe("native-child")
+		expect(update(updates[4] as SessionNotification)).toMatchObject({
 			sessionUpdate: "session_message_chunk",
 			content: { type: "text", text: "Investigate the complete original prompt.\nKeep every line." },
 		})
-		const parentMessage = update(updates[1] as SessionNotification)
-		const childMessage = update(updates[2] as SessionNotification)
+		const parentMessage = update(updates[2] as SessionNotification)
+		const childMessage = update(updates[3] as SessionNotification)
 		expect(parentMessage.recipientMessageId).toBe(childMessage.messageId)
 		expect(childMessage.senderMessageId).toBe(parentMessage.messageId)
 		expect(parentMessage.messageId).not.toBe(childMessage.messageId)
-		const reconstructed = reconstructMessageText(updates.slice(0, 4))
+		const reconstructed = reconstructMessageText(updates)
 		expect(reconstructed.get(String(parentMessage.messageId))).toBe(event.prompt)
 		expect(reconstructed.get(String(childMessage.messageId))).toBe(event.prompt)
 		expect(childMessage.content).toEqual([])
