@@ -51,7 +51,14 @@ export function hasStoredOAuthRefreshConfiguration(credential: StoredCredential 
 }
 
 /** Exact upstream rejection emitted when an internally forced minimum is not
- * met by the refreshed token (pi-ai auth/resolve, resolveStoredOAuth). */
+ * met by the refreshed token (pi-ai auth/resolve, resolveStoredOAuth).
+ *
+ * pi-ai and pi-coding-agent are exactly pinned to 1.3.0 and ModelsError
+ * carries only its coarse `code` — there is no stable subtype or flag that
+ * distinguishes this rejection — so the exact message is the only available
+ * discriminator. The active-prompt legacy tests exercise this real upstream
+ * error through ModelRuntime rather than a synthetic copy, keeping the matcher
+ * aligned with the pinned source. */
 const FORCED_REFRESH_TOO_SOON_MESSAGE = `OAuth refresh returned a token that expires too soon for ${KIMCHI_PROVIDER_ID}`
 
 function isForcedRefreshTooSoonError(error: unknown): boolean {
@@ -70,6 +77,17 @@ function isForcedRefreshTooSoonError(error: unknown): boolean {
  * persist-before-release discipline. Every other credential shape — raw
  * access tokens, opaque bearers, already-fresh schedules, or records without
  * issuer refresh metadata — returns undefined so resolution stays ordinary.
+ *
+ * The minimum is fixed before the call starts, and upstream reuses that same
+ * fixed minimum for its under-lock `needsRefresh` re-check (pi-ai
+ * resolveStoredOAuth passes its expiresSoon predicate into
+ * refreshStoredOAuthCredential). A peer that persists a corrected credential
+ * while this resolution is in flight can therefore still fail that under-lock
+ * check and cause one bounded redundant grant — including when the peer's
+ * replacement arrives inside the ordinary five-minute window. No public
+ * dynamic predicate exists and ModelRuntime accepts only a fixed minimum, so
+ * re-reading the store would merely move the race; the store lock and
+ * coalescing bound the redundancy to a single grant per forced resolution.
  */
 function forcedLegacyRefreshMinimumMs(credential: StoredCredential | undefined): number | undefined {
 	if (credential?.type !== "oauth" || !hasStoredOAuthRefreshConfiguration(credential)) return undefined
@@ -126,10 +144,14 @@ export async function resolveRefreshAwareKimchiAuth(
 		} catch (error) {
 			// Upstream applies the forced minimum after the refresh too and
 			// rejects a valid shorter replacement. That refresh is already
-			// durable, so re-resolve once without the temporary minimum; the
-			// ordinary five-minute window then accepts it without a second
-			// grant. No other error — invalid grants, transient failures, store
-			// errors — is caught or remapped here.
+			// durable, so re-resolve once without the temporary minimum. A
+			// replacement still inside the ordinary five-minute window makes that
+			// ordinary re-resolution issue one additional grant before accepting
+			// it; one outside the window is accepted with no second grant. Either
+			// way, the short-lived-credential handoff is registered only after this
+			// resolver returns, so it cannot suppress either grant. No other error —
+			// invalid grants, transient failures, store errors — is caught or
+			// remapped here.
 			if (forcedMinimumMs === undefined || !isForcedRefreshTooSoonError(error)) throw error
 			auth = await modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
 		}

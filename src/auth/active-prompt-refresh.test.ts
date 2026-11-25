@@ -614,6 +614,69 @@ describe("active prompt Kimchi credential preparation", () => {
 			}
 		})
 
+		it("recovers an inside-window legacy replacement with exactly two grants and no third after handoff registration", async () => {
+			writeLegacyIdTokenCredential(FAKE_NOW - 60_000)
+			// Inside the ordinary five-minute window and far below the forced minimum:
+			// the forced call persists it durably, upstream rejects it once under the
+			// forced minimum, and the ordinary re-resolution issues one more grant
+			// before accepting the same replacement.
+			const replacementExpiry = FAKE_NOW + 3 * 60_000
+			const replacementAccess = jwtWithExp(replacementExpiry)
+			const oauth = fakeOAuthDeps((credential) => ({
+				...credential,
+				access: replacementAccess,
+				expires: replacementExpiry,
+			}))
+			const owner: object = {}
+			const installOwnerScopedOAuth = (runtime: ModelRuntime): void => {
+				oauth.installOAuth(runtime)
+				const providerOAuth = runtime.getRegisteredProviderConfig("kimchi-dev")?.oauth
+				const refreshTransport = providerOAuth?.refreshToken
+				if (!providerOAuth || !refreshTransport) throw new Error("expected fake refresh transport")
+				// The wrapper only recognizes this prompt's registered handoff; every
+				// other refresh — including both recovery grants below — reaches the
+				// recording transport untouched.
+				const refreshToken: typeof refreshTransport = (credential, signal) =>
+					shouldReusePreparedOAuthCredential(paths.authPath, credential, owner)
+						? Promise.resolve(credential)
+						: refreshTransport(credential, signal)
+				runtime.registerProvider("kimchi-dev", {
+					oauth: Object.assign({}, providerOAuth, { refreshToken }),
+				})
+			}
+
+			await expect(
+				prepareActivePromptKimchiCredential(paths, installOwnerScopedOAuth, "kimchi-dev/openai", owner),
+			).resolves.toBe("ready")
+
+			// Exactly two grants: the durable forced grant plus the ordinary
+			// re-resolution grant that accepts the still-inside-window replacement.
+			expect(oauth.refreshCalls).toHaveLength(2)
+			const stored = readStore()
+			for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+				expect(stored[providerId]).toMatchObject({
+					access: replacementAccess,
+					// Non-rotating grant: the issuer kept the existing refresh token.
+					refresh: "legacy-refresh",
+					expires: replacementExpiry,
+				})
+			}
+			const persistedCanonical = readStoredCredential("kimchi-dev", paths.authPath)
+			if (persistedCanonical?.type !== "oauth") throw new Error("expected the persisted legacy replacement")
+			expect(shouldReusePreparedOAuthCredential(paths.authPath, persistedCanonical, owner)).toBe(true)
+
+			const runtime = await ModelRuntime.create({ authPath: paths.authPath, modelsPath: null })
+			installOwnerScopedOAuth(runtime)
+			const canonicalOAuth = runtime.getRegisteredProviderConfig("kimchi-dev")?.oauth
+			if (!canonicalOAuth) throw new Error("expected canonical test OAuth")
+			runtime.registerProvider("kimchi-dev/openai", { oauth: canonicalOAuth })
+
+			const requestAuth = await runtime.getAuth("kimchi-dev/openai")
+			expect(requestAuth?.auth.apiKey).toBe(persistedCanonical.access)
+			// The owner-scoped handoff supplied the replacement: no third grant.
+			expect(oauth.refreshCalls).toHaveLength(2)
+		})
+
 		it("fans the corrected replacement to a pre-existing legacy concrete entry", async () => {
 			const legacy = legacyIdTokenEntry(FAKE_NOW - 10 * 60_000)
 			writeFileSync(paths.authPath, JSON.stringify({ "kimchi-dev": legacy, "kimchi-dev/openai": legacy }))
