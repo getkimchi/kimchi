@@ -5,8 +5,17 @@ import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import {
+	FAKE_NOW,
+	HOUR_MS,
+	installOAuthCountingBrowser,
+	jwtWithExp,
+	legacyIdTokenEntry,
+	readStoredProviderEntry,
+	STORED_EXPIRES,
+	writeLegacyIdTokenCredential,
+} from "../../../auth/oauth-legacy-test-utils.js"
 import { clearApiKey, writeApiKey } from "../../../config.js"
 import {
 	isCredentialStale,
@@ -162,6 +171,68 @@ describe("handleAuthStatus", () => {
 		expect(isCredentialStale(undefined, KIMCHI_PROVIDER_ID)).toBe(false)
 		const persisted = JSON.parse(readFileSync(paths.authPath, "utf-8")) as Record<string, Record<string, unknown>>
 		expect(persisted[KIMCHI_PROVIDER_ID]?.access).toBe("refreshed-access")
+	})
+
+	// Regression: a secondary fan-out failure must not turn a durable canonical
+	// refresh into an unauthenticated result. With a provider-wide 401 mark, a
+	// successful canonical refresh, and a malformed models.json (which the
+	// secondary fan-out cannot parse while the canonical store is already
+	// updated), auth status resolves authenticated, keeps the refreshed
+	// canonical durable, clears the stale mark, and logs exactly one
+	// secret-free structured signal. A second status call also reports
+	// authenticated — later polls do not retry the missed fan-out, but nothing
+	// leaves the canonical credential looking signed out either.
+	it("stays authenticated with a durable canonical refresh when the secondary fan-out fails on malformed models.json", async () => {
+		const diagnostics = vi.spyOn(console, "error").mockImplementation(() => {})
+		writeOAuthCredential("old-bearer", {
+			expires: Date.now() + 60_000,
+			refresh: "old-grant",
+		})
+		writeFileSync(paths.modelsPath, "{corrupt")
+		markCredentialStale(undefined, KIMCHI_PROVIDER_ID)
+		markCredentialStale("old-bearer", KIMCHI_PROVIDER_ID)
+		const replacementExpiry = Date.now() + 3600_000
+		const deps = fakeOAuthDeps((credential) => ({
+			...credential,
+			access: "replacement-bearer",
+			refresh: "rotated-grant",
+			expires: replacementExpiry,
+		}))
+
+		await expect(handleAuthStatus(paths, deps)).resolves.toEqual({ authenticated: true })
+
+		// Exactly one structured, secret-free diagnostic: the event, outcome, and
+		// error type only — no messages, stacks, or credential values.
+		expect(diagnostics).toHaveBeenCalledTimes(1)
+		expect(diagnostics).toHaveBeenCalledWith({
+			event: "kimchi.oauth.refresh",
+			outcome: "sync_failed",
+			errorType: "SyntaxError",
+		})
+		const logged = diagnostics.mock.calls.map((call) => JSON.stringify(call))
+		for (const entry of logged) {
+			expect(entry).not.toContain("old-bearer")
+			expect(entry).not.toContain("replacement-bearer")
+			expect(entry).not.toContain("old-grant")
+			expect(entry).not.toContain("rotated-grant")
+		}
+		// The refreshed canonical remains durable and the stale marks are cleared.
+		const persisted = JSON.parse(readFileSync(paths.authPath, "utf-8")) as Record<string, Record<string, unknown>>
+		expect(persisted[KIMCHI_PROVIDER_ID]).toMatchObject({
+			access: "replacement-bearer",
+			refresh: "rotated-grant",
+			expires: replacementExpiry,
+		})
+		expect(isCredentialStale(undefined, KIMCHI_PROVIDER_ID)).toBe(false)
+		expect(isCredentialStale("old-bearer", KIMCHI_PROVIDER_ID)).toBe(false)
+		expect(isCredentialStale("replacement-bearer", KIMCHI_PROVIDER_ID)).toBe(false)
+
+		// Second poll: the durable replacement is outside the renewal window, so
+		// no second refresh or fan-out retry happens — and the status stays
+		// authenticated instead of reporting the earlier failure.
+		await expect(handleAuthStatus(paths, deps)).resolves.toEqual({ authenticated: true })
+		expect(deps.refreshCalls).toHaveLength(1)
+		expect(diagnostics).toHaveBeenCalledTimes(1)
 	})
 
 	it("does not refresh an OAuth credential outside the five-minute window", async () => {
@@ -326,12 +397,6 @@ describe("handleAuthStatus", () => {
 	// ---------------------------------------------------------------------------
 
 	describe("legacy ID-token bearer recovery", () => {
-		/** Fixed fake-clock instant for exact timestamp assertions. */
-		const FAKE_NOW = new Date("2025-02-03T04:05:06.789Z").getTime()
-		const HOUR_MS = 3_600_000
-		/** Stored response-derived schedule of every legacy fixture: 24h from the pinned instant. */
-		const STORED_EXPIRES = FAKE_NOW + 24 * HOUR_MS
-
 		beforeEach(() => {
 			// Only Date is faked, matching the issuance tests in cli-auth/oauth.test.ts
 			// and the recovery tests in auth/active-prompt-refresh.test.ts: the real
@@ -345,73 +410,9 @@ describe("handleAuthStatus", () => {
 			vi.useRealTimers()
 		})
 
-		/** Secret-free synthetic JWT with a numeric epoch-seconds exp. */
-		function jwtWithExp(expMs: number): string {
-			return `${Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")}.${Buffer.from(
-				JSON.stringify({ exp: Math.floor(expMs / 1000) }),
-			).toString("base64url")}.fixture-signature`
-		}
-
-		/** A legacy credential: fresh stored response-derived schedule (24h) while the
-		 * selected ID-token bearer was persisted before the shared expiry rule. */
-		function legacyIdTokenEntry(bearerExpiryMs: number): Record<string, unknown> {
-			return {
-				type: "oauth",
-				tokenUrl: "https://issuer.invalid/oauth/token",
-				clientId: "fake-issuer-client",
-				access: jwtWithExp(bearerExpiryMs),
-				refresh: "legacy-refresh",
-				expires: STORED_EXPIRES,
-				useIdToken: true,
-				region: "us",
-				audience: "https://llm.kimchi.dev",
-				orgId: "org-legacy",
-				orgName: "Legacy Org",
-				idToken: jwtWithExp(bearerExpiryMs),
-				accessToken: "legacy-raw-access",
-			}
-		}
-
-		function writeLegacyIdTokenCredential(bearerExpiryMs: number): void {
-			writeFileSync(paths.authPath, JSON.stringify({ "kimchi-dev": legacyIdTokenEntry(bearerExpiryMs) }))
-		}
-
-		/** Read a persisted credential entry from the shared store. */
-		function readStoredProviderEntry(providerId: string): Record<string, unknown> {
-			const stored = JSON.parse(readFileSync(paths.authPath, "utf-8")) as Record<string, Record<string, unknown>>
-			const entry = stored[providerId]
-			if (!entry) throw new Error(`expected a persisted ${providerId} credential`)
-			return entry
-		}
-
 		/** Read the persisted canonical credential entry from the shared store. */
 		function readStoredCanonical(): Record<string, unknown> {
-			return readStoredProviderEntry(KIMCHI_PROVIDER_ID)
-		}
-
-		/** Install the fake OAuth provider while counting browser/login attempts so
-		 * tests can assert the recovery never leaves the refresh path. */
-		function installOAuthCountingBrowser(oauth: ReturnType<typeof fakeOAuthDeps>): {
-			installOAuth: (runtime: ModelRuntime) => void
-			browserLoginAttempts: () => number
-		} {
-			let loginAttempts = 0
-			return {
-				browserLoginAttempts: () => loginAttempts,
-				installOAuth: (runtime: ModelRuntime): void => {
-					oauth.installOAuth(runtime)
-					const providerOAuth = runtime.getRegisteredProviderConfig("kimchi-dev")?.oauth
-					if (!providerOAuth) throw new Error("expected canonical test OAuth")
-					runtime.registerProvider("kimchi-dev", {
-						oauth: Object.assign({}, providerOAuth, {
-							login: (...args: Parameters<typeof providerOAuth.login>) => {
-								loginAttempts++
-								return providerOAuth.login(...args)
-							},
-						}),
-					})
-				},
-			}
+			return readStoredProviderEntry(paths.authPath, KIMCHI_PROVIDER_ID)
 		}
 
 		it.each([
@@ -420,7 +421,7 @@ describe("handleAuthStatus", () => {
 		])("authenticates an Agent auth status with a $description legacy ID-token bearer after one refresh", async ({
 			bearerExpiryMs,
 		}) => {
-			writeLegacyIdTokenCredential(bearerExpiryMs)
+			writeLegacyIdTokenCredential(paths.authPath, bearerExpiryMs)
 			// A pre-existing concrete provider entry carries the same legacy bearer:
 			// auth status must recover both it and the canonical entry, because prompt
 			// requests resolve the concrete kimchi-dev/* providers directly.
@@ -453,7 +454,7 @@ describe("handleAuthStatus", () => {
 			// the retired bearer or grant — the same discipline exercised end-to-end in
 			// auth/active-prompt-refresh.test.ts.
 			for (const providerId of [KIMCHI_PROVIDER_ID, "kimchi-dev/openai"]) {
-				expect(readStoredProviderEntry(providerId)).toMatchObject({
+				expect(readStoredProviderEntry(paths.authPath, providerId)).toMatchObject({
 					access: replacementAccess,
 					// Non-rotating grant: the issuer kept the existing refresh token.
 					refresh: "legacy-refresh",
@@ -468,12 +469,12 @@ describe("handleAuthStatus", () => {
 					tokenUrl: "https://issuer.invalid/oauth/token",
 					clientId: "fake-issuer-client",
 				})
-				expect(readStoredProviderEntry(providerId).expires).toBeGreaterThan(FAKE_NOW + 5 * 60_000)
+				expect(readStoredProviderEntry(paths.authPath, providerId).expires).toBeGreaterThan(FAKE_NOW + 5 * 60_000)
 			}
 		})
 
 		it("accepts a replacement shorter than the forced minimum through one re-resolution and a single grant", async () => {
-			writeLegacyIdTokenCredential(FAKE_NOW - 60_000)
+			writeLegacyIdTokenCredential(paths.authPath, FAKE_NOW - 60_000)
 			// Outside the ordinary five-minute window, but shorter than the forced
 			// minimum implied by the 24h stored schedule: upstream rejects it once
 			// on the forced call, then the existing resolver re-resolves without the
@@ -503,7 +504,7 @@ describe("handleAuthStatus", () => {
 		it("does not force a refresh for a fresh legacy ID-token bearer", async () => {
 			const bearerExpiryMs = FAKE_NOW + 12 * HOUR_MS
 			const legacyAccess = jwtWithExp(bearerExpiryMs)
-			writeLegacyIdTokenCredential(bearerExpiryMs)
+			writeLegacyIdTokenCredential(paths.authPath, bearerExpiryMs)
 			const oauth = fakeOAuthDeps((credential) => ({
 				...credential,
 				access: jwtWithExp(FAKE_NOW + 48 * HOUR_MS),

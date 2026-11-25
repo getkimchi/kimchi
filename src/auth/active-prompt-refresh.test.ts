@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
@@ -9,6 +9,16 @@ import { installKimchiOAuth } from "../extensions/login/flow.js"
 import { fakeOAuthDeps } from "../modes/acp/ext-methods/oauth-test-utils.js"
 import { syncOAuthCredentialToKimchiProviders } from "../pi-auth.js"
 import { prepareActivePromptKimchiCredential } from "./active-prompt-refresh.js"
+import {
+	FAKE_NOW,
+	HOUR_MS,
+	installOAuthCountingBrowser,
+	jwtWithExp,
+	legacyIdTokenEntry,
+	readAuthStore,
+	STORED_EXPIRES,
+	writeLegacyIdTokenCredential,
+} from "./oauth-legacy-test-utils.js"
 import { shouldReusePreparedOAuthCredential } from "./short-lived-credential-handoff.js"
 
 vi.mock("../pi-auth.js", async (importOriginal) => {
@@ -473,12 +483,6 @@ describe("active prompt Kimchi credential preparation", () => {
 	// ---------------------------------------------------------------------------
 
 	describe("legacy ID-token bearer recovery", () => {
-		/** Fixed fake-clock instant for exact timestamp assertions. */
-		const FAKE_NOW = new Date("2025-02-03T04:05:06.789Z").getTime()
-		const HOUR_MS = 3_600_000
-		/** Stored response-derived schedule of every legacy fixture: 24h from the pinned instant. */
-		const STORED_EXPIRES = FAKE_NOW + 24 * HOUR_MS
-
 		beforeEach(() => {
 			// Only Date is faked, matching the issuance tests in cli-auth/oauth.test.ts:
 			// ModelRuntime, the file-backed store, and the fake transports keep real
@@ -491,69 +495,13 @@ describe("active prompt Kimchi credential preparation", () => {
 			vi.useRealTimers()
 		})
 
-		/** Secret-free synthetic JWT with a numeric epoch-seconds exp. */
-		function jwtWithExp(expMs: number): string {
-			return `${Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")}.${Buffer.from(
-				JSON.stringify({ exp: Math.floor(expMs / 1000) }),
-			).toString("base64url")}.fixture-signature`
-		}
-
-		/** A legacy credential: fresh stored response-derived schedule (24h) while
-		 * the selected ID-token bearer was persisted before the shared expiry rule. */
-		function legacyIdTokenEntry(bearerExpiryMs: number): Record<string, unknown> {
-			return {
-				type: "oauth",
-				tokenUrl: "https://issuer.invalid/oauth/token",
-				clientId: "fake-issuer-client",
-				access: jwtWithExp(bearerExpiryMs),
-				refresh: "legacy-refresh",
-				expires: STORED_EXPIRES,
-				useIdToken: true,
-				region: "us",
-				audience: "https://llm.kimchi.dev",
-				orgId: "org-legacy",
-				orgName: "Legacy Org",
-				idToken: jwtWithExp(bearerExpiryMs),
-				accessToken: "legacy-raw-access",
-			}
-		}
-
-		function writeLegacyIdTokenCredential(bearerExpiryMs: number): void {
-			writeFileSync(paths.authPath, JSON.stringify({ "kimchi-dev": legacyIdTokenEntry(bearerExpiryMs) }))
-		}
-
-		/** Install the fake OAuth provider while counting browser/login attempts so
-		 * tests can assert the recovery never leaves the refresh path. */
-		function installOAuthCountingBrowser(oauth: ReturnType<typeof fakeOAuthDeps>): {
-			installOAuth: (runtime: ModelRuntime) => void
-			browserLoginAttempts: () => number
-		} {
-			let loginAttempts = 0
-			return {
-				browserLoginAttempts: () => loginAttempts,
-				installOAuth: (runtime: ModelRuntime): void => {
-					oauth.installOAuth(runtime)
-					const providerOAuth = runtime.getRegisteredProviderConfig("kimchi-dev")?.oauth
-					if (!providerOAuth) throw new Error("expected canonical test OAuth")
-					runtime.registerProvider("kimchi-dev", {
-						oauth: Object.assign({}, providerOAuth, {
-							login: (...args: Parameters<typeof providerOAuth.login>) => {
-								loginAttempts++
-								return providerOAuth.login(...args)
-							},
-						}),
-					})
-				},
-			}
-		}
-
 		it.each([
 			{ description: "expired", bearerExpiryMs: FAKE_NOW - 10 * 60_000 },
 			{ description: "near-expiry renewal boundary", bearerExpiryMs: FAKE_NOW + 5 * 60_000 },
 		])("refreshes a $description legacy ID-token bearer once and persists the corrected expiry", async ({
 			bearerExpiryMs,
 		}) => {
-			writeLegacyIdTokenCredential(bearerExpiryMs)
+			writeLegacyIdTokenCredential(paths.authPath, bearerExpiryMs)
 			const replacementExpiry = FAKE_NOW + 25 * HOUR_MS
 			const replacementAccess = jwtWithExp(replacementExpiry)
 			const oauth = fakeOAuthDeps((credential) => ({
@@ -585,7 +533,7 @@ describe("active prompt Kimchi credential preparation", () => {
 		})
 
 		it("accepts a replacement shorter than the forced minimum through one re-resolution and a single grant", async () => {
-			writeLegacyIdTokenCredential(FAKE_NOW - 60_000)
+			writeLegacyIdTokenCredential(paths.authPath, FAKE_NOW - 60_000)
 			// Outside the ordinary five-minute window, but shorter than the forced
 			// minimum implied by the 24h stored schedule: upstream rejects it once
 			// on the forced call, then accepts it without the temporary minimum.
@@ -615,7 +563,7 @@ describe("active prompt Kimchi credential preparation", () => {
 		})
 
 		it("recovers an inside-window legacy replacement with exactly two grants and no third after handoff registration", async () => {
-			writeLegacyIdTokenCredential(FAKE_NOW - 60_000)
+			writeLegacyIdTokenCredential(paths.authPath, FAKE_NOW - 60_000)
 			// Inside the ordinary five-minute window and far below the forced minimum:
 			// the forced call persists it durably, upstream rejects it once under the
 			// forced minimum, and the ordinary re-resolution issues one more grant
@@ -741,7 +689,7 @@ describe("active prompt Kimchi credential preparation", () => {
 		it("does not force a refresh for a fresh legacy ID-token bearer", async () => {
 			const bearerExpiryMs = FAKE_NOW + 12 * HOUR_MS
 			const legacyAccess = jwtWithExp(bearerExpiryMs)
-			writeLegacyIdTokenCredential(bearerExpiryMs)
+			writeLegacyIdTokenCredential(paths.authPath, bearerExpiryMs)
 			const oauth = fakeOAuthDeps((credential) => ({
 				...credential,
 				access: jwtWithExp(FAKE_NOW + 48 * HOUR_MS),
@@ -813,6 +761,6 @@ describe("active prompt Kimchi credential preparation", () => {
 	}
 
 	function readStore(): Record<string, Record<string, unknown>> {
-		return JSON.parse(readFileSync(paths.authPath, "utf-8")) as Record<string, Record<string, unknown>>
+		return readAuthStore(paths.authPath)
 	}
 })

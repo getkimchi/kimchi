@@ -93,13 +93,36 @@ export async function handleAuthStatus(
 		// only the canonical one; without the fan-out a pre-existing concrete
 		// entry would keep presenting the retired bearer and grant. No protected
 		// provider exists here: auth status has no active-provider identity to
-		// preserve, unlike active-prompt preparation. A store-write failure
-		// rejects this call like other credential-store failures.
+		// preserve, unlike active-prompt preparation. The canonical replacement is
+		// already durable when this runs, so the secondary fan-out is best effort:
+		// a failure (for example, corrupted models.json) logs one secret-free
+		// structured signal and the call still reports authenticated instead of
+		// rejecting or later polling unauthenticated. Later polls do not retry the
+		// fan-out; the active-prompt recovery path still handles concrete entries.
 		if (resolution.credential?.type === "oauth") {
-			await syncOAuthCredentialToKimchiProviders(paths.authPath, paths.modelsPath, { ...resolution.credential })
+			// Guard the fan-out with the post-refresh snapshot: if a newer login or
+			// a logout replaced the canonical credential while this status call was
+			// resolving, the store's owner wins and the stale snapshot must not be
+			// resurrected over the concrete provider entries.
+			const snapshot = { ...resolution.credential }
+			try {
+				await syncOAuthCredentialToKimchiProviders(paths.authPath, paths.modelsPath, snapshot, undefined, {
+					expectedCanonical: snapshot,
+				})
+			} catch (error) {
+				// Secret-free operational signal only: no message, stack, or token
+				// values. Only the secondary fan-out is caught here — canonical refresh
+				// and persistence failures still reject the call elsewhere above.
+				console.error({
+					event: "kimchi.oauth.refresh",
+					outcome: "sync_failed",
+					errorType: error instanceof Error ? error.name : typeof error,
+				})
+			}
 		}
-		// The persisted refresh is an authenticated success. Retire only the
-		// provider and rotated OAuth values, never unrelated API-key marks.
+		// The persisted refresh is an authenticated success regardless of the
+		// best-effort fan-out outcome. Retire only the provider and rotated OAuth
+		// values, never unrelated API-key marks.
 		clearRefreshedCredentialStale(resolution.previousAccessToken, auth.auth.apiKey, KIMCHI_PROVIDER_ID)
 		return { authenticated: true }
 	}
