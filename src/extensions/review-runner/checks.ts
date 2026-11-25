@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks"
 import { createHash, randomUUID } from "node:crypto"
 import { open, readFile, rename, rm } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
+import { raceWithTimeout } from "../../shared/race-with-timeout.js"
 import { checkReviewDirectory } from "../review-submit/directory-safety.js"
 import { gitBytes, gitText } from "../review-targets/git.js"
 import type { ResolvedReviewScope } from "../review-targets/types.js"
@@ -72,6 +73,8 @@ export interface ReviewCheckQueueOptions {
 	outputDir: string
 	statePath?: string
 	definitions?: ReviewCheckDefinition[]
+	/** @internal Deterministic command seam for queue lifecycle tests. */
+	executeCommand?: typeof executeReviewCommand
 	signal?: AbortSignal
 	now?: () => Date
 }
@@ -210,6 +213,7 @@ export class ReviewCheckQueue {
 	private readonly definitionSource: ReviewCheckDefinitionSource
 	private tail: Promise<void> = Promise.resolve()
 	private wrappingUp = false
+	private closed = false
 	private detachSignal?: () => void
 
 	private constructor(
@@ -257,6 +261,19 @@ export class ReviewCheckQueue {
 
 	cancel(reason?: unknown): void {
 		this.abort.abort(reason)
+	}
+
+	/** Close coordinator-owned check evidence. Settling commands may finish
+	 * within the caller's bounded cleanup; no result is persisted after closure. */
+	close = async (reason?: unknown, timeoutMs?: number): Promise<void> => {
+		if (this.closed) return this.idle()
+		this.closed = true
+		this.abort.abort(reason)
+		if (timeoutMs !== undefined) {
+			await raceWithTimeout(this.idle(), Math.max(0, timeoutMs), undefined)
+			return
+		}
+		await this.idle()
 	}
 
 	async idle(): Promise<void> {
@@ -431,7 +448,7 @@ export class ReviewCheckQueue {
 			kind: "checks",
 			revision: key.revision,
 		})
-		const record = await executeReviewCommand(request.controller, {
+		const record = await (this.options.executeCommand ?? executeReviewCommand)(request.controller, {
 			command: key.command,
 			cwd: resolve(worktree.path, definition.cwd),
 			intendedCheck: request.id,
@@ -456,6 +473,7 @@ export class ReviewCheckQueue {
 			satisfiesBuild: record.status === "passed" && (definition.kind === "build" || definition.builds),
 			completedAt: (this.options.now?.() ?? new Date()).toISOString(),
 		}
+		if (this.closed) return this.present(result, request)
 		this.saved.set(key.key, result)
 		await saveState(
 			this.options.statePath ?? join(this.options.outputDir, "state", "routine-checks.json"),

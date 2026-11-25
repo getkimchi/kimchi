@@ -1,31 +1,77 @@
-import type { ParsedReviewRequest } from "./types.js"
+import { assertReviewLensId, DEFAULT_REVIEW_CONCURRENCY, type ReviewLensId } from "../review-panel/lenses.js"
+import type { ParsedReviewRequest, ReviewPanelParseResult } from "./types.js"
 import { ReviewTargetError } from "./types.js"
-
-const RESERVED_STAGE_4_OPTIONS = new Set(["--lens", "--all", "--concurrency"])
 
 function argumentError(message: string): ReviewTargetError {
 	return new ReviewTargetError("invalid_arguments", message)
 }
 
-function reservedOption(argument: string): string | undefined {
-	const option = argument.split("=", 1)[0]
-	return RESERVED_STAGE_4_OPTIONS.has(option) ? option : undefined
-}
-
 function rejectUnknownOption(argument: string): never {
-	const reserved = reservedOption(argument)
-	if (reserved) {
-		throw argumentError(`${reserved} is reserved for panel selection and is not supported by target resolution yet.`)
-	}
 	throw argumentError(`Unknown review target option "${argument}".`)
 }
 
-function bareRequest(fetch: boolean): ParsedReviewRequest {
-	return { kind: "bare", fetch }
+function optionValue(args: readonly string[], index: number, option: string): { value: string; nextIndex: number } {
+	const argument = args[index]
+	const equals = argument.indexOf("=")
+	if (equals >= 0) {
+		const value = argument.slice(equals + 1)
+		if (!value) throw argumentError(`${option} requires a value.`)
+		return { value, nextIndex: index }
+	}
+	const value = args[index + 1]
+	if (!value || value.startsWith("-")) throw argumentError(`${option} requires a value.`)
+	return { value, nextIndex: index + 1 }
 }
 
-/** Parse the tokens following /review. Shell tokenization and UI dispatch belong to the surface adapter. */
-export function parseReviewTargetArgs(args: readonly string[]): ParsedReviewRequest {
+function extractPanelOptions(args: readonly string[]): {
+	targetArgs: string[]
+	panel: ReviewPanelParseResult
+} {
+	const targetArgs: string[] = []
+	const lenses: ReviewLensId[] = []
+	let all = false
+	let concurrency = DEFAULT_REVIEW_CONCURRENCY
+	let sawConcurrency = false
+	for (let index = 0; index < args.length; index += 1) {
+		const argument = args[index]
+		const option = argument.split("=", 1)[0]
+		if (option === "--lens") {
+			const { value, nextIndex } = optionValue(args, index, "--lens")
+			const lens = assertReviewLensId(value)
+			if (!lenses.includes(lens)) lenses.push(lens)
+			index = nextIndex
+			continue
+		}
+		if (option === "--all") {
+			if (argument !== "--all") throw argumentError("--all does not take a value.")
+			if (all) throw argumentError("--all was provided more than once.")
+			all = true
+			continue
+		}
+		if (option === "--concurrency") {
+			if (sawConcurrency) throw argumentError("--concurrency was provided more than once.")
+			const { value, nextIndex } = optionValue(args, index, "--concurrency")
+			if (!/^[0-9]+$/.test(value)) throw argumentError("--concurrency must be a positive integer.")
+			const parsed = Number(value)
+			if (!Number.isSafeInteger(parsed) || parsed < 1) {
+				throw argumentError("--concurrency must be a positive integer.")
+			}
+			concurrency = parsed
+			sawConcurrency = true
+			index = nextIndex
+			continue
+		}
+		targetArgs.push(argument)
+	}
+	if (all && lenses.length > 0) throw argumentError("--lens cannot be combined with --all.")
+	return { targetArgs, panel: { lenses, all, concurrency } }
+}
+
+function bareRequest(fetch: boolean): ParsedReviewRequest {
+	return { kind: "bare", fetch, panel: { lenses: [], all: false, concurrency: DEFAULT_REVIEW_CONCURRENCY } }
+}
+
+function parseTargetOnlyArgs(args: readonly string[]): ParsedReviewRequest {
 	if (args.length === 0) return bareRequest(false)
 	const target = args[0]
 	if (target !== "working-tree" && target !== "branch") {
@@ -88,4 +134,10 @@ export function parseReviewTargetArgs(args: readonly string[]): ParsedReviewRequ
 		throw argumentError(`Unexpected positional argument "${argument}" for branch ${branch}.`)
 	}
 	return { kind: "branch", branch, base, includeWorkingTree, fetch }
+}
+
+/** Parse the tokens following /review. Shell tokenization and UI dispatch belong to the surface adapter. */
+export function parseReviewTargetArgs(args: readonly string[]): ParsedReviewRequest {
+	const { targetArgs, panel } = extractPanelOptions(args)
+	return { ...parseTargetOnlyArgs(targetArgs), panel }
 }
