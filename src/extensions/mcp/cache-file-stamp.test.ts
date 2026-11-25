@@ -44,9 +44,8 @@ describe("statMetadataCacheFile", () => {
 		const before = statMetadataCacheFile()
 		writeCache('{"version":1,"servers":{"a":1}}', true)
 		const after = statMetadataCacheFile()
-		expect(before).not.toBeNull()
-		expect(after).not.toBeNull()
-		expect(sameCacheFileStamp(before as NonNullable<typeof before>, after as NonNullable<typeof after>)).toBe(false)
+		if (before === null || after === null) throw new Error("stat failed")
+		expect(sameCacheFileStamp(before, after)).toBe(false)
 	})
 
 	it("returns null when stat fails", () => {
