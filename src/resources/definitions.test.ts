@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -172,6 +172,40 @@ describe("resource definitions", () => {
 			restartRequired: true,
 			description: expect.stringContaining(".agents/rules"),
 		})
+	})
+
+	it("registers the newly gated model-facing extensions as default-on, restart-gated extensions", () => {
+		const resources = getResourceDefinitions()
+		for (const id of [
+			"extensions.codemode",
+			"extensions.skills-manager",
+			"extensions.behaviours",
+			"extensions.loop-guard",
+			"extensions.exploration-guard",
+			"extensions.bash-timeout-guidance",
+			"extensions.questionnaire",
+			"extensions.ide-adapter",
+			"extensions.remote-run",
+			"extensions.pr-watch",
+			"extensions.daemon",
+		]) {
+			expect(resources.find((resource) => resource.id === id)).toMatchObject({
+				kind: "extensions",
+				defaultEnabled: true,
+				restartRequired: true,
+			})
+		}
+	})
+
+	it("declares every literal resource id cli.ts gates an extension on", () => {
+		const cli = readFileSync(join(__dirname, "..", "cli.ts"), "utf-8")
+		const ids = cli
+			.split('{ id: "')
+			.slice(1)
+			.map((part) => part.slice(0, part.indexOf('"')))
+		const declared = new Set(getResourceDefinitions().map((resource) => resource.id))
+		expect(ids.length).toBeGreaterThan(10)
+		expect(ids.filter((id) => !declared.has(id))).toEqual([])
 	})
 })
 

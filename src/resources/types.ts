@@ -15,6 +15,8 @@ export interface ResourceDefinition {
 
 export interface ResourceSettings {
 	resources: Partial<Record<ResourceId, boolean>>
+	/** `false` turns off every resource not set to `true` in `resources`. */
+	resourcesDefault?: false
 }
 
 export interface ListedResourceSetting {

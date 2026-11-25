@@ -22,7 +22,8 @@ export function applyEnabledBashHooks(command: string, cwd = process.cwd()): Bas
 	let current = command
 	const settings = readResourceSettings()
 	for (const hook of discoverBashHookResources(cwd)) {
-		if ((settings.resources[hook.id as ResourceId] ?? hook.defaultEnabled) !== true) continue
+		const enabledByDefault = settings.resourcesDefault === false ? false : hook.defaultEnabled
+		if ((settings.resources[hook.id as ResourceId] ?? enabledByDefault) !== true) continue
 		const result = runBashHook(hook.path, current, cwd)
 		if (result.block) return result
 		current = result.command

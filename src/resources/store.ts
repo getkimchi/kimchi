@@ -26,7 +26,7 @@ export function readResourceSettings(path = getResourceSettingsPath()): Resource
 	for (const [id, value] of Object.entries(raw)) {
 		if (isResourceId(id) && typeof value === "boolean") resources[id] = value
 	}
-	return { resources }
+	return settings.resourcesDefault === false ? { resources, resourcesDefault: false } : { resources }
 }
 
 export function getResourceOverride(id: string, path = getResourceSettingsPath()): boolean | undefined {
@@ -80,8 +80,9 @@ export function orgLockMessage(id: string): string {
  * 1. org FORCE_ON / FORCE_OFF — locked; beats every local choice
  * 2. local settings.json override — the user's persistent choice
  * 3. KIMCHI_ENABLE_RESOURCES env — a transient local choice
- * 4. org ON / OFF — soft defaults a local choice (2 or 3) may override
- * 5. the definition's defaultEnabled
+ * 4. settings.json `"resourcesDefault": false` — off unless 2 or 3 turned it on
+ * 5. org ON / OFF — soft defaults a local choice (2 or 3) may override
+ * 6. the definition's defaultEnabled
  */
 export function isResourceEnabled(id: string, path = getResourceSettingsPath()): boolean {
 	assertResourceId(id)
@@ -92,6 +93,7 @@ export function isResourceEnabled(id: string, path = getResourceSettingsPath()):
 	const override = getResourceOverride(id, path)
 	if (override !== undefined) return override
 	if (envEnabledResources().has(id)) return true
+	if (readResourceSettings(path).resourcesDefault === false) return false
 
 	if (orgPolicy === "ON") return true
 	if (orgPolicy === "OFF") return false
