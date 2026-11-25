@@ -21,6 +21,22 @@ vi.mock("../pi-auth.js", async (importOriginal) => {
 	return { ...actual, syncOAuthCredentialToKimchiProviders: vi.fn(actual.syncOAuthCredentialToKimchiProviders) }
 })
 
+// Lets a test install credentials between canonical resolution (including its
+// persist-before-release) and the caller's post-resolution reads, modelling
+// another actor updating the shared store while resolution is in flight.
+const midResolution = vi.hoisted(() => ({ onResolved: undefined as undefined | (() => void) }))
+vi.mock("./refresh-aware-credential.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./refresh-aware-credential.js")>()
+	return {
+		...actual,
+		resolveRefreshAwareKimchiAuth: (async (...args: Parameters<typeof actual.resolveRefreshAwareKimchiAuth>) => {
+			const resolution = await actual.resolveRefreshAwareKimchiAuth(...args)
+			midResolution.onResolved?.()
+			return resolution
+		}) as typeof actual.resolveRefreshAwareKimchiAuth,
+	}
+})
+
 describe("active prompt Kimchi credential preparation", () => {
 	let agentDir: string
 	let paths: { authPath: string; modelsPath: string }
@@ -68,6 +84,226 @@ describe("active prompt Kimchi credential preparation", () => {
 		}
 		expect(isCredentialKeyRejected("expiring-access", "kimchi-dev")).toBe(false)
 		expect(isCredentialKeyRejected("replacement-access", "kimchi-dev")).toBe(false)
+	})
+
+	it("fans out one refresh of a far-future rejected token shared with the active provider", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		writeSharedRejectedOAuthCredentials()
+		const oauth = rotatingOAuthDeps()
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+			"ready",
+		)
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+			"ready",
+		)
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(syncOAuthCredentialToKimchiProviders).toHaveBeenCalledTimes(1)
+		expect(syncOAuthCredentialToKimchiProviders).toHaveBeenCalledWith(
+			paths.authPath,
+			paths.modelsPath,
+			expect.objectContaining({ access: "replacement-access" }),
+			undefined,
+		)
+		const stored = readStore()
+		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+			expect(stored[providerId]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
+		}
+		expect(isCredentialKeyRejected("expiring-access", "kimchi-dev")).toBe(false)
+		expect(isCredentialKeyRejected("replacement-access", "kimchi-dev")).toBe(false)
+	})
+
+	it("reports oauth_revoked instead of ready when a shared rejected active grant meets invalid_grant", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		writeSharedRejectedOAuthCredentials()
+		const oauth = fakeOAuthDeps(() => {
+			throw new OAuthTokenError("fake refresh grant revoked", { code: "invalid_grant", status: 400 })
+		})
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+			"oauth_revoked",
+		)
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(syncOAuthCredentialToKimchiProviders).not.toHaveBeenCalled()
+		expect(isCredentialKeyRejected("expiring-access", "kimchi-dev")).toBe(true)
+		const stored = readStore()
+		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+			expect(stored[providerId]).toMatchObject({ access: "expiring-access", refresh: "original-refresh" })
+		}
+	})
+
+	it("reports oauth_refresh_failed instead of ready when a shared rejected active grant meets a transient failure", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		writeSharedRejectedOAuthCredentials()
+		const oauth = fakeOAuthDeps(() => {
+			throw new Error("loopback temporarily unavailable")
+		})
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+			"oauth_refresh_failed",
+		)
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(syncOAuthCredentialToKimchiProviders).not.toHaveBeenCalled()
+		expect(isCredentialKeyRejected("expiring-access", "kimchi-dev")).toBe(true)
+		const stored = readStore()
+		for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+			expect(stored[providerId]).toMatchObject({ access: "expiring-access", refresh: "original-refresh" })
+		}
+	})
+
+	it("protects an independent active credential installed during canonical resolution", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		writeSharedRejectedOAuthCredentials()
+		const replacement = {
+			type: "oauth",
+			access: "independent-active-access",
+			refresh: "independent-active-refresh",
+			expires: Date.now() + 10 * 60_000,
+		}
+		// Another actor installs a distinct active credential after the canonical
+		// refresh is durable but before the caller re-reads the shared store.
+		midResolution.onResolved = () => {
+			const stored = readStore()
+			writeFileSync(paths.authPath, JSON.stringify({ ...stored, "kimchi-dev/openai": replacement }))
+		}
+		const oauth = rotatingOAuthDeps()
+
+		try {
+			await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+				"ready",
+			)
+		} finally {
+			midResolution.onResolved = undefined
+		}
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(syncOAuthCredentialToKimchiProviders).toHaveBeenCalledTimes(1)
+		expect(syncOAuthCredentialToKimchiProviders).toHaveBeenCalledWith(
+			paths.authPath,
+			paths.modelsPath,
+			expect.objectContaining({ access: "replacement-access" }),
+			"kimchi-dev/openai",
+		)
+		expect(readStore()["kimchi-dev"]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
+		expect(readStore()["kimchi-dev/openai"]).toEqual(replacement)
+		expect(isCredentialKeyRejected("expiring-access", "kimchi-dev")).toBe(false)
+	})
+
+	it("protects a distinct fresh active OAuth credential during a far-future rejected canonical rotation", async () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		writeOAuthCredential(Date.now() + 3_600_000)
+		markCredentialStale("expiring-access", "kimchi-dev")
+		const activeCredential = {
+			type: "oauth",
+			access: "independent-active-access",
+			refresh: "independent-active-refresh",
+			expires: Date.now() + 10 * 60_000,
+		}
+		writeFileSync(
+			paths.authPath,
+			JSON.stringify({ "kimchi-dev": readStore()["kimchi-dev"], "kimchi-dev/openai": activeCredential }),
+		)
+		const oauth = rotatingOAuthDeps()
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+			"ready",
+		)
+
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(syncOAuthCredentialToKimchiProviders).toHaveBeenCalledTimes(1)
+		expect(readStore()["kimchi-dev"]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
+		expect(readStore()["kimchi-dev/openai"]).toEqual(activeCredential)
+	})
+
+	it.each([
+		{
+			description: "an API-key after far-future rejected canonical revocation",
+			activeCredential: { type: "api_key", key: "independent-active-key" },
+			expectedAccessToken: "independent-active-key",
+			failure: "revoked",
+		},
+		{
+			description: "an API-key after a far-future rejected canonical transient failure",
+			activeCredential: { type: "api_key", key: "independent-active-key" },
+			expectedAccessToken: "independent-active-key",
+			failure: "transient",
+		},
+		{
+			description: "fresh independent OAuth after far-future rejected canonical revocation",
+			activeCredential: {
+				type: "oauth",
+				access: "independent-active-access",
+				refresh: "independent-active-refresh",
+				expires: Date.now() + 10 * 60_000,
+			},
+			expectedAccessToken: "independent-active-access",
+			failure: "revoked",
+		},
+		{
+			description: "fresh independent OAuth after a far-future rejected canonical transient failure",
+			activeCredential: {
+				type: "oauth",
+				access: "independent-active-access",
+				refresh: "independent-active-refresh",
+				expires: Date.now() + 10 * 60_000,
+			},
+			expectedAccessToken: "independent-active-access",
+			failure: "transient",
+		},
+	])("continues with $description", async ({ activeCredential, expectedAccessToken, failure }) => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		writeOAuthCredential(Date.now() + 3_600_000)
+		markCredentialStale("expiring-access", "kimchi-dev")
+		const canonical = readStore()["kimchi-dev"]
+		writeFileSync(paths.authPath, JSON.stringify({ "kimchi-dev": canonical, "kimchi-dev/openai": activeCredential }))
+		const oauth = fakeOAuthDeps(() => {
+			if (failure === "revoked") {
+				throw new OAuthTokenError("fake refresh grant revoked", { code: "invalid_grant", status: 400 })
+			}
+			throw new Error("fake refresh transport temporarily unavailable")
+		})
+
+		await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+			"ready",
+		)
+
+		if (activeCredential.type === "api_key") {
+			vi.stubEnv("KIMCHI_API_KEY", undefined)
+			writeFileSync(
+				paths.modelsPath,
+				JSON.stringify({
+					providers: {
+						"kimchi-dev/openai": {
+							baseUrl: "https://example.invalid/openai/v1",
+							apiKey: "$KIMCHI_API_KEY",
+							api: "openai-completions",
+							models: [],
+						},
+					},
+				}),
+			)
+		}
+		const runtime = await ModelRuntime.create({
+			authPath: paths.authPath,
+			modelsPath: activeCredential.type === "api_key" ? paths.modelsPath : null,
+			allowModelNetwork: false,
+			refreshOnCreate: false,
+		})
+		oauth.installOAuth(runtime)
+		const canonicalOAuth = runtime.getRegisteredProviderConfig("kimchi-dev")?.oauth
+		if (!canonicalOAuth) throw new Error("expected canonical test OAuth")
+		runtime.registerProvider("kimchi-dev/openai", { oauth: canonicalOAuth })
+		await expect(runtime.getAuth("kimchi-dev/openai")).resolves.toMatchObject({
+			auth: { apiKey: expectedAccessToken },
+		})
+		expect(oauth.refreshCalls).toHaveLength(1)
+		expect(syncOAuthCredentialToKimchiProviders).not.toHaveBeenCalled()
+		expect(readStore()["kimchi-dev"]).toEqual(canonical)
+		expect(readStore()["kimchi-dev/openai"]).toEqual(activeCredential)
+		expect(isCredentialKeyRejected("expiring-access", "kimchi-dev")).toBe(true)
 	})
 
 	it("does not force a refresh for a far-future token without an exact rejection", async () => {
@@ -592,6 +828,14 @@ describe("active prompt Kimchi credential preparation", () => {
 				},
 			}),
 		)
+	}
+
+	/** Canonical and active sub-provider hold the same far-future grant whose exact access token was rejected. */
+	function writeSharedRejectedOAuthCredentials(): void {
+		writeOAuthCredential(Date.now() + 3_600_000)
+		const shared = readStore()["kimchi-dev"]
+		writeFileSync(paths.authPath, JSON.stringify({ "kimchi-dev": shared, "kimchi-dev/openai": shared }))
+		markCredentialStale("expiring-access", "kimchi-dev")
 	}
 
 	function readStore(): Record<string, Record<string, unknown>> {

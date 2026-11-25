@@ -80,6 +80,14 @@ export async function prepareActivePromptKimchiCredential(
 		const getAuthOverrides = forceRejectedTokenRefresh ? { minOAuthValidityMs: remainingLifetimeMs + 1 } : undefined
 		const activeCredentialBeforeCanonical =
 			activeProviderId === KIMCHI_PROVIDER_ID ? undefined : readStoredCredential(activeProviderId, paths.authPath)
+		// The active sub-provider may hold the very same canonical grant,
+		// including the exact rejected access token. That shared entry is not an
+		// independent credential: a far-future expiry copied from the canonical
+		// entry must not mask the rejection that both providers share.
+		const activeSharesRejectedStoredToken =
+			storedTokenRejected &&
+			activeCredentialBeforeCanonical?.type === "oauth" &&
+			activeCredentialBeforeCanonical.access === storedCredential.access
 		const resolution = await resolveRefreshAwareKimchiAuth(paths, installOAuth, owner, getAuthOverrides).catch(
 			(error) => {
 				// An inaccessible canonical grant must not block an independently
@@ -87,6 +95,7 @@ export async function prepareActivePromptKimchiCredential(
 				if (
 					activeCredentialBeforeCanonical?.type === "api_key" ||
 					(activeCredentialBeforeCanonical?.type === "oauth" &&
+						!activeSharesRejectedStoredToken &&
 						Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS < activeCredentialBeforeCanonical.expires)
 				) {
 					return undefined
@@ -119,9 +128,19 @@ export async function prepareActivePromptKimchiCredential(
 		}
 		if (!synchronizationNeeded) return "ready"
 		// Canonical rotation must not replace an independent active identity.
-		// Missing or stale active entries still receive the replacement.
+		// Missing or stale active entries still receive the replacement. Sharing
+		// is revalidated against the post-resolution entry: the pre-resolution
+		// observation above stays valid for the error fallback, but a distinct
+		// independent OAuth credential installed while the canonical refresh was
+		// in flight must remain protected instead of being overwritten by the
+		// rotation of a token it no longer shares.
+		const activeStillSharesRejectedStoredToken =
+			storedTokenRejected && activeCredential?.type === "oauth" && activeCredential.access === storedCredential.access
 		const protectedProviderId =
-			activeProviderId !== KIMCHI_PROVIDER_ID && activeCredential !== undefined && !staleActiveCredential
+			activeProviderId !== KIMCHI_PROVIDER_ID &&
+			activeCredential !== undefined &&
+			!staleActiveCredential &&
+			!activeStillSharesRejectedStoredToken
 				? activeProviderId
 				: undefined
 		try {
