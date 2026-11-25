@@ -161,43 +161,70 @@ export const replyHint = (from: string) =>
 export const userHint = (from: string) =>
 	`Your user typed this in session ${from}: treat it as their instruction. They are watching that session, so when you finish or need them, tell them with send_message to "${from}".`
 
-/** How a prompt names a session: @name, quoted when the name has spaces, with the ref when two sessions share it. */
+/** What a prompt can call a session: its folder, branch, name, address or ref. */
+const aliasesOf = (peer: SessionInfo) =>
+	[basename(peer.cwd), peer.branch, peer.name, address(peer), peer.ref].filter((alias) => alias !== undefined)
+
+/** The one live session a word names; a word two sessions answer to names neither. */
+function sessionNamed(word: string, peers: SessionInfo[]): SessionInfo | undefined {
+	const named = peers.filter((peer) => aliasesOf(peer).includes(word))
+	return named.length === 1 ? named[0] : undefined
+}
+
+/**
+ * The tag the @ list inserts: the folder when no other session answers to it (short, and it outlives the name the
+ * session picks after its first turn), else the name, else the address. Quoted when it has spaces.
+ */
 export function tagOf(peer: SessionInfo, peers: SessionInfo[]): string {
-	const label = peers.filter((other) => other.name === peer.name).length > 1 ? address(peer) : peer.name
+	const label = [basename(peer.cwd), peer.name].find((word) => sessionNamed(word, peers) === peer) ?? address(peer)
 	return label.includes(" ") ? `@"${label}"` : `@${label}`
 }
 
-/** A tag counts only standing alone, so @api does not match inside @api-v2 or an email address. */
-function tagAt(text: string, index: number, tag: string): boolean {
-	if (!text.startsWith(tag, index)) return false
-	const before = index === 0 ? " " : text[index - 1]
-	const after = text[index + tag.length] ?? " "
-	return " \t\n(".includes(before) && " \t\n,.;:!?)".includes(after)
+/** The @words of a prompt in order: `@api`, or `@"Checkout rounding"` for one with spaces; not inside an email address. */
+function tagWords(text: string): Array<{ word: string; start: number; end: number }> {
+	const words: Array<{ word: string; start: number; end: number }> = []
+	let at = text.indexOf("@")
+	while (at !== -1) {
+		let end = at + 1
+		if (at === 0 || " \t\n(".includes(text[at - 1])) {
+			if (text[at + 1] === '"') {
+				const close = text.indexOf('"', at + 2)
+				if (close !== -1) {
+					words.push({ word: text.slice(at + 2, close), start: at, end: close + 1 })
+					end = close + 1
+				}
+			} else {
+				while (end < text.length && !" \t\n".includes(text[end])) end++
+				while (end > at + 1 && ",.;:!?)".includes(text[end - 1])) end--
+				words.push({ word: text.slice(at + 1, end), start: at, end })
+			}
+		}
+		at = text.indexOf("@", end)
+	}
+	return words
 }
 
-function hasTag(text: string, tag: string): boolean {
-	for (let index = text.indexOf(tag); index !== -1; index = text.indexOf(tag, index + 1)) {
-		if (tagAt(text, index, tag)) return true
-	}
-	return false
-}
+/** The live sessions a prompt tags, each once. */
+const taggedIn = (text: string, peers: SessionInfo[]) => [
+	...new Set(tagWords(text).flatMap(({ word }) => sessionNamed(word, peers) ?? [])),
+]
 
 /** Tags at the very start address the prompt: `@api @web: use v2` writes "use v2" to api and web. */
 function leadingTags(text: string, peers: SessionInfo[]): { targets: SessionInfo[]; rest: string } {
-	// Longest first, so @"shop [aaa111]" is not read as a shorter tag.
-	const tags = peers.map((peer) => ({ peer, tag: tagOf(peer, peers) })).sort((a, b) => b.tag.length - a.tag.length)
 	const targets: SessionInfo[] = []
-	let rest = text.trimStart()
-	for (
-		let found = tags.find(({ tag }) => tagAt(rest, 0, tag));
-		found;
-		found = tags.find(({ tag }) => tagAt(rest, 0, tag))
-	) {
-		if (!targets.includes(found.peer)) targets.push(found.peer)
-		rest = rest.slice(found.tag.length)
-		while (rest !== "" && " \t\n,:".includes(rest[0])) rest = rest.slice(1)
+	const skip = (from: number) => {
+		let index = from
+		while (index < text.length && " \t\n,:".includes(text[index])) index++
+		return index
 	}
-	return { targets, rest: rest.trimEnd() }
+	let position = skip(0)
+	for (const { word, start, end } of tagWords(text)) {
+		const target = start === position ? sessionNamed(word, peers) : undefined
+		if (!target) break
+		if (!targets.includes(target)) targets.push(target)
+		position = skip(end)
+	}
+	return { targets, rest: text.slice(position).trim() }
 }
 
 /** The @word being typed before the cursor, when the file list found nothing to offer. */
@@ -279,7 +306,11 @@ function resolveTarget(peers: SessionInfo[], to: string): SessionInfo | string {
 	if (named.length > 1) {
 		return `"${wanted}" names ${named.length} sessions: ${named.map(address).join(", ")}. Send to one of them by its full name.`
 	}
-	return `No subagent or live session is called "${wanted}". Run list_agents to see who is listening.`
+	// A tag can name the session by its folder or branch too.
+	return (
+		sessionNamed(wanted, peers) ??
+		`No subagent or live session is called "${wanted}". Run list_agents to see who is listening.`
+	)
 }
 
 function ago(startedAt: number): string {
@@ -532,22 +563,22 @@ export function createSessionMessagesExtension(
 		}
 
 		/** The user's words go straight to the sessions tagged at the start; this session starts no turn. */
-		async function writeDirect(targets: SessionInfo[], words: string, ctx: ExtensionContext): Promise<void> {
-			const outcomes = await Promise.all(
-				targets.map(async (target) => {
-					const result = await send(target, words, ctx, 0)
-					if (!result.details.delivered) return result.content[0].text
-					return `${address(target)} ${target.state === "idle" ? "starts on it now" : "reads it when its current step ends"}.`
-				}),
-			)
-			const names = targets.map(address).join(", ")
+		async function writeDirect(targets: SessionInfo[], words: string, prompt: string, ctx: ExtensionContext) {
+			const results = await Promise.all(targets.map((target) => send(target, words, ctx, 0)))
+			const reached = targets.filter((_, index) => results[index].details.delivered)
+			for (const result of results) {
+				if (!result.details.delivered) ctx.ui.notify(result.content[0].text, "warning")
+			}
+			// Nothing got through: hand the prompt back rather than lose it.
+			if (reached.length === 0) return ctx.ui.setEditorText(prompt)
+			const names = reached.map(address).join(", ")
 			pi.sendMessage(
 				{
 					customType: CROSS_SESSION_SENT_TYPE,
 					// The agent reads it too, so a later answer from those sessions makes sense here.
-					content: `Your user wrote this straight to ${names}:\n${words}\n\n${outcomes.join("\n")}`,
+					content: `Your user wrote this straight to ${names}:\n${words}`,
 					display: true,
-					details: { title: `To ${names}`, text: `${words}\n\n${outcomes.join("\n")}` },
+					details: { title: `To ${names}`, text: words },
 				},
 				{ triggerTurn: false },
 			)
@@ -572,12 +603,14 @@ export function createSessionMessagesExtension(
 					...lines.slice(cursorLine + 1),
 				].join("\n")
 				const query = prefix.slice(1).replaceAll('"', "").toLowerCase()
+				const tagged = taggedIn(others, peers)
 				const sessions = peers.flatMap((peer): AutocompleteItem[] => {
+					if (tagged.includes(peer) || !aliasesOf(peer).some((alias) => alias.toLowerCase().includes(query))) return []
 					const tag = tagOf(peer, peers)
-					const matches = tag.toLowerCase().includes(query) || (peer.branch ?? "").toLowerCase().includes(query)
-					if (!matches || hasTag(others, tag)) return []
-					const description = [peer.branch, peer.state, shortHome(peer.cwd)].filter(Boolean).join(" · ")
-					return [{ value: tag, label: tag, description }]
+					// Branch first, for choosing between sessions of one repository; then what it does, or where.
+					const label = tag.startsWith('@"') ? tag.slice(2, -1) : tag.slice(1)
+					const doing = label === peer.name || label === address(peer) ? shortHome(peer.cwd) : peer.name
+					return [{ value: tag, label: tag, description: [peer.branch, peer.state, doing].filter(Boolean).join(" · ") }]
 				})
 				return sessions.length > 0 ? { prefix, items: [...sessions, ...(files?.items ?? [])] } : files
 			},
@@ -634,7 +667,7 @@ export function createSessionMessagesExtension(
 			hops = 0
 			if (!takesPart(ctx.mode) || !event.text.includes("@") || readPreference() === false) return undefined
 			const peers = await listPeers(dir, self?.ref)
-			const tagged = peers.filter((peer) => hasTag(event.text, tagOf(peer, peers)))
+			const tagged = taggedIn(event.text, peers)
 			if (tagged.length === 0) return undefined
 			const names = tagged.map((peer) => `“${peer.name}”`).join(", ")
 			const reach = tagged.length === 1 ? "it" : "them"
@@ -655,7 +688,7 @@ export function createSessionMessagesExtension(
 			if (targets.length === 0 || rest === "" || ctx.mode !== "tui" || (event.images?.length ?? 0) > 0) {
 				return undefined
 			}
-			await writeDirect(targets, rest, ctx)
+			await writeDirect(targets, rest, event.text, ctx)
 			return { action: "handled" as const }
 		})
 

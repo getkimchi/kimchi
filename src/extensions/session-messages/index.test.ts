@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import net from "node:net"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { stripVTControlCharacters } from "node:util"
@@ -345,7 +346,8 @@ describe("session-messages", () => {
 		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
 		await startSession(dir, { id: BETA, name: "beta", cwd: shop, idle: false })
 		await startSession(dir, { id: GAMMA, name: "Checkout rounding" })
-		const beta = { value: "@beta", label: "@beta", description: `fix/rounding · busy · ${shop}` }
+		// The folder is the tag when no other session answers to it; the name the session picked shows beside it.
+		const beta = { value: "@fix-rounding", label: "@fix-rounding", description: "fix/rounding · busy · beta" }
 		const checkout = {
 			value: '@"Checkout rounding"',
 			label: '@"Checkout rounding"',
@@ -358,7 +360,7 @@ describe("session-messages", () => {
 		expect(all?.items).toHaveLength(3)
 		expect(all?.items).toEqual(expect.arrayContaining([beta, checkout]))
 		expect(all?.items.at(-1)).toEqual(file)
-		// Typing narrows by name or branch, with or without matching files.
+		// Typing narrows by folder, branch or name, with or without matching files.
 		expect(await atList(alpha)("@fix/r")).toEqual({ prefix: "@fix/r", items: [beta] })
 		// A session already tagged is not offered again.
 		expect(await atList(alpha)("@beta and @")).toEqual({ prefix: "@", items: [checkout] })
@@ -393,14 +395,9 @@ describe("session-messages", () => {
 			expect(alpha.harness.sendMessage).toHaveBeenCalledWith(
 				{
 					customType: CROSS_SESSION_SENT_TYPE,
-					content: expect.stringContaining(
-						"Your user wrote this straight to beta [bbbbb2], Checkout rounding [ccccc3]:\nuse v2 instead",
-					),
+					content: "Your user wrote this straight to beta [bbbbb2], Checkout rounding [ccccc3]:\nuse v2 instead",
 					display: true,
-					details: {
-						title: "To beta [bbbbb2], Checkout rounding [ccccc3]",
-						text: "use v2 instead\n\nbeta [bbbbb2] reads it when its current step ends.\nCheckout rounding [ccccc3] starts on it now.",
-					},
+					details: { title: "To beta [bbbbb2], Checkout rounding [ccccc3]", text: "use v2 instead" },
 				},
 				{ triggerTurn: false },
 			)
@@ -418,6 +415,53 @@ describe("session-messages", () => {
 			unregisterSessionPermissionFlagController(BETA)
 			clearPermissionModeEnv(BETA)
 		}
+	})
+
+	it("still finds a tagged session by its folder after the session renames itself", async () => {
+		const dir = tempDir()
+		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
+		// Sessions pick a name after their first turn; a tag picked before that names the folder.
+		const shipping = await startSession(dir, { id: BETA, name: "Add express shipping", cwd: "/work/shop-shipping" })
+		expect((await atList(alpha)("@ship"))?.items).toEqual([
+			{ value: "@shop-shipping", label: "@shop-shipping", description: "idle · Add express shipping" },
+		])
+		expect(await alpha.type("@shop-shipping make it 9.90")).toEqual([{ action: "handled" }])
+		expect(shipping.harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ details: expect.objectContaining({ text: "make it 9.90" }) }),
+			STEER_AND_WAKE,
+		)
+		expect(await alpha.run("send_message", { to: "@shop-shipping", message: "And a test." })).toContain(
+			"Delivered to Add express shipping [bbbbb2]",
+		)
+	})
+
+	it("gives the prompt back when no tagged session takes it", async () => {
+		const dir = tempDir()
+		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
+		// A session that answers who it is, then turns the message away.
+		const refusing = net.createServer((socket) =>
+			socket.once("data", (data) => {
+				const request = JSON.parse(String(data))
+				const info = {
+					name: "web",
+					ref: "fffff1",
+					cwd: "/work/web",
+					repository: "/work/web",
+					state: "idle",
+					startedAt: 1,
+				}
+				socket.end(
+					`${JSON.stringify(request.type === "info" ? { ok: true, info } : { ok: false, error: "it is shutting down" })}\n`,
+				)
+			}),
+		)
+		await new Promise<void>((resolve) => refusing.listen(join(dir, "fffff1.sock"), resolve))
+		running.push(() => new Promise((resolve) => refusing.close(resolve)))
+
+		expect(await alpha.type("@web use v2 instead")).toEqual([{ action: "handled" }])
+		expect(alpha.ctx.ui.notify).toHaveBeenCalledWith("Not delivered to web [fffff1]: it is shutting down.", "warning")
+		expect(alpha.ctx.ui.setEditorText).toHaveBeenCalledWith("@web use v2 instead")
+		expect(alpha.harness.sendMessage).not.toHaveBeenCalled()
 	})
 
 	it("asks once when a prompt tags a session before messages were allowed", async () => {
@@ -498,7 +542,7 @@ describe("session-messages", () => {
 		expect(sessions).toEqual(
 			expect.arrayContaining([
 				{
-					tag: '@"beta [bbbbb2]"',
+					tag: "@fix-rounding",
 					name: "beta",
 					ref: "bbbbb2",
 					branch: "fix/rounding",
