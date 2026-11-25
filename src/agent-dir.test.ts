@@ -12,7 +12,7 @@ function stubHome(home: string): void {
 }
 
 describe("applyAgentDirEnv", () => {
-	it("derives the dir from HOME, marks it, and gives a child with another HOME its own", () => {
+	it("derives the dir from HOME and derives it again when HOME changes", () => {
 		stubHome(resolve("/home/parent"))
 		const env: NodeJS.ProcessEnv = {}
 		const parentDir = join(resolve("/home/parent"), ".config", "kimchi", "harness")
@@ -27,7 +27,7 @@ describe("applyAgentDirEnv", () => {
 		expect(child.KIMCHI_CODING_AGENT_DIR_DERIVED).toBe(derived)
 	})
 
-	it("keeps an explicit dir set under an inherited marker, and so does its child", () => {
+	it("keeps an explicit dir when HOME changes, even one set under an inherited marker", () => {
 		stubHome(resolve("/home/parent"))
 		const parent: NodeJS.ProcessEnv = {}
 		applyAgentDirEnv(parent)
@@ -43,10 +43,19 @@ describe("applyAgentDirEnv", () => {
 		expect(grandchild.KIMCHI_CODING_AGENT_DIR_DERIVED).toBeUndefined()
 	})
 
-	it("expands a leading ~ in an explicit dir", () => {
-		stubHome(resolve("/home/user"))
+	it("expands a leading ~ in an explicit dir, and ~\\ on Windows", () => {
+		const home = resolve("/home/user")
+		stubHome(home)
 
-		expect(applyAgentDirEnv({ KIMCHI_CODING_AGENT_DIR: "~/stage" })).toBe(join(resolve("/home/user"), "stage"))
-		expect(applyAgentDirEnv({ KIMCHI_CODING_AGENT_DIR: "~" })).toBe(resolve("/home/user"))
+		expect(applyAgentDirEnv({ KIMCHI_CODING_AGENT_DIR: "~/stage" })).toBe(join(home, "stage"))
+		expect(applyAgentDirEnv({ KIMCHI_CODING_AGENT_DIR: "~" })).toBe(home)
+
+		const platform = Object.getOwnPropertyDescriptor(process, "platform")
+		Object.defineProperty(process, "platform", { value: "win32" })
+		try {
+			expect(applyAgentDirEnv({ KIMCHI_CODING_AGENT_DIR: "~\\stage" })).toBe(resolve(`${home}\\stage`))
+		} finally {
+			if (platform) Object.defineProperty(process, "platform", platform)
+		}
 	})
 })

@@ -15,11 +15,12 @@ export function defaultAgentDir(): string {
  * the marker is removed, so children keep it too.
  */
 export function applyAgentDirEnv(env: NodeJS.ProcessEnv = process.env): string {
-	const inherited = env.KIMCHI_CODING_AGENT_DIR
-	if (inherited && inherited !== env.KIMCHI_CODING_AGENT_DIR_DERIVED) {
+	const explicit = explicitAgentDir(env)
+	if (explicit) {
 		// Expand a leading `~` the way Pi's getAgentDir does.
-		const expanded = inherited === "~" || inherited.startsWith("~/") ? homedir() + inherited.slice(1) : inherited
-		env.KIMCHI_CODING_AGENT_DIR = resolve(expanded)
+		const tilde =
+			explicit === "~" || explicit.startsWith("~/") || (process.platform === "win32" && explicit.startsWith("~\\"))
+		env.KIMCHI_CODING_AGENT_DIR = resolve(tilde ? homedir() + explicit.slice(1) : explicit)
 		// biome-ignore lint/performance/noDelete: assigning undefined to process.env stores the string "undefined"
 		delete env.KIMCHI_CODING_AGENT_DIR_DERIVED
 	} else {
@@ -30,7 +31,7 @@ export function applyAgentDirEnv(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /** The agent dir when it was set explicitly rather than derived from HOME. */
-export function explicitAgentDir(): string | undefined {
-	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
-	return agentDir && agentDir !== process.env.KIMCHI_CODING_AGENT_DIR_DERIVED ? agentDir : undefined
+export function explicitAgentDir(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const agentDir = env.KIMCHI_CODING_AGENT_DIR
+	return agentDir && agentDir !== env.KIMCHI_CODING_AGENT_DIR_DERIVED ? agentDir : undefined
 }
