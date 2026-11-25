@@ -56,6 +56,7 @@ import { refreshGitBranch } from "../../utils.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { listSubagents, messageSubagent } from "../agents/index.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
+import { inDialogTurn } from "../permissions/prompt-queue.js"
 import { workRepository } from "../work-attribution/scope.js"
 import { acpClientLeftOut, takesPart } from "./session-policy.js"
 
@@ -67,8 +68,11 @@ export const CROSS_SESSION_SENT_TYPE = "cross-session-sent"
 
 /** Bounds one request or reply, so a peer cannot make a session buffer without limit. */
 const MAX_FRAME_CHARS = 64 * 1024
-/** A live session answers at once; longer means it is frozen, and the list skips it. */
-const REQUEST_TIMEOUT_MS = 2000
+/**
+ * A live session answers within milliseconds, or about 500 ms when its branch needs Git's fallback; past that it
+ * counts as frozen (suspended with Ctrl+Z, say), lists skip it, and typing @ never waits longer.
+ */
+const REQUEST_TIMEOUT_MS = 600
 /** A held message waits this long for its user; then its sender hears it expired. */
 const HOLD_EXPIRY_MS = 5 * 60_000
 /**
@@ -233,6 +237,9 @@ function typedTag(before: string): string | undefined {
 	return token.startsWith("@") ? token : undefined
 }
 
+/** A session's ref: the last six hex digits of its id (Pi ids are UUIDv7, so the first ones are a timestamp). */
+const refOf = (sessionId: string) => sessionId.slice(-6)
+
 const shortHome = (path: string) => (path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path)
 
 const branchOf = (cwd: string) => new Promise<string | undefined>((resolve) => refreshGitBranch(resolve, cwd))
@@ -393,11 +400,10 @@ export function createSessionMessagesExtension(
 			if (readPreference() === undefined) {
 				if (asking) await asking
 				else {
-					asking = ctx.ui
-						.confirm(title, `${question} Your choice is saved for future sessions; /session-messages changes it.`)
-						.finally(() => {
-							asking = undefined
-						})
+					const text = `${question} Your choice is saved for future sessions; /session-messages changes it.`
+					asking = inDialogTurn(pi.events, () => ctx.ui.confirm(title, text)).finally(() => {
+						asking = undefined
+					})
 					const accepted = await asking
 					if (readPreference() === undefined) writePreference(accepted)
 					ctx.ui.notify(readPreference() === true ? ENABLED_NOTICE : DISABLED_NOTICE, "info")
@@ -471,12 +477,20 @@ export function createSessionMessagesExtension(
 			// A session started before messages were allowed needs the tools before this turn, to reply.
 			registerTools()
 			const byUser = request.hops === 0
+			// A sender without an inbox sends no ref; telling the model to answer it would only fail.
+			const hint = !isRef(request.ref)
+				? "That session cannot receive replies."
+				: byUser
+					? userHint(request.from)
+					: replyHint(request.from)
 			const deliver = () => {
+				// One count per session: a message from another chain raises it even while this session works for its
+				// own user, so near the limit a send can wait for a user early. Per-sender counts would fix that.
 				hops = request.hops
 				pi.sendMessage(
 					{
 						customType: CROSS_SESSION_MESSAGE_TYPE,
-						content: `<cross-session-message from="${request.from}"${byUser ? ' by="user"' : ""}>\n${request.text}\n</cross-session-message>\n${byUser ? userHint(request.from) : replyHint(request.from)}`,
+						content: `<cross-session-message from="${request.from}"${byUser ? ' by="user"' : ""}>\n${request.text}\n</cross-session-message>\n${hint}`,
 						display: true,
 						details: {
 							from: request.from,
@@ -502,18 +516,18 @@ export function createSessionMessagesExtension(
 					error: `it runs in ${mode} mode in an app where Kimchi cannot ask its user, and your session runs in ${request.mode} mode`,
 				}
 			}
-			const shownAt = Date.now()
-			void ctx.ui
-				.confirm(
+			// Pi shows one dialog at a time: the question waits for permission prompts, which it would replace.
+			void inDialogTurn(pi.events, async () => {
+				const shownAt = Date.now()
+				const approved = await ctx.ui.confirm(
 					`Message from ${request.from}`,
 					`That session runs in ${request.mode} mode and this one in ${mode}. Let the message in?\n\n${request.text}`,
 					{ timeout: HOLD_EXPIRY_MS },
 				)
-				.then((approved) => {
-					if (approved) deliver()
-					// The timeout answers no too; only the time taken tells it from a decline (a second's slack).
-					else notifySender(request.ref, Date.now() - shownAt >= HOLD_EXPIRY_MS - 1000 ? "expired" : "declined")
-				})
+				// The timeout answers no too; only the time on screen tells it from a decline (a second's slack).
+				return approved ? "approved" : Date.now() - shownAt >= HOLD_EXPIRY_MS - 1000 ? "expired" : "declined"
+			})
+				.then((outcome) => (outcome === "approved" ? deliver() : notifySender(request.ref, outcome)))
 				.catch(() => {})
 			return { ok: true, held: true }
 		}
@@ -563,14 +577,16 @@ export function createSessionMessagesExtension(
 		}
 
 		/** The user's words go straight to the sessions tagged at the start; this session starts no turn. */
-		async function writeDirect(targets: SessionInfo[], words: string, prompt: string, ctx: ExtensionContext) {
+		async function writeDirect(targets: SessionInfo[], words: string, peers: SessionInfo[], ctx: ExtensionContext) {
 			const results = await Promise.all(targets.map((target) => send(target, words, ctx, 0)))
 			const reached = targets.filter((_, index) => results[index].details.delivered)
+			const missed = targets.filter((target) => !reached.includes(target))
 			for (const result of results) {
 				if (!result.details.delivered) ctx.ui.notify(result.content[0].text, "warning")
 			}
-			// Nothing got through: hand the prompt back rather than lose it.
-			if (reached.length === 0) return ctx.ui.setEditorText(prompt)
+			// What did not get through goes back into the editor, addressed to those sessions only.
+			if (missed.length > 0) ctx.ui.setEditorText([...missed.map((peer) => tagOf(peer, peers)), words].join(" "))
+			if (reached.length === 0) return
 			const names = reached.map(address).join(", ")
 			pi.sendMessage(
 				{
@@ -591,11 +607,15 @@ export function createSessionMessagesExtension(
 			applyCompletion: (lines, cursorLine, cursorCol, item, prefix) =>
 				current.applyCompletion(lines, cursorLine, cursorCol, item, prefix),
 			async getSuggestions(lines, cursorLine, cursorCol, options) {
-				const files = await current.getSuggestions(lines, cursorLine, cursorCol, options)
 				const line = lines[cursorLine] ?? ""
-				const prefix = files?.prefix.startsWith("@") ? files.prefix : typedTag(line.slice(0, cursorCol))
-				if (!prefix || readPreference() === false) return files
-				const peers = await listPeers(dir, self?.ref)
+				const typed = typedTag(line.slice(0, cursorCol))
+				const offerSessions = typed !== undefined && readPreference() !== false
+				const [files, peers] = await Promise.all([
+					current.getSuggestions(lines, cursorLine, cursorCol, options),
+					offerSessions ? listPeers(dir, self?.ref) : [],
+				])
+				const prefix = files?.prefix.startsWith("@") ? files.prefix : typed
+				if (!prefix || !offerSessions) return files
 				// A session tagged elsewhere in the prompt is not offered twice.
 				const others = [
 					...lines.slice(0, cursorLine),
@@ -621,12 +641,20 @@ export function createSessionMessagesExtension(
 			if (readPreference() === true) registerTools()
 			// Pi drops every wrapper when it switches sessions, so each start adds it again. ACP has no @ list.
 			if (ctx.mode === "tui") ctx.ui.addAutocompleteProvider(withSessions)
-			const ref = ctx.sessionManager.getSessionId().slice(-6)
+			const ref = refOf(ctx.sessionManager.getSessionId())
 			const path = join(dir, `${ref}.sock`)
 			const repository = await workRepository(ctx.cwd).catch(() => ctx.cwd)
 			try {
 				mkdirSync(dir, { recursive: true, mode: 0o700 })
 				chmodSync(dir, 0o700)
+				// The same session open in another process keeps its inbox; only a socket nobody answers is stale.
+				if (
+					await ask(path, { type: "info" }).then(
+						() => true,
+						() => false,
+					)
+				)
+					return
 				rmSync(path, { force: true })
 				const listening = net.createServer((socket) => {
 					socket.on("error", () => {})
@@ -688,7 +716,7 @@ export function createSessionMessagesExtension(
 			if (targets.length === 0 || rest === "" || ctx.mode !== "tui" || (event.images?.length ?? 0) > 0) {
 				return undefined
 			}
-			await writeDirect(targets, rest, event.text, ctx)
+			await writeDirect(targets, rest, peers, ctx)
 			return { action: "handled" as const }
 		})
 
@@ -809,7 +837,7 @@ export async function liveSessions(
 	options: { dir?: string; preferenceFile?: string } = {},
 ) {
 	if (readSessionMessagesPreference(options.preferenceFile) === false) return []
-	const peers = await listPeers(options.dir ?? liveSessionsDir(), sessionId.slice(-6))
+	const peers = await listPeers(options.dir ?? liveSessionsDir(), refOf(sessionId))
 	const repository = await workRepository(cwd).catch(() => cwd)
 	return peers.map((peer) => ({
 		tag: tagOf(peer, peers),

@@ -28,8 +28,8 @@ session; a no is remembered too, so Kimchi does not ask again. Change it any tim
 /session-messages        # show the current choice
 ```
 
-Sessions that are already running pick up the change after their current turn. Messages
-to your own subagents work either way.
+Sessions that are already running pick up the change after their current turn. After a
+no, `steer_subagent` and `resume_subagent` still reach your subagents.
 
 ## Use it
 

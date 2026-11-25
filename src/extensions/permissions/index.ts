@@ -137,7 +137,7 @@ import {
 	releaseTargetForPlanApproval,
 } from "./policy.js"
 import { getPermissionPolicySource, registerPermissionPolicySource } from "./policy-source-registry.js"
-import { PromptQueue } from "./prompt-queue.js"
+import { PromptQueue, setSessionPromptQueue } from "./prompt-queue.js"
 import {
 	type EscalatedCallStatus,
 	MODE_CHANGED_ABORT_ERROR,
@@ -556,6 +556,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	 *  replace the first and orphan its promise. Escalated subagent prompts
 	 *  (requestPermission on the session's registered sink) share the queue. */
 	const promptQueue = new PromptQueue()
+	setSessionPromptQueue(pi.events, promptQueue)
 	const dialogActivity = isWorker
 		? undefined
 		: createBlockedDialogActivity(pi.events, () => permissionPromptDepth.get(pi.events) ?? 0)

@@ -13,6 +13,7 @@ import { listSubagents, messageSubagent } from "../agents/index.js"
 import type { AgentRecord } from "../agents/personas/types.js"
 import { clearPermissionModeEnv, setPermissionMode } from "../permissions/mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "../permissions/mode-controller-registry.js"
+import { PromptQueue, setSessionPromptQueue } from "../permissions/prompt-queue.js"
 import {
 	CROSS_SESSION_MESSAGE_TYPE,
 	CROSS_SESSION_NOTICE_TYPE,
@@ -113,6 +114,20 @@ async function startSession(
 	/** The user presses Enter on this prompt: the input handlers' results. */
 	const type = (text: string) => harness.emit("input", { type: "input", text, source: "interactive" }, ctx)
 	return { harness, ctx, run, stop, type }
+}
+
+/** One raw request to a socket, as another session would send it. */
+function rawAsk(path: string, request: object): Promise<unknown> {
+	return new Promise((resolve, reject) => {
+		const socket = net.createConnection(path)
+		socket.setEncoding("utf8")
+		socket.once("data", (reply: string) => {
+			resolve(JSON.parse(reply))
+			socket.destroy()
+		})
+		socket.on("error", reject)
+		socket.write(`${JSON.stringify(request)}\n`)
+	})
 }
 
 /** A folder Git reports on that branch, without running Git. */
@@ -274,6 +289,28 @@ describe("session-messages", () => {
 		} finally {
 			unregisterSessionPermissionFlagController(looseId)
 			clearPermissionModeEnv(looseId)
+		}
+	})
+
+	it("asks about a held message only after the permission prompt on screen is answered", async () => {
+		const dir = tempDir()
+		const strict = await startSession(dir, { id: ALPHA, name: "strict" })
+		const loose = await startSession(dir, { id: BETA, name: "loose" })
+		setPermissionMode(BETA, { mode: "yolo", initiatedBy: "user", source: "runtime" })
+		// Pi has one dialog slot: a question shown now would replace the prompt and orphan its tool call.
+		const prompts = new PromptQueue()
+		setSessionPromptQueue(loose.harness.api.events, prompts)
+		let answer = (_approved: boolean) => {}
+		void prompts.enqueue(() => new Promise<boolean>((resolve) => (answer = resolve)))
+		try {
+			await strict.run("send_message", { to: "loose", message: "Delete the cache." })
+			await new Promise((resolve) => setTimeout(resolve, 20))
+			expect(loose.ctx.ui.confirm).not.toHaveBeenCalled()
+			answer(true)
+			await vi.waitFor(() => expect(loose.ctx.ui.confirm).toHaveBeenCalledTimes(1))
+		} finally {
+			unregisterSessionPermissionFlagController(BETA)
+			clearPermissionModeEnv(BETA)
 		}
 	})
 
@@ -462,6 +499,57 @@ describe("session-messages", () => {
 		expect(alpha.ctx.ui.notify).toHaveBeenCalledWith("Not delivered to web [fffff1]: it is shutting down.", "warning")
 		expect(alpha.ctx.ui.setEditorText).toHaveBeenCalledWith("@web use v2 instead")
 		expect(alpha.harness.sendMessage).not.toHaveBeenCalled()
+
+		// With two tags, the part that did not get through comes back addressed to that session only.
+		const beta = await startSession(dir, { id: BETA, name: "beta" })
+		expect(await alpha.type("@beta @web use v2")).toEqual([{ action: "handled" }])
+		expect(beta.harness.sendMessage).toHaveBeenCalledTimes(1)
+		expect(alpha.ctx.ui.setEditorText).toHaveBeenLastCalledWith("@web use v2")
+		expect(alpha.harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ details: { title: "To beta [bbbbb2]", text: "use v2" } }),
+			{ triggerTurn: false },
+		)
+	})
+
+	it("does not let a frozen session hold up typing", async () => {
+		const dir = tempDir()
+		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
+		// Accepts the connection, never answers: a Kimchi suspended with Ctrl+Z.
+		const held: net.Socket[] = []
+		const frozen = net.createServer((socket) => held.push(socket))
+		await new Promise<void>((resolve) => frozen.listen(join(dir, "fffff1.sock"), resolve))
+		running.push(() => {
+			for (const socket of held) socket.destroy()
+			return new Promise((resolve) => frozen.close(resolve))
+		})
+
+		const started = Date.now()
+		expect(await atList(alpha)("@")).toBeNull()
+		expect(Date.now() - started).toBeLessThan(1500)
+	})
+
+	it("leaves a session's inbox with the process that opened it first", async () => {
+		const dir = tempDir()
+		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
+		const first = await startSession(dir, { id: BETA, name: "beta" })
+		// The same session resumed in a second terminal.
+		const second = await startSession(dir, { id: BETA, name: "beta" })
+
+		expect(await alpha.run("send_message", { to: "beta", message: "hi" })).toContain("Delivered to beta [bbbbb2]")
+		expect(first.harness.sendMessage).toHaveBeenCalledTimes(1)
+		expect(second.harness.sendMessage).not.toHaveBeenCalled()
+		expect(await second.run("list_agents", {})).toContain("This session has no inbox")
+	})
+
+	it("tells the receiver when the sender cannot take a reply", async () => {
+		const dir = tempDir()
+		const beta = await startSession(dir, { id: BETA, name: "beta" })
+		const message = { type: "message", from: "gone (cannot receive replies)", mode: "default", text: "hi", hops: 1 }
+		expect(await rawAsk(join(dir, "bbbbb2.sock"), message)).toEqual({ ok: true })
+		expect(beta.harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ content: expect.stringMatching(/That session cannot receive replies\.$/) }),
+			STEER_AND_WAKE,
+		)
 	})
 
 	it("asks once when a prompt tags a session before messages were allowed", async () => {

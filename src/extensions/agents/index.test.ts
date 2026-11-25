@@ -8,6 +8,7 @@ import {
 	buildAgentToolGuidelines,
 	buildAutoResumeNote,
 	buildRunInBackgroundParameterDescription,
+	clearSubagentMessengersForTest,
 	listSubagents,
 	messageSubagent,
 	resumeFermentV2VerifierAgent,
@@ -1536,7 +1537,9 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 describe("messageSubagent (send_message to a subagent)", () => {
-	function spawnRecord(pi: ReturnType<typeof makeMockPi>) {
+	function spawnRecord(pi: ReturnType<typeof makeMockPi>, parentSessionId = "test-session", fresh = true) {
+		// Mock managers reuse IDs, so earlier tests' managers must not answer for this one.
+		if (fresh) clearSubagentMessengersForTest()
 		agentsExtension(pi)
 		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
 		const session = new RemoteAgentSession()
@@ -1550,7 +1553,7 @@ describe("messageSubagent (send_message to a subagent)", () => {
 		})
 		const id = manager.spawn(pi, undefined, "Explore", "prompt", {
 			description: "map the repo",
-			parentSessionId: "test-session",
+			parentSessionId,
 			toolUses: 0,
 			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			compactionCount: 0,
@@ -1582,13 +1585,30 @@ describe("messageSubagent (send_message to a subagent)", () => {
 
 		expect(await messageSubagent(id, "also list the tests")).toContain("resumes in the background")
 		expect(manager.resume).toHaveBeenCalledWith(id, "also list the tests", { maxTurns: getDefaultMaxTurns() })
-		// The usual background-agent completion wake; send_message runs only in TUI sessions, so no ACP client has to opt in.
+		// The usual background-agent completion wake; ACP sessions get send_message only with the backgroundRuns opt-in.
 		await vi.waitFor(() =>
 			expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "subagent-notification" }), {
 				deliverAs: "followUp",
 				triggerTurn: true,
 			}),
 		)
+	})
+
+	it("keeps each session's subagents apart when one process serves several, as ACP does", async () => {
+		const first = spawnRecord(makeMockPi())
+		const secondPi = makeMockPi()
+		spawnRecord(secondPi, "other-session", false)
+		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		const { id: _, ...sibling } = manager.getRecord("mock-0")
+		const second = manager.spawn(secondPi, undefined, "Explore", "prompt", {
+			...sibling,
+			description: "check the docs",
+		})
+
+		expect(listSubagents("test-session").map((record) => record.id)).toEqual([first.id])
+		expect(listSubagents("other-session").map((record) => record.id)).toEqual(["mock-0", second])
+		expect(await messageSubagent(second, "and the README")).toContain(`Steering message sent to agent ${second}`)
+		expect(first.acpClient.steer).not.toHaveBeenCalled()
 	})
 
 	it("refuses a stopped one", async () => {

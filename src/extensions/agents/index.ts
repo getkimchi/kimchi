@@ -610,18 +610,24 @@ export function getActiveManager(): AgentManager | undefined {
 	return activeManager
 }
 
-/** The subagents a session spawned, for list_agents (session-messages extension). */
-export function listSubagents(sessionId: string): AgentRecord[] {
-	return activeManager?.listAgents().filter((r) => r.parentSessionId === sessionId && r.visibility !== "system") ?? []
-}
+/**
+ * Each live session's agent manager and how to message its subagents, for list_agents and send_message
+ * (session-messages extension). One ACP process serves several sessions, so a single global would hand a session
+ * another session's subagents.
+ */
+const messengers = new Map<AgentManager, (agentId: string, message: string) => Promise<string>>()
 
-/** Message function type — set during agents extension init. */
-let messageSubagentFn: ((agentId: string, message: string) => Promise<string>) | undefined
+/** The subagents a session spawned. */
+export function listSubagents(sessionId: string): AgentRecord[] {
+	return [...messengers.keys()].flatMap((manager) =>
+		manager.listAgents().filter((r) => r.parentSessionId === sessionId && r.visibility !== "system"),
+	)
+}
 
 /** send_message to a subagent: a running one is steered, a finished one resumes in the background. */
 export function messageSubagent(agentId: string, message: string): Promise<string> {
-	if (!messageSubagentFn) return Promise.resolve("Subagents are not available in this session.")
-	return messageSubagentFn(agentId, message)
+	for (const [manager, send] of messengers) if (manager.getRecord(agentId)) return send(agentId, message)
+	return Promise.resolve(`Agent not found: "${agentId}". It may have been cleaned up.`)
 }
 
 /** Options for spawnRemoteAgent. */
@@ -682,6 +688,11 @@ export async function spawnRemoteAgent(
 ): Promise<{ id: string; result: string; backgrounded?: boolean }> {
 	if (!spawnRemoteAgentFn) throw new Error("Agent manager not initialized")
 	return spawnRemoteAgentFn(pi, ctx, prompt, description, opts)
+}
+
+/** Test seam: forget every session's manager, as a fresh process would. */
+export function clearSubagentMessengersForTest(): void {
+	messengers.clear()
 }
 
 /** Test seam: inject a fake manager so spawnGraderAgent can be unit-tested
@@ -1543,7 +1554,7 @@ export default function (pi: ExtensionAPI) {
 	)
 	activeManager = manager
 
-	messageSubagentFn = async (agentId, message) => {
+	const messageOwnSubagent = async (agentId: string, message: string) => {
 		const record = manager.getRecord(agentId)
 		if (!record) return `Agent not found: "${agentId}". It may have been cleaned up.`
 		if (record.status === "running") return steerRunningAgent(record, message)
@@ -1564,6 +1575,7 @@ export default function (pi: ExtensionAPI) {
 			.catch(() => {})
 		return `Agent ${agentId} had finished, so it resumes in the background with your message. Its result arrives as a notification.`
 	}
+	messengers.set(manager, messageOwnSubagent)
 
 	// Agents and their settings both live under the session's .kimchi/ — one
 	// helper so no surface can refresh one without the other.
@@ -1582,6 +1594,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		messengers.set(manager, messageOwnSubagent)
 		manager.clearCompleted()
 		// Sessions can live in a different project than the process cwd (ACP,
 		// worktrees) — pick up that project's agents and settings.
@@ -1784,6 +1797,7 @@ export default function (pi: ExtensionAPI) {
 		// reload — keeps the terminal path.
 		const continuing = event.reason === "fork"
 		sessionShuttingDown = true
+		messengers.delete(manager)
 		manager.detachRemoteRuns()
 		unsubCtrlB?.()
 		unsubCtrlB = undefined
