@@ -44,7 +44,7 @@ const TOOL_NAMES = {
 		"web_fetch",
 		"web_search",
 		"pr_watch",
-		"list_sessions",
+		"list_agents",
 		"send_message",
 		...WORKFLOW_OUTPUT_TOOL_NAMES,
 		"mcp",

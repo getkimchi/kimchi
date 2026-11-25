@@ -105,7 +105,7 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "pr_watch", modes: ["shared"] },
 	// Cross-session messages (session-messages extension). Safe in Plan mode:
 	// a receiver in another permission mode holds the message for its user.
-	{ name: "list_sessions", modes: ["shared"] },
+	{ name: "list_agents", modes: ["shared"] },
 	{ name: "send_message", modes: ["shared"] },
 	// Framework-owned workflow control-plane tools. They are registered only
 	// while a reporting/asking step is active, but must survive restrictive

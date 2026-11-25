@@ -2,14 +2,22 @@ import { spawnSync } from "node:child_process"
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { listSubagents, messageSubagent } from "../agents/index.js"
+import type { AgentRecord } from "../agents/personas/types.js"
 import { clearPermissionModeEnv, setPermissionMode } from "../permissions/mode-controller.js"
 import { CROSS_SESSION_MESSAGE_TYPE, createSessionMessagesExtension } from "./index.js"
 
+vi.mock("../agents/index.js", () => ({ listSubagents: vi.fn(), messageSubagent: vi.fn() }))
+
 const dirs: string[] = []
 const running: Array<() => Promise<unknown>> = []
+
+beforeEach(() => {
+	vi.mocked(listSubagents).mockReturnValue([])
+})
 
 afterEach(async () => {
 	for (const stop of running.splice(0)) await stop()
@@ -57,7 +65,7 @@ describe("session-messages", () => {
 		const beta = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "beta", idle: false })
 
 		expect((statSync(dir).mode & 0o777).toString(8)).toBe("700")
-		const listing = await alpha.run("list_sessions", {})
+		const listing = await alpha.run("list_agents", {})
 		expect(listing).toContain("This session is alpha [aaaaa1]")
 		expect(listing).toContain("beta [bbbbb2]  ·  busy  ·  /work/beta")
 		expect(listing).not.toContain("alpha [aaaaa1]  ·")
@@ -84,6 +92,31 @@ describe("session-messages", () => {
 		)
 	})
 
+	it("lists this session's subagents first and sends to one by its ID", async () => {
+		const dir = tempDir()
+		const alphaId = "0190aaaa-0000-7000-8000-00000aaaaaa1"
+		const explorer = {
+			id: "agent-7",
+			type: "Explore",
+			status: "running",
+			description: "map the repo",
+			startedAt: Date.now(),
+		} as AgentRecord
+		vi.mocked(listSubagents).mockImplementation((sessionId) => (sessionId === alphaId ? [explorer] : []))
+		vi.mocked(messageSubagent).mockResolvedValue("Steering message sent to agent agent-7.")
+		const alpha = await startSession(dir, { id: alphaId, name: "alpha" })
+		await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "agent-7" })
+
+		const listing = await alpha.run("list_agents", {})
+		expect(listing).toContain("Subagents (1):\n  agent-7  ·  Explore  ·  running  ·  map the repo  ·  started just now")
+		expect(listing.indexOf("Subagents (1)")).toBeLessThan(listing.indexOf("Peer sessions (1)"))
+		// A session with the same name loses to the subagent, as in the listing order.
+		expect(await alpha.run("send_message", { to: "agent-7", message: "Also list the tests." })).toBe(
+			"Steering message sent to agent agent-7.",
+		)
+		expect(messageSubagent).toHaveBeenCalledWith("agent-7", "Also list the tests.")
+	})
+
 	it("asks for the full name when two sessions share one", async () => {
 		const dir = tempDir()
 		const alpha = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000aaaaaa1", name: "alpha" })
@@ -99,7 +132,7 @@ describe("session-messages", () => {
 		)
 		expect(twin.harness.sendMessage).toHaveBeenCalledTimes(1)
 		expect(await alpha.run("send_message", { to: "gamma", message: "hi" })).toContain(
-			'No live session is called "gamma"',
+			'No subagent or live session is called "gamma"',
 		)
 	})
 
@@ -132,7 +165,7 @@ describe("session-messages", () => {
 
 		expect(driven.harness.registerTool).not.toHaveBeenCalled()
 		expect(existsSync(join(dir, "bbbbb2.sock"))).toBe(false)
-		expect(await alpha.run("list_sessions", {})).toContain("No other Kimchi session is running on this machine.")
+		expect(await alpha.run("list_agents", {})).toContain("No other Kimchi session is running on this machine.")
 	})
 
 	it("drops closed sessions and removes sockets left by crashed ones", async () => {
@@ -147,7 +180,7 @@ describe("session-messages", () => {
 		])
 		expect(existsSync(crashed)).toBe(true)
 
-		expect(await alpha.run("list_sessions", {})).toContain("No other Kimchi session is running on this machine.")
+		expect(await alpha.run("list_agents", {})).toContain("No other Kimchi session is running on this machine.")
 		expect(existsSync(crashed)).toBe(false)
 		expect(existsSync(join(dir, "aaaaa1.sock"))).toBe(true)
 	})

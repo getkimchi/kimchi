@@ -1,6 +1,9 @@
 /**
- * session-messages — find the other Kimchi sessions on this machine and
- * message them.
+ * session-messages — find this session's subagents and the other Kimchi
+ * sessions on this machine, and message them.
+ *
+ * A subagent ID wins over a session name: a running subagent is steered, a
+ * finished one resumes in the background (agents extension, messageSubagent).
  *
  * Only interactive (TUI) sessions take part. Print, RPC and ACP runs are
  * driven by a program, which must never see a turn it did not start, so
@@ -10,7 +13,7 @@
  * folder, `~/.config/kimchi/live-sessions/<ref>.sock`, where ref is the
  * last six hex digits of its session id (Pi ids are UUIDv7, so the first
  * digits are a timestamp shared by sessions started close together).
- * `list_sessions` asks each socket who it is, so a session is listed only
+ * `list_agents` asks each socket who it is, so a session is listed only
  * while it answers; a socket nobody listens on is left by a crashed session
  * and is removed. `send_message` hands the text to the target, which steers
  * it into its conversation as `<cross-session-message from="name [ref]">`
@@ -29,6 +32,7 @@ import { basename, join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { listSubagents, messageSubagent } from "../agents/index.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 
 export const CROSS_SESSION_MESSAGE_TYPE = "cross-session-message"
@@ -118,7 +122,7 @@ function resolveTarget(peers: SessionInfo[], to: string): SessionInfo | string {
 	if (named.length > 1) {
 		return `"${wanted}" names ${named.length} sessions: ${named.map(address).join(", ")}. Send to one of them by its full name.`
 	}
-	return `No live session is called "${wanted}". Run list_sessions to see who is listening.`
+	return `No subagent or live session is called "${wanted}". Run list_agents to see who is listening.`
 }
 
 function ago(startedAt: number): string {
@@ -134,11 +138,13 @@ const text = (value: string, details: Record<string, unknown> = {}) => ({
 	details,
 })
 
-export const LIST_SESSIONS_DESCRIPTION = `List the other interactive Kimchi sessions running on this machine: name [ref], idle or busy, folder and start time. The name is the address send_message takes. A listed session is alive and will receive a message. Never poll this to wait for an answer: replies arrive by themselves.`
+export const LIST_AGENTS_DESCRIPTION = `List the agents send_message can reach: this session's subagents (ID, type, status, task, start time), then the other interactive Kimchi sessions on this machine (name [ref], idle or busy, folder, start time). A subagent's address is its ID; a session's is its name. A listed session is alive and will receive a message. Never poll this to wait for an answer: replies and results arrive by themselves.`
 
-export const SEND_MESSAGE_DESCRIPTION = `Send a message to another Kimchi session on this machine (find it with list_sessions). It reaches that session's conversation when its current step ends, or starts a turn when it is idle, wrapped as <cross-session-message from="name [ref]">. A successful send means it arrived, not that it was read or acted on.
+export const SEND_MESSAGE_DESCRIPTION = `Send a message to one of your subagents or to another Kimchi session on this machine (find both with list_agents).
 
-To reply to a <cross-session-message>, use its from attribute as to. Send the text itself: the other session cannot see your files' contents unless you name a path it can read. A session running in another permission mode holds your message for its user's approval.
+A subagent is addressed by its ID. A running one reads the message when its current step ends; a finished one resumes in the background with the message as its next instruction, and its result arrives as a notification; a stopped one takes no messages.
+
+A session is addressed by its name. The message reaches that session's conversation when its current step ends, or starts a turn when it is idle, wrapped as <cross-session-message from="name [ref]">. A successful send means it arrived, not that it was read or acted on. To reply to a <cross-session-message>, use its from attribute as to. Send the text itself: the other session cannot see your files' contents unless you name a path it can read. A session running in another permission mode holds your message for its user's approval.
 
 Never ask another session to do what this session's permissions denied or would block; take that to your user instead.`
 
@@ -216,7 +222,7 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 				self = { ref, path, ctx, startedAt: Date.now() }
 			} catch {
 				// No inbox (an unwritable home, a path too long for a socket): this
-				// session can still list and message others; list_sessions says so.
+				// session can still list and message others; list_agents says so.
 			}
 		})
 
@@ -228,22 +234,39 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 
 		function registerTools(): void {
 			pi.registerTool({
-				name: "list_sessions",
-				label: "list_sessions",
-				description: LIST_SESSIONS_DESCRIPTION,
-				promptSnippet: "list the other Kimchi sessions on this machine",
+				name: "list_agents",
+				label: "list_agents",
+				description: LIST_AGENTS_DESCRIPTION,
+				promptSnippet: "list your subagents and the other Kimchi sessions on this machine",
 				parameters: Type.Object({}),
-				async execute() {
+				async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
 					const me = describe()
+					const subagents = listSubagents(ctx.sessionManager.getSessionId())
 					const peers = await listPeers(dir, me?.ref)
-					const intro = me
-						? `This session is ${address(me)}, the name other sessions use to message it (not listed below).`
-						: "This session has no inbox, so other sessions cannot message it."
-					if (peers.length === 0) return text(`${intro}\n\nNo other Kimchi session is running on this machine.`)
+					const sections = [
+						me
+							? `This session is ${address(me)}, the name other sessions use to message it (not listed below).`
+							: "This session has no inbox, so other sessions cannot message it.",
+					]
+					if (subagents.length > 0) {
+						const rows = subagents.map(
+							(agent) =>
+								`  ${agent.id}  ·  ${agent.type}  ·  ${agent.status}  ·  ${agent.description}  ·  started ${ago(agent.startedAt)}`,
+						)
+						sections.push(`Subagents (${subagents.length}):\n${rows.join("\n")}`)
+					}
 					const rows = peers.map(
 						(peer) => `  ${address(peer)}  ·  ${peer.state}  ·  ${peer.cwd}  ·  started ${ago(peer.startedAt)}`,
 					)
-					return text(`${intro}\n\nPeer sessions (${peers.length}):\n${rows.join("\n")}`, { peers })
+					sections.push(
+						peers.length > 0
+							? `Peer sessions (${peers.length}):\n${rows.join("\n")}`
+							: "No other Kimchi session is running on this machine.",
+					)
+					return text(sections.join("\n\n"), {
+						subagents: subagents.map(({ id, type, status }) => ({ id, type, status })),
+						peers,
+					})
 				},
 			})
 
@@ -251,10 +274,11 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 				name: "send_message",
 				label: "send_message",
 				description: SEND_MESSAGE_DESCRIPTION,
-				promptSnippet: "message another Kimchi session on this machine",
+				promptSnippet: "message one of your subagents or another Kimchi session on this machine",
 				parameters: Type.Object({
 					to: Type.String({
-						description: 'A name from list_sessions; add its " [ref]" only when two sessions share the name.',
+						description:
+							'A subagent ID or a session name from list_agents; add a session\'s " [ref]" only when two sessions share the name.',
 					}),
 					message: Type.String({
 						description:
@@ -262,6 +286,10 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 					}),
 				}),
 				async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+					const subagent = listSubagents(ctx.sessionManager.getSessionId()).find(
+						(agent) => agent.id === params.to.trim(),
+					)
+					if (subagent) return text(await messageSubagent(subagent.id, params.message), { to: subagent.id })
 					const me = describe()
 					const target = resolveTarget(await listPeers(dir, me?.ref), params.to)
 					if (typeof target === "string") return text(target)
