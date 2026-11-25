@@ -11,8 +11,9 @@ import { registerParentSurface, unregisterParentSurface } from "../permissions/p
 import { registerPermissionPolicySource } from "../permissions/policy-source-registry.js"
 import type { PermissionRequest } from "../permissions/prompter.js"
 import type { ApprovalOutcome } from "../permissions/prompts.js"
-import type { PermissionMode } from "../permissions/types.js"
-import { createReviewBashToolDefinition, createReviewExecutionController } from "./execution.js"
+import { parseRules } from "../permissions/rules.js"
+import type { PermissionMode, Rule } from "../permissions/types.js"
+import { createReviewBashToolDefinition, createReviewExecutionController, executeReviewCommand } from "./execution.js"
 import type { ReviewWorktree } from "./types.js"
 
 function fixtureWorktree(root: string, id: string): ReviewWorktree {
@@ -40,23 +41,31 @@ describe("review worker permission integration", () => {
 		rmSync(join(root, "two"), { recursive: true, force: true })
 	})
 
-	function gate(mode: PermissionMode, outcome: ApprovalOutcome, id = "one") {
+	function gate(
+		mode: PermissionMode,
+		outcome: ApprovalOutcome | undefined,
+		id = "one",
+		policy: { rules?: Rule[]; dangerBypass?: boolean } = {},
+	) {
 		const parentSessionId = `parent-${id}`
 		const controller = createReviewExecutionController({ mode: "local", worktree: fixtureWorktree(root, id) })
 		const unregisterPolicy = registerPermissionPolicySource(parentSessionId, {
 			getMode: () => ({ mode, initiatedBy: "user", source: "runtime" }),
-			getRules: () => [],
+			getRules: () => policy.rules ?? [],
 			getConfig: () => ({
 				config: DEFAULT_CONFIG,
 				allowBySource: { user: [], project: [], local: [], cli: [] },
 				denyBySource: { user: [], project: [], local: [], cli: [] },
 				paths: {},
 			}),
-			isDangerBypass: () => false,
+			isDangerBypass: () => policy.dangerBypass ?? false,
 			whenModeSettled: async () => {},
 		})
-		const requestPermission = vi.fn(async (_request: PermissionRequest): Promise<ApprovalOutcome> => outcome)
-		const surface = { notify: vi.fn(), requestPermission }
+		const requestPermission = vi.fn(async (_request: PermissionRequest): Promise<ApprovalOutcome> => {
+			if (outcome === undefined) throw new Error("Approval UI is unavailable.")
+			return outcome
+		})
+		const surface = { notify: vi.fn(), ...(outcome === undefined ? {} : { requestPermission }) }
 		registerParentSurface(parentSessionId, surface)
 		cleanups.push(() => {
 			unregisterPolicy()
@@ -106,6 +115,33 @@ describe("review worker permission integration", () => {
 		expect(script.controller.networkFor("call-bash")).toBe("unenforced")
 	})
 
+	it.each([
+		{ outcome: { kind: "allow-once" } as const, status: "approved" },
+		{ outcome: { kind: "deny" } as const, status: "declined" },
+		{ outcome: { kind: "aborted" } as const, status: "aborted" },
+		{ outcome: undefined, status: "unavailable" },
+	])("maps the parent approval outcome to $status", async ({ outcome, status }) => {
+		const review = gate("yolo", outcome)
+		const event = {
+			type: "tool_call",
+			toolCallId: "review-approval-outcome",
+			toolName: "bash",
+			input: { command: "npm install" },
+		} as ToolCallEvent
+		const result = await review.controller.requestApproval(
+			{
+				kind: "direct-install",
+				command: "npm install",
+				intendedCheck: "test",
+				worktrees: [review.controller.worktree.path],
+			},
+			{ event, ctx: review.ctx, mode: "yolo" },
+		)
+
+		expect(result).toBe(status)
+		expect(review.requestPermission).toHaveBeenCalledTimes(outcome === undefined ? 0 : 1)
+	})
+
 	it("shares one direct-install approval between the gate and bash execution", async () => {
 		const installed = gate("yolo", { kind: "allow-once" })
 		await call(installed.child, installed.ctx, "bash", { command: "npx --version" })
@@ -130,6 +166,113 @@ describe("review worker permission integration", () => {
 		expect(result).toMatchObject({ block: true, reason: expect.stringContaining("declined") })
 		expect(declined.controller.records).toHaveLength(1)
 		expect(declined.controller.records[0]).toMatchObject({ status: "blocked", approval: "declined" })
+	})
+
+	it.each([
+		{ caseName: "plan mutation", mode: "plan", command: "node focused.test", blocked: true },
+		{ caseName: "plan read-only command", mode: "plan", command: "echo safe", blocked: false },
+		{
+			caseName: "yolo deny rule",
+			mode: "yolo",
+			command: "echo REVIEW_DENY_BYPASS",
+			rules: parseRules(["bash(echo REVIEW_DENY_BYPASS*)"], "deny", "project"),
+			blocked: true,
+		},
+		{
+			caseName: "default deny rule",
+			mode: "default",
+			command: "echo REVIEW_DENY_BYPASS",
+			rules: parseRules(["bash(echo REVIEW_DENY_BYPASS*)"], "deny", "project"),
+			blocked: true,
+		},
+		{ caseName: "auto compound hard block", mode: "auto", command: "echo safe && sudo whoami", blocked: true },
+		{ caseName: "default compound hard block", mode: "default", command: "echo safe && sudo whoami", blocked: true },
+		{ caseName: "yolo hard block", mode: "yolo", command: "shutdown now", blocked: true },
+		{ caseName: "yolo allowed command", mode: "yolo", command: "echo safe", blocked: false },
+		{ caseName: "default read-only command", mode: "default", command: "echo safe", blocked: false },
+	] as const)("keeps ordinary and review block decisions aligned for $caseName", async (fixture) => {
+		const review = gate(fixture.mode, { kind: "allow-once" }, "one", { rules: fixture.rules })
+
+		const ordinary = await call(review.child, review.ctx, "bash", { command: fixture.command })
+		const authorized = await review.controller.authorizeCommand(fixture.command, { mode: fixture.mode })
+
+		expect(Boolean(ordinary?.block)).toBe(fixture.blocked)
+		expect(Boolean(authorized?.block)).toBe(fixture.blocked)
+	})
+
+	it.each(["default", "auto"] as const)("honours standalone hard-block approval outcomes in %s mode", async (mode) => {
+		for (const scenario of [
+			{ name: "approved", outcome: { kind: "allow-once" } as const, status: "passed", prompts: 1, runs: 1 },
+			{ name: "declined", outcome: { kind: "deny" } as const, status: "blocked", prompts: 1, runs: 0 },
+			{ name: "unavailable", outcome: undefined, status: "blocked", prompts: 0, runs: 0 },
+		] as const) {
+			const review = gate(mode, scenario.outcome, `${mode}-${scenario.name}`)
+			const operations = { exec: vi.fn(async () => ({ exitCode: 0 })) }
+			const event = {
+				type: "tool_call",
+				toolCallId: `hard-block-${mode}-${scenario.name}`,
+				toolName: "bash",
+				input: { command: "shutdown now" },
+			} as ToolCallEvent
+			review.controller.captureExecution(event, review.ctx, mode)
+
+			const result = await executeReviewCommand(review.controller, {
+				command: "shutdown now",
+				cwd: review.controller.worktree.path,
+				intendedCheck: "hard-block approval",
+				worktree: review.controller.worktree,
+				online: true,
+				toolCallId: event.toolCallId,
+				operations,
+			})
+
+			expect(result).toMatchObject({ status: scenario.status, approval: scenario.name })
+			expect(operations.exec).toHaveBeenCalledTimes(scenario.runs)
+			expect(review.requestPermission).toHaveBeenCalledTimes(scenario.prompts)
+			if (scenario.prompts > 0) {
+				expect(review.requestPermission.mock.calls[0][0].subtitle).toContain("Hard-blocked command")
+			}
+		}
+	})
+
+	it.each([
+		"default",
+		"auto",
+	] as const)("keeps direct-install compound denies ahead of approval in %s mode", async (mode) => {
+		const review = gate(mode, { kind: "allow-once" }, `${mode}-direct-precheck`)
+		const event = {
+			type: "tool_call",
+			toolCallId: `direct-precheck-${mode}`,
+			toolName: "bash",
+			input: { command: "npm install && shutdown now" },
+		} as ToolCallEvent
+		review.controller.captureExecution(event, review.ctx, mode)
+		const operations = { exec: vi.fn(async () => ({ exitCode: 0 })) }
+
+		const result = await executeReviewCommand(review.controller, {
+			command: "npm install && shutdown now",
+			cwd: review.controller.worktree.path,
+			intendedCheck: "direct-install precheck",
+			worktree: review.controller.worktree,
+			toolCallId: event.toolCallId,
+			operations,
+		})
+
+		expect(result).toMatchObject({ status: "blocked", approval: "not-requested" })
+		expect(result.output).toContain("Hard-blocked")
+		expect(operations.exec).not.toHaveBeenCalled()
+		expect(review.requestPermission).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		"default",
+		"auto",
+	] as const)("honours an explicit allow rule for a standalone hard block in %s mode", async (mode) => {
+		const allowed = gate(mode, { kind: "allow-once" }, `${mode}-allowed-hard-block`, {
+			rules: parseRules(["bash(shutdown now)"], "allow", "project"),
+		})
+		expect(await call(allowed.child, allowed.ctx, "bash", { command: "shutdown now" })).toBeUndefined()
+		await expect(allowed.controller.authorizeCommand("shutdown now", { mode })).resolves.toBeUndefined()
 	})
 
 	it("prevents every reviewer from writing or running scripts in read-only mode", async () => {

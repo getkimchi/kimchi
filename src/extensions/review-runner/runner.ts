@@ -258,8 +258,7 @@ export class ReviewRunner {
 			this.cancelActiveReviewers(new Error("Review runner cleanup requested"))
 			this.checkQueue.cancel(new Error("Review runner cleanup requested"))
 			await Promise.allSettled([...this.activeRuns.values()])
-			await this.checkQueue.idle()
-			this.checkQueue.dispose()
+			await this.checkQueue.dispose()
 			await this.worktrees.cleanup()
 		})()
 		this.cleanupPromise = operation.catch((error) => {

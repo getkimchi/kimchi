@@ -8,14 +8,16 @@ import { createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { DEFAULT_CONFIG } from "../permissions/constants.js"
 import { createWorkerPermissionsExtension } from "../permissions/index.js"
+import { registerParentSurface, unregisterParentSurface } from "../permissions/parent-surface-registry.js"
 import { registerPermissionPolicySource } from "../permissions/policy-source-registry.js"
+import type { PermissionRequest } from "../permissions/prompter.js"
 import { parseRules } from "../permissions/rules.js"
 import type { Rule } from "../permissions/types.js"
 import { parseReviewTargetArgs } from "../review-targets/parser.js"
 import { resolveReviewTarget } from "../review-targets/resolve.js"
 import type { ExplicitReviewRequest, ResolvedReviewTarget } from "../review-targets/types.js"
 import type { ReviewCheckDefinition } from "./check-config.js"
-import { ReviewCheckQueue } from "./checks.js"
+import { ReviewCheckQueue, ReviewCheckStateError } from "./checks.js"
 import { createReviewExecutionController } from "./execution.js"
 import type { ReviewNetworkBoundary } from "./network-boundary.js"
 import { registerReviewChildTools } from "./tools.js"
@@ -95,7 +97,7 @@ console.error('routine failure'); process.exit(4)`,
 
 	afterEach(async () => {
 		for (const cleanup of policyCleanups) cleanup()
-		queue?.dispose()
+		await queue?.dispose()
 		await pool?.cleanup()
 		rmSync(sandbox, { recursive: true, force: true })
 	})
@@ -163,6 +165,45 @@ console.error('routine failure'); process.exit(4)`,
 		const path = join(worktree.scratchDir, "runs")
 		return existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").length : 0
 	}
+
+	function deferred() {
+		let resolve!: () => void
+		const promise = new Promise<void>((resolvePromise) => {
+			resolve = resolvePromise
+		})
+		return { promise, resolve }
+	}
+
+	it.each([
+		{ caseName: "invalid JSON", contents: "{not-json", detail: "valid JSON" },
+		{
+			caseName: "unsupported schema",
+			contents: JSON.stringify({ schema_version: "review-check-state/v2", checks: [] }),
+			detail: "unsupported schema",
+		},
+	])("fails closed with a structured error for $caseName", async ({ contents, detail }) => {
+		const statePath = join(outputDir, "state", "routine-checks.json")
+		mkdirSync(join(outputDir, "state"), { recursive: true })
+		writeFileSync(statePath, contents)
+
+		const error: unknown = await setup([]).then(
+			() => {
+				throw new Error("Invalid review state unexpectedly loaded.")
+			},
+			(cause: unknown) => cause,
+		)
+
+		if (!(error instanceof ReviewCheckStateError)) throw error
+		expect(error).toMatchObject({
+			name: "ReviewCheckStateError",
+			code: "review_check_state_invalid",
+			statePath,
+		})
+		expect(error.message).toContain(statePath)
+		expect(error.message).toContain(detail)
+		expect(error.message).toContain("move it aside")
+		expect(readFileSync(statePath, "utf8")).toBe(contents)
+	})
 
 	it("marks reviewed-tree discovery separately from injected checks and does not infer builds", async () => {
 		await setup(null)
@@ -410,8 +451,163 @@ fs.writeFileSync('installed', 'yes')`,
 		const resumedFalse = await flippedQueue.request({ id: "test", requestedBy: "false", controller: runner })
 		expect(resumedFalse.key).toBe(first.key)
 		expect(resumedFalse.satisfiesBuild).toBe(false)
-		resumedQueue.dispose()
-		flippedQueue.dispose()
+		await resumedQueue.dispose()
+		await flippedQueue.dispose()
+	})
+
+	it("waits for requests still being authorized before becoming idle", async () => {
+		await setup()
+		const authorizationStarted = deferred()
+		const releaseAuthorization = deferred()
+		const runner = controller("idle-authorization")
+		runner.bindCommandAuthorizer(async () => {
+			authorizationStarted.resolve()
+			await releaseAuthorization.promise
+			return undefined
+		})
+		const pending = queue.request({ id: "test", requestedBy: "idle", controller: runner })
+		await authorizationStarted.promise
+
+		let becameIdle = false
+		const waitingForIdle = queue.idle().then(() => {
+			becameIdle = true
+		})
+		try {
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			expect(becameIdle).toBe(false)
+		} finally {
+			releaseAuthorization.resolve()
+		}
+
+		expect((await pending).status).toBe("passed")
+		await waitingForIdle
+		expect(becameIdle).toBe(true)
+	})
+
+	it("aborts and awaits a request still being authorized during disposal", async () => {
+		await setup()
+		const authorizationStarted = deferred()
+		const releaseAuthorization = deferred()
+		const runner = controller("dispose-authorization")
+		runner.bindCommandAuthorizer(async () => {
+			authorizationStarted.resolve()
+			await releaseAuthorization.promise
+			return undefined
+		})
+		const pending = queue.request({ id: "test", requestedBy: "dispose", controller: runner })
+		await authorizationStarted.promise
+
+		let disposed = false
+		const disposing = queue.dispose().then(() => {
+			disposed = true
+		})
+		try {
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			expect(disposed).toBe(false)
+		} finally {
+			releaseAuthorization.resolve()
+		}
+
+		expect(await pending).toMatchObject({ status: "cancelled" })
+		await disposing
+		expect(disposed).toBe(true)
+	})
+
+	it("aborts and awaits a real pending parent approval during disposal", async () => {
+		await setup([
+			{
+				id: "install",
+				command: "npm install",
+				cwd: ".",
+				kind: "other",
+				builds: false,
+				toolchain: "node-test",
+				dependencies: ["package.json"],
+			},
+		])
+		const parentSessionId = `${sandbox}-pending-approval`
+		policyCleanups.push(
+			registerPermissionPolicySource(parentSessionId, {
+				getMode: () => ({ mode: "yolo", initiatedBy: "user", source: "runtime" }),
+				getRules: () => [],
+				getConfig: () => ({
+					config: DEFAULT_CONFIG,
+					allowBySource: { user: [], project: [], local: [], cli: [] },
+					denyBySource: { user: [], project: [], local: [], cli: [] },
+					paths: {},
+				}),
+				isDangerBypass: () => false,
+				whenModeSettled: async () => {},
+			}),
+		)
+		let resolveApproval = () => {}
+		let promptSignal: AbortSignal | undefined
+		const requestPermission = vi.fn(
+			(request: PermissionRequest) =>
+				new Promise<{ kind: "aborted" }>((resolve) => {
+					promptSignal = request.signal
+					resolveApproval = () => resolve({ kind: "aborted" })
+					request.signal?.addEventListener("abort", () => resolve({ kind: "aborted" }), { once: true })
+				}),
+		)
+		const surface = { notify: vi.fn(), requestPermission }
+		registerParentSurface(parentSessionId, surface)
+		policyCleanups.push(() => unregisterParentSurface(parentSessionId, surface))
+		const runner = controller("pending-approval")
+		const child = createExtensionApi()
+		createWorkerPermissionsExtension({
+			parentSessionId,
+			persona: "Policy reviewer",
+			agentId: "policy",
+			description: "await cancellation during approval",
+			reviewExecution: runner,
+		})(child.api)
+		const context = createToolContext({ cwd: repo })
+		const event = {
+			type: "tool_call",
+			toolCallId: "pending-approval-call",
+			toolName: "run_review_command",
+			input: { command: "npm install" },
+		} as ToolCallEvent
+		expect(await child.getHandler("tool_call")(event, context)).toBeUndefined()
+		const pending = queue.request({
+			id: "install",
+			requestedBy: "pending-approval",
+			controller: runner,
+			toolCallId: event.toolCallId,
+		})
+		await vi.waitFor(() => expect(requestPermission).toHaveBeenCalledTimes(1))
+
+		let watchdogFired = false
+		const watchdog = setTimeout(() => {
+			watchdogFired = true
+			resolveApproval()
+		}, 1000)
+		try {
+			const disposing = queue.dispose()
+			const result = await pending
+			await disposing
+
+			expect(watchdogFired).toBe(false)
+			expect(result).toMatchObject({ status: "cancelled", approval: "aborted" })
+			expect(promptSignal?.aborted).toBe(true)
+		} finally {
+			clearTimeout(watchdog)
+			resolveApproval()
+		}
+	})
+
+	it.each(["idle", "dispose"] as const)("rejects re-entrant %s from inside a request callback", async (method) => {
+		await setup()
+		const runner = controller(`reentrant-${method}`)
+		runner.bindCommandAuthorizer(async () => {
+			await expect(queue[method]()).rejects.toThrow("inside its own request callback")
+			return undefined
+		})
+
+		await expect(queue.request({ id: "test", requestedBy: "reentrant", controller: runner })).resolves.toMatchObject({
+			status: "passed",
+		})
 	})
 
 	it("blocks a queued check that had not started when wrap-up began", async () => {

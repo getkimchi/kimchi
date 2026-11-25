@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import { createHash, randomUUID } from "node:crypto"
 import { open, readFile, rename, rm } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
@@ -16,6 +17,23 @@ import {
 import type { ReviewRevision, ReviewWorktreePool } from "./types.js"
 
 export const REVIEW_CHECK_STATE_VERSION = "review-check-state/v1"
+
+export class ReviewCheckStateError extends Error {
+	readonly code = "review_check_state_invalid"
+
+	constructor(
+		readonly statePath: string,
+		detail: string,
+		cause: unknown,
+	) {
+		super(
+			`Could not load review check evidence at ${JSON.stringify(statePath)}: ${detail}. The review stopped to avoid discarding evidence. Repair the file using schema ${REVIEW_CHECK_STATE_VERSION}, or move it aside and rerun the review to rebuild check evidence.`,
+			{ cause },
+		)
+		this.name = "ReviewCheckStateError"
+	}
+}
+
 export type ReviewCheckDefinitionSource = "coordinator" | "reviewed-tree"
 
 export interface ReviewExecutionProfile {
@@ -84,11 +102,21 @@ async function loadState(path: string): Promise<SavedCheckState | undefined> {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
 		throw error
 	}
-	const value = JSON.parse(contents) as Partial<SavedCheckState>
-	if (value.schema_version !== REVIEW_CHECK_STATE_VERSION || !Array.isArray(value.checks)) {
-		throw new Error("Review check state has an unsupported schema.")
+	try {
+		const value = JSON.parse(contents) as Partial<SavedCheckState>
+		if (value.schema_version !== REVIEW_CHECK_STATE_VERSION || !Array.isArray(value.checks)) {
+			throw new Error("Review check state has an unsupported schema.")
+		}
+		return { schema_version: REVIEW_CHECK_STATE_VERSION, checks: value.checks.map(assertSavedResult) }
+	} catch (error) {
+		const detail =
+			error instanceof SyntaxError
+				? "the file does not contain valid JSON"
+				: error instanceof Error
+					? error.message
+					: "the file has an invalid structure"
+		throw new ReviewCheckStateError(path, detail, error)
 	}
-	return { schema_version: REVIEW_CHECK_STATE_VERSION, checks: value.checks.map(assertSavedResult) }
 }
 
 async function saveState(path: string, results: readonly ReviewCheckResult[]): Promise<void> {
@@ -175,6 +203,8 @@ function syntheticResult(
 export class ReviewCheckQueue {
 	private readonly definitions = new Map<string, ReviewCheckDefinition>()
 	private readonly inFlight = new Map<string, Promise<ReviewCheckResult>>()
+	private readonly requests = new Set<Promise<ReviewCheckResult>>()
+	private readonly requestContext = new AsyncLocalStorage<true>()
 	private readonly saved = new Map<string, ReviewCheckResult>()
 	private readonly abort = new AbortController()
 	private readonly definitionSource: ReviewCheckDefinitionSource
@@ -230,12 +260,21 @@ export class ReviewCheckQueue {
 	}
 
 	async idle(): Promise<void> {
-		await this.tail
+		this.rejectReentrantLifecycleCall("idle")
+		while (this.requests.size > 0) await Promise.allSettled([...this.requests])
 		this.detachSignal?.()
 	}
 
-	dispose(): void {
-		this.detachSignal?.()
+	async dispose(): Promise<void> {
+		this.rejectReentrantLifecycleCall("dispose")
+		this.cancel(new Error("Review check queue disposed."))
+		await this.idle()
+	}
+
+	private rejectReentrantLifecycleCall(method: "idle" | "dispose"): void {
+		if (this.requestContext.getStore()) {
+			throw new Error(`ReviewCheckQueue.${method}() cannot be called from inside its own request callback.`)
+		}
 	}
 
 	private async key(request: ReviewCheckRequest): Promise<ReviewKey> {
@@ -281,14 +320,31 @@ export class ReviewCheckQueue {
 		}
 	}
 
-	request = async (request: ReviewCheckRequest): Promise<ReviewCheckResult> => {
+	request = (request: ReviewCheckRequest): Promise<ReviewCheckResult> => {
+		const pending = this.requestContext.run(true, () => this.performRequest(request))
+		this.requests.add(pending)
+		void pending.then(
+			() => {
+				this.requests.delete(pending)
+			},
+			() => {
+				this.requests.delete(pending)
+			},
+		)
+		return pending
+	}
+
+	private async performRequest(request: ReviewCheckRequest): Promise<ReviewCheckResult> {
 		request.signal?.throwIfAborted()
 		const key = await this.key(request)
 		const denial = await request.controller.authorizeCommand(
 			key.command,
 			request.controller.executionFor(request.toolCallId) ?? { mode: "review-check-request" },
 		)
-		if (denial) return syntheticResult(key, request, "blocked", denial.reason, this.definitionSource)
+		const deferredHardBlockReason = denial?.deferToReviewApproval ? denial.reason : undefined
+		if (denial && !deferredHardBlockReason) {
+			return syntheticResult(key, request, "blocked", denial.reason, this.definitionSource)
+		}
 		const saved = this.saved.get(key.key)
 		if (saved) return this.present(saved, request)
 		if (request.controller.mode === "local" && request.online && !isDirectInstallCommand(key.command)) {
@@ -326,7 +382,7 @@ export class ReviewCheckQueue {
 		}
 		const existing = this.inFlight.get(key.key)
 		if (existing) return this.present(await existing, request)
-		const execution = this.tail.catch(() => {}).then(() => this.execute(key, request))
+		const execution = this.tail.catch(() => {}).then(() => this.execute(key, request, deferredHardBlockReason))
 		this.inFlight.set(key.key, execution)
 		this.tail = execution.then(
 			() => undefined,
@@ -339,7 +395,11 @@ export class ReviewCheckQueue {
 		}
 	}
 
-	private async execute(key: ReviewKey, request: ReviewCheckRequest): Promise<ReviewCheckResult> {
+	private async execute(
+		key: ReviewKey,
+		request: ReviewCheckRequest,
+		deferredHardBlockReason?: string,
+	): Promise<ReviewCheckResult> {
 		const definition = this.definitions.get(request.id)
 		if (!definition) throw new Error(`Unknown review check ID "${request.id}".`)
 		if (this.wrappingUp) {
@@ -363,6 +423,7 @@ export class ReviewCheckQueue {
 			online: request.online,
 			toolCallId: request.toolCallId,
 			authorizationAlreadyChecked: true,
+			...(deferredHardBlockReason ? { deferredHardBlockReason } : {}),
 			signal: this.abort.signal,
 		})
 		const result: ReviewCheckResult = {

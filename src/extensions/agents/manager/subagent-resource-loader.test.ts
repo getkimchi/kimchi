@@ -38,11 +38,12 @@ import {
 	type ExtensionAPI,
 	type InlineExtension,
 	type ModelRuntime,
+	type PackageManager,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createToolContext } from "../../__mocks__/context.js"
 import { getConfig, getToolNamesForType, registerAgents } from "../personas/agent-types.js"
 import { AGENT_RESEARCHER } from "../personas/types.js"
@@ -510,6 +511,39 @@ describe("review checkout package/settings isolation", () => {
 			for (const marker of markers) expect(existsSync(marker)).toBe(false)
 		})
 	}
+
+	it("keeps package resolution enabled on a normal loader when another loader skips it", async () => {
+		const root = makeTmpDir()
+		const agentDir = join(root, "agent")
+		mkdirSync(agentDir, { recursive: true })
+		const makeLoader = (skipPackageResolution: boolean) =>
+			new SubagentResourceLoader({
+				cwd: root,
+				agentDir,
+				skipPackageResolution,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				noContextFiles: true,
+				readSystemPrompt: () => "review",
+				appendSystemPromptOverride: () => [],
+			})
+		const normal = makeLoader(false)
+		const skipping = makeLoader(true)
+		const normalPackageManager = (normal as unknown as { packageManager: PackageManager }).packageManager
+		const skippingPackageManager = (skipping as unknown as { packageManager: PackageManager }).packageManager
+		const normalResolve = vi.spyOn(normalPackageManager, "resolve")
+		const skippingResolve = vi.spyOn(skippingPackageManager, "resolve")
+
+		await normal.reload()
+		await skipping.reload()
+
+		expect(normalPackageManager).not.toBe(skippingPackageManager)
+		expect(normalResolve).toHaveBeenCalledTimes(1)
+		expect(skippingResolve).toHaveBeenCalledTimes(1)
+		expect(normalPackageManager.resolve).not.toBe(skippingPackageManager.resolve)
+	})
 
 	it("skips invoking-user global package resolution before permission checks", async () => {
 		const root = makeTmpDir()

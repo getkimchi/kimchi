@@ -52,7 +52,12 @@ export class SubagentResourceLoader extends DefaultResourceLoader {
 			// invokes resolve(), which reads raw global/project settings instead of
 			// the merged overrides. The pinned private field is the narrow adapter
 			// seam; leave every other loader and extension-source operation intact.
-			const packageManager = (this as unknown as { packageManager: PackageManager }).packageManager
+			const packageManager = (this as unknown as { packageManager?: PackageManager }).packageManager
+			if (!packageManager || typeof packageManager.resolve !== "function") {
+				throw new Error(
+					"SubagentResourceLoader cannot disable package resolution because DefaultResourceLoader.packageManager is unavailable; check compatibility with the installed pi-coding-agent version.",
+				)
+			}
 			packageManager.resolve = async () => ({ extensions: [], skills: [], prompts: [], themes: [] })
 		}
 		this.readSystemPrompt = readSystemPrompt

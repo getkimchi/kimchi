@@ -51,13 +51,14 @@ export interface ReviewExecutionEvent {
 	event?: ToolCallEvent
 	ctx?: ExtensionContext
 	mode: string
+	signal?: AbortSignal
 }
 
 export type ReviewApprover = (
 	request: ReviewApprovalRequest,
 	execution: ReviewExecutionEvent,
 ) => Promise<ReviewApprovalStatus>
-export type ReviewAuthorizationResult = { block: true; reason: string } | undefined
+export type ReviewAuthorizationResult = { block: true; reason: string; deferToReviewApproval?: boolean } | undefined
 export type ReviewCommandAuthorizer = (
 	command: string,
 	execution: ReviewExecutionEvent,
@@ -91,6 +92,8 @@ export interface ReviewCommandRequest {
 	toolName?: string
 	/** Internal queue evidence path: the requester was already authorized before reuse. */
 	authorizationAlreadyChecked?: boolean
+	/** A standalone hard block deferred by the precheck; only approval can settle it. */
+	deferredHardBlockReason?: string
 }
 
 export interface ReviewCommandRecord {
@@ -208,7 +211,9 @@ class ExecutionController implements ReviewExecutionController {
 		execution: ReviewExecutionEvent,
 	): Promise<ReviewApprovalStatus> => {
 		if (this.mode === "headless") return "unavailable"
-		return (await this.approver?.(request, execution)) ?? "unavailable"
+		if (execution.signal?.aborted) return "aborted"
+		const approval = this.approver?.(request, execution)
+		return approval ? awaitReviewApproval(approval, execution.signal) : "unavailable"
 	}
 
 	captureExecution(event: ToolCallEvent, ctx: ExtensionContext, mode: string): void {
@@ -331,6 +336,24 @@ function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
 }
 
+async function awaitReviewApproval(
+	approval: Promise<ReviewApprovalStatus>,
+	signal: AbortSignal | undefined,
+): Promise<ReviewApprovalStatus> {
+	if (!signal) return approval
+	if (signal.aborted) return "aborted"
+	let onAbort: (() => void) | undefined
+	const cancelled = new Promise<ReviewApprovalStatus>((resolve) => {
+		onAbort = () => resolve("aborted")
+		signal.addEventListener("abort", onAbort, { once: true })
+	})
+	try {
+		return await Promise.race([approval, cancelled])
+	} finally {
+		if (onAbort) signal.removeEventListener("abort", onAbort)
+	}
+}
+
 interface Preparation {
 	command: string
 	environment: NodeJS.ProcessEnv
@@ -415,11 +438,20 @@ export async function prepareReviewCommand(
 	startedAt = Date.now(),
 ): Promise<Preparation | ReviewCommandRecord> {
 	const execution = controller.executionFor(request.toolCallId) ?? { mode: "library" }
+	const approvalExecution: ReviewExecutionEvent = {
+		...execution,
+		...(request.signal ? { signal: request.signal } : {}),
+	}
+	let deferredHardBlockReason = request.deferredHardBlockReason
 	if (!request.authorizationAlreadyChecked) {
 		const denial = await controller.authorizeCommand(request.command, execution)
-		if (denial) return blockedRecord(controller, request, startedAt, denial.reason)
+		if (denial?.deferToReviewApproval) deferredHardBlockReason = denial.reason
+		else if (denial) return blockedRecord(controller, request, startedAt, denial.reason)
 	}
 	if (controller.mode === "headless") {
+		if (deferredHardBlockReason) {
+			return blockedRecord(controller, request, startedAt, deferredHardBlockReason)
+		}
 		return {
 			command: request.command,
 			environment: { ...process.env, ...request.worktree.env },
@@ -457,7 +489,7 @@ export async function prepareReviewCommand(
 				toolCallId: request.toolCallId,
 				toolName: request.toolName ?? "bash",
 			},
-			execution,
+			approvalExecution,
 		)
 		if (approval !== "approved") {
 			return blockedRecord(
@@ -491,7 +523,7 @@ export async function prepareReviewCommand(
 				toolCallId: request.toolCallId,
 				toolName: request.toolName ?? "bash",
 			},
-			execution,
+			approvalExecution,
 		)
 		if (approval !== "approved") {
 			return blockedRecord(
@@ -504,6 +536,9 @@ export async function prepareReviewCommand(
 			)
 		}
 		return consumeApprovedPreparation(controller, request, "offline-unavailable", startedAt)
+	}
+	if (deferredHardBlockReason) {
+		return blockedRecord(controller, request, startedAt, deferredHardBlockReason)
 	}
 	controller.markOfflineBoundary(request.toolCallId, boundary)
 	return {
@@ -527,6 +562,7 @@ export async function executeReviewCommand(
 		request.signal?.throwIfAborted()
 		preparation = await prepareReviewCommand(controller, request, startedAt)
 		if ("status" in preparation) return preparation
+		request.signal?.throwIfAborted()
 		const operations = request.operations ?? createLocalBashOperations()
 		const result = await operations.exec(preparation.command, request.cwd, {
 			onData: (data) => {
