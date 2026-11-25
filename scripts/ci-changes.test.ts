@@ -1,0 +1,41 @@
+import { describe, expect, it } from "vitest"
+import { suitesToRun } from "./ci-changes.js"
+
+describe("suitesToRun", () => {
+	it("skips every suite when nothing changed", () => {
+		expect(suitesToRun([])).toEqual({ tui: false })
+	})
+
+	it("skips every suite for a docs-only change", () => {
+		expect(suitesToRun(["docs/ferment.md", "README.md", ".github/pull_request_template.md", "LICENSE"])).toEqual({
+			tui: false,
+		})
+	})
+
+	it("runs TUI for markdown under src, because it ships in the binary", () => {
+		expect(suitesToRun(["src/extensions/agents/README.md"]).tui).toBe(true)
+	})
+
+	it("runs TUI for a source change", () => {
+		expect(suitesToRun(["src/cli.ts"]).tui).toBe(true)
+	})
+
+	it("runs TUI for a workflow change", () => {
+		expect(suitesToRun([".github/workflows/ci.yml"]).tui).toBe(true)
+	})
+
+	it("skips TUI when only other suites' tests changed", () => {
+		expect(
+			suitesToRun(["src/cli.test.ts", "tests/smoke/binary.test.ts", "tests/e2e/acp/run-boundary.test.ts"]).tui,
+		).toBe(false)
+	})
+
+	it("runs TUI for its own tests and support files", () => {
+		expect(suitesToRun(["tests/e2e/tui/side-chat.test.ts"]).tui).toBe(true)
+		expect(suitesToRun(["tests/e2e/tui/support/fixture.ts"]).tui).toBe(true)
+	})
+
+	it("runs TUI when one file of a mixed change matters", () => {
+		expect(suitesToRun(["docs/ferment.md", "src/cli.ts"]).tui).toBe(true)
+	})
+})

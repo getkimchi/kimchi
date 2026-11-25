@@ -5,6 +5,7 @@ name: CI
 on:
   pull_request:
   merge_group:
+  workflow_dispatch:
 
 # github.ref is unique per PR (refs/pull/N/merge) and per merge queue entry,
 # so a new push cancels only its own stale run. github.head_ref is not used
@@ -19,6 +20,31 @@ permissions:
 # Playwright 1.59.1 cannot install Chromium on Ubuntu 26.04, so the Linux
 # jobs pin ubuntu-24.04. Remove the pins when upgrading to Playwright 1.61+.
 jobs:
+  # Decides which path-filtered suites this change needs. The rules live in
+  # scripts/ci-changes.js. Only pull requests are filtered.
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tui: ${{ steps.decide.outputs.tui }}
+    steps:
+      # Depth 2 gives the PR merge commit and its first parent, the base.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            node scripts/ci-changes.js HEAD^1 HEAD
+          else
+            node scripts/ci-changes.js --all
+          fi
+
   lint:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -89,6 +115,23 @@ jobs:
         pnpm run test:scripts
         node --import tsx --input-type=module -e "import pty from 'node-pty'; if (typeof pty.spawn !== 'function') throw new Error('node-pty spawn is unavailable')"
         pnpm run test:smoke
+
+  # Advisory: the gate does not wait for it. PR and manual runs only.
+  tui-e2e:
+    needs: [changes, build]
+    if: github.event_name != 'merge_group' && needs.changes.outputs.tui == 'true'
+    uses: ./.github/workflows/_test-suite.yml
+    with:
+      name: tui-e2e
+      shards: "[1, 2, 3, 4]"
+      # The slowest round-robin shard takes 13 to 16 minutes.
+      timeout-minutes: 20
+      use-build: true
+      search-tools: true
+      command: KIMCHI_PROXY_HELPER="$PWD/bin/proxy-helper" node scripts/run-tui-e2e.js --shard "$SHARD_INDEX/$SHARD_TOTAL"
+      failure-artifacts: |
+        *.tui-e2e.log
+        **/tui-traces/**
 
   # Tripwire for ACP wire-compat regressions (docs/acp-compat.md). It diffs
   # against the PR base, so it runs on pull requests only. It is advisory: the
