@@ -42,6 +42,11 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 		description: SLASH_COMMANDS["pr-watch"].hint,
 		input: { hint: "Optional instructions, or an action: watch, monitor, status, or stop." },
 	},
+	{
+		name: "session-messages",
+		description: SLASH_COMMANDS["session-messages"].hint,
+		input: { hint: "enable or disable; nothing shows the current choice." },
+	},
 ]
 
 /**
@@ -90,13 +95,16 @@ export function tryParseCompactCommand(text: string): { instructions?: string } 
 	return instructions ? { instructions } : {}
 }
 
-/** Full session palette: static commands first, then skill commands. */
+/** Full session palette: static commands first, then skill commands. Opt-in features list theirs only when on. */
 export function composeAvailableCommands(
 	skillCommands: ReadonlyMap<string, AcpSkillInfo>,
 	prMonitoring = false,
+	sessionMessages = false,
 ): AvailableCommand[] {
 	return [
-		...AVAILABLE_COMMANDS.filter(({ name }) => name !== "pr-watch" || prMonitoring),
+		...AVAILABLE_COMMANDS.filter(
+			({ name }) => (name !== "pr-watch" || prMonitoring) && (name !== "session-messages" || sessionMessages),
+		),
 		...buildSkillAvailableCommands(Array.from(skillCommands.values())),
 	]
 }

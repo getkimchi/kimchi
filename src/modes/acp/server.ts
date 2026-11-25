@@ -3843,6 +3843,7 @@ export class KimchiAcpAgent {
 					availableCommands: composeAvailableCommands(
 						record.skillCommands,
 						getClientOptedIntoPRMonitoring(this.clientCapabilities),
+						getClientOptedIntoSessionMessages(this.clientCapabilities),
 					),
 				},
 			})
