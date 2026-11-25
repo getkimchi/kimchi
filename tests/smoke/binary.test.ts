@@ -216,7 +216,6 @@ describe("binary smoke tests", () => {
 				runBinary({
 					args: ["-p", "hello"],
 					extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy", KIMCHI_CODING_AGENT_DIR: `~/${stageName}` },
-					throwOnError: false,
 					timeoutMs: 30_000,
 				})
 

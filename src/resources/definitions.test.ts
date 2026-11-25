@@ -177,11 +177,12 @@ describe("resource definitions", () => {
 	it("declares every literal resource id cli.ts gates an extension on", () => {
 		const cli = readFileSync(join(__dirname, "..", "cli.ts"), "utf-8")
 		const ids = cli
-			.split('{ id: "')
+			.split('id: "')
 			.slice(1)
 			.map((part) => part.slice(0, part.indexOf('"')))
 		const declared = new Set(getResourceDefinitions().map((resource) => resource.id))
-		expect(ids.length).toBeGreaterThan(10)
+		// Its id starts on its own line, the case a narrower scan would miss.
+		expect(ids).toContain("extensions.skills-manager")
 		expect(ids.filter((id) => !declared.has(id))).toEqual([])
 	})
 })
