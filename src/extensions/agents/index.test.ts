@@ -384,12 +384,13 @@ describe("session_shutdown nudge race (integration)", () => {
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("onComplete appends a subagents:record entry with file paths for export enrichment", async () => {
+	it("onComplete persists export and association fields without duplicating the delegated prompt", async () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
 
 		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
 		expect(managerInstance).toBeDefined()
+		const delegatedPrompt = "Inspect every edge case of this delegated task.\n".repeat(64)
 
 		const fakeRecord = {
 			id: "record-agent",
@@ -408,7 +409,7 @@ describe("session_shutdown nudge race (integration)", () => {
 			parentSessionId: "parent-session",
 			parentSessionFile: "/tmp/parent.jsonl",
 			toolCallId: "kt.Agent.1",
-			prompt: "Review all changes in full",
+			prompt: delegatedPrompt,
 			cwd: "/work/child",
 			remote: false,
 			isBackground: true,
@@ -435,7 +436,6 @@ describe("session_shutdown nudge race (integration)", () => {
 			sessionId: "child-session",
 			parentSessionId: "parent-session",
 			toolCallId: "kt.Agent.1",
-			prompt: "Review all changes in full",
 			cwd: "/work/child",
 			remote: false,
 			background: true,

@@ -1202,11 +1202,17 @@ export default function (pi: ExtensionAPI) {
 
 	function appendSubagentRecord(record: AgentRecord): void {
 		pi.appendEntry("subagents:record", {
-			...buildAgentLifecycleData(record),
 			id: record.id,
 			type: record.type,
 			description: record.description,
+			agentId: record.id,
+			sessionId: record.sessionId ?? "",
+			parentSessionId: record.parentSessionId ?? "",
+			toolCallId: record.toolCallId,
+			cwd: record.cwd ?? "",
 			visibility: record.visibility,
+			remote: record.remote ?? false,
+			background: record.isBackground ?? false,
 			status: record.status,
 			abortReason: record.abortReason,
 			result: record.result,
