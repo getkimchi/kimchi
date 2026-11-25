@@ -322,4 +322,24 @@ describe("handleToolDecision", () => {
 		const events = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>)
 		expect(events.find((e) => e.eventName === TOOL_DECISION_EVENT)).toBeUndefined()
 	})
+
+	it("preserves mixed-case MCP tool names in telemetry", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		handleToolDecision(ctx, {
+			toolCallId: "tc-mcp",
+			toolName: "getJiraIssue",
+			decision: "accept",
+			sourceDetail: "mcp_readonly_annotation",
+			permissionMode: "auto",
+		})
+
+		ctx.flushLogBuffer()
+
+		let event: ReturnType<typeof logEvents>[number] | undefined
+		await vi.waitFor(() => {
+			event = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).find((e) => e.eventName === TOOL_DECISION_EVENT)
+			expect(event).toBeDefined()
+		})
+		expect(event?.attrs.tool_name).toBe("getJiraIssue")
+	})
 })

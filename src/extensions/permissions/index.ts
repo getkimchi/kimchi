@@ -1782,7 +1782,9 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					return undefined
 				}
 
-				const autoMcpDecision = mode === "auto" ? decideAutoMcpCall(lookupMcpCall(pi, toolName, input)) : undefined
+				// MCP names are case-sensitive, so look them up with the original tool name, not the lowercased version.
+				const autoMcpDecision =
+					mode === "auto" ? decideAutoMcpCall(lookupMcpCall(pi, event.toolName, input)) : undefined
 				if (autoMcpDecision?.action === "allow") {
 					emitToolDecision(pi, event, mode, "accept", autoMcpDecision.sourceDetail)
 					return undefined

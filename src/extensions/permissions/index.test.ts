@@ -710,6 +710,53 @@ describe("auto MCP read-only approval", () => {
 			sourceDetail: "mcp_readonly_annotation",
 		})
 	})
+
+	it("auto classifies a mixed-case MCP tool with annotation_false instead of using name taxonomy", async () => {
+		const toolName = "getJiraIssue"
+		const input = { id: "LLM-4358" }
+		const harness = createPermissionsHarness([toolName], { auto: true })
+		const lookup = vi.fn(
+			(name: string): McpCallFacts =>
+				name === "getJiraIssue"
+					? { kind: "tool", via: "direct", server: "jira", tool: "getJiraIssue", evidence: "annotation_false" }
+					: { kind: "not_mcp" },
+		)
+		registerMcpCallLookup(harness.pi, lookup)
+		const decisions = collectDecisions(harness)
+		const ctx = autoContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", toolCall(toolName, input), ctx)
+
+		expect(result).toBeUndefined()
+		expect(lookup).toHaveBeenCalledExactlyOnceWith("getJiraIssue", input)
+		expect(classifyToolCall).toHaveBeenCalledOnce()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-mcp",
+				toolName: "getJiraIssue",
+				decision: "accept",
+				sourceDetail: "classifier",
+				permissionMode: "auto",
+			},
+		])
+	})
+
+	it("auto approves a mixed-case MCP tool with annotation_true", async () => {
+		await expectAutoAllow({
+			toolName: "getJiraIssue",
+			input: { id: "LLM-4358" },
+			facts: {
+				kind: "tool",
+				via: "direct",
+				server: "jira",
+				tool: "getJiraIssue",
+				evidence: "annotation_true",
+			},
+			sourceDetail: "mcp_readonly_annotation",
+		})
+	})
 })
 
 describe("host pre-approval (createPermissionsExtension preApproved)", () => {
