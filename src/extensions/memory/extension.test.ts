@@ -378,8 +378,10 @@ describe("memory extension", () => {
 		const { start } = await setup(
 			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 		)
+		const prompts: Array<string | undefined> = []
 		for (let turn = 0; turn < 3; turn++) {
 			const result = await start(startEvent(`turn ${turn}`), fakeCtx)
+			prompts.push(result?.systemPrompt)
 			await flushRecall(() => expect(search).toHaveBeenCalledTimes(turn + 1))
 			// The model must know capture is automatic even with no digest, and
 			// where the user manages what is stored.
@@ -391,6 +393,7 @@ describe("memory extension", () => {
 		// Turn 1 (digest) + turns 2-3: nothing was delivered, so the gate sees
 		// drift and retries retrieval — nothing new clears the bar, nothing lands.
 		expect(search).toHaveBeenCalledTimes(3)
+		expect(prompts.every((prompt) => prompt === prompts[0])).toBe(true)
 	})
 
 	it("recomputes the digest after compaction, then goes stable again", async () => {
@@ -415,6 +418,62 @@ describe("memory extension", () => {
 		expect(searcher.search).toHaveBeenCalledTimes(3)
 	})
 
+	it("recomputes the prefix when compaction lands during the initial digest", async () => {
+		vi.useFakeTimers()
+		try {
+			const search = vi.fn(() => {
+				if (search.mock.calls.length === 1) return new Promise<Array<{ memory?: string }>>(() => {})
+				return Promise.resolve([{ memory: "post-compact fact", score: 0.7 }])
+			})
+			const { start, getHandler } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(0)
+			getHandler("session_compact")({ type: "session_compact" }, fakeCtx)
+			const first = await pending
+			expect(first?.systemPrompt).not.toContain("post-compact fact")
+
+			const second = await start(startEvent("turn 2"), fakeCtx)
+			expect(second?.systemPrompt).toContain("post-compact fact")
+			expect(search).toHaveBeenCalledTimes(2)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it("recomputes the prefix when memory is toggled during the initial digest", async () => {
+		vi.useFakeTimers()
+		try {
+			let release: ((hits: Array<{ memory?: string; score?: number }>) => void) | undefined
+			const search = vi.fn(() => {
+				if (search.mock.calls.length === 1) {
+					return new Promise<Array<{ memory?: string; score?: number }>>((resolve) => {
+						release = resolve
+					})
+				}
+				return Promise.resolve([{ memory: "post-toggle fact", score: 0.7 }])
+			})
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(0)
+			setSessionMemoryOverride(fakeCtx.sessionManager, false)
+			release?.([{ memory: "stale fact", score: 0.7 }])
+			const first = await pending
+			expect(first).toBeUndefined()
+			setSessionMemoryOverride(fakeCtx.sessionManager, true)
+
+			const second = await start(startEvent("turn 2"), fakeCtx)
+			expect(second?.systemPrompt).toContain("post-toggle fact")
+			expect(search).toHaveBeenCalledTimes(2)
+		} finally {
+			setSessionMemoryOverride(fakeCtx.sessionManager, undefined)
+			vi.useRealTimers()
+		}
+	})
+
 	it("degrades to no-memory when the store fails — logged once, session untouched", async () => {
 		const ctx = createContext()
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
@@ -427,10 +486,13 @@ describe("memory extension", () => {
 					},
 				}),
 			)
+			const prompts: Array<string | undefined> = []
 			for (let turn = 0; turn < 2; turn++) {
 				const result = await start(startEvent(`turn ${turn}`), ctx)
+				prompts.push(result?.systemPrompt)
 				expect(result?.systemPrompt).toContain("captured automatically")
 			}
+			expect(prompts.every((prompt) => prompt === prompts[0])).toBe(true)
 			expect(vi.mocked(ctx.ui.setWidget).mock.calls.filter((call) => call[0] === "memory-recall")).toEqual([])
 			expect(consoleError).toHaveBeenCalledTimes(1)
 			expect(consoleError.mock.calls[0]?.[0]).toContain("[memory]")
@@ -439,17 +501,15 @@ describe("memory extension", () => {
 		}
 	})
 
-	it("degrades to no-memory when the digest search hangs — and retries the digest next turn", async () => {
+	it("degrades to no-memory when the digest search hangs — keeps the prefix stable and recalls on later turns", async () => {
 		vi.useFakeTimers()
 		const events: Array<Record<string, unknown>> = []
 		vi.mocked(createRecallRecorder).mockReturnValue({ file: "timeout.jsonl", emit: (event) => events.push(event) })
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 		try {
-			// Only the first search hangs; later calls resolve. A timeout must
-			// NOT cache the failure: the next turn recomputes the digest.
-			const search = vi.fn((query: string) => {
+			const search = vi.fn(() => {
 				if (search.mock.calls.length === 1) return new Promise<Array<{ memory?: string }>>(() => {})
-				return Promise.resolve([{ memory: `fact for ${query.length}`, score: 0.7 }])
+				return Promise.resolve([{ memory: "late fact", score: 0.7 }])
 			})
 			const { sendMessage, start } = await setup(
 				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
@@ -457,25 +517,51 @@ describe("memory extension", () => {
 			const pending = start(startEvent("turn 1"), fakeCtx)
 			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
 			const result = await pending
-			// Degraded to no facts — the notice is still present.
 			expect(result?.systemPrompt).toContain("captured automatically")
-			expect(result?.systemPrompt).not.toContain("fact for")
+			expect(result?.systemPrompt).not.toContain("late fact")
 			expect(events.some((event) => event.conclusion === "attachedToTurn" || event.conclusion === "selected")).toBe(
 				false,
 			)
 			expect(events.some((event) => event.conclusion === "timed-out")).toBe(true)
 			expect(consoleError.mock.calls.some(([m]) => String(m).includes("timed out"))).toBe(true)
-			// Retry: turn 2 recomputes the digest into the prefix (no recall —
-			// the digest search already used this prompt).
+
 			const turn2 = await start(startEvent("turn 2"), fakeCtx)
-			expect(turn2?.systemPrompt).toContain("fact for")
+			expect(turn2?.systemPrompt).toBe(result?.systemPrompt)
+			await flushRecall(() => expect(sendMessage).toHaveBeenCalledTimes(1))
 			expect(search).toHaveBeenCalledTimes(2)
-			// The recall valve is untouched: turn 3's drift fires and delivers.
-			await start(startEvent("turn 3 - fresh territory"), fakeCtx)
-			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS)
-			expect(search).toHaveBeenCalledTimes(3)
+			expect(sendMessage.mock.calls[0]?.[0].customType).toBe("memory-recall")
+			expect(sendMessage.mock.calls[0]?.[1]?.triggerTurn).toBe(false)
+
+			const turn3 = await start(startEvent("turn 3 - fresh territory"), fakeCtx)
+			expect(turn3?.systemPrompt).toBe(result?.systemPrompt)
+			await flushRecall(() => expect(search).toHaveBeenCalledTimes(3))
 			expect(sendMessage).toHaveBeenCalledTimes(1)
 		} finally {
+			vi.useRealTimers()
+			consoleError.mockRestore()
+		}
+	})
+
+	it("keeps the authored memory notice identical after the initial digest times out", async () => {
+		vi.useFakeTimers()
+		process.env.KIMCHI_MEMORY_AUTHORED = "1"
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			const search = vi.fn(() => {
+				if (search.mock.calls.length === 1) return new Promise<Array<{ memory?: string }>>(() => {})
+				return Promise.resolve([{ memory: "late fact", score: 0.7 }])
+			})
+			const { start } = await setup(
+				createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
+			)
+			const pending = start(startEvent("turn 1"), fakeCtx)
+			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+			const first = await pending
+			const second = await start(startEvent("turn 2"), fakeCtx)
+			expect(first?.systemPrompt).toContain("save_memory")
+			expect(second?.systemPrompt).toBe(first?.systemPrompt)
+		} finally {
+			delete process.env.KIMCHI_MEMORY_AUTHORED
 			vi.useRealTimers()
 			consoleError.mockRestore()
 		}
@@ -521,7 +607,7 @@ describe("memory extension", () => {
 		}
 	})
 
-	it("a hung searcher factory degrades per turn and never wedges the session — the next turn retries", async () => {
+	it("a hung searcher factory keeps the prefix stable and recovers through tail recall", async () => {
 		vi.useFakeTimers()
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 		try {
@@ -532,8 +618,6 @@ describe("memory extension", () => {
 					isEnabled: () => true,
 					createSearcher: () => {
 						createCalls += 1
-						// First factory call never settles (wedged backend); the
-						// second one succeeds.
 						return createCalls === 1 ? new Promise(() => {}) : Promise.resolve({ search })
 					},
 				}),
@@ -541,16 +625,16 @@ describe("memory extension", () => {
 			const pending = start(startEvent("turn 1"), fakeCtx)
 			await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
 			const result = await pending
-			// Bounded: the turn degrades to the bare notice instead of hanging.
 			expect(result?.systemPrompt).toContain("captured automatically")
 			expect(result?.systemPrompt).not.toContain("late-blooming")
 			expect(consoleError.mock.calls.some(([m]) => String(m).includes("timed out"))).toBe(true)
-			// The wedged factory call did not wedge the session: turn 2 retries
-			// with a FRESH factory call and the digest lands in the prefix.
+
 			const turn2 = await start(startEvent("turn 2"), fakeCtx)
+			expect(turn2?.systemPrompt).toBe(result?.systemPrompt)
+			await flushRecall(() => expect(sendMessage).toHaveBeenCalledTimes(1))
 			expect(createCalls).toBe(2)
-			expect(turn2?.systemPrompt).toContain("late-blooming fact")
-			expect(sendMessage).not.toHaveBeenCalled()
+			expect(search).toHaveBeenCalledTimes(1)
+			expect(turn2?.systemPrompt).not.toContain("late-blooming fact")
 		} finally {
 			vi.useRealTimers()
 			consoleError.mockRestore()
