@@ -1,5 +1,5 @@
-import { type ChildProcess, spawn } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { type ChildProcess, execFileSync, spawn } from "node:child_process"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { expect, it } from "vitest"
@@ -51,7 +51,7 @@ function runPrint(
 	homeDir: string,
 	prompt: string,
 	directories: { contextDir: string; outputDir: string },
-	options: { sessionId?: string; timeoutMs?: number; submitGraceMs?: number } = {},
+	options: { sessionId?: string; timeoutMs?: number; submitGraceMs?: number; worktreeTempDir?: string } = {},
 ): RunningPrint {
 	const runDir = join(homeDir, "run")
 	const child = spawn(
@@ -90,6 +90,7 @@ function runPrint(
 							KIMCHI_REVIEW_TEST_SUBMIT_GRACE_MS: String(options.submitGraceMs),
 							KIMCHI_REVIEW_TEST_CANCELLATION_GRACE_MS: "250",
 						}),
+				...(options.worktreeTempDir ? { TMPDIR: options.worktreeTempDir } : {}),
 				PATH: process.env.PATH ?? "",
 				HOME: homeDir,
 				PI_PACKAGE_DIR: PACKAGE_DIR,
@@ -524,3 +525,102 @@ it("TERM followed by KILL stops every reviewer process in Kimchi's process group
 		await cleanup(f.tempRoot, f.fake)
 	}
 })
+
+it.skipIf(process.platform === "win32")(
+	"wrap-up reclaims reviewer worktrees and snapshot refs after a real SIGKILL",
+	{ timeout: 45_000 },
+	async () => {
+		const root = mkdtempSync(join(tmpdir(), "review-kill-worktrees-"))
+		const started = join(root, "base-command-started")
+		const script = join(root, "held-command.mjs")
+		writeFileSync(
+			script,
+			`import { spawn } from "node:child_process"\nimport { writeFileSync } from "node:fs"\nconst child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })\nchild.unref()\nwriteFileSync(process.argv[2], "started")\nsetInterval(() => {}, 1000)\n`,
+		)
+		const scripts: FakeResponseScript[] = [
+			{
+				match: (request) =>
+					JSON.stringify(request.body).includes("REVIEW_LENS spec") &&
+					!JSON.stringify(request.body).includes('"role":"tool"'),
+				toolCalls: [
+					{
+						id: "call_base_command",
+						function: {
+							name: "run_review_command",
+							arguments: JSON.stringify({
+								command: `${process.execPath} ${script} ${started}`,
+								cwd: ".",
+								revision: "base",
+								intended_check: "hold the real base worktree until the hard kill",
+							}),
+						},
+					},
+				],
+			},
+			{ match: (request) => JSON.stringify(request.body).includes("REVIEW_LENS spec"), stallAfterThinking: true },
+		]
+		const f = await fixture({ scripts })
+		let running: RunningPrint | undefined
+		try {
+			running = runPrint(f.homeDir, `/review --manifest ${f.manifestPath} --lens spec`, f.directories, {
+				timeoutMs: 30_000,
+				worktreeTempDir: f.homeDir,
+			})
+			await waitForProbe(() => existsSync(started), "the base-revision reviewer command to start")
+			signalGroup(running.child, "SIGKILL")
+			const killed = await running.done
+			expect(killed.signal).toBe("SIGKILL")
+			expect(killed.timedOut).toBe(false)
+			const sessionId = killed.events[0]?.id
+			if (!sessionId) throw new Error("The killed panel had no session ID")
+			const runRoot = join(f.homeDir, "kimchi-review-worktrees")
+			const directories = readdirSync(runRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())
+			expect(directories).toHaveLength(1)
+			const runDir = join(runRoot, directories[0].name)
+			const manifest = JSON.parse(readFileSync(join(runDir, "review-worktrees.json"), "utf8")) as {
+				ownerPid: number
+				worktrees: Array<{ path: string }>
+			}
+			expect(manifest.ownerPid).toBe(running.child.pid)
+			expect(manifest.worktrees).toHaveLength(2)
+			const paths = manifest.worktrees.map((entry) => entry.path)
+			const registrationsBefore = execFileSync("git", ["-C", f.checkout, "worktree", "list", "--porcelain"], {
+				encoding: "utf8",
+			})
+			for (const path of paths) {
+				expect(existsSync(path)).toBe(true)
+				expect(registrationsBefore).toContain(path)
+			}
+
+			const wrapped = await runPrint(f.homeDir, "/review wrap-up", f.directories, {
+				sessionId,
+				worktreeTempDir: f.homeDir,
+			}).done
+			expectPanelStartup(wrapped)
+			expect(existsSync(runDir)).toBe(false)
+			const registrationsAfter = execFileSync("git", ["-C", f.checkout, "worktree", "list", "--porcelain"], {
+				encoding: "utf8",
+			})
+			for (const path of paths) {
+				expect(existsSync(path)).toBe(false)
+				expect(registrationsAfter).not.toContain(path)
+			}
+			expect(
+				execFileSync(
+					"git",
+					["-C", f.checkout, "for-each-ref", "--format=%(refname)", "refs/kimchi/review/snapshots/"],
+					{ encoding: "utf8" },
+				),
+			).toBe("")
+		} finally {
+			if (running && running.child.exitCode === null && running.child.signalCode === null) {
+				try {
+					signalGroup(running.child, "SIGKILL")
+				} catch {}
+			}
+			await running?.done.catch(() => {})
+			await cleanup(f.tempRoot, f.fake)
+			rmSync(root, { recursive: true, force: true })
+		}
+	},
+)

@@ -92,7 +92,6 @@ async function workingTreeStatus(
 		excludeReviewOwnedPaths(root, [entry.path], excludedDirectories).includes(entry.path),
 	)
 }
-}
 
 function displayPaths(paths: string[]): string {
 	const visible = paths.slice(0, INDEX_FLAG_DISPLAY_LIMIT).join(", ")

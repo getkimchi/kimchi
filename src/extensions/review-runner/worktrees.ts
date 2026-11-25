@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from "node:crypto"
 import { link, mkdir, open, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises"
-import { hostname, tmpdir } from "node:os"
+import { tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
+import {
+	currentReviewHost,
+	currentReviewOwnerIdentity,
+	reviewProcessStartIdentity,
+} from "../review-command/owner-identity.js"
 import { checkReviewDirectory } from "../review-submit/directory-safety.js"
 import { gitBytes, gitResultError, gitText, repositoryRoot } from "../review-targets/git.js"
 import { cleanupReviewSnapshot } from "../review-targets/resolve.js"
@@ -41,8 +46,9 @@ interface WorktreeManifest {
 	baseSha: string
 	headSha: string
 	snapshotRef?: string
-	pid?: number
-	host?: string
+	ownerPid?: number
+	ownerHost?: string
+	ownerStart?: string
 	createdAt: number
 	updatedAt: number
 	worktrees: WorktreeManifestEntry[]
@@ -82,6 +88,36 @@ async function pathExists(path: string): Promise<boolean> {
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
 		throw error
+	}
+}
+
+async function ownerIsLive(manifest: WorktreeManifest): Promise<boolean> {
+	if (manifest.ownerPid === undefined && manifest.ownerHost === undefined && manifest.ownerStart === undefined) {
+		return false
+	}
+	if (
+		typeof manifest.ownerPid !== "number" ||
+		!Number.isSafeInteger(manifest.ownerPid) ||
+		manifest.ownerPid < 1 ||
+		typeof manifest.ownerHost !== "string" ||
+		manifest.ownerHost.length === 0 ||
+		typeof manifest.ownerStart !== "string" ||
+		manifest.ownerStart.length === 0
+	) {
+		throw new Error("Reviewer worktree manifest has an unsafe owner identity.")
+	}
+	if (manifest.ownerHost !== currentReviewHost() || manifest.ownerPid === process.pid) return false
+	try {
+		process.kill(manifest.ownerPid, 0)
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ESRCH") return false
+		return true
+	}
+	try {
+		return (await reviewProcessStartIdentity(manifest.ownerPid)) === manifest.ownerStart
+	} catch {
+		// Unknown liveness preserves another root; it never guesses from PID reuse.
+		return true
 	}
 }
 
@@ -389,6 +425,7 @@ export async function createReviewWorktreePool(options: ReviewWorktreeOptions): 
 		runDir = join(rootParent, `${safeName(basename(repository))}-${randomUUID()}`)
 		await mkdir(runDir, { mode: 0o700 })
 		const scope = options.target.scope
+		const owner = await currentReviewOwnerIdentity()
 		const manifest: WorktreeManifest = {
 			schema_version: MANIFEST_VERSION,
 			repository,
@@ -397,8 +434,9 @@ export async function createReviewWorktreePool(options: ReviewWorktreeOptions): 
 			baseSha: scope.pinned.baseSha,
 			headSha: scope.pinned.headSha,
 			...(scope.pinned.snapshotRef ? { snapshotRef: scope.pinned.snapshotRef } : {}),
-			pid: process.pid,
-			host: hostname(),
+			ownerPid: process.pid,
+			ownerHost: owner.hostname,
+			ownerStart: owner.startIdentity,
 			createdAt: Date.now(),
 			updatedAt: Date.now(),
 			worktrees: [],
@@ -445,16 +483,6 @@ async function removeRunContentsExceptManifest(runDir: string): Promise<void> {
 	}
 }
 
-function manifestProcessIsAlive(manifest: WorktreeManifest): boolean {
-	if (manifest.host !== hostname() || !Number.isSafeInteger(manifest.pid) || (manifest.pid ?? 0) < 1) return false
-	try {
-		process.kill(manifest.pid ?? 0, 0)
-		return true
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM"
-	}
-}
-
 async function ownedReviewWorktreeRegistrations(
 	repository: string,
 	runDir: string,
@@ -490,8 +518,17 @@ export async function recoverReviewWorktrees(
 			const metadata = await stat(manifestPath)
 			if (options.olderThanMs > 0 && metadata.mtimeMs > cutoff) continue
 			const manifest = parseManifest(runDir, JSON.parse(await readFile(manifestPath, "utf8")))
-			if (manifestProcessIsAlive(manifest)) continue
+			if (await ownerIsLive(manifest)) continue
 			await serializeRepository(manifest.repository, async () => {
+				if (!(await pathExists(manifest.repository))) {
+					await rm(runDir, { recursive: true, force: true })
+					recovered.push({
+						runDir,
+						repository: manifest.repository,
+						removedWorktrees: manifest.worktrees.map((entry) => entry.path),
+					})
+					return
+				}
 				const ownedPaths = await ownedReviewWorktreeRegistrations(manifest.repository, runDir, options.signal)
 				const paths = new Set([...manifest.worktrees.map((entry) => entry.path), ...ownedPaths])
 				const removedWorktrees: string[] = []

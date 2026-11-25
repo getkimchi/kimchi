@@ -7,6 +7,7 @@ import {
 	type ReviewAgentSpawner,
 	type ReviewExecutionPolicyOptions,
 	ReviewRunner,
+	recoverReviewWorktrees,
 } from "../review-runner/index.js"
 import { MAX_OUTPUT_FILE_BYTES, SUMMARY_SCHEMA_VERSION } from "../review-submit/store.js"
 import { type ResolvedReviewScope, type ResolvedReviewTarget, ReviewTargetError } from "../review-targets/index.js"
@@ -651,6 +652,7 @@ export async function wrapUpReviewPanel(options: WrapUpReviewPanelOptions): Prom
 			}
 		}
 	})
+	await recoverReviewWorktrees({ rootDir: options.rootDir, olderThanMs: 0, signal: options.signal })
 	const usage = new ReviewPanelUsageBuffer(options.onChildUsage, options.parentToolCallId, options.onUsageDropped)
 	const runner = await makeRunner({
 		ctx: options.ctx,

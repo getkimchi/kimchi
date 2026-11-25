@@ -175,6 +175,7 @@ export interface ReviewInterruptionFixture {
 	started: string
 	survived: string
 	pidFile: string
+	grandchildPidFile: string
 	toolArguments: string
 }
 
@@ -182,17 +183,19 @@ export function createReviewInterruptionFixture(homeDir: string): ReviewInterrup
 	const started = join(homeDir, "review-command-started")
 	const survived = join(homeDir, "review-command-survived")
 	const pidFile = join(homeDir, "review-command.pid")
+	const grandchildPidFile = join(homeDir, "review-command-grandchild.pid")
 	const script = join(homeDir, "review-command.mjs")
 	writeFileSync(
 		script,
-		`import { writeFileSync } from "node:fs"\nwriteFileSync(process.argv[2], "started")\nwriteFileSync(process.argv[3], String(process.pid))\nsetTimeout(() => writeFileSync(process.argv[4], "survived"), 2000)\nsetInterval(() => {}, 1000)\n`,
+		`import { spawn } from "node:child_process"\nimport { writeFileSync } from "node:fs"\nconst grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })\ngrandchild.unref()\nwriteFileSync(process.argv[3], String(process.pid))\nwriteFileSync(process.argv[5], String(grandchild.pid))\nwriteFileSync(process.argv[2], "started")\nsetTimeout(() => writeFileSync(process.argv[4], "survived"), 2000)\nsetInterval(() => {}, 1000)\n`,
 	)
 	return {
 		started,
 		survived,
 		pidFile,
+		grandchildPidFile,
 		toolArguments: JSON.stringify({
-			command: `${process.execPath} ${script} ${started} ${pidFile} ${survived}`,
+			command: `${process.execPath} ${script} ${started} ${pidFile} ${survived} ${grandchildPidFile}`,
 			cwd: ".",
 			intended_check: "long-running reviewer command for cancellation cleanup",
 		}),

@@ -59,6 +59,7 @@ test("review command interruption terminates commands, finalizes partial coverag
 }) => {
 	let interruption: ReviewInterruptionFixture | undefined
 	let pid: number | undefined
+	let grandchildPid: number | undefined
 	const requiredInterruption = () => {
 		if (!interruption) throw new Error("Interruption fixture was not initialized")
 		return interruption
@@ -82,13 +83,15 @@ test("review command interruption terminates commands, finalizes partial coverag
 					expect(seen).toBe(true),
 				)
 				pid = Number(readFileSync(requiredInterruption().pidFile, "utf8"))
+				grandchildPid = Number(readFileSync(requiredInterruption().grandchildPidFile, "utf8"))
 				terminal.keyPress(Key.Escape)
 				await waitForText(terminal, "Review partial: 0 final findings.", { timeoutMs: 20_000 })
 				await waitForText(terminal, "unfinished lenses: spec")
 				await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_100))
 				expect(existsSync(requiredInterruption().survived)).toBe(false)
-				if (pid === undefined) throw new Error("Missing reviewer command PID")
+				if (pid === undefined || grandchildPid === undefined) throw new Error("Missing reviewer command PID")
 				expect(() => process.kill(pid, 0)).toThrow()
+				expect(() => process.kill(grandchildPid, 0)).toThrow()
 				expect(existsSync(join(fixture.workDir, ".kimchi", "review-output", "active-review.json"))).toBe(false)
 				const runsRoot = join(fixture.workDir, ".kimchi", "review-output", "runs")
 				const [run] = readdirSync(runsRoot)
@@ -98,10 +101,12 @@ test("review command interruption terminates commands, finalizes partial coverag
 				expect(git(fixture.workDir, "for-each-ref", "--format=%(refname)", "refs/kimchi/review/snapshots/")).toBe("")
 				expect(git(fixture.workDir, "worktree", "list", "--porcelain")).not.toContain("kimchi-review-worktrees")
 			} finally {
-				if (pid) {
-					try {
-						process.kill(pid, "SIGKILL")
-					} catch {}
+				for (const processId of [pid, grandchildPid]) {
+					if (processId) {
+						try {
+							process.kill(processId, "SIGKILL")
+						} catch {}
+					}
 				}
 			}
 		},
