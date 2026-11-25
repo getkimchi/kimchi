@@ -237,8 +237,9 @@ export interface SessionCliArgs {
 		"mcp-config"?: string
 		verbose?: boolean
 		"no-auto-update"?: boolean
-		/** Pi's own flag, read with Pi's parser (see parseCliArgs). */
+		/** Pi's own flags, read with Pi's parser (see parseCliArgs). */
 		"no-context-files"?: boolean
+		"no-skills"?: boolean
 	}
 	positionals: string[]
 }
@@ -346,10 +347,11 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 		}
 		;(options as Record<string, unknown>)[key] = value
 	}
-	// Pi owns this flag and its short form (-nc); Kimchi's own context
-	// loaders must obey it too.
+	// Pi owns these flags and their short forms (-nc, -ns); Kimchi's own
+	// context and skill loaders must obey them too.
 	const piArgs = parsePiArgs(args)
 	if (piArgs.noContextFiles) options["no-context-files"] = true
+	if (piArgs.noSkills) options["no-skills"] = true
 	return { options, positionals }
 }
 

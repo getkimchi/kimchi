@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { type ExtensionAPI, loadSkillsFromDir, type ToolDefinition } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { populateCliArgs } from "../../cli-args.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import claudeCodeSkillsExtension from "./index.js"
 
@@ -30,6 +31,7 @@ describe("Claude Code skills extension", () => {
 	})
 
 	afterEach(() => {
+		populateCliArgs([])
 		if (oldHome === undefined) {
 			delete process.env.HOME
 		} else {
@@ -240,6 +242,22 @@ describe("Claude Code skills extension", () => {
 			{ name: "typescript-safety", description: "Claude Code skill: typescript-safety." },
 		])
 		expect(loaded.diagnostics.map((diagnostic) => diagnostic.message)).not.toContain("description is required")
+	})
+
+	it("contributes no skills and no Skill tool with --no-skills", async () => {
+		writeRawSkill(join(dir, "project", ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")
+		populateCliArgs(["--no-skills"])
+		const { handlers, tools, fireSessionStart } = registerExtension()
+
+		const result = await handlers.resources_discover?.({
+			type: "resources_discover",
+			cwd: join(dir, "project"),
+			reason: "startup",
+		})
+		fireSessionStart(join(dir, "project"))
+
+		expect(result).toBeUndefined()
+		expect(tools).toHaveLength(0)
 	})
 
 	it("omits Claude Code skills disabled by an enabled bundled skill from discovery", async () => {

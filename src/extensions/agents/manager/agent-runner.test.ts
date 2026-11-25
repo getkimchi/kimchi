@@ -4,6 +4,7 @@ import { dirname, join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { populateCliArgs } from "../../../cli-args.js"
 import { createContext, createToolContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
 import { AUTO_MODEL_PROVIDER } from "../../auto-model/constants.js"
@@ -877,6 +878,27 @@ describe("runAgent — telemetry extension", () => {
 			pi: pi as unknown as RunOptions["pi"],
 			isolated: true,
 		})
+
+		expect(mockScanBriefSkills).not.toHaveBeenCalled()
+	})
+
+	it("gives subagents no skills when the parent runs with --no-skills", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		mockGetConfig.mockReturnValue(makeTypeConfig({ skills: true }))
+		populateCliArgs(["--no-skills"])
+		try {
+			await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "analyze report.pdf", {
+				pi: pi as unknown as RunOptions["pi"],
+			})
+		} finally {
+			populateCliArgs([])
+		}
 
 		expect(mockScanBriefSkills).not.toHaveBeenCalled()
 	})

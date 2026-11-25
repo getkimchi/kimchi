@@ -29,6 +29,7 @@ import { arch, homedir, version as osVersion, platform, userInfo } from "node:os
 import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { getParsedCliArgs } from "../../cli-args.js"
 import { loadConfig } from "../../config.js"
 import { isWithinDeprecationNotifyWindow } from "../../model-deprecation.js"
 import { isResourceEnabled } from "../../resources/store.js"
@@ -729,6 +730,8 @@ export default function (getSkillPathsFromConfig: () => string[]) {
 			// every downstream surface (base prompt skills section, /skill:<name>,
 			// autocomplete, /resources) sees them. All discovery, filtering, and
 			// collision-avoidance logic lives in resolveSkillPathsForDiscovery.
+			// --no-skills stops these too; Pi still loads explicit --skill paths.
+			if (getParsedCliArgs().options["no-skills"]) return undefined
 			const extraPaths = getConfiguredSkillResourcePaths(event.cwd, getSkillPathsFromConfig(), {
 				// Bundled skills may shadow external skills by name while their own
 				// resource toggle is enabled (documents → Anthropic office skills);

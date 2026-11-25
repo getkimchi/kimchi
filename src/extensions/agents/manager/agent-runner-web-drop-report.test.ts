@@ -34,6 +34,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 		createAgentSession: vi.fn(),
 		defineTool: vi.fn((tool) => tool),
 		getAgentDir: vi.fn(() => process.env.PI_CODING_AGENT_DIR),
+		parseArgs: vi.fn(() => ({})),
 	}
 })
 

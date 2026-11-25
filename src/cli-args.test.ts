@@ -44,12 +44,19 @@ describe("value-flag parsing", () => {
 })
 
 describe("Pi resource switches", () => {
-	it.each(["--no-context-files", "-nc"])("reads %s with Pi's parser", (flag) => {
-		expect(parseCliArgs(["-p", "hi", flag]).options["no-context-files"]).toBe(true)
+	it.each([
+		["--no-context-files", "no-context-files"],
+		["-nc", "no-context-files"],
+		["--no-skills", "no-skills"],
+		["-ns", "no-skills"],
+	] as const)("reads %s with Pi's parser", (flag, option) => {
+		expect(parseCliArgs(["-p", "hi", flag]).options[option]).toBe(true)
 	})
 
 	it("leaves the switches unset by default", () => {
-		expect(parseCliArgs(["-p", "hi"]).options["no-context-files"]).toBeUndefined()
+		const { options } = parseCliArgs(["-p", "hi", "--skill", "./one"])
+		expect(options["no-context-files"]).toBeUndefined()
+		expect(options["no-skills"]).toBeUndefined()
 	})
 })
 

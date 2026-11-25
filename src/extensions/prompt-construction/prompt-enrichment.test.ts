@@ -676,6 +676,26 @@ describe("prompt enrichment skills", () => {
 		expect(paths.some((p) => existsSync(join(p, "SKILL.md")))).toBe(true)
 	})
 
+	it("contributes no skill paths through resources_discover with --no-skills", async () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".kimchi", "skills", "project-skill", "SKILL.md"), { description: "Project skill." })
+		setProjectScopeTrusted(cwd, true)
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([".config/kimchi/harness/skills"])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
+		const discover = () =>
+			resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined) as
+				| { skillPaths?: string[] }
+				| undefined
+
+		expect(discover()?.skillPaths?.length).toBeGreaterThan(0)
+		populateCliArgs(["--no-skills"])
+		try {
+			expect(discover()).toBeUndefined()
+		} finally {
+			populateCliArgs([])
+		}
+	})
+
 	it("does not contribute ancestor Claude Code skills through resources_discover", async () => {
 		const project = join(dir, "project")
 		const cwd = join(project, "src")
