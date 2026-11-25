@@ -353,6 +353,21 @@ describe("config-owned PR reporting consent", () => {
 		expect(readPrReportingConsent()).toBe("follow-telemetry")
 	})
 
+	it("keeps a telemetry-following queue following when telemetry is currently off", async () => {
+		// A default queue reads {enabled:false, followsTelemetry:true} while telemetry is
+		// off; the inherited policy must not become an explicit opt-out.
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "false")
+		const ctx = createContext()
+		const api = trackedApi(() => ctx)
+		reportingExtension(api.api)
+		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+		expect(readPrReportingConsent()).toBe("follow-telemetry")
+		// Turning telemetry back on restores the inherited reporting behavior.
+		vi.stubEnv("KIMCHI_TELEMETRY_ENABLED", "true")
+		expect((await readReportingState(directory)).enabled).toBe(true)
+		await api.getHandler("session_shutdown")({}, ctx)
+	})
+
 	it("seeds an explicit legacy opt-out as off", async () => {
 		await setReportingEnabled(directory, false)
 		const ctx = createContext()

@@ -44,7 +44,10 @@ async function migrateReportingConsent(): Promise<void> {
 		return
 	}
 	if (readPrReportingConsent() !== undefined) return
-	writePrReportingConsent(state.enabled === false ? "off" : state.followsTelemetry ? "follow-telemetry" : "on")
+	// followsTelemetry wins over the derived enabled bit: a default queue reads
+	// {enabled:false, followsTelemetry:true} while telemetry is off, and that inherited
+	// policy must not become an explicit opt-out that telemetry cannot revive.
+	writePrReportingConsent(state.followsTelemetry ? "follow-telemetry" : state.enabled === false ? "off" : "on")
 }
 
 export default function prCostReportingExtension(pi: ExtensionAPI): void {
