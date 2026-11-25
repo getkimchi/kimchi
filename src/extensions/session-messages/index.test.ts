@@ -496,15 +496,16 @@ describe("session-messages", () => {
 	})
 
 	it("over ACP, takes part only when the client opted in, and refuses what it would have to ask about", async () => {
+		const dir = tempDir()
+		const tui = await startSession(dir, { id: ALPHA, name: "tui" })
 		acp.server = true
 		try {
-			const dir = tempDir()
-			const tui = await startSession(dir, { id: ALPHA, name: "tui" })
 			setSessionMessagesPermitted(false)
 			const plain = await startSession(dir, { id: BETA, name: "plain", mode: "rpc" })
 			expect(plain.harness.registerTool).not.toHaveBeenCalled()
+			expect(plain.harness.registerCommand).not.toHaveBeenCalled()
 			expect(existsSync(join(dir, "bbbbb2.sock"))).toBe(false)
-			expect(await plain.type("@tui use v2")).toEqual([undefined])
+			expect(await plain.type("@tui use v2")).toEqual([])
 
 			setSessionMessagesPermitted(true)
 			const studio = await startSession(dir, { id: GAMMA, name: "studio", mode: "rpc" })

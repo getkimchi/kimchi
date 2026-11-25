@@ -57,7 +57,7 @@ import { isAgentWorker } from "../agent-worker-context.js"
 import { listSubagents, messageSubagent } from "../agents/index.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { workRepository } from "../work-attribution/scope.js"
-import { takesPart } from "./session-policy.js"
+import { acpClientLeftOut, takesPart } from "./session-policy.js"
 
 export const CROSS_SESSION_MESSAGE_TYPE = "cross-session-message"
 /** Tells a sender that a held message was declined or expired. */
@@ -352,7 +352,7 @@ export function createSessionMessagesExtension(
 	}
 
 	return (pi: ExtensionAPI): void => {
-		if (isAgentWorker()) return
+		if (isAgentWorker() || acpClientLeftOut()) return
 		pi.registerMessageRenderer(CROSS_SESSION_MESSAGE_TYPE, renderMessage)
 		pi.registerMessageRenderer(CROSS_SESSION_NOTICE_TYPE, renderMessage)
 		pi.registerMessageRenderer(CROSS_SESSION_SENT_TYPE, renderMessage)
@@ -665,7 +665,7 @@ export function createSessionMessagesExtension(
 			// What the user wrote (not an extension's injection) starts the hop count again.
 			if (event.source === "extension") return undefined
 			hops = 0
-			if (!takesPart(ctx.mode) || !event.text.includes("@") || readPreference() === false) return undefined
+			if (!takesPart(ctx.mode) || tagWords(event.text).length === 0 || readPreference() === false) return undefined
 			const peers = await listPeers(dir, self?.ref)
 			const tagged = taggedIn(event.text, peers)
 			if (tagged.length === 0) return undefined

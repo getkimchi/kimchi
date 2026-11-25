@@ -16,3 +16,8 @@ export function setSessionMessagesPermitted(permitted: boolean): void {
 export function takesPart(mode: ExtensionContext["mode"]): boolean {
 	return mode === "tui" || (IS_ACP_MODE && acpClientOptedIn)
 }
+
+/** An ACP client that did not opt in gets nothing registered, not even the command in its palette. */
+export function acpClientLeftOut(): boolean {
+	return IS_ACP_MODE && !acpClientOptedIn
+}

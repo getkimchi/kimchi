@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { expect, it } from "vitest"
 import { requestAdvertisesTool } from "../tui/support/mcp-model-script.js"
 import { chatRequests } from "../tui/support/wire-requests.js"
-import { startAcpFixture } from "./support/acp-fixture.js"
+import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, waitForSessionUpdate } from "./support/scenarios.js"
 
 const liveDir = (homeDir: string) => join(homeDir, ".config", "kimchi", "live-sessions")
@@ -26,6 +26,13 @@ function allowMessages(homeDir: string): void {
 	const harness = join(homeDir, ".config", "kimchi", "harness")
 	mkdirSync(harness, { recursive: true })
 	writeFileSync(join(harness, "session-messages.json"), JSON.stringify({ enabled: true }))
+}
+
+/** Every slash command the agent advertised to the client so far. */
+function advertisedCommands(fixture: AcpFixture): string[] {
+	return fixture.client.sessionUpdates.flatMap(({ update }) =>
+		update.sessionUpdate === "available_commands_update" ? update.availableCommands.map(({ name }) => name) : [],
+	)
 }
 
 /** One request to a session's socket, one reply, as the sessions themselves talk. */
@@ -68,6 +75,7 @@ it.each([
 		expect((await prompt(fixture, sessionId, "Reply briefly.")).stopReason).toBe("end_turn")
 		expect(sockets(fixture.homeDir)).toEqual([])
 		expect(chatRequests(fixture).some((request) => requestAdvertisesTool(request, "send_message"))).toBe(false)
+		expect(advertisedCommands(fixture)).not.toContain("session-messages")
 		await expect(fixture.conn.request("_kimchi.dev/live_sessions", { sessionId })).rejects.toThrow()
 	} finally {
 		await fixture.stop()
@@ -105,6 +113,7 @@ it("an opted-in client lists sessions for its @ list and shows a received messag
 		const sessionId = await newSession(fixture, fixture.workDir)
 		expect((await prompt(fixture, sessionId, "Reply briefly.")).stopReason).toBe("end_turn")
 		expect(chatRequests(fixture).some((request) => requestAdvertisesTool(request, "send_message"))).toBe(true)
+		expect(advertisedCommands(fixture)).toContain("session-messages")
 
 		expect(await fixture.conn.request("_kimchi.dev/live_sessions", { sessionId })).toEqual({
 			sessions: [
