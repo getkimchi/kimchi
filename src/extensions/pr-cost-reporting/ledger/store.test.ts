@@ -252,6 +252,11 @@ test("an existing ledger gains the additive indexes on open (bun driver)", () =>
 	const indexes = (result.afterReopen as string[]).filter((name) => expected.includes(name))
 	expect((result.afterDrop as string[]).some((name) => expected.includes(name))).toBe(false)
 	expect(indexes.sort()).toEqual(expected)
+	expect(result.columns).toMatchObject({
+		outbox_batches_by_account: ["account_key", "order_key", "created_at"],
+		outbox_pending_cover: ["account_key", "acked_at", "blocked"],
+		work_records_imported: ["imported_at"],
+	})
 })
 
 test("paged window reads survive a missing index and resume from the page cursor", { timeout: 60_000 }, () => {
@@ -262,6 +267,8 @@ test("paged window reads survive a missing index and resume from the page cursor
 	expect(result.firstReopened).toEqual(["page-0", "page-1"])
 	expect(result.nextPage).toEqual(["page-2"])
 	expect(result.presentAfterRead).toBe(true)
+	expect((result.firstPlan as string[]).join(" ")).toContain("USING INDEX work_records_imported")
+	expect((result.nextPlan as string[]).join(" ")).toContain("USING INTEGER PRIMARY KEY")
 })
 
 test("a busy-deferred additive apply self-heals on the cached backend within one process", { timeout: 60_000 }, () => {

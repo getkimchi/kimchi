@@ -66,11 +66,13 @@ describe("ResourceManagerComponent", () => {
 		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn())
 		const second = getResourceDefinitions()[1]
 		expect(second).toBeDefined()
+		const before = isResourceEnabled(second.id)
 		component.handleInput("\x1b[B")
 		component.handleInput(" ")
 
 		const text = component.render(80).join("\n")
 		expect(text).toContain(second.id)
+		expect(isResourceEnabled(second.id)).toBe(!before)
 	})
 
 	it("shows experimental resources in their own tab without changing their persisted id", () => {
@@ -140,7 +142,3 @@ describe("ResourceManagerComponent", () => {
 		expect(new Set(columns).size).toBe(1)
 	})
 })
-
-function selectedIndex(component: unknown): number {
-	return ((component as { list: unknown }).list as { selectedIndex: number }).selectedIndex
-}

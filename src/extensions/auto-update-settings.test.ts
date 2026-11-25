@@ -5,8 +5,9 @@
 // @earendil-works/pi-coding-agent and is exercised manually in the
 // harness itself — booting the TUI in vitest is out of scope.
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createCommandContext } from "./__mocks__/context.js"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
 
 const mockCheckForUpdate = vi.fn()
 const mockApplyUpdate = vi.fn()
@@ -137,18 +138,13 @@ describe("auto-update setting reflects in the toggle label state", () => {
 		mockSaveAutoUpdateSetting.mockImplementation((next: boolean) => {
 			enabled = next
 		})
-		let handler: ExtensionCommandContext["ui"] extends never
-			? never
-			: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined
-		defaultExport({
-			on: vi.fn(),
-			registerCommand: (name: string, definition: { handler: typeof handler }) => {
-				if (name === "update") handler = definition.handler
-			},
-		} as unknown as ExtensionAPI)
+		const { api, getRegisteredCommand } = createExtensionApi()
+		defaultExport(api)
+		const handleUpdate = getRegisteredCommand("update").handler
 		const select = vi.fn().mockResolvedValueOnce("Auto-update: ON (toggle off)").mockResolvedValueOnce("Back")
-		const ctx = { mode: "tui", ui: { select, notify: vi.fn() } } as unknown as ExtensionCommandContext
-		await handler?.("", ctx)
+		const ctx = createCommandContext()
+		ctx.ui.select = select
+		await handleUpdate("", ctx)
 
 		expect(select.mock.calls[0]?.[1]).toContain("Auto-update: ON (toggle off)")
 		expect(select.mock.calls[1]?.[1]).toContain("Auto-update: OFF (toggle on)")

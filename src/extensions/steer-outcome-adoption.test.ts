@@ -8,6 +8,7 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import explorationGuardExtension from "./exploration-guard.js"
 import { resetSteerOutcomeWatches, steerOutcomeWatcherExtension } from "./steer-outcome-watcher.js"
 import { TODO_WRITE_TOOL_NAMES } from "./todos/session.js"
 
@@ -88,22 +89,23 @@ describe("steer outcome watcher — site adoptions", () => {
 	})
 
 	it("exploration_guard: complied on the first write-tool call after the steer", async () => {
-		const { emitted, fire } = makePi()
-		// Fire the steer the way the guard does — classify against a write tool,
-		// complied when one lands.
-		const { watchSteerOutcome } = await import("./steer-outcome-watcher.js")
-		watchSteerOutcome({
-			kind: "exploration_guard",
-			steerId: "eg-1",
-			sessionId: "session",
-			interactive: true,
-			windowToolCalls: 3,
-			classify: (event) => (event.type === "tool_execution_end" && event.toolName === "write" ? "complied" : undefined),
-		})
+		const { pi, emitted, fire } = makePi()
+		explorationGuardExtension(pi, { noToolWarnThreshold: 1, noToolSteerThreshold: 2 })
+		await fire("session_start", {})
+		for (let turn = 0; turn < 2; turn++) {
+			await fire("turn_start", {})
+			await fire("turn_end", { message: { role: "assistant", stopReason: "stop" } })
+		}
+		const fired = emitted.filter((event) => event.channel === "steer:fired").at(-1)
+		if (!fired || typeof fired.payload !== "object" || fired.payload === null)
+			throw new Error("mandatory steer not fired")
+		const steerId = (fired.payload as { steer_id?: string }).steer_id
+		expect(typeof steerId).toBe("string")
+
 		await fire("tool_execution_end", { toolName: "read" })
 		await fire("tool_execution_end", { toolName: "write" })
-		expect(outcomes(emitted)).toEqual([
-			expect.objectContaining({ kind: "exploration_guard", outcome: "complied", steer_id: "eg-1" }),
+		expect(outcomes(emitted).filter((outcome) => outcome.steer_id === steerId)).toEqual([
+			expect.objectContaining({ kind: "exploration_guard", outcome: "complied", steer_id: steerId }),
 		])
 	})
 })

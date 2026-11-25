@@ -791,10 +791,6 @@ async function refreshFileInner(client: LspClient, filePath: string): Promise<vo
 	}
 }
 
-export function getAllClients(): LspClient[] {
-	return Array.from(clients.values())
-}
-
 /**
  * Bound the per-client open-document set. Documents were historically never
  * closed (didClose was never sent), so every synced file stayed pinned in

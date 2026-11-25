@@ -339,6 +339,7 @@ describe("probeOllamaModels — /api/show capability enrichment", () => {
 		])
 		const models = await probeOllamaModels("http://localhost:11434", { fetch: fetchImpl })
 		expect(models[0].inputModalities).toEqual(["text", "image"])
+		expect(models[0].contextWindow).toBe(32768)
 	})
 })
 
@@ -974,26 +975,6 @@ describe("probeOllamaModels — heterogeneous multi-model probe", () => {
 		expect(ollamaModelTier(models[0])).toBe("standard") // 13B → standard
 		expect(ollamaModelTier(models[1])).toBe("standard") // 14B → standard
 		expect(ollamaModelTier(models[2])).toBe("light") // 7B  → light
-	})
-
-	it("falls back to tags-level capabilities when /api/show 404s but tags has the info", async () => {
-		const tagsEntries = [
-			makeTagsEntry({
-				name: "vision-only:8b",
-				details: { parameter_size: "8B", family: "llama" },
-				capabilities: ["completion", "vision"],
-			}),
-		]
-		const fetchImpl = makeFetchMock([
-			(url) => (url.endsWith("/api/tags") ? makeTagsResponse(tagsEntries) : null),
-			// /api/show 404 for all models → fall back to tags-level capabilities
-			(url) => (url.endsWith("/api/show") ? notFoundJson() : null),
-		])
-
-		const models = await probeOllamaModels("http://localhost:11434", { fetch: fetchImpl })
-		expect(models).toHaveLength(1)
-		expect(models[0].inputModalities).toEqual(["text", "image"])
-		expect(models[0].contextWindow).toBe(32768) // DEFAULT_CONTEXT_WINDOW fallback
 	})
 
 	it("runs /api/show enrichment concurrently (not sequentially) within the probe", async () => {

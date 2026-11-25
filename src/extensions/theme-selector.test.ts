@@ -240,17 +240,27 @@ describe("theme-selector extension", () => {
 	})
 
 	it("caps visible options at ten and can navigate to the remainder", async () => {
-		const { pi, commands } = makePi()
+		const { SelectList, visibleWidth } =
+			await vi.importActual<typeof import("@earendil-works/pi-tui")>("@earendil-works/pi-tui")
 		const themes = Array.from({ length: 12 }, (_, i) => ({ name: `theme-${i + 1}` }))
-		const { ctx, ui } = makeCtx(themes, "theme-1")
-		themeSelectorExtension(pi)
-		const { selectList } = await runCommandAndCaptureFactory(pi, commands, ctx, ui)
-		const container = mockInstances.Container[0]
-		expect(selectList.maxVisible).toBe(10)
-		expect(selectList.layout).toEqual({ minPrimaryColumnWidth: 12, maxPrimaryColumnWidth: 32 })
-		expect(container.render(60)).not.toContain("theme-11")
-		selectList.setSelectedIndex(11)
-		expect(container.render(60)).toContain("theme-12")
+		const list = new SelectList(
+			themes.map((theme) => ({ value: theme.name, label: theme.name })),
+			10,
+			{
+				noMatch: (text) => text,
+				selectedPrefix: (text) => text,
+				selectedText: (text) => text,
+				description: (text) => text,
+				scrollInfo: (text) => text,
+			},
+			{ minPrimaryColumnWidth: 12, maxPrimaryColumnWidth: 32 },
+		)
+		expect(list.render(60).filter((line) => line.includes("theme-"))).toHaveLength(10)
+		for (const line of list.render(60)) expect(visibleWidth(line)).toBeLessThanOrEqual(60)
+		for (let index = 1; index < 12; index++) list.handleInput("\x1b[B")
+		const rendered = list.render(60)
+		expect(rendered.some((line) => line.includes("theme-12"))).toBe(true)
+		expect(rendered.at(-1)).toContain("12/12")
 	})
 
 	it("preview on arrow key calls previewTheme (never setTheme) — persistence bug guard", async () => {

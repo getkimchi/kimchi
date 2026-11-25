@@ -1002,18 +1002,31 @@ describe("lsp_diagnostics", () => {
 		expect(result.content[0].text).toContain("Type error")
 	})
 
-	it("caps wait_ms at 10000", async () => {
-		// Just verifying it doesn't blow up and still returns sensibly
-		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
-		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
-		const fakeClient = makeClient()
-		vi.mocked(clientMod.getOrCreateClient).mockResolvedValue(fakeClient as never)
-		const pi = makePi()
-		lspExtension(pi)
-		await pi.fireSessionStart()
-		// We pass 0 so tests don't actually wait; the cap logic is tested structurally
-		const result = await callTool(pi, "lsp_diagnostics", { file_path: "/project/a.ts", wait_ms: 0 })
-		expect(result.content[0].text).toBeTruthy()
+	it("completes an oversized diagnostics wait at the 10000 ms cap", async () => {
+		vi.useFakeTimers()
+		try {
+			vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+			vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
+			const fakeClient = makeClient()
+			vi.mocked(clientMod.getOrCreateClient).mockResolvedValue(fakeClient as never)
+			const pi = makePi()
+			lspExtension(pi)
+			await pi.fireSessionStart()
+			let settled = false
+			const pending = callTool(pi, "lsp_diagnostics", { file_path: "/project/a.ts", wait_ms: 60_000 }).then(
+				(result) => {
+					settled = true
+					return result
+				},
+			)
+			await vi.advanceTimersByTimeAsync(9_999)
+			expect(settled).toBe(false)
+			await vi.advanceTimersByTimeAsync(1)
+			const result = await pending
+			expect(result.content[0].text).toBe("No diagnostics found — file looks clean.")
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	it("handles getOrCreateClient throwing (error path)", async () => {
@@ -1385,12 +1398,12 @@ describe("waitForDiagnostics", () => {
 		expect(elapsed).toBeLessThan(50)
 	})
 
-	it("clears pendingDiagBaseline after the early-return so a later call does not see a stale baseline", async () => {
+	it("waits for new diagnostics after clearing the fresh baseline used by an early return", async () => {
 		const waitForDiagnostics = await loadRealWaitForDiagnostics()
 		const client = makeRealClient(5, true) as unknown as Parameters<typeof waitForDiagnostics>[0]
-		expect(client.pendingDiagBaseline.has("file:///x.ts")).toBe(true)
-		await waitForDiagnostics(client, "file:///x.ts", { timeoutMs: 100 })
-		expect(client.pendingDiagBaseline.has("file:///x.ts")).toBe(false)
+		expect(await waitForDiagnostics(client, "file:///x.ts", { timeoutMs: 100 })).toBe(true)
+		const later = await waitForDiagnostics(client, "file:///x.ts", { timeoutMs: 20 })
+		expect(later).toBe(false)
 	})
 
 	it("does not take the early-return when no refresh baseline exists (diagnosticsVersion check requires hasRefreshBaseline)", async () => {
@@ -1400,8 +1413,6 @@ describe("waitForDiagnostics", () => {
 		// even if diagnosticsVersion > 0 and the URI has diagnostics.
 		const result = await waitForDiagnostics(client, "file:///x.ts", { timeoutMs: 20 })
 		expect(result).toBe(false)
-		// And the baseline map stays empty (no refresh baseline to clear).
-		expect(client.pendingDiagBaseline.size).toBe(0)
 	})
 
 	it("does not take the early-return when diagnosticsVersion has not advanced past the baseline", async () => {
@@ -1409,7 +1420,5 @@ describe("waitForDiagnostics", () => {
 		const client = makeRealClient(0, true) as unknown as Parameters<typeof waitForDiagnostics>[0]
 		const result = await waitForDiagnostics(client, "file:///x.ts", { timeoutMs: 20 })
 		expect(result).toBe(false)
-		// Baseline cleared on timeout so a stale entry cannot leak.
-		expect(client.pendingDiagBaseline.has("file:///x.ts")).toBe(false)
 	})
 })

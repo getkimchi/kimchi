@@ -105,8 +105,16 @@ describe("PR watcher", () => {
 			expect.objectContaining({ url: URL7 }),
 			expect.any(AbortSignal),
 		)
-		const [synced] = vi.mocked(syncManagedCheckout).mock.invocationCallOrder
-		expect(synced).toBeLessThan(vi.mocked(checkoutProblem).mock.invocationCallOrder[0])
+		const nextHead = "b".repeat(40)
+		let synced = false
+		vi.mocked(syncManagedCheckout).mockImplementation(async () => {
+			synced = true
+		})
+		vi.mocked(readPRSnapshot).mockImplementation(async () => pr({ headSha: synced ? nextHead : head }))
+		vi.mocked(checkoutProblem).mockImplementation(async (_cwd, snapshot) => {
+			expect(snapshot.headSha).toBe(nextHead)
+			return null
+		})
 		await watcher.refresh()
 		expect(repairs()).toHaveLength(1)
 	})

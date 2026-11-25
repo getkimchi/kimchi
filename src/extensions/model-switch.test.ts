@@ -945,7 +945,7 @@ describe("modelSwitchExtension", () => {
 			vi.clearAllMocks()
 		})
 
-		it("suppresses nested model_select events during overflow revert", async () => {
+		it("suppresses nested model_select events during overflow revert and re-arms afterward", async () => {
 			const { pi, trigger, setModel } = createHarnessWithTrigger()
 			setModel.mockImplementationOnce(async () => {
 				await trigger(
@@ -992,6 +992,17 @@ describe("modelSwitchExtension", () => {
 				createContext({ tokens: 10_000 }),
 			)
 			expect(setModel).toHaveBeenCalledOnce()
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"], contextWindow: 250_000 },
+					source: "set",
+				},
+				createContext({ tokens: 150_000 }),
+			)
+			expect(setModel).toHaveBeenCalledTimes(2)
 		})
 
 		it("allows source=set when tokens fit (no guard triggered)", async () => {

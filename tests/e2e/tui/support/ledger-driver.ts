@@ -35,6 +35,7 @@ import {
 	OUTBOX_DELIVERY_STATUS_SQL,
 	outboxClaimsSql,
 	readRecords,
+	readRecordsSincePageSql,
 	readRecordsSinceSql,
 	readTransitionRepositories,
 	readWorkHead,
@@ -181,8 +182,17 @@ async function schemaCheck(agent: string): Promise<void> {
 	first.close()
 	const second = openStore(agent)
 	const afterReopen = listFrom(second.db)
+	const columns = Object.fromEntries(
+		afterReopen.map((name) => [
+			name,
+			second.db
+				.query<{ name: string }, []>(`PRAGMA index_info(${name})`)
+				.all()
+				.map((row) => row.name),
+		]),
+	)
 	second.close()
-	out({ before, afterDrop, afterReopen })
+	out({ before, afterDrop, afterReopen, columns })
 }
 
 async function writeProbe(agent: string): Promise<void> {
@@ -2405,6 +2415,16 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 			const firstReopened = backend.readRecordsSincePage(0, 0, 100, 2)
 			const nextPage = backend.readRecordsSincePage(0, firstReopened.at(-1)?.position ?? 0, 100, 2)
 			const presentAfterRead = workRecordsImportedPresent(witness.db)
+			const firstPlan = witness.db
+				.query<{ detail: string }, [number, number, number]>(`EXPLAIN QUERY PLAN ${readRecordsSincePageSql(true)}`)
+				.all(0, 100, 2)
+				.map((row) => row.detail)
+			const nextPlan = witness.db
+				.query<{ detail: string }, [number, number, number, number]>(
+					`EXPLAIN QUERY PLAN ${readRecordsSincePageSql(false)}`,
+				)
+				.all(0, firstReopened.at(-1)?.position ?? 0, 100, 2)
+				.map((row) => row.detail)
 			out({
 				deferredDuringLock,
 				presentDuringLock,
@@ -2412,6 +2432,8 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 				firstReopened: firstReopened.map((row) => row.recordHash),
 				nextPage: nextPage.map((row) => row.recordHash),
 				presentAfterRead,
+				firstPlan,
+				nextPlan,
 			})
 		} finally {
 			closeBackends()

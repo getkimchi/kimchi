@@ -234,7 +234,7 @@ it("cancellation before the real handoff kills a stubborn three-generation proce
 // waitForChildProcess re-arms its idle timer on every chunk, so the executor
 // only settles once the patched abort/timeout termination destroys the pipes
 // (earendil-works/pi#10929). These measure settlement ONLY; the escaped
-// descendant's survival is pinned separately by the .fails cases below.
+// descendant's survival is a separate upstream issue, not covered by these cases.
 it.skipIf(process.platform !== "linux").each(["stop", "safety-limit", "abort", "shutdown"] as const)(
 	"managed %s settles promptly despite a setsid child that keeps writing inherited stdout",
 	async (mode) => {

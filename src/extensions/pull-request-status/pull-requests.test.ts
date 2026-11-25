@@ -1266,9 +1266,15 @@ describe("durable work pull request discovery", () => {
 		await lookup()
 		await lookup()
 		const reads = vi.spyOn(fs, "readSync")
+		const opens = vi.spyOn(fs, "openSync")
+		const fileReads = vi.spyOn(fs, "readFileSync").mockImplementation(() => {
+			throw new Error("unexpected legacy read")
+		})
 		const requests = http.mock.calls.length
 		await lookup()
 		expect(reads).not.toHaveBeenCalled()
+		expect(opens).not.toHaveBeenCalled()
+		expect(fileReads).not.toHaveBeenCalled()
 		expect(http).toHaveBeenCalledTimes(requests)
 	})
 

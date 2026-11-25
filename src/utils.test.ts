@@ -96,19 +96,20 @@ describe("getDetectedVersion", () => {
 		const tmpDir = mkdtempSync(resolve(tmpdir(), "kimchi-detected-version-cache-"))
 		const packagePath = resolve(tmpDir, "package.json")
 		try {
-			writeFileSync(packagePath, JSON.stringify({ name: "@kimchi-dev/cli", version: "0.0.0" }))
-			vi.stubEnv("PI_PACKAGE_DIR", "")
-			vi.doMock("./utils.js", async (importOriginal) => {
-				const actual = await importOriginal<typeof import("./utils.js")>()
-				return { ...actual, SOURCE_ROOT: tmpDir }
+			writeFileSync(packagePath, JSON.stringify({ name: "@kimchi-dev/cli", version: "9.9.9" }))
+			vi.stubEnv("PI_PACKAGE_DIR", undefined)
+			vi.doMock("node:url", async (importOriginal) => {
+				const actual = await importOriginal<typeof import("node:url")>()
+				return { ...actual, fileURLToPath: () => join(tmpDir, "src", "utils.ts") }
 			})
 			const { getDetectedVersion, detectVersion } = await import("./utils.js")
-			expect(getDetectedVersion()).toBe("dev")
+			expect(getDetectedVersion()).toBe("9.9.9")
+			writeFileSync(packagePath, JSON.stringify({ name: "@kimchi-dev/cli", version: "0.0.0" }))
 			expect(detectVersion(tmpDir, "9.9.9")).toBe("dev")
-			writeFileSync(packagePath, JSON.stringify({ name: "kimchi-test", version: "9.9.9" }))
-			expect(detectVersion(tmpDir, "9.9.9")).toBe("9.9.9")
-			expect(getDetectedVersion()).toBe("dev")
+			expect(getDetectedVersion()).toBe("9.9.9")
 		} finally {
+			vi.doUnmock("node:url")
+			vi.resetModules()
 			rmSync(tmpDir, { recursive: true, force: true })
 		}
 	})

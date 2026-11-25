@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import type { ScopePhaseInput } from "../../ferment/state-machine.js"
 import { editPhaseProposal } from "./phase-editor.js"
-import type { FermentRuntime } from "./runtime.js"
+import { createDefaultFermentRuntime } from "./runtime.js"
 
 interface MockUi {
 	select?: ReturnType<typeof vi.fn>
@@ -13,11 +13,6 @@ interface MockUi {
 
 function buildCtx(ui: MockUi | undefined): ExtensionContext {
 	return { ui } as unknown as ExtensionContext
-}
-
-function makeRuntime(): FermentRuntime & { markHumanInput: ReturnType<typeof vi.fn> } {
-	const markHumanInput = vi.fn()
-	return { markHumanInput } as unknown as FermentRuntime & { markHumanInput: ReturnType<typeof vi.fn> }
 }
 
 const PHASES: ScopePhaseInput[] = [
@@ -158,15 +153,48 @@ describe("editPhaseProposal", () => {
 		expect(result).toEqual(PHASES)
 	})
 
-	it("calls runtime.markHumanInput after each interactive step", async () => {
-		const select = vi
-			.fn()
-			.mockImplementationOnce(async (_title: string, options: string[]) => options[0])
-			.mockResolvedValueOnce("Rename")
-			.mockResolvedValueOnce(CONFIRM_LABEL)
-		const input = vi.fn().mockResolvedValueOnce("Alpha Prime")
-		const runtime = makeRuntime()
-		await editPhaseProposal(buildCtx({ select, input }), PHASES, runtime)
-		expect(runtime.markHumanInput.mock.calls.length).toBeGreaterThanOrEqual(3)
+	it("advances the last human-input timestamp after interactive steps", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] })
+		try {
+			vi.setSystemTime(new Date("2026-01-01T00:00:00Z"))
+			let now = 1_000
+			const advance = () => vi.setSystemTime(new Date(now++ * 1_000))
+			const runtime = createDefaultFermentRuntime()
+			const markInput = runtime.markHumanInput.bind(runtime)
+			const timestamps: number[] = []
+			runtime.markHumanInput = () => {
+				markInput()
+				timestamps.push(runtime.getLastHumanInputAt()?.getTime() ?? 0)
+			}
+			const select = vi
+				.fn()
+				.mockImplementationOnce(async (_title: string, options: string[]) => {
+					advance()
+					return options[0]
+				})
+				.mockImplementationOnce(async () => {
+					advance()
+					return "Rename"
+				})
+				.mockImplementationOnce(async () => {
+					advance()
+					return CONFIRM_LABEL
+				})
+			const input = vi.fn().mockImplementationOnce(async () => {
+				advance()
+				return "Alpha Prime"
+			})
+			const result = await editPhaseProposal(buildCtx({ select, input }), PHASES, runtime)
+			expect(result?.[0]).toEqual({ name: "Alpha Prime", goal: "Build alpha" })
+			expect(timestamps.length).toBeGreaterThanOrEqual(3)
+			expect(
+				timestamps.every((timestamp, index) => timestamp >= (timestamps[index - 1] ?? 0)),
+				`timestamps: ${timestamps.join(", ")}`,
+			).toBe(true)
+			expect(timestamps.at(-1)).toBeGreaterThan(timestamps[0])
+			expect(runtime.getLastHumanInputAt()?.getTime()).toBe(timestamps.at(-1))
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 })

@@ -306,24 +306,6 @@ describe("FermentStorage v4", () => {
 			const step = updated?.phases[0]?.steps[0]
 			expect(step?.status).toBe("skipped")
 		})
-
-		it("verifies a step (success)", () => {
-			storage.startStep(f.id, "p1", "s1")
-			const result = { success: true, exitCode: 0, completedAt: new Date().toISOString() }
-			const updated = storage.verifyStep(f.id, "p1", "s1", result)
-			const step = updated?.phases[0]?.steps[0]
-			expect(step?.status).toBe("verified")
-			expect(step?.result).toEqual(result)
-		})
-
-		it("verifies a step (failure)", () => {
-			storage.startStep(f.id, "p1", "s1")
-			const result = { success: false, exitCode: 1, completedAt: new Date().toISOString() }
-			const updated = storage.verifyStep(f.id, "p1", "s1", result)
-			const step = updated?.phases[0]?.steps[0]
-			expect(step?.status).toBe("done")
-			expect(step?.result).toEqual(result)
-		})
 	})
 
 	describe("addDecision", () => {

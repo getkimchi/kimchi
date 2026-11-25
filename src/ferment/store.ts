@@ -28,7 +28,6 @@ import type {
 	MemoryCategory,
 	Phase,
 	Step,
-	StepResult,
 } from "./types.js"
 
 export interface FermentListItem {
@@ -689,14 +688,6 @@ export class FermentStorage {
 		return this.updateStep(id, phaseId, stepId, {
 			status: "skipped",
 			completedAt: new Date().toISOString(),
-		})
-	}
-
-	verifyStep(id: string, phaseId: string, stepId: string, result: StepResult): Ferment | undefined {
-		return this.updateStep(id, phaseId, stepId, {
-			status: result.success ? "verified" : "done",
-			completedAt: result.completedAt,
-			result,
 		})
 	}
 

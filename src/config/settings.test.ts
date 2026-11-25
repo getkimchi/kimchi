@@ -35,10 +35,10 @@ vi.mock("./json.js", async (importOriginal) => {
 			if (readJsonError) throw readJsonError
 			return original.readJsonCached(testPath)
 		},
-		writeJson: (_path: string, data: unknown) => {
+		writeJson: vi.fn((_path: string, data: unknown) => {
 			if (writeJsonError) throw writeJsonError
 			return original.writeJson(testPath, data)
-		},
+		}),
 	}
 })
 
@@ -218,10 +218,10 @@ describe("writeConfigSetting", () => {
 	it("does not write when value is unchanged (no-op optimization)", () => {
 		seed({ theme: "dark" })
 		const before = readBack()
-		const writeSpy = vi.spyOn({ writeJson }, "writeJson")
+		vi.mocked(writeJson).mockClear()
 		writeConfigSetting("theme", "dark")
 		const after = readBack()
-		expect(writeSpy).not.toHaveBeenCalled()
+		expect(writeJson).not.toHaveBeenCalled()
 		expect(after).toEqual(before)
 	})
 

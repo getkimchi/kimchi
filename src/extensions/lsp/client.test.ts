@@ -19,7 +19,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import {
 	ensureFileOpen,
 	evictClient,
-	getAllClients,
 	getOrCreateClient,
 	noteSessionEnd,
 	noteSessionStart,
@@ -30,13 +29,7 @@ import {
 	shutdownAll,
 	splitStderrLines,
 } from "./client.js"
-import {
-	LSP_EVICT_GRACE_MS,
-	LSP_IDLE_EVICT_MS,
-	LSP_REAPER_SWEEP_MS,
-	MAX_CHAINS,
-	OPEN_DOCS_MAX,
-} from "./lifecycle-constants.js"
+import { LSP_EVICT_GRACE_MS, LSP_IDLE_EVICT_MS, LSP_REAPER_SWEEP_MS, OPEN_DOCS_MAX } from "./lifecycle-constants.js"
 import type { BunProcess, LspClient, ServerConfig } from "./types.js"
 import { fileToUri } from "./utils.js"
 
@@ -212,6 +205,23 @@ async function answerInitialize(fake: FakeProc): Promise<void> {
 // Tests
 // =============================================================================
 
+async function startFreshClient(cwd: string): Promise<LspClient> {
+	const fresh = createFakeProc()
+	// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
+	;(globalThis as any).Bun = { spawn: () => fresh.proc }
+	const promise = getOrCreateClient(FAKE_CONFIG, cwd)
+	if (fresh.written.length > 0) await answerInitialize(fresh)
+	return promise
+}
+
+async function expectCachedClient(client: LspClient): Promise<void> {
+	expect(await startFreshClient(client.cwd)).toBe(client)
+}
+
+async function expectRespawn(client: LspClient): Promise<void> {
+	expect(await startFreshClient(client.cwd)).not.toBe(client)
+}
+
 // biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
 let originalBun: any
 
@@ -380,9 +390,6 @@ describe("LSP client reader — zombie cleanup on crash", () => {
 		await answerInitialize(fake)
 		const client = await clientPromise
 
-		// Verify client is registered
-		expect(getAllClients()).toHaveLength(1)
-
 		// Start a pending request so we can verify it gets rejected
 		const requestPromise = sendRequest(client, "textDocument/hover", {}).catch(() => "rejected")
 
@@ -400,8 +407,7 @@ describe("LSP client reader — zombie cleanup on crash", () => {
 		// Give the catch block a moment to clean up
 		await new Promise((r) => setTimeout(r, 100))
 
-		// Zombie client should be removed — next getOrCreateClient would spawn fresh
-		expect(getAllClients()).toHaveLength(0)
+		await expectRespawn(client)
 		// Process should have been killed
 		expect(fake.isKilled()).toBe(true)
 	})
@@ -468,7 +474,7 @@ describe("dead server pipe (EPIPE) resilience", () => {
 
 		// The corpse must not stay registered: otherwise the next file op keeps
 		// writing into the dead pipe instead of respawning a fresh server.
-		expect(getAllClients()).toHaveLength(0)
+		await expectRespawn(client)
 		expect(fakes[0].isKilled()).toBe(true)
 	})
 
@@ -480,7 +486,7 @@ describe("dead server pipe (EPIPE) resilience", () => {
 		// opened. The rejection must stay a normal promise rejection — vitest
 		// fails the run if it escapes as an unhandled rejection.
 		await expect(refreshFile(client, `${CWD}/never-opened.ts`)).rejects.toThrow(/pipe closed/)
-		expect(getAllClients()).toHaveLength(0)
+		await expectRespawn(client)
 	})
 
 	it("labels the write error and evicts the client when sendRequest hits a dead server", async () => {
@@ -488,7 +494,7 @@ describe("dead server pipe (EPIPE) resilience", () => {
 		killStdin(fakes[0])
 
 		await expect(sendRequest(client, "textDocument/hover", {})).rejects.toThrow(/pipe closed/)
-		expect(getAllClients()).toHaveLength(0)
+		await expectRespawn(client)
 		expect(fakes[0].isKilled()).toBe(true)
 	})
 
@@ -496,11 +502,9 @@ describe("dead server pipe (EPIPE) resilience", () => {
 		const dead = await startChain()
 		killStdin(fakes[0])
 		await sendRequest(dead, "textDocument/hover", {}).catch(() => {})
-		expect(getAllClients()).toHaveLength(0)
 
 		const fresh = await startChain()
 		expect(fresh).not.toBe(dead)
-		expect(getAllClients()).toHaveLength(1)
 
 		// The fresh chain is fully functional: didOpen reaches the new server.
 		await ensureFileOpen(fresh, `${CWD}/f0.ts`)
@@ -525,7 +529,7 @@ describe("dead server pipe (EPIPE) resilience", () => {
 		// Give the async reply-write catch a moment to run the teardown.
 		await new Promise((r) => setTimeout(r, 100))
 
-		expect(getAllClients()).toHaveLength(0)
+		await expectRespawn(client)
 		expect(fakes[0].isKilled()).toBe(true)
 	})
 
@@ -559,7 +563,7 @@ describe("dead server pipe (EPIPE) resilience", () => {
 		expect(await Promise.all([pending, notification])).toEqual(["rejected", "n-failed"])
 		await new Promise((r) => setTimeout(r, 100))
 
-		expect(getAllClients()).toHaveLength(0)
+		await expectRespawn(client)
 		// Both teardowns ran — the second kill is the point: it must not throw.
 		expect(fakes[0].killCount()).toBe(2)
 	})
@@ -575,7 +579,7 @@ describe("dead server pipe (EPIPE) resilience", () => {
 		await expect(
 			sendNotification(client, "textDocument/didOpen", { textDocument: { uri: fileToUri(`${CWD}/f0.ts`) } }),
 		).rejects.toThrow(/pipe closed/)
-		expect(getAllClients()).toHaveLength(0)
+		await expectRespawn(client)
 		expect(fakes[0].isKilled()).toBe(true)
 	})
 
@@ -597,7 +601,7 @@ describe("dead server pipe (EPIPE) resilience", () => {
 			new Promise((r) => setTimeout(() => r("hung"), 1500)),
 		])
 		expect(result).toMatch(/^rejected:/)
-		expect(getAllClients()).toHaveLength(0)
+		await expectRespawn(client)
 	})
 })
 
@@ -721,14 +725,11 @@ describe("chain cap (MAX_CHAINS)", () => {
 			a.lastActivity = 1_000
 			b.lastActivity = 2_000
 
-			await makeClientAt(`${CWD}/c`)
+			const c = await makeClientAt(`${CWD}/c`)
 
-			// Registry converges back to MAX_CHAINS: A evicted, B and C live.
-			expect(
-				getAllClients()
-					.map((cl) => cl.cwd)
-					.sort(),
-			).toEqual([`${CWD}/b`, `${CWD}/c`])
+			// B and C remain available through the public client lookup.
+			await expectCachedClient(b)
+			await expectCachedClient(c)
 			// Eviction rejects nothing (A had no pending requests) and kills A's
 			// process after the grace timer — B and C stay alive.
 			expect(fakes[0].isKilled()).toBe(false)
@@ -750,10 +751,12 @@ describe("chain cap (MAX_CHAINS)", () => {
 		const busyA = sendRequest(a, "textDocument/hover", {}).catch(() => "rejected")
 		const busyB = sendRequest(b, "textDocument/hover", {}).catch(() => "rejected")
 
-		await makeClientAt(`${CWD}/c`)
+		const c = await makeClientAt(`${CWD}/c`)
 
-		// No eviction: all three chains live, cap exceeded temporarily.
-		expect(getAllClients()).toHaveLength(MAX_CHAINS + 1)
+		// No eviction: all three chains remain available, cap exceeded temporarily.
+		await expectCachedClient(a)
+		await expectCachedClient(b)
+		await expectCachedClient(c)
 		expect(fakes[0].isKilled()).toBe(false)
 		expect(fakes[1].isKilled()).toBe(false)
 		// Cleanup settles the dangling requests.
@@ -815,16 +818,13 @@ describe("idle client reaper", () => {
 		vi.useFakeTimers()
 		try {
 			await makeClient()
-			expect(getAllClients()).toHaveLength(1)
 
 			// 14 minutes idle: every sweep keeps the chain (threshold is 15).
 			vi.advanceTimersByTime(LSP_IDLE_EVICT_MS - LSP_REAPER_SWEEP_MS)
-			expect(getAllClients()).toHaveLength(1)
 			expect(fake.isKilled()).toBe(false)
 
 			// Past the threshold: the next sweep reaps, the grace timer kills.
 			vi.advanceTimersByTime(2 * LSP_REAPER_SWEEP_MS + LSP_EVICT_GRACE_MS + 1_000)
-			expect(getAllClients()).toHaveLength(0)
 			expect(fake.isKilled()).toBe(true)
 		} finally {
 			vi.useRealTimers()
@@ -840,7 +840,7 @@ describe("idle client reaper", () => {
 				vi.advanceTimersByTime(LSP_IDLE_EVICT_MS - 60_000)
 				client.lastActivity = Date.now()
 			}
-			expect(getAllClients()).toHaveLength(1)
+			await expectCachedClient(client)
 			expect(fake.isKilled()).toBe(false)
 		} finally {
 			vi.useRealTimers()
@@ -911,10 +911,9 @@ describe("eviction/respawn lifecycle races", () => {
 		resolveOldExited?.()
 		await new Promise((r) => setTimeout(r, 10))
 
-		// The respawn stays registered — this is the FAILING assertion before
+		// The respawn stays available — this is the FAILING assertion before
 		// identity-checked deletes.
-		expect(getAllClients()).toContain(fresh)
-		expect(getAllClients()).toHaveLength(1)
+		await expectCachedClient(fresh)
 	})
 
 	it("never evicts a chain with in-flight lifecycle work (file reads, timed waits)", async () => {
@@ -929,6 +928,7 @@ describe("eviction/respawn lifecycle races", () => {
 		// Simulate lifecycle work on A (e.g. a file read inside ensureFileOpen;
 		// without the fix A would be the evictable LRU chain).
 		let finishFileRead!: (content: string) => void
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
 		;(globalThis as any).Bun.file = () => ({
 			text: () =>
 				new Promise<string>((resolve) => {
@@ -937,13 +937,11 @@ describe("eviction/respawn lifecycle races", () => {
 		})
 		const opening = ensureFileOpen(a, `${CWD}/busy.ts`)
 
-		await makeClientAt(`${CWD}/c`)
+		const c = await makeClientAt(`${CWD}/c`)
 
 		// The pending file read makes A busy: eviction falls to the next-LRU idle chain B.
-		const cwds = getAllClients()
-			.map((cl) => cl.cwd)
-			.sort()
-		expect(cwds).toEqual([`${CWD}/a`, `${CWD}/c`])
+		await expectCachedClient(a)
+		await expectCachedClient(c)
 		expect(fakes[0].isKilled()).toBe(false)
 
 		finishFileRead("content")
@@ -951,32 +949,14 @@ describe("eviction/respawn lifecycle races", () => {
 	})
 
 	it("never evicts a chain that is still initializing (project-load wait)", async () => {
-		// Race from the review: a chain mid-init (creator suspended at `await
-		// client.projectLoaded` — mechanism documented at getOrCreateClient's
-		// init span) looked idle to the cap filter, and the creating caller got
-		// a dead client back as a normal success.
-		//
-		// Actor 1: chain A mid-init (initialize answered, no $/progress end).
+		const clock = vi.spyOn(Date, "now").mockReturnValue(1_000)
 		const { clientPromise: aPromise, fake: fakeA } = await startMidInitChain(`${CWD}/a`)
-		const aRegistered = getAllClients().find((cl) => cl.cwd === `${CWD}/a`)
-		if (!aRegistered) throw new Error("chain A not registered")
-		aRegistered.lastActivity = 1_000 // oldest by far → pre-fix LRU victim
-
-		// Actor 2: chain B fully initialized and idle, more recently active.
+		clock.mockReturnValue(2_000)
 		await makeClientAt(`${CWD}/b`)
-
-		// Actor 3: a tool touches root C — the cap check runs with A mid-init.
 		await makeClientAt(`${CWD}/c`)
-
-		// A is busy (init span): eviction falls to the next-LRU idle chain B.
-		const cwds = getAllClients()
-			.map((cl) => cl.cwd)
-			.sort()
-		expect(cwds).toEqual([`${CWD}/a`, `${CWD}/c`])
+		// A remains protected by initialization work; the idle B is evicted.
+		await vi.waitFor(() => expect(fakes[1].isKilled()).toBe(true), { timeout: 2_500 })
 		expect(fakeA.isKilled()).toBe(false)
-
-		// A's project load completes → the creator must resolve with a live
-		// client, not a chain whose process was killed mid-startup.
 		fakeA.enqueue({
 			jsonrpc: "2.0",
 			method: "$/progress",
@@ -984,7 +964,8 @@ describe("eviction/respawn lifecycle races", () => {
 		})
 		const a = await aPromise
 		expect(fakeA.isKilled()).toBe(false)
-		expect(getAllClients()).toContain(a)
+		await expectCachedClient(a)
+		clock.mockRestore()
 	})
 
 	it("the reaper skips chains with in-flight lifecycle work", async () => {
@@ -992,6 +973,7 @@ describe("eviction/respawn lifecycle races", () => {
 		client.lastActivity = 0 // ancient
 
 		let finishFileRead!: (content: string) => void
+		// biome-ignore lint/suspicious/noExplicitAny: Bun global is untyped in tests
 		;(globalThis as any).Bun.file = () => ({
 			text: () =>
 				new Promise<string>((resolve) => {
@@ -1011,28 +993,8 @@ describe("eviction/respawn lifecycle races", () => {
 	})
 
 	it("closeDeadClient fails creators parked on projectLoaded instead of stranding them", async () => {
-		// Review (moderate): a write failure mid-creation evicted the chain but
-		// never settled projectLoaded — the creator stayed parked for the full
-		// 15s timeout and then resolved with an unregistered corpse. Awaiting
-		// creators must throw (the invariant shutdownAll enforces), not receive
-		// a dead chain as a normal success.
-		const { clientPromise, fake } = await startMidInitChain(CWD)
-
-		// Corrupt stdin the way a dead server does (EPIPE on write) and fail a
-		// notification on the mid-creation chain to trigger closeDeadClient.
 		const epipe = Object.assign(new Error("EPIPE: broken pipe, write"), { code: "EPIPE" })
-		const midClient = getAllClients().find((cl) => cl.cwd === CWD)
-		if (!midClient)
-			throw new Error("mid-creation client not registered")
-			// biome-ignore lint/suspicious/noExplicitAny: test-only stdin corruption
-		;(midClient.proc.stdin as any).write = () => {
-			throw epipe
-		}
-		await sendNotification(midClient, "textDocument/didOpen", {
-			textDocument: { uri: fileToUri(`${CWD}/f.ts`) },
-		}).catch(() => {})
-
-		// The parked creator must reject (fast), not resolve with a corpse.
+		const { clientPromise, fake } = await startMidInitChain(CWD, epipe)
 		const outcome = await Promise.race([
 			clientPromise.then(
 				() => "resolved with a client" as const,
@@ -1041,9 +1003,9 @@ describe("eviction/respawn lifecycle races", () => {
 			new Promise((r) => setTimeout(() => r("still parked after 2s"), 2000)),
 		])
 		expect(outcome).toMatch(/^rejected:/)
-		// The corpse is gone either way; the next caller respawns fresh.
-		expect(getAllClients()).toHaveLength(0)
 		expect(fake.isKilled()).toBe(true)
+		const revived = await startFreshClient(CWD)
+		expect(revived.proc).not.toBe(fake.proc)
 	})
 
 	it("a server exit mid-init rejects the awaiting creator instead of resolving a corpse", async () => {
@@ -1076,7 +1038,8 @@ describe("eviction/respawn lifecycle races", () => {
 		resolveExited?.()
 
 		await expect(clientPromise).rejects.toThrow(/LSP server exited/)
-		expect(getAllClients()).toHaveLength(0)
+		const revived = await startFreshClient(CWD)
+		expect(revived.proc).not.toBe(exitedFake.proc)
 	})
 
 	/** A fake proc whose `exited` promise resolves when killed, like a real
@@ -1101,10 +1064,19 @@ describe("eviction/respawn lifecycle races", () => {
 	 *  end — the creator stays suspended at `await client.projectLoaded`.
 	 *  Same microtask-tick contract as answerInitialize: the initialize
 	 *  request is written synchronously inside getOrCreateClient. */
-	async function startMidInitChain(cwd: string) {
+	async function startMidInitChain(cwd: string, failOnInitialized?: Error) {
 		const spawnIndex = fakes.length
 		const clientPromise = getOrCreateClient(FAKE_CONFIG, cwd)
+		// Expected negative initialization branches are observed by the tests below.
+		clientPromise.catch(() => {})
 		const fake = fakes[spawnIndex]
+		if (failOnInitialized) {
+			const originalWrite = fake.proc.stdin.write.bind(fake.proc.stdin)
+			fake.proc.stdin.write = (data) => {
+				if (Buffer.from(data).toString().includes('"method":"initialized"')) throw failOnInitialized
+				originalWrite(data)
+			}
+		}
 		await Promise.resolve()
 		await Promise.resolve()
 		const initReq = parseWrittenRequest(fake.written[0])
@@ -1163,7 +1135,7 @@ describe("eviction/respawn lifecycle races", () => {
 		expect(fakeA.isKilled()).toBe(true)
 		// The dying creator's cleanup runs after the respawn registered; its
 		// identity-checked deletes must not drop the fresh chain.
-		expect(getAllClients()).toContain(client)
+		await expectCachedClient(client)
 	})
 
 	it("a stale file lock from a shutdown chain cannot drop a fresh chain's lock", async () => {
@@ -1264,11 +1236,9 @@ describe("session ref-counted shutdown", () => {
 
 		noteSessionEnd() // session 1 closes while session 2 is live
 		expect(fakeA.isKilled()).toBe(false)
-		expect(getAllClients()).toHaveLength(1)
 
 		noteSessionEnd() // last session closes → real shutdown
 		expect(fakeA.isKilled()).toBe(true)
-		expect(getAllClients()).toHaveLength(0)
 	})
 
 	it("a single-session shutdown behaves like the old shutdownAll (TUI)", async () => {
@@ -1282,6 +1252,5 @@ describe("session ref-counted shutdown", () => {
 		noteSessionStart()
 		noteSessionEnd()
 		expect(fake.isKilled()).toBe(true)
-		expect(getAllClients()).toHaveLength(0)
 	})
 })

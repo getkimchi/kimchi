@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
@@ -217,16 +216,12 @@ describe("steer-events", () => {
 			expect(payload?.turns_to_outcome).toBeUndefined()
 		})
 
-		it("cli.ts registers the abort tracker before the outcome watcher (turn-count parity)", async () => {
-			// The fallback's turns_to_outcome assumes the turn counter increments
-			// before the watcher classifies the same turn_end — which holds only
-			// while cli.ts lists steerAbortTrackerExtension first. An upstream
-			// reorder would silently shift every fallback turn count by one.
-			const src = await readFile(new URL("../cli.ts", import.meta.url), "utf8")
-			const tracker = src.lastIndexOf("steerAbortTrackerExtension")
-			const watcher = src.lastIndexOf("steerOutcomeWatcherExtension")
-			expect(tracker).toBeGreaterThan(-1)
-			expect(watcher).toBeGreaterThan(tracker)
+		it("stamps a fallback outcome with the actual turn count from the abort tracker", async () => {
+			const { pi, emitted, fire } = makeTrackingPi()
+			emitSteerFired(pi, "bash_tool_guard", "warn", { sessionId: "session" })
+			await fire("turn_end", { message: { role: "assistant", stopReason: "stop" } })
+			emitSteerOutcome(pi, "bash_tool_guard", "complied", { sessionId: "session" })
+			expect(outcomes(emitted)[0]?.turns_to_outcome).toBe(1)
 		})
 
 		it("per-kind isolation: an outcome only joins its own kind's fire", () => {

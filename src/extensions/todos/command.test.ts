@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createContext } from "../__mocks__/context.js"
+import { createCommandContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js"
@@ -7,24 +8,12 @@ import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope 
 const TEST_SESSION_ID = "test-session"
 
 async function executeTodosCommand(input: string) {
-	const commands = new Map<string, { handler: (args: string, ctx: never) => Promise<void> | void }>()
-	registerTodosCommand({
-		appendEntry: vi.fn(),
-		registerCommand: (name: string, config: { handler: (args: string, ctx: never) => Promise<void> | void }) => {
-			commands.set(name, config)
-		},
-	} as never)
-	const handler = commands.get("todos")?.handler
-	if (!handler) throw new Error("todos command was not registered")
+	const { api, getRegisteredCommand } = createExtensionApi()
+	registerTodosCommand(api)
+	const context = createCommandContext()
 	const notify = vi.fn()
-	await handler(
-		input,
-		createContext({
-			hasUI: true,
-			sessionManager: { getSessionId: () => TEST_SESSION_ID },
-			ui: { notify },
-		}) as never,
-	)
+	context.ui.notify = notify
+	await getRegisteredCommand("todos").handler(input, context)
 	return notify
 }
 
@@ -54,10 +43,8 @@ describe("/todos command helpers", () => {
 
 		await executeTodosCommand("start 1")
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "in_progress" })
-
 		await executeTodosCommand("block 1")
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "blocked" })
-
 		await executeTodosCommand("done 1")
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "completed" })
 	})
@@ -81,54 +68,31 @@ describe("/todos command helpers", () => {
 	})
 
 	it("persists slash-command edits as custom session entries", async () => {
-		const registered = new Map<string, { handler: (args: string, ctx: never) => Promise<void> | void }>()
-		const appendEntry = vi.fn()
+		const { api, getRegisteredCommand, getAppendedEntries } = createExtensionApi()
+		registerTodosCommand(api)
+		const context = createCommandContext()
+		context.hasUI = false
 		const log = vi.spyOn(console, "log").mockImplementation(() => {})
-		registerTodosCommand({
-			registerCommand: (name: string, config: { handler: (args: string, ctx: never) => Promise<void> | void }) => {
-				registered.set(name, config)
-			},
-			appendEntry,
-		} as never)
-
 		try {
-			await registered.get("todos")?.handler("add persisted task", {
-				hasUI: false,
-				sessionManager: { getSessionId: () => TEST_SESSION_ID, getBranch: () => [] },
-			} as never)
+			await getRegisteredCommand("todos").handler("add persisted task", context)
 		} finally {
 			log.mockRestore()
 		}
 
-		expect(appendEntry).toHaveBeenCalledOnce()
-		expect(appendEntry).toHaveBeenCalledWith(
-			TODO_CUSTOM_ENTRY_TYPE,
+		expect(getAppendedEntries(TODO_CUSTOM_ENTRY_TYPE)).toEqual([
 			expect.objectContaining({
 				schemaVersion: 1,
 				scope: { kind: "global" },
 				todos: [{ id: 1, content: "persisted task", status: "pending" }],
 			}),
-		)
+		])
 	})
 
-	it("registers the /todos command", () => {
-		const registered = new Map<string, { getArgumentCompletions: (prefix: string) => Array<{ value: string }> }>()
-		registerTodosCommand({
-			registerCommand: (
-				name: string,
-				config: { getArgumentCompletions: (prefix: string) => Array<{ value: string }> },
-			) => {
-				registered.set(name, config)
-			},
-		} as never)
-
-		expect(registered.has("todos")).toBe(true)
-		expect(registered.has("todo")).toBe(false)
-		expect(
-			registered
-				.get("todos")
-				?.getArgumentCompletions("show")
-				.map((entry) => entry.value),
-		).toEqual(["show all"])
+	it("registers the /todos command", async () => {
+		const { api, getRegisteredCommand } = createExtensionApi()
+		registerTodosCommand(api)
+		expect(() => getRegisteredCommand("todo")).toThrow("Command todo was not registered")
+		const completions = await getRegisteredCommand("todos").getArgumentCompletions?.("show")
+		expect(completions?.map((entry) => entry.value)).toEqual(["show all"])
 	})
 })

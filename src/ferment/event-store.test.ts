@@ -590,11 +590,18 @@ describe("FermentEventStore", () => {
 			parentStorage.activatePhase(legacy.id, "p1")
 			parentStorage.refinePhase(legacy.id, "p1", [{ id: "s1", index: 1, description: "init", status: "pending" }])
 			parentStorage.startStep(legacy.id, "p1", "s1")
-			parentStorage.verifyStep(legacy.id, "p1", "s1", {
-				success: true,
-				exitCode: 0,
-				completedAt: new Date().toISOString(),
-			})
+			const result = { success: true, exitCode: 0, completedAt: new Date().toISOString() }
+			parentStorage.refinePhase(legacy.id, "p1", [
+				{
+					id: "s1",
+					index: 1,
+					description: "init",
+					status: "verified",
+					startedAt: result.completedAt,
+					completedAt: result.completedAt,
+					result,
+				},
+			])
 			parentStorage.completePhase(legacy.id, "p1", "Setup done")
 			parentStorage.addDecision(legacy.id, "Use OAuth", "Better than sessions")
 			parentStorage.addMemory(legacy.id, "gotcha", "Watch for clock drift")
@@ -655,11 +662,18 @@ describe("FermentEventStore", () => {
 			parentStorage.activatePhase(legacy.id, "p1")
 			parentStorage.refinePhase(legacy.id, "p1", [{ id: "s1", index: 1, description: "do", status: "pending" }])
 			parentStorage.startStep(legacy.id, "p1", "s1")
-			parentStorage.verifyStep(legacy.id, "p1", "s1", {
-				success: true,
-				exitCode: 0,
-				completedAt: new Date().toISOString(),
-			})
+			const result = { success: true, exitCode: 0, completedAt: new Date().toISOString() }
+			parentStorage.refinePhase(legacy.id, "p1", [
+				{
+					id: "s1",
+					index: 1,
+					description: "do",
+					status: "verified",
+					startedAt: result.completedAt,
+					completedAt: result.completedAt,
+					result,
+				},
+			])
 			parentStorage.completePhase(legacy.id, "p1", "ok")
 			parentStorage.addDecision(legacy.id, "title", "desc")
 			parentStorage.addMemory(legacy.id, "gotcha", "thing")

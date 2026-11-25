@@ -1,58 +1,178 @@
-/**
- * Contract test for the /bug destination hunks in
- * `patches/@earendil-works__pi-coding-agent@1.3.0.patch`: kimchi branding and
- * the __kimchiBugReportScrub/__kimchiBugReportDeliver seams.
- *
- * The disclaimer must be selected LAZILY (at dialog-render time): the kimchi
- * destination hook is installed when kimchi's extensions load, which happens
- * after dist/modes/interactive/bug-report.js initializes. An eager
- * module-level choice always picks the Earendil text (the "This report goes
- * to the Pi developers" bug).
- *
- * If this test starts failing after a pin bump, check whether upstream moved
- * the /bug consent flow or added its own destination hook.
- */
-import { readFileSync } from "node:fs"
-import { describe, expect, it } from "vitest"
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import JSZip from "jszip"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { reportBug } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/bug-report.js"
+import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js"
+import { createModel, createModelRegistry } from "./extensions/__mocks__/model-registry.js"
+import type { BugReportBundle, KimchiBugReportDelivery } from "./extensions/bug-report.js"
 
-function source(): string {
-	return readFileSync(
-		new URL("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/bug-report.js", import.meta.url),
-		"utf8",
-	)
+vi.mock("../node_modules/@earendil-works/pi-coding-agent/dist/core/crash-log.js", () => ({
+	readCrashLog: () => [],
+	clearCrashLog: () => {},
+}))
+
+type DeliveryHook = (bundle: BugReportBundle) => Promise<KimchiBugReportDelivery>
+type ScrubHook = (bundle: BugReportBundle) => Promise<BugReportBundle>
+type HarnessGlobal = typeof globalThis & {
+	__kimchiBugReportDeliver?: DeliveryHook
+	__kimchiBugReportScrub?: ScrubHook
 }
 
-describe("patch: /bug kimchi destination seams", () => {
-	it("provides the scrub and deliver hook seams", () => {
-		const dist = source()
-		expect(dist).toContain("globalThis.__kimchiBugReportScrub")
-		expect(dist).toContain("globalThis.__kimchiBugReportDeliver")
+const globals = globalThis as HarnessGlobal
+let dir: string
+let originalDeliver: DeliveryHook | undefined
+let originalScrub: ScrubHook | undefined
+let originalCwd: string
+
+beforeEach(() => {
+	initTheme("light")
+	dir = mkdtempSync(join(tmpdir(), "bug-report-flow-"))
+	originalCwd = process.cwd()
+	process.chdir(dir)
+	vi.stubEnv("PI_OFFLINE", "")
+	originalDeliver = globals.__kimchiBugReportDeliver
+	originalScrub = globals.__kimchiBugReportScrub
+	globals.__kimchiBugReportDeliver = undefined
+	globals.__kimchiBugReportScrub = undefined
+})
+
+afterEach(() => {
+	process.chdir(originalCwd)
+	vi.unstubAllEnvs()
+	globals.__kimchiBugReportDeliver = originalDeliver
+	globals.__kimchiBugReportScrub = originalScrub
+	rmSync(dir, { recursive: true, force: true })
+})
+
+function makeContext(deliverLabel: "File on GitHub" | "Export as Zip") {
+	const statuses: string[] = []
+	const errors: string[] = []
+	const prompts: string[] = []
+	const inputSequence = deliverLabel === "Export as Zip" ? ["\r", "2", "2", "2"] : ["\r", "2", "2", "1"]
+	const settingsManager = {
+		getGlobalSettings: () => ({}),
+		getProjectSettings: () => ({}),
+		getExternalEditorCommand: () => undefined,
+	}
+	const manager = {
+		getCwd: () => dir,
+		getSessionId: () => "bug-session",
+		getEntries: () => [],
+		appendCustomEntry: vi.fn(),
+	}
+	const model = createModel("test-model", "test-provider")
+	const session = {
+		sessionId: "bug-session",
+		messages: [],
+		model,
+		modelRuntime: createModelRegistry([model]),
+		settingsManager,
+		resourceLoader: { getExtensions: () => ({ extensions: [], errors: [] }) },
+		sessionManager: manager,
+	}
+	let step = 0
+	const editor = { focused: true, handleInput: vi.fn() }
+	const drive = (component: unknown) => {
+		if (component === editor) return
+		if (
+			typeof component !== "object" ||
+			component === null ||
+			!("handleInput" in component) ||
+			!("render" in component)
+		) {
+			throw new Error("report component is not input-capable")
+		}
+		if ("focused" in component) (component as { focused: boolean }).focused = true
+		const { handleInput, render } = component as {
+			handleInput: (keyData: string) => void
+			render: (width: number) => string[]
+		}
+		prompts.push(render.call(component, 120).join("\n"))
+		queueMicrotask(() => {
+			if (step < inputSequence.length) handleInput.call(component, inputSequence[step++])
+		})
+	}
+	const context = {
+		session,
+		ui: { setFocus: drive, requestRender: vi.fn(), terminal: { rows: 40, columns: 120 } },
+		editorContainer: { clear: vi.fn(), addChild: vi.fn() },
+		editor,
+		keybindings: {
+			matches: (data: string, action: string) => {
+				if (action === "tui.select.cancel") return data === "\x1b"
+				if (action === "tui.select.confirm") return data === "\r" || data === "\n"
+				if (action === "tui.select.down") return data === "\x1b[B" || data === "j"
+				if (action === "tui.select.up") return data === "\x1b[A" || data === "k"
+				return false
+			},
+		},
+		showStatus: (message: string) => statuses.push(message),
+		showError: (message: string) => errors.push(message),
+	} as unknown as Parameters<typeof reportBug>[0]
+	return {
+		context: context as Parameters<typeof reportBug>[0],
+		prompts,
+		statuses,
+		errors,
+		manager,
+	}
+}
+
+async function exportedZip(): Promise<JSZip> {
+	const archive = readdirSync(dir, { encoding: "utf8" }).find((name) => name.endsWith(".zip"))
+	if (!archive) throw new Error("no zip archive produced")
+	return JSZip.loadAsync(readFileSync(join(dir, archive)))
+}
+
+describe("/bug destination behavior", () => {
+	it("preserves the stock disclaimer and exports a real archive without a destination hook", async () => {
+		const harness = makeContext("Export as Zip")
+		await reportBug(harness.context)
+
+		expect(harness.prompts[0]).toContain("This report goes to the Pi developers (Earendil)")
+		const archive = await exportedZip()
+		const metadataFile = archive.file("report.json")
+		if (!metadataFile) throw new Error("archive is missing report.json")
+		expect(JSON.parse(await metadataFile.async("string")).session).toMatchObject({
+			id: "bug-session",
+			included: false,
+		})
+		expect(harness.errors).toEqual([])
+		expect(harness.statuses[0]).toContain("Bug report exported to:")
 	})
 
-	it("selects the disclaimer lazily (hook may load after this module)", () => {
-		const dist = source()
-		expect(dist).toContain("const bugReportDisclaimer = () =>")
-		// The consent dialog must call the resolver, not read a module-level
-		// const evaluated before extensions loaded.
-		expect(dist).toContain("bugReportDisclaimer()")
-		// No eager top-level selection should remain.
-		expect(dist).not.toMatch(/^const DISCLAIMER =/m)
+	it("selects the Kimchi disclaimer after a late destination hook is installed and private-gist upload", async () => {
+		const harness = makeContext("File on GitHub")
+		const deliver = vi.fn(async () => ({ message: "Bug report filed." }))
+		globals.__kimchiBugReportDeliver = deliver
+
+		await reportBug(harness.context)
+
+		expect(harness.prompts[0]).toContain("getkimchi/kimchi")
+		const delivery = harness.prompts.find((prompt) => prompt.includes("Bug report"))
+		expect(delivery).toContain("private GitHub gist")
+		expect(delivery).toContain("github.com/getkimchi/kimchi")
+		expect(deliver).toHaveBeenCalledOnce()
+		expect(harness.statuses).toContain("Bug report filed.")
 	})
 
-	it("keeps the Earendil flow intact when no hook is registered", () => {
-		const dist = source()
-		expect(dist).toContain("This report goes to the Pi developers (Earendil)")
-		expect(dist).toContain("kimchiDestinationActive() ? KIMCHI_DISCLAIMER : EARENDIL_DISCLAIMER")
-	})
+	it("scrubs the actual bundle before private delivery", async () => {
+		const harness = makeContext("File on GitHub")
+		const deliver = vi.fn(async () => ({ message: "filed" }))
+		globals.__kimchiBugReportDeliver = deliver
+		globals.__kimchiBugReportScrub = vi.fn(async (bundle: BugReportBundle) => ({
+			...bundle,
+			metadata: { ...bundle.metadata, scrubbed: true },
+		}))
 
-	it("mentions the opt-in private-gist upload in the delivery menu", () => {
-		expect(source()).toContain("private GitHub gist")
-	})
+		await reportBug(harness.context)
 
-	it("maps the displayed upload label to an upload delivery (not zip)", () => {
-		// Trap: the label becomes "File on GitHub" with the kimchi hook, so a
-		// hardcoded "Upload Report" comparison sends GitHub picks to the zip
-		// path. The mapping must compare against the displayed label variable.
-		expect(source()).toContain('delivery: delivery === uploadLabel ? "upload" : "zip"')
+		expect(globals.__kimchiBugReportScrub).toHaveBeenCalledOnce()
+		expect(deliver).toHaveBeenCalledOnce()
+		expect(deliver).toHaveBeenCalledWith(
+			expect.objectContaining({ metadata: expect.objectContaining({ scrubbed: true }) }),
+		)
 	})
 })

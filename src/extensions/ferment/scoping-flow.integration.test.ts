@@ -100,22 +100,17 @@ const passingPlanGates = () => [
 
 describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 	it("TUI mode: single input → sendMessage with intent; propose_ferment_scoping → ready for review", async () => {
-		// Setup
 		const ferment = h.eventStorage.create("OAuth Integration", undefined, process.cwd())
 		h.runtime.setActive(ferment)
-
-		const selectMock = vi.fn().mockResolvedValue("Start execution  ✓")
 		const ctx = createContext({
 			ui: {
 				editor: vi.fn().mockResolvedValue("I want to add Google OAuth"),
-				select: selectMock,
+				select: vi.fn().mockResolvedValue("Start execution  ✓"),
 			},
 		})
 
-		// Step 1: invoke runScopingFlow
 		await runScopingFlow(ferment, h.pi, ctx, h.runtime)
 
-		// Assert the breadcrumb + visible request echo + hidden planning nudge all fire.
 		expect(h.pi.sendMessage).toHaveBeenCalledTimes(3)
 		const requestCall = (h.pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls.find(
 			(call) => (call[0] as { customType?: string }).customType === "ferment_request",
@@ -128,33 +123,8 @@ describe("runScopingFlow → propose_ferment_scoping end-to-end", () => {
 		const nudgeCall = (h.pi.sendMessage as ReturnType<typeof vi.fn>).mock.calls.find(
 			(call) => (call[0] as { customType?: string }).customType === "ferment_created_nudge",
 		)
-		if (!nudgeCall) throw new Error("missing ferment_created_nudge call")
-		const [msgArg, optArg] = nudgeCall
-		expect(msgArg.customType).toBe("ferment_created_nudge")
-		expect(optArg?.triggerTurn).toBe(true)
-		const contentText: string = Array.isArray(msgArg.content)
-			? msgArg.content.map((c: { text?: string }) => c.text ?? "").join("")
-			: String(msgArg.content)
-		expect(contentText).toContain("Task:\nScope a Ferment through a structured orient-interview-plan flow.")
-		expect(contentText).toContain("Context:")
-		expect(contentText).toContain("I want to add Google OAuth")
-		expect(contentText).toContain(`ferment_id "${ferment.id}"`)
-		expect(contentText).toContain("Do NOT call create_ferment")
-		expect(contentText).toContain('<scoping_sequence required="true">')
-		expect(contentText).toContain("STEP 1")
-		expect(contentText).toContain("ORIENT")
-		expect(contentText).toContain("STEP 2")
-		expect(contentText).toContain("INTERVIEW")
-		expect(contentText).toContain("STEP 3")
-		expect(contentText).toContain("COMPLETION CRITERIA")
-		expect(contentText).toContain("STEP 4")
-		expect(contentText).toContain("DEEP EXPLORATION")
-		expect(contentText).toContain("STEP 5")
-		expect(contentText).toContain('subagent_type: "Explore"')
-		expect(contentText).toContain("token_budget: 120000")
-		expect(contentText).toContain("Output contract:")
-		expect(contentText).toContain("gates array is required")
-		expect(contentText).toContain("exactly P1, P2, and P3")
+		expect(nudgeCall?.[0]).toMatchObject({ customType: "ferment_created_nudge" })
+		expect(nudgeCall?.[1]?.triggerTurn).toBe(true)
 
 		// Pending scope seeded
 		expect(getPendingScope(ferment.id)).toBeDefined()

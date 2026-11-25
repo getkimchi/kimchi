@@ -98,12 +98,18 @@ describe("tool-output-store", () => {
 				throw new Error("read failed deliberately")
 			})
 
-		expect(store.read({ file, offset: 0, length: 1 })).toBeUndefined()
-		expect(openSpy).toHaveBeenCalledOnce()
-		expect(errorSpy).toHaveBeenCalledWith(
-			`[tool-output-store] read failed for ${file}@0:`,
-			expect.objectContaining({ message: "read failed deliberately" }),
-		)
+		try {
+			expect(store.read({ file, offset: 0, length: 1 })).toBeUndefined()
+			expect(openSpy).toHaveBeenCalledOnce()
+			expect(errorSpy).toHaveBeenCalledOnce()
+			expect(errorSpy).toHaveBeenCalledWith(
+				`[tool-output-store] read failed for ${file}@0:`,
+				expect.objectContaining({ message: "read failed deliberately" }),
+			)
+		} finally {
+			openSpy.mockRestore()
+			errorSpy.mockRestore()
+		}
 	})
 
 	it("marker encode/decode round-trip and reject malformed text", () => {
