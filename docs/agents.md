@@ -6,17 +6,17 @@ child session with its own system prompt, model, and tool restrictions.
 
 ## Permission modes
 
-Kimchi's permission modes (`default`, `plan`, `auto`, `yolo`) gate the **parent
-session's** autonomy (read-only vs full edit, etc.). Permission modes and agents
-are independent:
+Kimchi's permission modes (`default`, `plan`, `auto`, `yolo`) and agents work
+together:
 
-- **Permission modes** control what the parent session is allowed to do.
+- **Permission modes** control what the session is allowed to do.
 - **Agents** (this extension) handle delegation. Each persona declares its own
-  tool set independently of the parent's mode.
+  tool set in its `tools` field.
 
-A parent in `plan` mode (read-only) can still spawn an `expert-coder` agent that
-edits files — that's by design. Agents are isolated child sessions; their
-authority is scoped to the persona's `tools` field, not the parent's mode.
+A subagent's tool calls follow the main session's mode and rules. The persona
+decides which tools the subagent has; the mode decides whether a call may run.
+For example, a subagent started from a session in `plan` mode cannot edit
+files, even when its persona lists `edit`. See [Permissions](#permissions).
 
 ## How it works
 
@@ -31,6 +31,21 @@ When the LLM calls `Agent({ subagent_type: "expert-coder", prompt: "...", descri
 While agents run, a persistent widget above the editor shows live status, token
 counts, and current activity. Open `/agents` to see the menu — select any
 running or completed agent to view its full conversation in a live overlay.
+
+## Permissions
+
+Subagent tool calls go through the same permission gate as the main session and
+follow its mode and rules. A subagent has no prompt of its own. When a call
+needs a decision, the main session asks the user and names the subagent. When
+nobody can be asked, the call is blocked. The details are in
+[subagent-permissions.md](subagent-permissions.md).
+
+### Branching
+
+After `/branch`, a subagent that is still running keeps its original parent
+session. It cannot ask the new session for approval, so a call that needs
+approval is blocked. Start a new subagent from the new session when a call needs
+the user's approval.
 
 ## Discovery hierarchy
 

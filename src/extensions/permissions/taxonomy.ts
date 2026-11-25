@@ -22,6 +22,9 @@ const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 	lsp_definition: "readOnly",
 	lsp_references: "readOnly",
 	lsp_rename: "write",
+	// These inspect a stopped session without executing or mutating the target.
+	debug_locals: "readOnly",
+	debug_backtrace: "readOnly",
 	// daemon + daemon_control spawn/manage session-surviving processes —
 	// same risk class as bash (execute), so they inherit the same
 	// permission-mode treatment. (bash_control is `unknown` upstream;
@@ -33,6 +36,8 @@ const STATIC_CATEGORIES: Record<string, ToolCategory> = {
 	questionnaire: "readOnly",
 	workflow_submit_result: "readOnly",
 	workflow_submit_questions: "readOnly",
+	submit_agent_report: "readOnly",
+	confirm_todos: "readOnly",
 }
 
 const READ_ONLY_NAME_HINT = /^(read|get|list|search|query|describe|find|grep|ls|loki_|view|show)/i

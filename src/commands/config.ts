@@ -2,9 +2,12 @@ import {
 	LANGUAGE_AUTO,
 	loadConfig,
 	normalizeLanguageSetting,
+	normalizeTuiTimezone,
 	readTelemetryConfig,
 	writeLanguage,
 	writeTelemetryEnabled,
+	writeTuiTimestamps,
+	writeTuiTimezone,
 	writeTuiWheelScrollLines,
 } from "../config.js"
 import { sendPreSessionEvent } from "../extensions/telemetry/pre-session.js"
@@ -19,7 +22,7 @@ const TELEMETRY_ENV = "KIMCHI_TELEMETRY_ENABLED"
  * schema-constrained keys (apiKey, region, …). Each entry pairs the CLI
  * surface validation with its config.js writer. New writable keys go here.
  */
-interface WritableKeyDef<T = number | string> {
+interface WritableKeyDef<T = number | string | boolean> {
 	/** null = invalid input (exit 2, nothing written). */
 	parse: (raw: string) => T | null
 	write: (value: T) => void
@@ -40,7 +43,7 @@ interface WritableKeyDef<T = number | string> {
  * warnIfShadowed) while the table itself is looked up by string key. The one
  * erasing cast lives here instead of in every entry.
  */
-function defineKey<T extends number | string>(def: WritableKeyDef<T>): WritableKeyDef {
+function defineKey<T extends number | string | boolean>(def: WritableKeyDef<T>): WritableKeyDef {
 	return def as unknown as WritableKeyDef
 }
 
@@ -53,6 +56,19 @@ const WRITABLE_KEYS: Record<string, WritableKeyDef> = {
 		write: (lines) => writeTuiWheelScrollLines(lines),
 		describeValue: "an integer ≥ 1",
 		defaultDisplay: 'unset (default "auto")',
+	}),
+	"tui.timestamps": defineKey<boolean>({
+		parse: parseSwitch,
+		write: (enabled) => writeTuiTimestamps(enabled),
+		formatWritten: (key, enabled) => `${key} = ${enabled ? "on" : "off"} (written to global config)`,
+		describeValue: 'a switch such as "on" or "off"',
+		defaultDisplay: "off (default)",
+	}),
+	"tui.timezone": defineKey<string>({
+		parse: (raw) => normalizeTuiTimezone(raw) ?? null,
+		write: (timezone) => writeTuiTimezone(timezone),
+		describeValue: '"local", "UTC", or a valid IANA timezone such as "Europe/Kyiv"',
+		defaultDisplay: "local (system timezone)",
 	}),
 	language: defineKey<string>({
 		// normalizeLanguageSetting maps "auto" (any case) to LANGUAGE_AUTO.

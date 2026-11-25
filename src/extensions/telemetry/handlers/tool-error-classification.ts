@@ -38,6 +38,12 @@
  */
 
 import { isFermentToolName } from "../../ferment/tool-names.js"
+import {
+	CLASSIFIER_INVALID_OUTPUT_BLOCK_REASON,
+	CLASSIFIER_NOT_CONFIGURED_BLOCK_REASON,
+	CLASSIFIER_SUBAGENT_GUIDANCE,
+	CLASSIFIER_UNAVAILABLE_BLOCK_REASON,
+} from "../../permissions/classifier-health.js"
 import { TODO_CHECKIN_BLOCK_PREFIX } from "../../todos/checkin-gate.js"
 import { hashFilePath } from "../helpers.js"
 
@@ -225,6 +231,29 @@ function classifyBashGate(fullMsg: string): ToolErrorClassification | undefined 
 const CLASSIFIER_PREFIX = "Classifier: "
 const NO_UI_SUFFIX = " (no UI to confirm)"
 
+// Fixed block reasons produced by the classifier outage handling
+// (permissions/classifier-health.ts). The gate appends a bounded
+// ` (code=<failureCode>)` tail, and worker sessions get a fixed guidance
+// sentence before it. Recognised here so outage blocks stay in the `blocked`
+// bucket with their failure_code instead of falling into the generic
+// failure funnel.
+const CLASSIFIER_FIXED_BLOCK_PREFIXES = [
+	CLASSIFIER_UNAVAILABLE_BLOCK_REASON,
+	CLASSIFIER_NOT_CONFIGURED_BLOCK_REASON,
+	CLASSIFIER_INVALID_OUTPUT_BLOCK_REASON,
+]
+const CLASSIFIER_CODE_TAIL = /\s\(code=([a-z_]+)\)$/
+const CLASSIFIER_CODE_TAIL_VALUES: ReadonlySet<string> = new Set([
+	"timeout",
+	"provider_error",
+	"budget_exhausted",
+	"auth_timeout",
+	"auth_unavailable",
+	"no_api_key",
+	"no_candidates",
+	"invalid_output",
+])
+
 /**
  * The auto-mode classifier's fail-closed rejection (permissions/index.ts):
  * `Classifier: <reason> (no UI to confirm)` — the wrapper is matched via its
@@ -235,9 +264,9 @@ const NO_UI_SUFFIX = " (no UI to confirm)"
  *
  * The rate-limit window timestamp embedded in provider error text is dropped;
  * availability stays observable via the bounded `failure_code`. Model/tool
- * attribution is extracted only from the strict "(model=X [tool=Y])" tail —
+ * attribution is extracted only from a strict "(model=X [tool=Y])" pair —
  * ids never contain spaces, so diagnostic-laden reasons yield no attr
- * rather than a polluted one.
+ * rather than a polluted one. The pair may precede worker approval guidance.
  *
  * Trade-off (documented): the match is prefix-only — the suffix is stripped
  * when present but not required — so a NON-bash error result that happens to
@@ -247,12 +276,32 @@ const NO_UI_SUFFIX = " (no UI to confirm)"
  * reasons.
  */
 function classifyClassifierGate(fullMsg: string): ToolErrorClassification | undefined {
+	// New fixed-reason forms (classifier outage handling): optional subagent
+	// guidance, then the optional bounded code tail, after a known base.
+	for (const prefix of CLASSIFIER_FIXED_BLOCK_PREFIXES) {
+		if (!fullMsg.startsWith(prefix)) continue
+		let rest = fullMsg.slice(prefix.length)
+		let failureCode: string | undefined
+		const tail = rest.match(CLASSIFIER_CODE_TAIL)
+		if (tail) {
+			rest = rest.slice(0, tail.index)
+			if (CLASSIFIER_CODE_TAIL_VALUES.has(tail[1])) failureCode = tail[1]
+		}
+		// Anything other than empty or exactly the fixed guidance after the base
+		// is not a producer we know — leave it to the generic funnel.
+		if (rest !== "" && rest !== CLASSIFIER_SUBAGENT_GUIDANCE) return undefined
+		return {
+			kind: "blocked",
+			message: "Classifier unavailable — fail closed",
+			attrs: { failure_code: failureCode ?? "other" },
+		}
+	}
 	if (!fullMsg.startsWith(CLASSIFIER_PREFIX)) return undefined
 	let reason = fullMsg.slice(CLASSIFIER_PREFIX.length)
 	if (reason.endsWith(NO_UI_SUFFIX)) reason = reason.slice(0, -NO_UI_SUFFIX.length)
 
 	const attrs: Record<string, string | number> = {}
-	const modelTool = reason.match(/\(model=([^\s()]+)(?: tool=([^\s()]+))?\)\s*$/)
+	const modelTool = reason.match(/\(model=([^\s()]+)(?: tool=([^\s()]+))?\)/)
 	if (modelTool) {
 		if (modelTool[1]) attrs.classifier_model = cap(modelTool[1])
 		if (modelTool[2]) attrs.classifier_tool = cap(modelTool[2])

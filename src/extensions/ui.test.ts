@@ -359,6 +359,20 @@ describe("withWorkingHidden — cooking animator pause/resume", () => {
 		expect(order).toEqual(["pause", "setWorkingVisible:false", "prompt", "setWorkingVisible:true", "resume"])
 	})
 
+	it("releases the animator but leaves the indicator hidden for a prompt that gave way", async () => {
+		const ctx = fakeCtx()
+		ctx.ui.setWorkingVisible = vi.fn()
+		const controller = { pause: vi.fn(), resume: vi.fn(), stop: vi.fn() }
+		__setWorkingAnimatorForTest(controller)
+
+		await withWorkingHidden(ctx, async () => undefined, { keepHidden: () => true })
+
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.setWorkingVisible).toHaveBeenCalledWith(false)
+		expect(controller.pause).toHaveBeenCalledTimes(1)
+		expect(controller.resume).toHaveBeenCalledTimes(1)
+	})
+
 	it("resumes the animator even when the prompt resolves to undefined", async () => {
 		const ctx = fakeCtx()
 		const controller = {

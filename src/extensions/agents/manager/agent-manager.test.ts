@@ -63,6 +63,7 @@ import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
 import { createContext, createLiveContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
+import { isAgentWorker } from "../../agent-worker-context.js"
 import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
@@ -860,6 +861,55 @@ describe("AgentManager", () => {
 			releaseRun.resolve()
 			await wait.catch(() => {})
 		}
+	})
+
+	it("threads the run's identity into the fresh run options", async () => {
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		manager = new AgentManager()
+		const spawningCtx = fakeCtx()
+		const record = await manager.spawnAndWait(fakePi(), spawningCtx, "Explore", "inspect the config", {
+			description: "inspect the config",
+		})
+		expect(mockRunAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			"Explore",
+			expect.anything(),
+			expect.objectContaining({ agentId: record.id, description: "inspect the config" }),
+		)
+	})
+
+	it("resumes inside a fresh worker run context for its watchdog hold", async () => {
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "checkpoint",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: true,
+			abortReason: "token_budget",
+			steered: false,
+		})
+		let seenWorker: boolean | undefined
+		mockResumeAgent.mockImplementationOnce(async () => {
+			seenWorker = isAgentWorker()
+			return {
+				responseText: "resumed",
+				session: { dispose: vi.fn() } as unknown as AgentSession,
+				aborted: false,
+				steered: false,
+			}
+		})
+		manager = new AgentManager()
+		const spawningCtx = fakeCtx()
+		const record = await manager.spawnAndWait(fakePi(), spawningCtx, "Explore", "inspect the config", {
+			description: "inspect the config",
+		})
+		const resumed = await manager.resume(record.id, "continue")
+		expect(resumed?.status).toBe("completed")
+		expect(seenWorker).toBe(true)
+		expect(isAgentWorker()).toBe(false)
 	})
 
 	it("waits for active resume promises to settle so resume runner cleanup can run", async () => {

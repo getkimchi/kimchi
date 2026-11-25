@@ -8,6 +8,7 @@ import {
 	type CreateAgentSessionOptions,
 	createAgentSession,
 	type ExtensionAPI,
+	type ExtensionFactory,
 	getAgentDir,
 	type InlineExtension,
 	type ModelRegistry as PiModelRegistry,
@@ -19,7 +20,14 @@ import { isResourceEnabled } from "../../../resources/store.js"
 import { requireModelRuntime } from "../../../shared/model-runtime.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { readEffectiveTelemetryConfig } from "../../../telemetry-policy.js"
-import { runAsAgentWorker } from "../../agent-worker-context.js"
+import {
+	enterAgentPersonaEnv,
+	getRegisteredWorkerParentSession,
+	registerWorkerParentSession,
+	runAsAgentWorker,
+	setAgentWorkerInactivityHold,
+	setAgentWorkerParentSessionId,
+} from "../../agent-worker-context.js"
 import { isAutoRoutedModel } from "../../auto-model/constants.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { getEffectiveModel } from "../../auto-model/state.js"
@@ -46,6 +54,7 @@ import {
 	type WorkSegment,
 } from "../../work-attribution.js"
 import { detectEnv } from "../env.js"
+import { createInteractiveTimeBudget, type InteractiveTimeBudgetRef } from "../interactive-time-budget.js"
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../personas/default-agents.js"
 import {
@@ -76,6 +85,12 @@ import { addUsage, getLifetimeTotal, getOutputTotal, getSessionUsage, type Lifet
  *   are also excluded — they are only meaningful to the top-level planner.
  */
 const EXCLUDED_TOOL_NAMES = ["Agent", "resume_subagent", "get_subagent_result", "steer_subagent", ...FERMENT_TOOL_NAMES]
+
+const WORKER_PERMISSIONS_EXTENSION_NAME = "kimchi-worker-permissions"
+const WORKER_PERMISSIONS_EXTENSION_PATH = `<inline:${WORKER_PERMISSIONS_EXTENSION_NAME}>`
+
+/** Per-session clock references stay alive for the session's inline factories across resumes. */
+const sessionTimeBudgets = new WeakMap<AgentSession, InteractiveTimeBudgetRef>()
 
 /** The native skill-loading tool name, appendable to a subagent's tool list
  *  when its skills config entails it. Not part of BUILTIN_TOOL_NAMES (which
@@ -288,6 +303,10 @@ export interface RunOptions {
 	/** Called on streaming text deltas from the assistant response. */
 	onTextDelta?: (delta: string, fullText: string) => void
 	onSessionCreated?: (session: AgentSession) => void
+	/** ID of this run as the manager tracks it — passed to the worker permission role. */
+	agentId?: string
+	/** Task description shown in escalated permission prompts. */
+	description?: string
 	/** Called at the end of each agentic turn with the cumulative count. */
 	onTurnEnd?: (turnCount: number) => void
 	/** Called once per assistant message_end with that message's usage delta. */
@@ -432,6 +451,8 @@ interface InactivityTracker {
 	markSteered(): void
 	/** Track one session event. */
 	track(event: AgentSessionEvent): void
+	/** An interactive wait ended: restart the clock and clear a pending steer. */
+	touch(): void
 }
 
 function createInactivityTracker(mode: InactivityMode | undefined): InactivityTracker {
@@ -464,6 +485,10 @@ function createInactivityTracker(mode: InactivityMode | undefined): InactivityTr
 			state.lastActivityAt = Date.now()
 			state.steered = false
 		},
+		touch() {
+			state.lastActivityAt = Date.now()
+			state.steered = false
+		},
 	}
 }
 
@@ -488,7 +513,11 @@ export async function runAgent(
 	prompt: string,
 	options: RunOptions,
 ): Promise<RunResult> {
-	return runAsAgentWorker(() => withParentSessionEnv(ctx, () => runAgentInner(ctx, type, prompt, options)))
+	// Per-run watchdog holds ride the async context, not process.env: parallel
+	// runs share the env, so anything a child reads from it can belong to a sibling.
+	return runAsAgentWorker(() => withParentSessionEnv(ctx, () => runAgentInner(ctx, type, prompt, options)), {
+		parentSessionId: ctx.sessionManager.getSessionId(),
+	})
 }
 
 async function runAgentInner(
@@ -584,6 +613,7 @@ ${skillLines}`
 	// front — without it, a time-based clamp firing later is unexplainable
 	// to the agent (see subagent-bash-clamp.ts).
 	const effectiveMaxDuration = options.maxDuration ?? agentConfig?.maxDuration ?? DEFAULT_MAX_DURATION
+	const timeBudget = { budget: createInteractiveTimeBudget(effectiveMaxDuration, Date.now()) }
 	if (effectiveMaxTurns != null || effectiveTokenBudget != null || effectiveMaxDuration > 0) {
 		extras.budget = {
 			maxTurns: effectiveMaxTurns,
@@ -625,9 +655,39 @@ ${skillLines}`
 
 	const agentDir = getAgentDir()
 
+	// Construct the gate before the resource loader: a failed import or
+	// initialization must prevent the child from running unchecked.
+	// The import is dynamic on purpose: a static one closes a cycle
+	// (permissions/index -> remote-run/runner -> agents/index -> this file).
+	const parentSessionId = ctx.sessionManager.getSessionId()
+	const { createWorkerPermissionsExtension, getPermissionsExtensionOptions } = await import(
+		"../../permissions/index.js"
+	)
+	// A host that tunes the gate (the Ferment V2 verifier's pre-approvals)
+	// passes a createPermissionsExtension() factory with its inline
+	// extensions. The child keeps one gate: those options are folded into the
+	// worker gate and the host's factory is not loaded. Such a host-run child
+	// also keeps failing closed instead of asking the user in the main session.
+	const callerExtensions = options.extensionFactories ?? []
+	const callerGates = callerExtensions.filter((extension) => getPermissionsExtensionOptions(extension) !== undefined)
+	if (callerGates.length > 1) {
+		throw new Error("A subagent accepts at most one permission gate from its host.")
+	}
+	const hostGateOptions = callerGates[0] ? getPermissionsExtensionOptions(callerGates[0]) : undefined
+	const workerPermissionsExtension = createWorkerPermissionsExtension({
+		...(hostGateOptions?.preApproved ? { preApproved: hostGateOptions.preApproved } : {}),
+		...(hostGateOptions ? { askParent: false } : {}),
+		parentSessionId,
+		persona: agentConfig?.name ?? type,
+		agentId: options.agentId,
+		description: options.description ?? prompt.slice(0, 200),
+	})
 	const extensionFactories = buildInlineExtensionFactories({
 		effectiveMaxDuration,
+		timeBudget,
 		type,
+		parentSessionId,
+		workerPermissionsExtension,
 		model,
 		toolNames,
 		workerReport: options.workerReport,
@@ -649,10 +709,9 @@ ${skillLines}`
 	}
 	// Caller-provided inline extensions (e.g. the Ferment V2 verifier guard)
 	// load even when extensions are disabled — the resource loader always
-	// processes its inline factories.
-	if (options.extensionFactories) {
-		extensionFactories.push(...options.extensionFactories)
-	}
+	// processes its inline factories. A caller's permission gate is left out:
+	// its options already went into the worker gate above.
+	extensionFactories.push(...callerExtensions.filter((extension) => !callerGates.includes(extension)))
 	// SubagentResourceLoader reads the system prompt live via the
 	// readSystemPrompt callback (see subagent-resource-loader.ts): after the
 	// final active-tool list is known, reassigning `systemPrompt` and calling
@@ -675,6 +734,12 @@ ${skillLines}`
 		extensionFactories,
 	})
 	await loader.reload()
+	const workerGateLoadError = loader
+		.getExtensions()
+		.errors.find(({ path }) => path === WORKER_PERMISSIONS_EXTENSION_PATH)
+	if (workerGateLoadError) {
+		throw new Error(`${WORKER_PERMISSIONS_EXTENSION_PATH}: ${workerGateLoadError.error}`)
+	}
 
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
@@ -745,6 +810,8 @@ ${skillLines}`
 	}
 
 	const { session } = await createAgentSession(sessionOpts)
+	registerWorkerParentSession(session, parentSessionId)
+	sessionTimeBudgets.set(session, timeBudget)
 
 	await session.bindExtensions({
 		onError: (err) => {
@@ -810,6 +877,25 @@ ${skillLines}`
 
 	const inactivity = createInactivityTracker(options.inactivityMode)
 	const inactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+	// Interactive waits (a permission prompt escalated to the parent) emit no
+	// session events, so the watchdog would steer then abort a worker that is
+	// legitimately waiting for a human. The gate takes this hold for the wait.
+	const inactivityHolds = { count: 0 }
+	setAgentWorkerInactivityHold({
+		acquire: () => {
+			const releaseTimeBudget = timeBudget.budget.pause()
+			inactivityHolds.count += 1
+			let released = false
+			return () => {
+				if (released) return
+				released = true
+				inactivityHolds.count -= 1
+				releaseTimeBudget()
+				// The wait was the activity: restart the clock, clear a pending steer.
+				inactivity.touch()
+			}
+		},
+	})
 
 	const PROGRESS_STEER_POINTS: { threshold: number; message: string }[] = [
 		{
@@ -942,6 +1028,7 @@ ${skillLines}`
 
 	let inactivityInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
 		if (inactivity.suspended()) return
+		if (inactivityHolds.count > 0) return // interactive wait (e.g. escalated permission prompt)
 		const elapsed = inactivity.elapsedMs()
 		if (inactivity.steered && elapsed >= inactivityTimeout) {
 			aborted = true
@@ -959,13 +1046,17 @@ ${skillLines}`
 	}
 	options.onRuntimeCleanupRegistered?.(cleanupInactivityInterval)
 
-	const durationTimer = effectiveMaxDuration
-		? setTimeout(() => {
-				aborted = true
-				abortReason = "max_duration"
-				hardAbort(session)
-			}, effectiveMaxDuration * 1000)
-		: undefined
+	// The worker's clock starts here. The budget object was created earlier
+	// because the prompt and the bash clamp need a reference to it, but
+	// building the loader and the session takes time that must not be charged
+	// to max_duration. No tool call has run yet, so nothing holds the old one.
+	timeBudget.budget.dispose()
+	timeBudget.budget = createInteractiveTimeBudget(effectiveMaxDuration, Date.now())
+	timeBudget.budget.setOnExpire(() => {
+		aborted = true
+		abortReason = "max_duration"
+		hardAbort(session)
+	})
 
 	const collector = collectResponseText(session)
 	const cleanupAbort = forwardAbortSignal(session, options.signal)
@@ -978,32 +1069,23 @@ ${skillLines}`
 		}
 	}
 
-	// Propagate agent persona to child environment so permission rules can
-	// apply persona-specific path scopes (e.g. plan persona → .kimchi/plans/).
-	const prevPersona = process.env.KIMCHI_AGENT_PERSONA
-	if (agentConfig?.name) {
-		process.env.KIMCHI_AGENT_PERSONA = agentConfig.name
-	}
+	// The commands and hooks this run starts read its persona from the
+	// environment. The child's own gate gets it as an argument, and the
+	// session that started the run keeps the persona it was launched with.
+	const leavePersonaEnv = agentConfig?.name ? enterAgentPersonaEnv(agentConfig.name) : undefined
 
 	try {
 		await session.prompt(effectivePrompt)
 	} finally {
 		cleanupInactivityInterval()
-		if (durationTimer) clearTimeout(durationTimer)
+		timeBudget.budget.dispose()
 		unsubTurns()
 		collector.unsubscribe()
 		cleanupAbort()
 		// Emit session_shutdown so extensions (e.g. telemetry) can flush and
 		// clear timers. Mirrors the ACP server pattern in modes/acp/server.ts.
 		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
-		if (agentConfig?.name) {
-			// Restore persona env — important for sequential runs in the same process.
-			if (prevPersona === undefined) {
-				delete process.env.KIMCHI_AGENT_PERSONA
-			} else {
-				process.env.KIMCHI_AGENT_PERSONA = prevPersona
-			}
-		}
+		leavePersonaEnv?.()
 	}
 
 	const finalUsageDelta = usageDelta(getSessionUsage(session), windowObservedUsage)
@@ -1054,8 +1136,14 @@ ${skillLines}`
 export interface InlineExtensionFactoryDeps {
 	/** Resolved wall-clock budget in seconds; 0 = unlimited (default bash timeout instead of the clamp). */
 	effectiveMaxDuration: number
+	/** Shared run/resume clock used by the expiry timer and bash timeout clamp. */
+	timeBudget: InteractiveTimeBudgetRef
 	/** Subagent persona type — labels the bash clamp telemetry. */
 	type: SubagentType
+	/** Fully constructed worker gate, appended after every tool provider. */
+	workerPermissionsExtension: ExtensionFactory
+	/** Main session whose live mode governs MCP gateway calls. */
+	parentSessionId: string
 	/** Resolved run model; an auto-routed model adds the routing + prompt-rebuild factories. */
 	model: Model<Api> | undefined
 	/** Persona tool allowlist; debug_/step_ tool names gate the DAP extension via shouldRegisterDapForTools. */
@@ -1112,7 +1200,9 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 	// and use the plain default-timeout extension instead.
 	const bashExtension =
 		deps.effectiveMaxDuration > 0
-			? createSubagentBashClampExtension(deps.effectiveMaxDuration, Date.now(), deps.type)
+			? createSubagentBashClampExtension(deps.effectiveMaxDuration, Date.now(), deps.type, () =>
+					deps.timeBudget.budget.getRemainingMs(),
+				)
 			: subagentBashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
@@ -1170,9 +1260,17 @@ export function buildInlineExtensionFactories(deps: InlineExtensionFactoryDeps):
 		// in the parent process) and use lazy gateway discovery so a subagent
 		// never retains an eager gateway connection.
 		extensionFactories.push(
-			createKimchiMcpAdapterExtension({ cwd: deps.effectiveCwd, suppressWarnings: true, lazyGatewayConnect: true }),
+			createKimchiMcpAdapterExtension({
+				cwd: deps.effectiveCwd,
+				suppressWarnings: true,
+				lazyGatewayConnect: true,
+				parentSessionId: deps.parentSessionId,
+			}),
 		)
 	}
+	// The caller constructs this before loader initialization so a load failure
+	// cannot be swallowed into an unchecked child. Isolation never disables the gate.
+	extensionFactories.push({ name: WORKER_PERMISSIONS_EXTENSION_NAME, factory: deps.workerPermissionsExtension })
 	return extensionFactories
 }
 
@@ -1205,6 +1303,8 @@ export async function resumeAgent(
 	// terminally (its lifecycle manager cannot reconnect). A resumed session is
 	// the same AgentSession object, so restart its extensions with a fresh
 	// session_start — reason "resume", matching pi's own resumption event.
+	const ownerSessionId = getRegisteredWorkerParentSession(session)
+	if (ownerSessionId) setAgentWorkerParentSessionId(ownerSessionId)
 	await session.extensionRunner?.emit({ type: "session_start", reason: "resume" })
 
 	const collector = collectResponseText(session)
@@ -1212,10 +1312,31 @@ export async function resumeAgent(
 
 	const resumeInactivity = createInactivityTracker(options.inactivityMode)
 	const resumeInactivityTimeout = options.inactivityTimeout ?? DEFAULT_INACTIVITY_TIMEOUT
+	// Same interactive-wait hold as the fresh-run path: resumes also escalate
+	// permission prompts to the parent during a classifier outage.
+	const resumeInactivityHolds = { count: 0 }
+	setAgentWorkerInactivityHold({
+		acquire: () => {
+			const releaseTimeBudget = timeBudget.budget.pause()
+			resumeInactivityHolds.count += 1
+			let released = false
+			return () => {
+				if (released) return
+				released = true
+				resumeInactivityHolds.count -= 1
+				releaseTimeBudget()
+				resumeInactivity.touch()
+			}
+		},
+	})
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns)
 	const minBudget = options.minTokenBudget ?? MIN_TOKEN_BUDGET
 	const effectiveTokenBudget = options.tokenBudget != null ? Math.max(options.tokenBudget, minBudget) : undefined
 	const effectiveMaxDuration = options.maxDuration ?? DEFAULT_MAX_DURATION
+	const resumeTimeBudget = createInteractiveTimeBudget(effectiveMaxDuration, Date.now())
+	const timeBudget = sessionTimeBudgets.get(session) ?? { budget: resumeTimeBudget }
+	timeBudget.budget = resumeTimeBudget
+	sessionTimeBudgets.set(session, timeBudget)
 	const observedUsage: LifetimeUsage = getSessionUsage(session) ?? {
 		input: 0,
 		output: 0,
@@ -1310,6 +1431,7 @@ export async function resumeAgent(
 
 	let resumeInactivityInterval: ReturnType<typeof setInterval> | undefined = setInterval(() => {
 		if (resumeInactivity.suspended()) return
+		if (resumeInactivityHolds.count > 0) return // interactive wait (e.g. escalated permission prompt)
 		const elapsed = resumeInactivity.elapsedMs()
 		if (resumeInactivity.steered && elapsed >= resumeInactivityTimeout) {
 			aborted = true
@@ -1326,19 +1448,17 @@ export async function resumeAgent(
 		resumeInactivityInterval = undefined
 	}
 	options.onRuntimeCleanupRegistered?.(cleanupResumeInactivityInterval)
-	const durationTimer = effectiveMaxDuration
-		? setTimeout(() => {
-				aborted = true
-				abortReason = "max_duration"
-				hardAbort(session)
-			}, effectiveMaxDuration * 1000)
-		: undefined
+	resumeTimeBudget.setOnExpire(() => {
+		aborted = true
+		abortReason = "max_duration"
+		hardAbort(session)
+	})
 
 	try {
 		await session.prompt(prompt)
 	} finally {
 		cleanupResumeInactivityInterval()
-		if (durationTimer) clearTimeout(durationTimer)
+		resumeTimeBudget.dispose()
 		collector.unsubscribe()
 		unsubEvents()
 		cleanupAbort()

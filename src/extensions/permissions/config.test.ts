@@ -126,11 +126,19 @@ describe("loadConfig merging", () => {
 		writeFileSync(overridePath, JSON.stringify({ defaultMode: "auto", deny: ["bash"] }))
 
 		setProjectScopeTrusted(tmpCwd, true)
-		const { loaded } = loadConfig({ cwd: tmpCwd, cliConfigPath: overridePath })
+		const { loaded } = loadConfig({
+			cwd: tmpCwd,
+			cliConfigPath: overridePath,
+			cliAllow: ["read"],
+			cliDeny: ["write"],
+		})
 		expect(loaded.config.defaultMode).toBe("auto")
-		// project allow is NOT included because cli-override replaces.
+		// The override replaces the merged mode/settings, not existing rule sources.
 		expect(loaded.config.allow).not.toContain("bash(git:*)")
 		expect(loaded.config.deny).toContain("bash")
+		expect(loaded.allowBySource.project).toEqual(["bash(git:*)"])
+		expect(loaded.allowBySource.cli).toEqual(["read"])
+		expect(loaded.denyBySource.cli).toEqual(["write"])
 	})
 
 	it("reports schema validation errors but doesn't throw", () => {

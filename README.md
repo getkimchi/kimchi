@@ -388,6 +388,10 @@ Kimchi stores its configuration (settings, sessions, models) under:
 
 Mouse-wheel scroll speed in fullscreen mode is configurable via `tui.wheelScrollLines` (synced to pi's `fullscreenWheelScrollLines` setting) — see [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md).
 
+### TUI transcript timestamps
+
+Optional datetime labels for prompts, responses, completed tools, and other transcript events are disabled by default. Enable them with `/timestamps on` for an immediate in-session redraw, or `kimchi config set tui.timestamps on` for the next TUI start. Timestamps use the system timezone unless `tui.timezone` is set to `UTC` or an IANA zone — see [docs/tui-timestamps.md](docs/tui-timestamps.md).
+
 ### Reply language
 
 Kimchi answers in the language you write in. To pin it instead (useful when a model drifts in mixed-language sessions), run `kimchi config set language ko` or `/language ko` in a session; `auto` unpins — see [docs/response-language.md](docs/response-language.md).
