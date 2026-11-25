@@ -40,7 +40,7 @@ import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import { applyPiTelemetryPatch } from "./pi-telemetry-patch.js"
 import "./session-selector-adapter.js"
-import { resolveGatewayCredentials } from "./auth/gateway-credentials.js"
+import { loginAuthPath, resolveGatewayCredentials } from "./auth/gateway-credentials.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
@@ -629,8 +629,14 @@ async function cliMain(): Promise<void> {
 			// SSO login keeps its credential in auth.json (type: "oauth"), not in
 			// config.json. Catalog discovery resolves that credential through the
 			// provider's OAuth config so an expiring token is persisted before use.
+			// The login is read from the home harness when an explicit agent dir
+			// has no auth.json; the API-key fan-out below still writes agentDir's.
 			const authJsonPath = resolve(agentDir, "auth.json")
-			const gatewayCredentials = resolveGatewayCredentials({ apiKey: currentApiKey ?? "" }, { authPath: authJsonPath })
+			const loginAuthJsonPath = loginAuthPath(agentDir)
+			const gatewayCredentials = resolveGatewayCredentials(
+				{ apiKey: currentApiKey ?? "" },
+				{ authPath: loginAuthJsonPath },
+			)
 			const oauthAccessToken = gatewayCredentials.source === "oauth" ? gatewayCredentials.token : undefined
 			const oauthOrganizationId = gatewayCredentials.source === "oauth" ? gatewayCredentials.organizationId : undefined
 			const rejectedEnvironmentKeyMessage =
@@ -653,8 +659,8 @@ async function cliMain(): Promise<void> {
 						...(oauthAccessToken
 							? {
 									refreshOAuth: {
-										authPath: authJsonPath,
-										installOAuth: (runtime) => installKimchiOAuth(runtime, authJsonPath),
+										authPath: loginAuthJsonPath,
+										installOAuth: (runtime) => installKimchiOAuth(runtime, loginAuthJsonPath),
 									},
 								}
 							: {}),

@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { GATEWAY_ORGANIZATION_HEADER, gatewayAuthHeaders, resolveGatewayCredentials } from "./gateway-credentials.js"
 
@@ -75,6 +75,26 @@ describe("resolveGatewayCredentials", () => {
 			expect(creds).toEqual({ token: "other", source: "api-key" })
 		} finally {
 			rmSync(otherDir, { recursive: true, force: true })
+		}
+	})
+
+	it("reads the home harness login when an explicit agent dir has no auth.json", () => {
+		const home = mkdtempSync(join(tmpdir(), "gateway-credentials-home-"))
+		try {
+			vi.stubEnv("HOME", home)
+			vi.stubEnv("USERPROFILE", home)
+			const homeAuth = join(home, ".config", "kimchi", "harness", "auth.json")
+			mkdirSync(dirname(homeAuth), { recursive: true })
+			writeFileSync(homeAuth, JSON.stringify({ "kimchi-dev": { type: "oauth", access: "home-access", refresh: "r" } }))
+
+			expect(resolveGatewayCredentials({ apiKey: "" }).token).toBe("home-access")
+			seedAuth({ "kimchi-dev": { type: "api_key", key: "stage-key" } })
+			expect(resolveGatewayCredentials({ apiKey: "" }).token).toBe("stage-key")
+			rmSync(authPath)
+			vi.stubEnv("KIMCHI_CODING_AGENT_DIR_DERIVED", "1")
+			expect(resolveGatewayCredentials({ apiKey: "" }).source).toBe("none")
+		} finally {
+			rmSync(home, { recursive: true, force: true })
 		}
 	})
 
