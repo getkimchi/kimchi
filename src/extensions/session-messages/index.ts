@@ -234,7 +234,7 @@ export function createSessionMessagesExtension(
 			const whose = peers.length === 1 ? "that session's" : "those sessions'"
 			return {
 				block: true,
-				reason: `Held, not failed: your user just agreed to ask ${names} (open in this repository) instead of starting subagents for related work. If ${work} is related to ${whose} work, send it with send_message to ${addresses}; if it is unrelated, start this subagent again.`,
+				reason: `Held, not failed: your user just agreed to ask ${names} (open in this repository) instead of starting subagents for related work, so do not ask them again. If ${work} is related to ${whose} work, send it with send_message to ${addresses}; if it is unrelated, start this subagent again.`,
 			}
 		}
 
