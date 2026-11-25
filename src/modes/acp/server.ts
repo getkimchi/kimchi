@@ -1367,9 +1367,9 @@ export class KimchiAcpAgent {
 			this.scheduleProjectTrustUpdate(sessionId)
 
 			const configOptions = buildConfigOptions(session, initialMode.mode)
+			await this.subagentRegistry.replay(session, replayHistory)
 			// Same seeding as newSession (see there) — a resumed Auto session
 			// hydrates its pick before this point, so the label is already final.
-			await this.subagentRegistry.replay(session, replayHistory)
 			record.lastModelOptionName = autoOptionName(configOptions)
 			return {
 				configOptions,
