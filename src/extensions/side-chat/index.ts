@@ -471,7 +471,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 				if (!options.resume) {
 					const origin = record.fresh
 						? "↳ Fresh side chat — no main-session context"
-						: `↳ Branched from the main session with ${side.contextLength} messages of context`
+						: `↳ Branched from the main session with ${side.branchedMessages} messages of context`
 					panel.addInfo(`${origin} · read-only tools: ${SIDE_CHAT_TOOLS.join(", ")}`)
 				}
 				unsubscribe = side.session.subscribe((event) => {
