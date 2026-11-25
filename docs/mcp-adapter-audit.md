@@ -378,11 +378,27 @@ This trust is limited in the following ways:
   auto-mode flow. Tools with `readOnlyHint: false` or no annotations go to the
   classifier.
 
+The permission hook, the gateway check, and the plan-mode wire names share one
+cached catalog. The catalog is rebuilt when the config, the private catalogs,
+the `stat` of the cache file, or a TTL expiry changes. If the cache file cannot
+be `stat`ed, nothing is reused and every lookup rebuilds. Kimchi refreshes the
+config on each `session_start` in file-backed mode and keeps it in programmatic
+mode. If the config source or the session `cwd` changes, MCP calls fall back to
+the normal approval flow until the next reload. Servers added at runtime
+resolve as `unknown` and keep the normal approval flow.
+
+Known limits:
+
+- Changes to environment variables inside a running process are not tracked.
+- A config edit in the short window between Kimchi's read and the adapter's
+  read is not detected.
+
 Relevant code:
 
 - [`src/extensions/mcp/auto-policy.ts`](../src/extensions/mcp/auto-policy.ts)
 - [`src/extensions/mcp/call-facts.ts`](../src/extensions/mcp/call-facts.ts)
 - [`src/extensions/mcp/call-catalog.ts`](../src/extensions/mcp/call-catalog.ts)
+- [`src/extensions/mcp/call-catalog-store.ts`](../src/extensions/mcp/call-catalog-store.ts)
 
 ### Conservative adapter defaults
 
