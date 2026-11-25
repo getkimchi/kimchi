@@ -216,7 +216,7 @@ export function createSessionMessagesExtension(
 			asking = ctx.ui
 				.confirm(
 					OFFER_TITLE,
-					`${address(peer)} is working in this repository too (${peer.cwd}). If you allow it, this session can hand that session work or questions instead of starting a subagent, and sessions on this machine can message each other. Your choice is saved for future sessions; /session-messages enable or disable changes it.`,
+					`Another session works in this repository: ${address(peer)}, in ${peer.cwd}. With messages on, this session can hand it work or questions instead of starting a subagent. Saved for future sessions; /session-messages enable or disable changes it.`,
 				)
 				.then((accepted) => {
 					if (readPreference() === undefined) writePreference(accepted)

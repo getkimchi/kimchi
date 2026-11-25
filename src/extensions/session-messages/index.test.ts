@@ -221,7 +221,7 @@ describe("session-messages", () => {
 		await vi.waitFor(() => expect(alpha.ctx.ui.notify).toHaveBeenCalledWith(ENABLED_NOTICE, "info"))
 		expect(alpha.ctx.ui.confirm).toHaveBeenCalledWith(
 			"Let Kimchi sessions message each other?",
-			expect.stringContaining("beta [bbbbb2] is working in this repository too (/work/shop)"),
+			expect.stringContaining("Another session works in this repository: beta [bbbbb2], in /work/shop."),
 		)
 		// Neither earlier session had a session in its repository to ask about.
 		expect(other.ctx.ui.confirm).not.toHaveBeenCalled()
