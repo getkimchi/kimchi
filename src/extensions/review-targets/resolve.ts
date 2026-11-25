@@ -16,7 +16,9 @@ import {
 	withReviewTargetFetchAuthorization,
 } from "./git.js"
 import { assertNoConversionDrivers } from "./preflight.js"
-import { resolveTargetRevision } from "./refs.js"
+import { prepareProviderReview } from "./provider.js"
+import { sanitizeReviewDisplayText } from "./provider-url.js"
+import { resolveBranchTargetRevision, resolveTargetRevision } from "./refs.js"
 import { deleteSnapshotRef, freezeWorkingTree, inspectWorkingTree, removeStaleSnapshots } from "./snapshot.js"
 import type {
 	BranchReviewRequest,
@@ -140,7 +142,7 @@ async function remoteDefaultBase(
 	return suggestions.length === 1 ? suggestions[0] : undefined
 }
 
-async function suggestBase(
+async function providerOrRemoteDefaultBase(
 	root: string,
 	options: ReviewInvocationOptions,
 	remote: string | undefined,
@@ -150,6 +152,39 @@ async function suggestBase(
 		(await pullRequestBase(root, options.pullRequestTargetBranch, configuredRemotes, remote, options.signal)) ??
 		(await remoteDefaultBase(root, remote, configuredRemotes, options.signal))
 	)
+}
+
+async function fallbackBases(
+	root: string,
+	remote: string | undefined,
+	signal?: AbortSignal,
+): Promise<ReviewBaseSuggestion[]> {
+	const candidates: Array<{ suggestion: ReviewBaseSuggestion; sha: string }> = []
+	const add = async (suggestion: ReviewBaseSuggestion) => {
+		const sha = await optionalCommit(root, suggestion.ref, signal)
+		if (sha && !candidates.some((candidate) => candidate.sha === sha)) candidates.push({ suggestion, sha })
+	}
+	if (remote) {
+		for (const branch of ["main", "master"]) {
+			await add({ ref: `refs/remotes/${remote}/${branch}`, source: "remote-default", remote })
+		}
+	}
+	for (const branch of ["main", "master"]) {
+		await add({ ref: `refs/heads/${branch}`, source: "remote-default", remote })
+	}
+	return candidates.map((candidate) => candidate.suggestion)
+}
+
+async function suggestBase(
+	root: string,
+	options: ReviewInvocationOptions,
+	remote: string | undefined,
+	configuredRemotes: string[],
+): Promise<ReviewBaseSuggestion | undefined> {
+	const primary = await providerOrRemoteDefaultBase(root, options, remote, configuredRemotes)
+	if (primary) return primary
+	const fallbacks = await fallbackBases(root, remote, options.signal)
+	return fallbacks.length === 1 ? fallbacks[0] : undefined
 }
 
 /** Return picker data only; selecting and rendering a choice belongs to the surface adapter. */
@@ -241,7 +276,15 @@ async function comparison(
 ): Promise<{ baseRef: string; baseSha: string; tipSha: string; source: ResolvedReviewScope["baseSource"] }> {
 	const remote = await selectedRemote(root, options, [request.branch, request.base])
 	if (request.fetch) await fetchRemote(root, remote.name, options.signal)
-	const tipSha = (await resolveTargetRevision(root, request.branch, "branch", options.signal)).commitSha
+	const tip = await resolveBranchTargetRevision(root, request.branch, {
+		remote: remote.name,
+		configuredRemotes: remote.configured,
+		prefer: request.prefer,
+		interactions: options.interactions,
+		autoFetch: !request.fetch,
+		signal: options.signal,
+	})
+	const tipSha = tip.commitSha
 	if (request.includeWorkingTree) {
 		const checkoutHead = await resolveCommit(root, "HEAD", options.signal)
 		if (checkoutHead !== tipSha) {
@@ -251,15 +294,35 @@ async function comparison(
 			)
 		}
 	}
+	let baseRef = request.base
 	let baseSuggestion: ReviewBaseSuggestion | undefined
-	if (request.base === undefined) baseSuggestion = await suggestBase(root, options, remote.name, remote.configured)
-	if (!request.base && !baseSuggestion) {
-		throw new ReviewTargetError(
-			"base_required",
-			"No PR/MR target branch or unique remote default branch is available. Supply --base <ref> explicitly.",
-		)
+	if (baseRef === undefined) {
+		baseSuggestion = await providerOrRemoteDefaultBase(root, options, remote.name, remote.configured)
+		if (!baseSuggestion) {
+			const candidates = await fallbackBases(root, remote.name, options.signal)
+			let selected: string | undefined
+			if (options.interactions?.chooseBase) {
+				selected = await options.interactions.chooseBase({ branch: request.branch, candidates })
+				if (!selected) {
+					throw new ReviewTargetError("selection_cancelled", "Review base selection was cancelled.")
+				}
+			} else if (candidates.length === 1) {
+				selected = candidates[0].ref
+				options.onBaseSelected?.(candidates[0])
+			} else {
+				throw new ReviewTargetError(
+					"base_required",
+					candidates.length
+						? `More than one default base is available: ${candidates.map((candidate) => candidate.ref).join(", ")}. Choose one with --base <ref>.`
+						: "No remote HEAD, remote main/master, or local main/master base is available. Supply --base <ref> explicitly.",
+				)
+			}
+			baseSuggestion = candidates.find((candidate) => candidate.ref === selected)
+			baseRef = selected
+		} else {
+			baseRef = baseSuggestion.ref
+		}
 	}
-	const baseRef = request.base ?? baseSuggestion?.ref
 	if (!baseRef) throw new ReviewTargetError("base_required", "Supply --base <ref> explicitly.")
 	const baseRevision = await resolveTargetRevision(root, baseRef, "base", options.signal)
 	return {
@@ -275,6 +338,61 @@ export async function resolveReviewTarget(
 	request: ExplicitReviewRequest,
 	options: ResolveReviewTargetOptions,
 ): Promise<ResolvedReviewTarget> {
+	if (request.kind === "pull-request") {
+		const prepared = await prepareProviderReview(request, options)
+		try {
+			await options.beforeProviderResolution?.(prepared)
+			const target = await withReviewTargetFetchAuthorization(true, () =>
+				resolveReviewTarget(
+					{
+						kind: "branch",
+						branch: prepared.headRef,
+						base: request.base,
+						includeWorkingTree: false,
+						fetch: request.fetch,
+						panel: request.panel,
+					},
+					{
+						...options,
+						root: prepared.root,
+						remote: prepared.remote,
+						pullRequestTargetBranch: prepared.baseRefName,
+					},
+				),
+			)
+			target.scope.refs.branch = sanitizeReviewDisplayText(prepared.headRefName)
+			target.scope.refs.head = target.scope.refs.branch
+			target.scope.pullRequest = {
+				provider: request.provider,
+				url: prepared.metadata.url,
+				number: request.number,
+				title: sanitizeReviewDisplayText(prepared.metadata.title),
+				reportedHeadSha: prepared.metadata.headRefOid,
+				headMoved: prepared.headSha !== prepared.metadata.headRefOid,
+			}
+			if (target.scope.pullRequest.headMoved) {
+				options.onWarning?.(
+					`The ${request.provider === "github" ? "PR" : "MR"} moved while it was fetched; reviewing ${prepared.headSha.slice(0, 7)} instead of reported head ${prepared.metadata.headRefOid.slice(0, 7)}.`,
+				)
+			}
+			const cleanupTarget = target.cleanup
+			let cleanupPromise: Promise<void> | undefined
+			target.cleanup = () => {
+				cleanupPromise ??= (async () => {
+					try {
+						await cleanupTarget()
+					} finally {
+						await prepared.cleanup()
+					}
+				})()
+				return cleanupPromise
+			}
+			return target
+		} catch (error) {
+			await prepared.cleanup().catch(() => {})
+			throw error
+		}
+	}
 	return withReviewTargetFetchAuthorization(request.fetch, async () => {
 		const root = await repositoryRoot(options.root, options.signal)
 		let baseRef = "HEAD"

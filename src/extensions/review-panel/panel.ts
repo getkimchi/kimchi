@@ -354,7 +354,10 @@ async function rescanAllWriters(store: ReviewPanelStateStore, outputDir: string)
 async function finalizeWithWriterRescan(
 	store: ReviewPanelStateStore,
 	outputDir: string,
-	options: Pick<FinalizeReviewPanelOptions, "hasVerifier" | "reconcile" | "environmentGaps">,
+	options: Pick<
+		FinalizeReviewPanelOptions,
+		"hasVerifier" | "reconcile" | "environmentGaps" | "beforeReport" | "beforeStaleCandidateCheck"
+	>,
 ): Promise<ReviewPanelResult> {
 	for (let attempt = 0; attempt < 4; attempt += 1) {
 		const inputDigest = candidateInputDigest(store.state.candidates)
@@ -366,6 +369,7 @@ async function finalizeWithWriterRescan(
 				...options,
 				beforePublish: async () => {
 					await rescanAllWriters(store, outputDir)
+					await options.beforeStaleCandidateCheck?.()
 					if (candidateInputDigest(store.state.candidates) !== inputDigest) {
 						throw new StaleCandidateInputError()
 					}
@@ -383,8 +387,12 @@ async function finalizeWithWriterRescan(
 		contextDir: store.state.contextDir,
 		hasVerifier: false,
 		environmentGaps: options.environmentGaps,
+		beforeReport: options.beforeReport,
 	})
 }
+
+/** @internal Test seam for the last exhausted-rescan fallback phase boundary. */
+export const finalizeReviewPanelWithWriterRescan = finalizeWithWriterRescan
 
 /** Run a fresh panel. Stage 5 passes parser panel fields directly plus trusted
  * requiredLenses; a manifest deadline is converted to epoch milliseconds. */
@@ -608,6 +616,11 @@ export async function runReviewPanel(options: RunReviewPanelOptions): Promise<Re
 		const result = await finalizeWithWriterRescan(store, outputDir, {
 			...verifier,
 			environmentGaps: options.environmentGaps,
+			beforeReport: () => {
+				if (options.ctx.mode !== "tui") return
+				phase = "finalizing"
+				options.onProgress?.(progressFor(store.state, phase))
+			},
 		})
 		await usage.flush()
 		options.onProgress?.(result.progress)
@@ -683,6 +696,11 @@ export async function wrapUpReviewPanel(options: WrapUpReviewPanelOptions): Prom
 		const result = await finalizeWithWriterRescan(store, outputDir, {
 			...verifier,
 			environmentGaps: options.environmentGaps,
+			beforeReport: () => {
+				if (options.ctx.mode !== "tui") return
+				phase = "finalizing"
+				options.onProgress?.(progressFor(store.state, phase))
+			},
 		})
 		await usage.flush()
 		options.onProgress?.(result.progress)

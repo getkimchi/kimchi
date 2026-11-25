@@ -303,8 +303,8 @@ describe("review target resolution", () => {
 			["working-tree", false],
 			["branch", true],
 		])
-		expect(choices.choices[1]).toMatchObject({ requiresExplicitBase: true })
-		expect(choices.syntax).toContain("/review branch <ref> --base <ref> --include-working-tree [--fetch]")
+		expect(choices.choices[1]).toMatchObject({ requiresExplicitBase: false })
+		expect(choices.syntax).toContain("/review branch <ref> [--base <ref>] --include-working-tree [--fetch]")
 
 		write(repo, "ignored.txt", "ignored\n")
 		choices = await getReviewTargetChoices({ kind: "bare", fetch: false }, { root: repo })
@@ -454,16 +454,21 @@ describe("review target resolution", () => {
 		expect(choices.choices[1].requiresExplicitBase).toBe(false)
 	})
 
-	it("requires an explicit base when no local provider metadata or unique remote HEAD exists", async () => {
+	it("infers a local main base and requires a choice when no conventional base exists", async () => {
 		initialize()
 		git(repo, "checkout", "-b", "feature")
 		write(repo, "file.txt", "feature\n")
 		git(repo, "commit", "-am", "feature")
+		const inferred = await resolve(parseReviewTargetArgs(["feature"]) as ExplicitReviewRequest)
+		expect(inferred.scope.refs.resolvedBase).toBe("refs/heads/main")
+		await inferred.cleanup()
+
+		git(repo, "branch", "-m", "main", "trunk")
 		await expect(resolve(parseReviewTargetArgs(["branch", "feature"]) as ExplicitReviewRequest)).rejects.toMatchObject({
 			code: "base_required",
 		})
 		const target = await resolve(
-			parseReviewTargetArgs(["branch", "feature", "--base", "main"]) as ExplicitReviewRequest,
+			parseReviewTargetArgs(["branch", "feature", "--base", "trunk"]) as ExplicitReviewRequest,
 		)
 		expect(target.scope.baseSource).toBe("explicit")
 	})

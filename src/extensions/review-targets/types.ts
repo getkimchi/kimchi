@@ -1,11 +1,14 @@
 import type { ReviewPanelArguments } from "../review-panel/lenses.js"
+import type { PreparedProviderReview } from "./provider.js"
 
 export type ReviewPanelParseResult = ReviewPanelArguments
 
 export const REVIEW_TARGET_SYNTAX = [
 	"/review working-tree [--fetch]",
-	"/review branch <ref> --base <ref> [--fetch]",
-	"/review branch <ref> --base <ref> --include-working-tree [--fetch]",
+	"/review <branch> [--base <ref>] [--prefer local|remote] [--fetch]",
+	"/review branch <ref> [--base <ref>] [--prefer local|remote] [--fetch]",
+	"/review branch <ref> [--base <ref>] --include-working-tree [--fetch]",
+	"/review <GitHub pull-request or GitLab merge-request URL> [--base <ref>]",
 ] as const
 
 export interface BareReviewRequest {
@@ -20,16 +23,32 @@ export interface WorkingTreeReviewRequest {
 	panel?: ReviewPanelArguments
 }
 
+export type ReviewBranchPreference = "local" | "remote"
+
 export interface BranchReviewRequest {
 	kind: "branch"
 	branch: string
 	base?: string
 	includeWorkingTree: boolean
 	fetch: boolean
+	prefer?: ReviewBranchPreference
 	panel?: ReviewPanelArguments
 }
 
-export type ExplicitReviewRequest = WorkingTreeReviewRequest | BranchReviewRequest
+export interface ProviderReviewRequest {
+	kind: "pull-request"
+	url: string
+	provider: "github" | "gitlab"
+	host: string
+	/** Repository path without a leading slash or .git suffix (nested groups retained). */
+	project: string
+	number: number
+	base?: string
+	fetch: boolean
+	panel?: ReviewPanelArguments
+}
+
+export type ExplicitReviewRequest = WorkingTreeReviewRequest | BranchReviewRequest | ProviderReviewRequest
 export type ParsedReviewRequest = BareReviewRequest | ExplicitReviewRequest
 
 export interface ReviewBaseSuggestion {
@@ -75,12 +94,41 @@ export interface ReviewInvocationOptions {
 	signal?: AbortSignal
 }
 
+export interface ReviewBranchRevisionChoice {
+	branch: string
+	remote: string
+	local: { ref: string; sha: string; ahead: number; behind: number }
+	remoteRevision: { ref: string; sha: string }
+}
+
+export interface ReviewBaseChoice {
+	branch: string
+	candidates: ReviewBaseSuggestion[]
+}
+
+export interface ReviewTargetInteractions {
+	chooseBranchRevision?: (choice: ReviewBranchRevisionChoice) => Promise<ReviewBranchPreference | undefined>
+	/** Return a candidate ref, another ref entered by the user, or undefined to cancel. */
+	chooseBase?: (choice: ReviewBaseChoice) => Promise<string | undefined>
+}
+
 export interface ResolveReviewTargetOptions extends ReviewInvocationOptions {
 	contextDir?: string
+	/** Present only on surfaces that can wait for a user decision. */
+	interactions?: ReviewTargetInteractions
+	/** Overrides the cache parent in tests; defaults to ~/.kimchi/review-repos. */
+	cacheRoot?: string
+	/** Reports a deterministic base selected without a prompt. */
+	onBaseSelected?: (suggestion: ReviewBaseSuggestion) => void
+	onWarning?: (message: string) => void
+	/** Stop this review if proper-lockfile detects that its cache ownership was compromised. */
+	onCacheCompromised?: (error: Error) => void
 	/** Provider-owned commentable-lines/v1 data for exactly this base/head comparison. */
 	providerAnchorMap?: unknown
 	/** @internal Test-only cancellation injection before the checkout HEAD is resolved. */
 	beforeHeadResolution?: () => void | Promise<void>
+	/** @internal Test-only synchronization after the immutable provider head is fetched. */
+	beforeProviderResolution?: (prepared: PreparedProviderReview) => void | Promise<void>
 	/** @internal Test-only filesystem race injection after the working tree has been added to the temporary index. */
 	beforeSnapshotCommit?: () => void | Promise<void>
 }
@@ -142,6 +190,15 @@ export interface ResolvedReviewScope {
 	contextDir: string
 	commentableLinesPath: string
 	limitations: ReviewLimitation[]
+	/** Provider presentation metadata; comparison and artifact formats are otherwise unchanged. */
+	pullRequest?: {
+		provider: "github" | "gitlab"
+		url: string
+		number: number
+		title: string
+		reportedHeadSha: string
+		headMoved: boolean
+	}
 }
 
 export interface ResolvedReviewTarget {

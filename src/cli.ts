@@ -22,6 +22,7 @@ import {
 	normalizeBooleanFlagArgs,
 	normalizeResumeIdArgs,
 	populateCliArgs,
+	printReviewRequiredError,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
@@ -817,6 +818,8 @@ async function cliMain(): Promise<void> {
 
 			// Parse Kimchi-local CLI flags once before upstream pi-mono sees them.
 			populateCliArgs(rawArgs)
+			const reviewRequiredError = printReviewRequiredError(rawArgs)
+			if (reviewRequiredError) throw new Error(reviewRequiredError)
 			// Couple the background-bash pair BEFORE pi parses the args: a
 			// `--tools` allowlist that admits `bash` also admits `bash_control`,
 			// exactly as the two extensions are registered together below. Without

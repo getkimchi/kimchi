@@ -4,9 +4,12 @@ import { isExperimentalFeaturesEnabled } from "../experimental.js"
 import { isPrintModeEnabled } from "../print-mode.js"
 import { cancelActiveReview } from "./active-runs.js"
 import { runReviewCommand } from "./command.js"
+import { reviewArgumentCompletions } from "./completions.js"
+import { REVIEW_RESULT_CUSTOM_TYPE, reviewResultRenderer } from "./result-message.js"
 
 export type { ReviewCommandDependencies } from "./command.js"
 export { runReviewCommand } from "./command.js"
+export { reviewArgumentCompletions } from "./completions.js"
 export {
 	loadPreparedReviewManifest,
 	parseReviewManifestDeadline,
@@ -16,6 +19,7 @@ export {
 	readReviewManifest,
 	validateReviewManifest,
 } from "./manifest.js"
+export { REVIEW_RESULT_CUSTOM_TYPE, reviewResultRenderer } from "./result-message.js"
 export { readTrustedReviewSettings } from "./settings.js"
 
 export function isReviewCommandEnabled(options: { experimental: boolean; review: boolean; print: boolean }): boolean {
@@ -24,7 +28,14 @@ export function isReviewCommandEnabled(options: { experimental: boolean; review:
 
 export default function reviewCommandExtension(pi: ExtensionAPI): void {
 	let resumed = false
+	let invocationCwd: string | undefined
+	const requiredInvocationCwd = (): string => {
+		if (!invocationCwd) throw new Error("Review completions require the active session cwd.")
+		return invocationCwd
+	}
+	pi.registerMessageRenderer(REVIEW_RESULT_CUSTOM_TYPE, reviewResultRenderer)
 	pi.on("session_start", (event, ctx) => {
+		invocationCwd = ctx.cwd
 		resumed =
 			event.reason === "resume" ||
 			(event.reason === "startup" &&
@@ -42,8 +53,10 @@ export default function reviewCommandExtension(pi: ExtensionAPI): void {
 	if (!enabled) return
 	pi.registerCommand("review", {
 		description:
-			"Review a pinned working-tree or branch comparison with a configurable panel; print JSON sessions accept --manifest and resumed wrap-up",
+			"Review working-tree, a branch (bare name or branch <ref>), or a GitHub PR/GitLab MR URL; infer base when possible, use --prefer local|remote for divergent branches",
+		getArgumentCompletions: (prefix) => reviewArgumentCompletions(prefix, requiredInvocationCwd()),
 		handler: async (args, ctx) => {
+			invocationCwd = ctx.cwd
 			await runReviewCommand(args, ctx, pi, { resumed, allowLocal: experimental })
 		},
 	})

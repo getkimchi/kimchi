@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
-import { type CliMode, getCliModeArg, PROTOCOL_MODES } from "./cli-modes.js"
+import { type CliMode, getCliModeArg, hasPrintFlag, PROTOCOL_MODES } from "./cli-modes.js"
 
 // Re-export the shared leaf-module helpers so existing callers can keep
 // importing them from cli-args.ts without touching their import paths.
@@ -428,6 +428,21 @@ export function getParsedCliArgs(): SessionCliArgs {
 		cachedCliArgs = parseCliArgs(process.argv.slice(2))
 	}
 	return cachedCliArgs
+}
+
+/** Canonicalize the extension-boolean switch so Pi's unknown-flag parser
+ * cannot consume the following positional prompt as a string value. */
+export function normalizeReviewBooleanArgs(args: string[]): string[] {
+	return args.map((arg) => (arg === "--review" ? "--review=true" : arg))
+}
+
+/** Fail explicitly when a print session has not selected its review protocol. */
+export function printReviewRequiredError(args: string[], parsed = getParsedCliArgs()): string | undefined {
+	if (parsed.options.review === true || getCliModeArg(args) === "acp") return undefined
+	if (!hasPrintFlag(args) && getCliModeArg(args) !== "json") return undefined
+	const prompt = parsed.positionals.find((value) => value.trim().length > 0)?.trimStart()
+	if (prompt !== "/review" && !prompt?.startsWith("/review ")) return undefined
+	return "Print-mode /review requires --review. Pass --review to enable review mode and its output protocol."
 }
 
 export function normalizeResumeIdArgs(args: string[]): string[] {

@@ -2,18 +2,16 @@ import { Text } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import { createCommandContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { testTheme } from "../__mocks__/theme.js"
 import { type ReviewPanelSelectionInput, resolveReviewPanel } from "../review-panel/lenses.js"
 import type { ReviewPanelProgress, ReviewPanelResult } from "../review-panel/types.js"
 import { FINDING_SCHEMA_VERSION } from "../review-submit/store.js"
 import type { ResolvedReviewTarget } from "../review-targets/types.js"
 import { reporter } from "./command.js"
+import { REVIEW_RESULT_CUSTOM_TYPE } from "./result-message.js"
 
 const BASE_SHA = "a".repeat(40)
 const HEAD_SHA = "b".repeat(40)
-const CHECKOUT_PATH = `/tmp/${"checkout-path-segment/".repeat(16)}repository`
-const RUN_DIRECTORY = `${CHECKOUT_PATH}/.kimchi/review-output/runs/${"run-segment-".repeat(16)}`
-const LONG_REASON_SUFFIX =
-	"because an explicitly verbose policy requires additional context that must remain available without repeating during progress refreshes"
 const FINDING_TITLE = "The new export lacks a behavior guard"
 const FINDING_DESCRIPTION = "The new export changes behavior without a guard."
 const WIDTHS = [60, 80, 120] as const
@@ -21,33 +19,26 @@ const WIDTHS = [60, 80, 120] as const
 function target(): ResolvedReviewTarget {
 	return {
 		scope: {
-			kind: "working-tree",
-			refs: { base: "main", resolvedBase: BASE_SHA, head: HEAD_SHA },
-			includeWorkingTree: true,
+			kind: "branch",
+			refs: { branch: "feature", base: "main", resolvedBase: "refs/heads/main", head: "feature" },
+			includeWorkingTree: false,
 			baseSource: "explicit",
 			pinned: { baseSha: BASE_SHA, headSha: HEAD_SHA, tipSha: HEAD_SHA },
-			headKind: "working-tree-snapshot",
-			dirty: true,
+			headKind: "commit",
+			dirty: false,
 			files: { changed: 3, anchorable: 3, unanchorable: 0 },
 			anchorSource: "local",
-			checkoutPath: CHECKOUT_PATH,
-			contextDir: `${CHECKOUT_PATH}/.kimchi/review-context`,
-			commentableLinesPath: `${CHECKOUT_PATH}/.kimchi/review-context/commentable-lines.json`,
+			checkoutPath: "/private/review/checkout/must-not-appear",
+			contextDir: "/private/review/context",
+			commentableLinesPath: "/private/review/context/commentable-lines.json",
 			limitations: [],
 		},
 		cleanup: async () => {},
 	}
 }
 
-function selection(input: ReviewPanelSelectionInput): ReturnType<typeof resolveReviewPanel> {
-	const selected = resolveReviewPanel(input)
-	return {
-		...selected,
-		lenses: selected.lenses.map((lens) => ({
-			...lens,
-			reasons: [...lens.reasons, `${lens.id}: ${lens.reasons.join("; ")} ${LONG_REASON_SUFFIX}`],
-		})),
-	}
+function selected(input: ReviewPanelSelectionInput) {
+	return resolveReviewPanel(input)
 }
 
 function coverage(lensCount: number): ReviewPanelProgress["coverage"] {
@@ -58,32 +49,33 @@ function coverage(lensCount: number): ReviewPanelProgress["coverage"] {
 		submitted_lenses: lensCount,
 		failed_lenses: 0,
 		cancelled_lenses: 0,
-		candidate_count: lensCount,
+		candidate_count: 3,
 		final_finding_count: 1,
 		provenance_truncated_count: 0,
 		findings_by_priority: { P0: 0, P1: 0, P2: 1, P3: 0, P4: 0 },
 	}
 }
 
-function progress(selected: ReturnType<typeof selection>, complete: boolean): ReviewPanelProgress {
+function progress(selection: ReturnType<typeof selected>, complete = false): ReviewPanelProgress {
 	return {
 		phase: complete ? "complete" : "reviewing",
-		lenses: selected.lenses.map((lens, index) => ({
+		lenses: selection.lenses.map((lens, index) => ({
 			id: lens.id,
 			writer: lens.writer,
-			status: !complete && index === 0 ? "running" : "submitted",
+			status: complete ? "submitted" : index === 0 ? "submitted" : index === 1 ? "running" : "queued",
 			reasons: lens.reasons,
-			candidateCount: 1,
+			candidateCount: index === 0 ? 2 : index === 1 ? 1 : 0,
+			...(index === 2 ? { error: "one concise lens failure" } : {}),
 		})),
 		counts: {
-			queued: 0,
-			running: complete ? 0 : 1,
-			submitted: complete ? selected.lenses.length : selected.lenses.length - 1,
+			queued: complete ? 0 : Math.max(0, selection.lenses.length - 2),
+			running: complete || selection.lenses.length < 2 ? 0 : 1,
+			submitted: complete ? selection.lenses.length : 1,
 			failed: 0,
 			cancelled: 0,
-			candidates: selected.lenses.length,
+			candidates: 3,
 		},
-		coverage: coverage(selected.lenses.length),
+		coverage: coverage(selection.lenses.length),
 		reconciliation: complete
 			? { status: "reconciled", reason: "All candidates reconciled." }
 			: { status: "pending", reason: "Reconciliation pending." },
@@ -91,10 +83,10 @@ function progress(selected: ReturnType<typeof selection>, complete: boolean): Re
 }
 
 function result(
-	selected: ReturnType<typeof selection>,
+	selection: ReturnType<typeof selected>,
 ): Pick<ReviewPanelResult, "progress" | "findings" | "summaryPath"> {
 	return {
-		progress: progress(selected, true),
+		progress: progress(selection, true),
 		findings: [
 			{
 				schema_version: FINDING_SCHEMA_VERSION,
@@ -102,7 +94,7 @@ function result(
 				writer: "final",
 				seq: 1,
 				created_at: "2026-11-25T12:00:00Z",
-				path: `${CHECKOUT_PATH}/src/value.ts`,
+				path: "src/value.ts",
 				line: 2,
 				title: FINDING_TITLE,
 				description: FINDING_DESCRIPTION,
@@ -113,20 +105,23 @@ function result(
 				derived_from: ["candidate-1"],
 			},
 		],
-		summaryPath: `${RUN_DIRECTORY}/summary/final.json`,
+		summaryPath: "/private/review/output/summary/final.json",
 	}
 }
 
-function expectAtMostTenRenderedRows(ctx: ReturnType<typeof createCommandContext>, width: number, phase: string): void {
+function widgetRows(ctx: ReturnType<typeof createCommandContext>, width: number): string[] {
 	const content = vi.mocked(ctx.ui.setWidget).mock.calls.at(-1)?.[1]
-	expect(Array.isArray(content), `${phase} must supply text lines`).toBe(true)
-	if (!Array.isArray(content)) return
-	const rows = content.flatMap((line) => new Text(line, 1, 0).render(width))
-	expect(rows.length, `${phase} at width ${width}:\n${rows.join("\n")}`).toBeLessThanOrEqual(10)
+	expect(typeof content).toBe("function")
+	if (typeof content !== "function") return []
+	const factory = content as unknown as (tui: unknown, theme: typeof testTheme) => { render(width: number): string[] }
+	return factory(undefined, testTheme).render(width)
 }
 
-function occurrences(text: string, value: string): number {
-	return text.split(value).length - 1
+function expectWidgetBudget(ctx: ReturnType<typeof createCommandContext>, width: number, phase: string): string[] {
+	const rows = widgetRows(ctx, width)
+	expect(rows.length, `${phase} at width ${width}:\n${rows.join("\n")}`).toBeLessThanOrEqual(12)
+	for (const row of rows) if (row) expect(new Text(row, 0, 0).render(width)).toHaveLength(1)
+	return rows
 }
 
 const cases = [
@@ -138,43 +133,169 @@ const cases = [
 describe("review command reporter", () => {
 	for (const testCase of cases) {
 		for (const width of WIDTHS) {
-			it(`keeps every phase of the ${testCase.name} within 10 rendered rows at width ${width}`, () => {
+			it(`keeps the ${testCase.name} within 12 rendered rows at width ${width}`, () => {
 				const ctx = createCommandContext()
 				const { api, sendMessage } = createExtensionApi()
-				const selected = selection(testCase.input)
-				expect(selected.lenses).toHaveLength(testCase.lensCount)
+				const selection = selected(testCase.input)
+				expect(selection.lenses).toHaveLength(testCase.lensCount)
 				const report = reporter(ctx, true, api)
-				report.scope(target(), RUN_DIRECTORY)
-				expectAtMostTenRenderedRows(ctx, width, "scope")
-				report.selection(selected)
-				expectAtMostTenRenderedRows(ctx, width, "selection")
-				report.progress(progress(selected, false))
-				expectAtMostTenRenderedRows(ctx, width, "progress")
+				report.scope(target())
+				expectWidgetBudget(ctx, width, "scope")
+				report.selection(selection)
+				expectWidgetBudget(ctx, width, "selection")
+				report.progress(progress(selection))
+				const rows = expectWidgetBudget(ctx, width, "progress").join("\n")
+				expect(rows).toContain("done")
+				expect(rows).toContain("2 issues")
+				expect(rows).not.toContain("0 issues")
+				expect(rows).not.toContain("candidates")
+				expect(rows).not.toContain("Effective concurrency")
+				expect(rows).not.toContain(target().scope.checkoutPath)
+				expect(rows).not.toContain(HEAD_SHA)
+				expect(rows).toContain(HEAD_SHA.slice(0, 7))
+				report.progress({ ...progress(selection), phase: "reconciling" })
 				report.error(new Error(`Failure with extended diagnostics: ${"error detail ".repeat(40)}`))
-				expectAtMostTenRenderedRows(ctx, width, "error")
-				report.result(result(selected))
-				expectAtMostTenRenderedRows(ctx, width, "result")
-				expect(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1)?.[1]).toEqual([
-					"Review complete: 1 final finding.",
-					"Complete review coverage.",
-				])
-
-				expect(sendMessage).toHaveBeenCalledTimes(2)
-				const transcript = [
-					...sendMessage.mock.calls.map(([message]) => String(message.content)),
-					...vi.mocked(ctx.ui.notify).mock.calls.map(([message]) => message),
-				].join("\n")
-				expect(occurrences(transcript, `${BASE_SHA}..${HEAD_SHA}`)).toBe(1)
-				expect(occurrences(transcript, CHECKOUT_PATH)).toBeGreaterThanOrEqual(1)
-				expect(occurrences(transcript, RUN_DIRECTORY)).toBeGreaterThanOrEqual(1)
-				for (const lens of selected.lenses) {
-					expect(occurrences(transcript, lens.reasons[1] ?? "")).toBe(1)
+				expect(expectWidgetBudget(ctx, width, "error").join("\n")).toContain("Review failed:")
+				report.result(result(selection))
+				expect(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1)?.[1]).toBeUndefined()
+				expect(sendMessage).toHaveBeenCalledTimes(1)
+				expect(sendMessage.mock.calls[0]?.[0].customType).toBe(REVIEW_RESULT_CUSTOM_TYPE)
+				expect(String(sendMessage.mock.calls[0]?.[0].content)).toContain("✔ Review done · 1 finding (1 P2)")
+				for (const notification of vi.mocked(ctx.ui.notify).mock.calls) {
+					expect(notification[0]).not.toContain("Review complete:")
+					expect(notification[0]).not.toContain("Complete review coverage.")
 				}
-				expect(transcript).toContain(`Effective concurrency: ${selected.slotCount}`)
-				expect(transcript).toContain("Complete review coverage.")
-				expect(transcript).toContain(FINDING_TITLE)
-				expect(transcript).toContain(`Report: ${RUN_DIRECTORY}/summary/final.json`)
 			})
 		}
 	}
+
+	it("renders issue states, stage mapping, PR title, and theme colors", () => {
+		const ctx = createCommandContext()
+		const { api } = createExtensionApi()
+		const report = reporter(ctx, true, api)
+		const prTarget = target()
+		prTarget.scope.pullRequest = {
+			provider: "github",
+			url: "https://github.com/owner/repository/pull/42",
+			number: 42,
+			title: "Improve review target handling",
+			reportedHeadSha: HEAD_SHA,
+			headMoved: false,
+		}
+		const selection = selected({ all: true })
+		report.scope(prTarget)
+		report.selection(selection)
+		const current = progress(selection)
+		current.phase = "reconciling"
+		current.lenses[0].status = "submitted"
+		current.lenses[0].candidateCount = 2
+		current.lenses[1].status = "running"
+		current.lenses[1].candidateCount = 1
+		current.lenses[2].status = "failed"
+		current.lenses[2].error = `A concise lens failure ${"detail ".repeat(20)}`
+		current.reconciliation = { status: "fallback", reason: "Durable fallback published." }
+		report.progress(current)
+		const rows = expectWidgetBudget(ctx, 120, "states")
+		const output = rows.join("\n")
+		expect(output).toContain("Improve review target handling")
+		expect(output).toContain("2 issues")
+		expect(output).toContain("1 issue so far")
+		expect(output).toContain("A concise lens failure")
+		expect(output).toContain("dedupe & verify issues")
+		expect(output).toContain("write findings")
+		expect(output).toContain("\u001b[")
+		const green = testTheme.fg("success", "marker").split("marker")[0]
+		const yellow = testTheme.fg("warning", "marker").split("marker")[0]
+		const red = testTheme.fg("error", "marker").split("marker")[0]
+		expect(rows.find((row) => row.includes("● spec"))?.startsWith(green)).toBe(true)
+		expect(rows.find((row) => row.includes("◐ standards"))?.startsWith(yellow)).toBe(true)
+		expect(rows.find((row) => row.includes("✖ operational"))?.startsWith(red)).toBe(true)
+		expect(rows.find((row) => row.includes("2 Merge"))?.startsWith(yellow)).toBe(true)
+		const dim = testTheme.fg("dim", "marker").split("marker")[0]
+		expect(rows.find((row) => row.includes("3 Report"))?.startsWith(dim)).toBe(true)
+		expect(rows.length).toBeLessThanOrEqual(12)
+
+		current.phase = "finalizing"
+		report.progress(current)
+		const finalizingRows = widgetRows(ctx, 120)
+		expect(finalizingRows.find((row) => row.includes("2 Merge"))?.startsWith(green)).toBe(true)
+		expect(finalizingRows.find((row) => row.includes("3 Report"))?.startsWith(yellow)).toBe(true)
+	})
+
+	it("uses singular file wording and does not fail Merge before it starts", () => {
+		const ctx = createCommandContext()
+		const { api } = createExtensionApi()
+		const report = reporter(ctx, true, api)
+		const oneFile = target()
+		oneFile.scope.files = { changed: 1, anchorable: 1, unanchorable: 0 }
+		const selection = selected({ lenses: ["spec"] })
+		report.scope(oneFile)
+		report.selection(selection)
+		const current = progress(selection)
+		current.reconciliation = { status: "fallback", reason: "An early fallback checkpoint." }
+		report.progress(current)
+		report.error(new Error("reviewer failed before reconciliation"))
+		const rows = widgetRows(ctx, 120)
+		expect(rows[0]).toContain("1 file ·")
+		expect(rows[0]).not.toContain("1 files")
+		const merge = rows.find((row) => row.includes("2 Merge"))
+		expect(merge).not.toContain("✖")
+		expect(merge).toContain("○")
+	})
+
+	it("suppresses the TUI-only finalizing phase on non-TUI surfaces", () => {
+		const ctx = createCommandContext()
+		ctx.mode = "rpc"
+		const { api } = createExtensionApi()
+		const report = reporter(ctx, true, api)
+		const selection = selected({ lenses: ["spec"], concurrency: 1 })
+		report.scope(target())
+		report.selection(selection)
+		report.progress({ ...progress(selection), phase: "reconciling" })
+		const priorCall = vi.mocked(ctx.ui.setWidget).mock.calls.at(-1)
+		const updateCount = vi.mocked(ctx.ui.setWidget).mock.calls.length
+		report.progress({ ...progress(selection), phase: "finalizing" })
+		const finalCall = vi.mocked(ctx.ui.setWidget).mock.calls.at(-1)
+		expect(finalCall).toEqual(priorCall)
+		expect(vi.mocked(ctx.ui.setWidget).mock.calls).toHaveLength(updateCount)
+		expect(JSON.stringify(finalCall)).not.toContain("finalizing")
+	})
+
+	it("keeps the exact legacy notification sequence on non-TUI surfaces", () => {
+		const ctx = createCommandContext()
+		ctx.mode = "rpc"
+		const { api, sendMessage } = createExtensionApi()
+		const report = reporter(ctx, true, api)
+		const selection = selected({ lenses: ["spec"], concurrency: 1 })
+		report.scope(target(), "/private/review/run")
+		report.selection(selection)
+		report.result(result(selection))
+		expect(vi.mocked(ctx.ui.notify).mock.calls.map(([message]) => message)).toEqual([
+			`Review scope pinned:\n${BASE_SHA}..${HEAD_SHA}\nCheckout: ${target().scope.checkoutPath}\nRun directory: /private/review/run`,
+			"Review lenses:\nspec (Selected with --lens.)\nEffective concurrency: 1",
+			"Review complete: 1 final finding.\nComplete review coverage.\nP2 src/value.ts:2 The new export lacks a behavior guard\nReport: /private/review/output/summary/final.json",
+		])
+		expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
+			"review-panel",
+			["Review complete: 1 final finding.", "Complete review coverage."],
+			{ placement: "aboveEditor" },
+		)
+		expect(sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("uses the legacy string-array widget for a non-TUI error", () => {
+		const ctx = createCommandContext()
+		ctx.mode = "rpc"
+		const { api } = createExtensionApi()
+		const report = reporter(ctx, true, api)
+		report.scope(target())
+		report.selection(selected({ lenses: ["spec"], concurrency: 1 }))
+		report.progress(progress(selected({ lenses: ["spec"] })))
+		report.error(new Error("panel exploded"))
+		expect(ctx.ui.setWidget).toHaveBeenLastCalledWith(
+			"review-panel",
+			["Review branch; 3 changed files", "Lenses: 1; concurrency 1", "Review failed: panel exploded"],
+			{ placement: "aboveEditor" },
+		)
+	})
 })

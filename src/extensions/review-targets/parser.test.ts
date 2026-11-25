@@ -38,6 +38,38 @@ describe("review target parser", () => {
 		expect(parseReviewTargetArgs(["branch", "feature"])).toMatchObject({ kind: "branch", base: undefined })
 	})
 
+	it("accepts bare branches, PR/MR URLs, and an explicit divergence preference", () => {
+		expect(parseReviewTargetArgs(["my-branch", "--prefer", "remote"])).toMatchObject({
+			kind: "branch",
+			branch: "my-branch",
+			prefer: "remote",
+		})
+		expect(parseReviewTargetArgs(["https://github.com/owner/repository/pull/42"])).toMatchObject({
+			kind: "pull-request",
+			provider: "github",
+			project: "owner/repository",
+			number: 42,
+		})
+		expect(
+			parseReviewTargetArgs(["https://gitlab.example.test/group/nested/repository/-/merge_requests/7"]),
+		).toMatchObject({
+			kind: "pull-request",
+			provider: "gitlab",
+			host: "gitlab.example.test",
+			project: "group/nested/repository",
+			number: 7,
+		})
+	})
+
+	it("still supports the explicit branch form with --prefer", () => {
+		expect(parseReviewTargetArgs(["branch", "feature", "--prefer=local", "--base=main"])).toMatchObject({
+			kind: "branch",
+			branch: "feature",
+			prefer: "local",
+			base: "main",
+		})
+	})
+
 	it("selects the default panel and caps slots at the lens count", () => {
 		const resolved = resolveReviewPanel(parseReviewTargetArgs([]).panel)
 		expect(resolved.lenses.map((lens) => lens.id)).toEqual(["spec", "standards", "operational", "adversarial"])
@@ -84,7 +116,9 @@ describe("review target parser", () => {
 		[["branch", "feature", "--base", "--fetch"], "requires a ref value"],
 		[["branch", "feature", "--base", "main", "--base", "other"], "more than once"],
 		[["branch", "feature", "extra"], "Unexpected positional argument"],
-		[["other"], "Unknown review target"],
+		[["https://github.com/owner/repository/issues/42"], "Invalid PR/MR URL"],
+		[["https://gitlab.example.test/group/project/merge_requests/4"], "Invalid PR/MR URL"],
+		[["feature", "--prefer", "elsewhere"], "--prefer must be local or remote"],
 		[["--base", "main"], "requires an explicit working-tree or branch target"],
 		[["working-tree", "--lens", "unknown"], "Unknown review lens"],
 		[["working-tree", "--lens", "spec", "--all"], "cannot be combined"],

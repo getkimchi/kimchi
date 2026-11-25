@@ -23,9 +23,10 @@ import { submitFinding, submitReply } from "../review-submit/store.js"
 import { parseReviewTargetArgs } from "../review-targets/parser.js"
 import { resolveReviewTarget } from "../review-targets/resolve.js"
 import type { ExplicitReviewRequest, ResolvedReviewTarget } from "../review-targets/types.js"
+import { resolveReviewPanel } from "./lenses.js"
 import { reviewPanelPaths } from "./output.js"
-import { runReviewPanel, wrapUpReviewPanel } from "./panel.js"
-import { ReviewPanelStateStore } from "./state.js"
+import { finalizeReviewPanelWithWriterRescan, runReviewPanel, wrapUpReviewPanel } from "./panel.js"
+import { createInitialPanelState, ReviewPanelStateStore } from "./state.js"
 import type { ReviewPanelDroppedUsage, ReviewPanelProgress, RunReviewPanelOptions } from "./types.js"
 
 // Keep the real child loader/session/tool path; only machine-specific prompt
@@ -523,6 +524,12 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 			}),
 		)
 		expect(progress.some((update) => update.phase === "reviewing" && update.counts.candidates > 0)).toBe(true)
+		const reconciling = progress.findIndex((update) => update.phase === "reconciling")
+		const finalizing = progress.findIndex((update) => update.phase === "finalizing")
+		const complete = progress.findIndex((update) => update.phase === "complete")
+		expect(reconciling).toBeGreaterThanOrEqual(0)
+		expect(finalizing).toBeGreaterThan(reconciling)
+		expect(complete).toBeGreaterThan(finalizing)
 		const maximumRunning = Math.max(...progress.map((update) => update.counts.running))
 		expect(maximumRunning).toBe(2)
 		expect(result.state.lenses.map((lens) => lens.status)).toEqual(["submitted", "submitted", "submitted", "submitted"])
@@ -539,6 +546,22 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 			new Set(requests.filter((request) => request.agent !== "reconciliation").map((request) => request.agent)),
 		).toEqual(new Set(["spec", "standards", "operational", "adversarial"]))
 		expect(usageWriters).toEqual(new Set(["spec", "standards", "operational", "adversarial", "reconciliation"]))
+	})
+
+	it("preserves the legacy phase during coverage publication outside the TUI", async () => {
+		const { ctx } = await scriptedContext(defaultScript)
+		ctx.mode = "rpc"
+		const phases: string[] = []
+		await runReviewPanel(
+			runOptions(ctx, await target(), {
+				lenses: ["spec"],
+				concurrency: 1,
+				onProgress: (update) => phases.push(update.phase),
+			}),
+		)
+		expect(phases).toContain("reconciling")
+		expect(phases.at(-1)).toBe("complete")
+		expect(phases).not.toContain("finalizing")
 	})
 
 	it("wraps up with expected identity through symlink aliases", async () => {
@@ -1069,6 +1092,60 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 			artifacts,
 		)
 		expect(usageEvents).toHaveLength(usageCount)
+	})
+
+	it("moves the exhausted writer rescan fallback through finalizing before complete", async () => {
+		const resolvedTarget = await target()
+		const selection = resolveReviewPanel({ lenses: ["spec"], all: false, concurrency: 1 })
+		const store = await ReviewPanelStateStore.create(
+			createInitialPanelState(
+				resolvedTarget,
+				selection,
+				{ lenses: ["spec"], all: false, concurrency: 1 },
+				[],
+				outputDir,
+			),
+			outputDir,
+		)
+		const phases = ["reconciling"]
+		let writer = 0
+		try {
+			const result = await finalizeReviewPanelWithWriterRescan(store, outputDir, {
+				hasVerifier: false,
+				beforeReport: () => {
+					phases.push("finalizing")
+				},
+				beforeStaleCandidateCheck: async () => {
+					writer += 1
+					await store.update((state) => {
+						state.candidates.push({
+							id: `spec-${writer}`,
+							lens: "spec",
+							finding: {
+								schema_version: "review-finding/v1",
+								id: `spec-${writer}`,
+								writer: "spec",
+								seq: writer,
+								created_at: new Date().toISOString(),
+								path: "value.ts",
+								line: 2,
+								title: `Writer submission ${writer}`,
+								description: `Writer submission ${writer}`,
+								explanation: "The late-writer fixture submitted this finding from static inspection.",
+								suggestion: "Keep the final fallback fresh.",
+								priority: "P2",
+								type: "bug",
+							},
+						})
+					})
+				},
+			})
+			phases.push(result.progress.phase)
+			expect(writer).toBe(4)
+			expect(phases).toEqual(["reconciling", "finalizing", "complete"])
+		} finally {
+			await store.close()
+		}
 	})
 
 	it("rescans late writers at the publication boundary during wrap-up", async () => {

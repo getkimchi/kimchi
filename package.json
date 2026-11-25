@@ -44,6 +44,7 @@
 		"test:e2e:tui:ci": "KIMCHI_PROXY_HELPER=\"$PWD/bin/proxy-helper\" node scripts/run-tui-e2e.js",
 		"test:e2e:acp": "pnpm run build:binary && vitest run --config tests/e2e/acp/vitest.config.ts",
 		"test:e2e:acp:ci": "KIMCHI_PROXY_HELPER=\"$PWD/bin/proxy-helper\" vitest run --config tests/e2e/acp/vitest.config.ts",
+		"test:e2e:print": "pnpm run build:binary && vitest run --config tests/e2e/print/vitest.config.ts",
 		"test:e2e:rpc": "pnpm run build:binary && vitest run --config tests/e2e/rpc/vitest.config.ts",
 		"test:e2e:mcp": "pnpm run build:binary && pnpm run test:e2e:mcp:tui && pnpm run test:e2e:mcp:acp && pnpm run test:e2e:mcp:conformance",
 		"test:e2e:mcp:live": "node scripts/mcp-live-probe.mjs",

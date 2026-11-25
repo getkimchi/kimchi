@@ -20,8 +20,10 @@ import {
 	isTerminalUiMode,
 	normalizeBooleanFlagArgs,
 	normalizeResumeIdArgs,
+	normalizeReviewBooleanArgs,
 	parseCliArgs,
 	populateCliArgs,
+	printReviewRequiredError,
 	resolveBashProcessLimitSeconds,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
@@ -45,6 +47,51 @@ describe("value-flag parsing", () => {
 		expect(getParsedCliArgs().options.models).toBe("kimchi-dev/auto,kimchi-dev/glm-5.3")
 		populateCliArgs([])
 		expect(getParsedCliArgs().options.models).toBeUndefined()
+	})
+})
+
+describe("normalizeReviewBooleanArgs", () => {
+	it("keeps the positional prompt out of the upstream extension-flag value parser", () => {
+		expect(normalizeReviewBooleanArgs(["--review", "Review target"])).toEqual(["--review=true", "Review target"])
+		expect(normalizeReviewBooleanArgs(["--review=false", "Review target"])).toEqual(["--review=false", "Review target"])
+		expect(normalizeReviewBooleanArgs(["--review-writer", "final"])).toEqual(["--review-writer", "final"])
+	})
+})
+
+describe("print review startup", () => {
+	it.each([
+		["text", ["-p", "/review branch feature --base main"]],
+		["JSON", ["-p", "--mode", "json", "/review --bogus"]],
+	])("requires --review for a %s print prompt without changing the prompt", (_mode, args) => {
+		populateCliArgs(args)
+		expect(printReviewRequiredError(args)).toBe(
+			"Print-mode /review requires --review. Pass --review to enable review mode and its output protocol.",
+		)
+		expect(getParsedCliArgs().options.review).toBeUndefined()
+		expect(args).not.toContain("--review=true")
+		populateCliArgs([])
+	})
+
+	it("does not opt into review for other prompts or interactive use", () => {
+		for (const args of [["-p", "review this code"], ["/review --bogus"]]) {
+			populateCliArgs(args)
+			expect(printReviewRequiredError(args)).toBeUndefined()
+			expect(getParsedCliArgs().options.review).toBeUndefined()
+		}
+		populateCliArgs([])
+	})
+
+	it("requires enabling a disabled or unspecified review mode", () => {
+		for (const args of [...["--review=false"], ...["--review"]]) {
+			const invocation = ["-p", ...args, "/review --bogus"]
+			populateCliArgs(invocation)
+			if (args[0] === "--review=false") {
+				expect(printReviewRequiredError(invocation)).toContain("requires --review")
+			} else {
+				expect(printReviewRequiredError(invocation)).toBeUndefined()
+			}
+		}
+		populateCliArgs([])
 	})
 })
 

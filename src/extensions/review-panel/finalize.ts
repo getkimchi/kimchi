@@ -249,6 +249,10 @@ export interface FinalizeReviewPanelOptions {
 	hasVerifier: boolean
 	/** Synchronize source writers immediately before replacing any final artifact. */
 	beforePublish?: () => Promise<void>
+	/** @internal Inject a new writer during the publication-boundary regression test. */
+	beforeStaleCandidateCheck?: () => void | Promise<void>
+	/** Reconciliation and findings are complete; report/summary writing is starting. */
+	beforeReport?: () => void | Promise<void>
 	/** Trusted sandbox or coordinator environment limitations, merged with reviewer reports. */
 	environmentGaps?: EnvironmentGap[]
 }
@@ -447,6 +451,7 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 		})
 		findings = published.records
 	}
+	await options.beforeReport?.()
 	const hasReplies = replyBatch ? replyBatch.records.length > 0 : await fileExists(paths.repliesPath)
 	const coverage = coverageFor(store.state, findings)
 	await store.update((state) => {

@@ -20,14 +20,14 @@ for (const scenario of [
 	{
 		name: "complete zero-finding",
 		partial: false,
-		finalText: "Review complete: 0 final findings.",
+		finalText: "Review done · no findings · working-tree → HEAD",
 		coverage: "Complete review coverage.",
 	},
 	{
 		name: "partial with unfinished lens",
 		partial: true,
-		finalText: "Review partial: 0 final findings.",
-		coverage: "unfinished lenses: spec",
+		finalText: "Review failed · no findings · working-tree → HEAD",
+		coverage: "Partial coverage: spec did not finish.",
 	},
 ] as const) {
 	test(`review command reports a ${scenario.name} run`, async ({ terminal }) => {
@@ -42,12 +42,10 @@ for (const scenario of [
 			},
 			async () => {
 				terminal.submit("/review working-tree --lens spec --concurrency 1")
-				await waitForText(terminal, "Review scope pinned:", { full: true })
-				await waitForText(terminal, "spec (Selected with --lens.)", { full: true })
-				await waitForText(terminal, "Effective concurrency: 1", { full: true })
 				await waitForText(terminal, scenario.finalText, { full: true })
-				await waitForText(terminal, scenario.coverage, { full: true })
-				await waitForText(terminal, "No findings.", { full: true })
+				if (scenario.partial) await waitForText(terminal, scenario.coverage, { full: true })
+				expect(viewText(terminal)).not.toContain("Review complete:")
+				expect(viewText(terminal)).not.toContain("Effective concurrency:")
 			},
 		)
 	})
@@ -64,13 +62,21 @@ test("review command publishes final findings to the transcript", async ({ termi
 				seedReviewRepository(workDir)
 				writeFileSync(join(workDir, REVIEW_VALUE_FILE), "export const value = 1\nexport const changed = false\n")
 			},
-			responses: reviewResponseScripts({ finding: true }),
+			responses: reviewResponseScripts({ finding: true, critical: true }),
 		},
 		async () => {
 			terminal.submit("/review working-tree --lens spec --concurrency 1")
-			await waitForText(terminal, "Review complete: 1 final finding.", { full: true })
+			await waitForText(terminal, "✔ Review done · 2 findings (1 P0, 1 P1) · working-tree → HEAD", {
+				full: true,
+			})
+			await waitForText(terminal, "P0 value.ts:2", { full: true })
 			await waitForText(terminal, "P1 value.ts:2", { full: true })
-			await waitForText(terminal, "New export changes behavior without a guard", { full: true })
+			await waitForText(terminal, "critical authorization bypass because every caller now enables", {
+				full: true,
+			})
+			await waitForText(terminal, "Consumers of the changed export can observe unintended behavior on the main path.", {
+				full: true,
+			})
 			expect(viewText(terminal)).not.toContain("(widget truncated)")
 		},
 	)
@@ -109,8 +115,8 @@ for (const cancellationKey of ["Escape", "Ctrl+C"] as const) {
 					grandchildPid = Number(readFileSync(requiredInterruption().grandchildPidFile, "utf8"))
 					if (cancellationKey === "Escape") terminal.keyPress(Key.Escape)
 					else terminal.keyCtrlC()
-					await waitForText(terminal, "Review partial: 0 final findings.", { timeoutMs: 20_000 })
-					await waitForText(terminal, "unfinished lenses: spec")
+					await waitForText(terminal, "Review failed · no findings · working-tree → HEAD", { timeoutMs: 20_000 })
+					await waitForText(terminal, "Partial coverage: spec did not finish.")
 					await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_100))
 					expect(existsSync(requiredInterruption().survived)).toBe(false)
 					if (pid === undefined || grandchildPid === undefined) throw new Error("Missing reviewer command PID")
