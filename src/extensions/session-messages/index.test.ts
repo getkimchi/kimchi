@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import net from "node:net"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { stripVTControlCharacters } from "node:util"
@@ -11,6 +12,7 @@ import { listSubagents, messageSubagent } from "../agents/index.js"
 import type { AgentRecord } from "../agents/personas/types.js"
 import { clearPermissionModeEnv, setPermissionMode } from "../permissions/mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "../permissions/mode-controller-registry.js"
+import { PromptQueue, setSessionPromptQueue } from "../permissions/prompt-queue.js"
 import {
 	CROSS_SESSION_MESSAGE_TYPE,
 	CROSS_SESSION_NOTICE_TYPE,
@@ -242,6 +244,29 @@ describe("session-messages", () => {
 		}
 	})
 
+	it("asks about a held message only after the permission prompt on screen is answered", async () => {
+		const dir = tempDir()
+		const strict = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000aaaaaa1", name: "strict" })
+		const looseId = "0190aaaa-0000-7000-8000-00000bbbbbb2"
+		const loose = await startSession(dir, { id: looseId, name: "loose" })
+		setPermissionMode(looseId, { mode: "yolo", initiatedBy: "user", source: "runtime" })
+		// Pi has one dialog slot: a question shown now would replace the prompt and orphan its tool call.
+		const prompts = new PromptQueue()
+		setSessionPromptQueue(loose.harness.api.events, prompts)
+		let answer = (_approved: boolean) => {}
+		void prompts.enqueue(() => new Promise<boolean>((resolve) => (answer = resolve)))
+		try {
+			await strict.run("send_message", { to: "loose", message: "Delete the cache." })
+			await new Promise((resolve) => setTimeout(resolve, 20))
+			expect(loose.ctx.ui.confirm).not.toHaveBeenCalled()
+			answer(true)
+			await vi.waitFor(() => expect(loose.ctx.ui.confirm).toHaveBeenCalledTimes(1))
+		} finally {
+			unregisterSessionPermissionFlagController(looseId)
+			clearPermissionModeEnv(looseId)
+		}
+	})
+
 	it("tells the sender when its held message is declined or expires", async () => {
 		const dir = tempDir()
 		const strictId = "0190aaaa-0000-7000-8000-00000aaaaaa1"
@@ -411,6 +436,36 @@ describe("session-messages", () => {
 
 		await alpha.harness.getRegisteredCommand("session-messages").handler("disable", alpha.ctx as never)
 		expect(await alpha.run("send_message", { to: "beta", message: "hi" })).toBe(DISABLED_NOTICE)
+	})
+
+	it("does not wait long for a frozen session", async () => {
+		const dir = tempDir()
+		const alpha = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000aaaaaa1", name: "alpha" })
+		// Accepts the connection, never answers: a Kimchi suspended with Ctrl+Z.
+		const held: net.Socket[] = []
+		const frozen = net.createServer((socket) => held.push(socket))
+		await new Promise<void>((resolve) => frozen.listen(join(dir, "fffff1.sock"), resolve))
+		running.push(() => {
+			for (const socket of held) socket.destroy()
+			return new Promise((resolve) => frozen.close(resolve))
+		})
+
+		const started = Date.now()
+		expect(await alpha.run("list_agents", {})).toContain("No other Kimchi session is running on this machine.")
+		expect(Date.now() - started).toBeLessThan(1500)
+	})
+
+	it("leaves a session's inbox with the process that opened it first", async () => {
+		const dir = tempDir()
+		const alpha = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000aaaaaa1", name: "alpha" })
+		const first = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "beta" })
+		// The same session resumed in a second terminal.
+		const second = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "beta" })
+
+		expect(await alpha.run("send_message", { to: "beta", message: "hi" })).toContain("Delivered to beta [bbbbb2]")
+		expect(first.harness.sendMessage).toHaveBeenCalledTimes(1)
+		expect(second.harness.sendMessage).not.toHaveBeenCalled()
+		expect(await second.run("list_agents", {})).toContain("This session has no inbox")
 	})
 
 	it("drops closed sessions and removes sockets left by crashed ones", async () => {

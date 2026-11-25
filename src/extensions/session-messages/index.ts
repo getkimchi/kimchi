@@ -48,6 +48,7 @@ import { readJson, readJsonCached, writeJson } from "../../config/json.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { listSubagents, messageSubagent } from "../agents/index.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
+import { inDialogTurn } from "../permissions/prompt-queue.js"
 import { workRepository } from "../work-attribution/scope.js"
 
 export const CROSS_SESSION_MESSAGE_TYPE = "cross-session-message"
@@ -56,8 +57,11 @@ export const CROSS_SESSION_NOTICE_TYPE = "cross-session-notice"
 
 /** Bounds one request or reply, so a peer cannot make a session buffer without limit. */
 const MAX_FRAME_CHARS = 64 * 1024
-/** A live session answers at once; longer means it is frozen, and the list skips it. */
-const REQUEST_TIMEOUT_MS = 2000
+/**
+ * A live session answers within milliseconds; past this it counts as frozen (suspended with Ctrl+Z, say), and
+ * the list skips it rather than make the agent wait.
+ */
+const REQUEST_TIMEOUT_MS = 600
 /** A held message waits this long for its user; then its sender hears it expired. */
 const HOLD_EXPIRY_MS = 5 * 60_000
 /**
@@ -290,14 +294,11 @@ export function createSessionMessagesExtension(
 			if (readPreference() === undefined) {
 				if (asking) await asking
 				else {
-					asking = ctx.ui
-						.confirm(
-							OFFER_TITLE,
-							`I see you have a session open in this repository, “${peers[0].name}”, that may already know this work. I can ask it instead of starting a subagent. Turn on session messages? Your choice is saved for future sessions; /session-messages changes it.`,
-						)
-						.finally(() => {
-							asking = undefined
-						})
+					const question = `I see you have a session open in this repository, “${peers[0].name}”, that may already know this work. I can ask it instead of starting a subagent. Turn on session messages? Your choice is saved for future sessions; /session-messages changes it.`
+					// Pi shows one dialog at a time: the question waits for permission prompts, which it would replace.
+					asking = inDialogTurn(pi.events, () => ctx.ui.confirm(OFFER_TITLE, question)).finally(() => {
+						asking = undefined
+					})
 					const accepted = await asking
 					if (readPreference() === undefined) writePreference(accepted)
 					ctx.ui.notify(readPreference() === true ? ENABLED_NOTICE : DISABLED_NOTICE, "info")
@@ -364,18 +365,18 @@ export function createSessionMessagesExtension(
 				deliver()
 				return { ok: true }
 			}
-			const shownAt = Date.now()
-			void ctx.ui
-				.confirm(
+			// Pi shows one dialog at a time: the question waits for permission prompts, which it would replace.
+			void inDialogTurn(pi.events, async () => {
+				const shownAt = Date.now()
+				const approved = await ctx.ui.confirm(
 					`Message from ${request.from}`,
 					`That session runs in ${request.mode} mode and this one in ${mode}. Let the message in?\n\n${request.text}`,
 					{ timeout: HOLD_EXPIRY_MS },
 				)
-				.then((approved) => {
-					if (approved) deliver()
-					// The timeout answers no too; only the time taken tells it from a decline (a second's slack).
-					else notifySender(request.ref, Date.now() - shownAt >= HOLD_EXPIRY_MS - 1000 ? "expired" : "declined")
-				})
+				// The timeout answers no too; only the time on screen tells it from a decline (a second's slack).
+				return approved ? "approved" : Date.now() - shownAt >= HOLD_EXPIRY_MS - 1000 ? "expired" : "declined"
+			})
+				.then((outcome) => (outcome === "approved" ? deliver() : notifySender(request.ref, outcome)))
 				.catch(() => {})
 			return { ok: true, held: true }
 		}
@@ -389,6 +390,14 @@ export function createSessionMessagesExtension(
 			try {
 				mkdirSync(dir, { recursive: true, mode: 0o700 })
 				chmodSync(dir, 0o700)
+				// The same session open in another process keeps its inbox; only a socket nobody answers is stale.
+				if (
+					await ask(path, { type: "info" }).then(
+						() => true,
+						() => false,
+					)
+				)
+					return
 				rmSync(path, { force: true })
 				const listening = net.createServer((socket) => {
 					socket.on("error", () => {})
