@@ -14,7 +14,7 @@ vi.mock("pi-mcp-adapter/config", () => ({
 	setPiMcpConfigEnabled: vi.fn(),
 }))
 
-import { LEGACY_PROJECT_MCP_CONFIG, loadKimchiMcpConfig } from "./config.js"
+import { getSharedMcpConfigPath, LEGACY_PROJECT_MCP_CONFIG, loadKimchiMcpConfig } from "./config.js"
 
 describe("loadKimchiMcpConfig", () => {
 	let cwd: string
@@ -37,7 +37,7 @@ describe("loadKimchiMcpConfig", () => {
 		const result = loadKimchiMcpConfig({ cwd })
 
 		expect(result).toEqual({ config, warnings: [] })
-		expect(upstream.load).toHaveBeenCalledWith(undefined, cwd)
+		expect(upstream.load).toHaveBeenCalledWith(getSharedMcpConfigPath(), cwd)
 	})
 
 	it("loads user-only config outside the repository and forces programmatic mode", () => {
@@ -60,7 +60,7 @@ describe("loadKimchiMcpConfig", () => {
 		const result = loadKimchiMcpConfig({ cwd })
 
 		expect(result).toEqual({ config, warnings: [] })
-		expect(upstream.load).toHaveBeenCalledWith(undefined, cwd)
+		expect(upstream.load).toHaveBeenCalledWith(getSharedMcpConfigPath(), cwd)
 	})
 
 	it("restores explicit selected-file precedence when a standard project source overrides the same server", () => {
@@ -116,6 +116,18 @@ describe("loadKimchiMcpConfig", () => {
 		})
 	})
 
+	it("discovers with the shared config path the adapter is handed, without selected-file precedence", () => {
+		const config: McpConfig = { mcpServers: { docs: { url: "https://example.test/mcp" } } }
+		upstream.load.mockReturnValue(config)
+
+		const result = loadKimchiMcpConfig({ cwd })
+
+		// The adapter receives getSharedMcpConfigPath() as configPath, so its user layer is that file, not mcp-adapter.json.
+		expect(upstream.load).toHaveBeenCalledExactlyOnceWith(getSharedMcpConfigPath(), cwd)
+		expect(result.configPath).toBeUndefined()
+		expect(result.useProgrammaticConfig).toBeUndefined()
+	})
+
 	it("prefers an explicit config path over the legacy project file", () => {
 		const legacyPath = join(cwd, LEGACY_PROJECT_MCP_CONFIG)
 		mkdirSync(dirname(legacyPath), { recursive: true })
@@ -136,6 +148,6 @@ describe("loadKimchiMcpConfig", () => {
 		const result = loadKimchiMcpConfig({ cwd })
 
 		expect(result.configPath).toBeUndefined()
-		expect(upstream.load).toHaveBeenCalledWith(undefined, cwd)
+		expect(upstream.load).toHaveBeenCalledWith(getSharedMcpConfigPath(), cwd)
 	})
 })

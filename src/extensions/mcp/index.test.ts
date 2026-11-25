@@ -1350,6 +1350,8 @@ describe("upstream MCP adapter facade", () => {
 				expect(failClosedReasons()[0]).toContain("config source changed")
 			})
 
+			// Mock-only guard: the first start and the refresh both pass the same overridePath, so a real configPath
+			// cannot change between them today. The test pins the source comparison in case that invariant ever breaks.
 			it("fails closed when the config file path changes", async () => {
 				configState.config = { mcpServers: { docs } }
 				configState.configPath = "/tmp/a.json"
@@ -1378,6 +1380,8 @@ describe("upstream MCP adapter facade", () => {
 				lookupMcpCall(harness.api, "mcp", {})
 
 				expect(lastLookupCatalog().config).toEqual({ mcpServers: {} })
+				expect(failClosedReasons()).toHaveLength(1)
+				expect(failClosedReasons()[0]).toContain("config source changed")
 			})
 
 			it("fails closed when a later session starts in another cwd", async () => {
@@ -1406,10 +1410,46 @@ describe("upstream MCP adapter facade", () => {
 				upstream.api?.registerTool(tool("mcp", "MCP"))
 
 				configState.config = { mcpServers: { docs, jira } }
-				await restart(harness, createContext({ cwd: "/b", isProjectTrusted: () => true }))
+				await restart(harness, createContext({ cwd: "/a", isProjectTrusted: () => true }))
 				lookupMcpCall(harness.api, "mcp", {})
 
 				expect(lastLookupCatalog().config.mcpServers).toEqual({ docs, jira })
+				expect(failClosedReasons()).toEqual([])
+			})
+
+			// The adapter re-reads its config with ctx.cwd, so a fixed options.cwd cannot vouch for that read.
+			it("fails closed when the adapter session cwd changes under a fixed options.cwd", async () => {
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				createKimchiMcpAdapterExtension({ cwd: "/fixed" })(harness.api)
+				await start(harness, createContext({ cwd: "/a", isProjectTrusted: () => true }))
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				configState.config = { mcpServers: { docs, jira } }
+				await restart(harness, createContext({ cwd: "/b", isProjectTrusted: () => true }))
+				lookupMcpCall(harness.api, "mcp", {})
+
+				expect(lastLookupCatalog().config).toEqual({ mcpServers: {} })
+				expect(failClosedReasons()).toHaveLength(1)
+				expect(failClosedReasons()[0]).toContain("adapter session cwd changed")
+			})
+
+			it("logs refreshed config warnings as debug diagnostics only", async () => {
+				configState.config = { mcpServers: { docs } }
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				upstream.api?.registerTool(tool("mcp", "MCP"))
+
+				configState.warnings = ["Failed to load selected MCP config from /tmp/x.json: bad json"]
+				const later = await restart(harness)
+				lookupMcpCall(harness.api, "mcp", {})
+
+				const lines = vi.mocked(debugToolSurface).mock.calls.map(([line]) => line())
+				expect(lines).toContain(
+					"[mcp] call lookup refresh warning: Failed to load selected MCP config from /tmp/x.json: bad json",
+				)
+				expect(later.ui.notify).not.toHaveBeenCalled()
 				expect(failClosedReasons()).toEqual([])
 			})
 
@@ -1508,6 +1548,37 @@ describe("upstream MCP adapter facade", () => {
 				const refreshed = lastLookupCatalog().config.mcpServers[gateway.name]
 				expect(refreshed).toMatchObject({ url: gateway.entry.url, directTools: false })
 				expect(refreshed.lifecycle).toBeUndefined()
+			})
+
+			it("resolves a direct tool after shutdown and a replacement start re-register it", async () => {
+				const actual = await vi.importActual<typeof import("./call-facts.js")>("./call-facts.js")
+				callResolution.describeMcpCall.mockImplementation(actual.describeMcpCall)
+				configState.config = { mcpServers: { docs } }
+				metadataCache.loadMetadataCache.mockReturnValue({
+					version: 1,
+					servers: {
+						docs: {
+							configHash: computeServerHash(docs),
+							cachedAt: Date.now(),
+							resources: [],
+							tools: [{ name: "get_issue", annotations: { readOnlyHint: true } }],
+						},
+					},
+				})
+				const harness = createExtensionApi()
+				mcpAdapterExtension(harness.api)
+				await start(harness)
+				const firstDefinition = tool("docs_get_issue", "MCP: get_issue")
+				upstream.api?.registerTool(firstDefinition)
+				const expected = { kind: "tool", via: "direct", server: "docs", tool: "get_issue" }
+				expect(lookupMcpCall(harness.api, "docs_get_issue", {})).toMatchObject(expected)
+
+				await restart(harness)
+				const replacementDefinition = tool("docs_get_issue", "MCP: get_issue")
+				expect(replacementDefinition.parameters).not.toBe(firstDefinition.parameters)
+				upstream.api?.registerTool(replacementDefinition)
+
+				expect(lookupMcpCall(harness.api, "docs_get_issue", {})).toMatchObject(expected)
 			})
 
 			it("keeps registered tool names live across a refresh", async () => {

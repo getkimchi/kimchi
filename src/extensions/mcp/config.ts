@@ -134,7 +134,9 @@ export function loadKimchiMcpConfig(
 	// piConfig.mcpProjectConfigDir makes the legacy .kimchi layer upstream's
 	// normal project source, including its management UI and persistence paths.
 	const configPath = options.overridePath
-	const discovered = loadUpstreamMcpConfig(configPath, cwd)
+	// Discover with the same user-layer path the adapter is handed (index.ts falls back to the shared file), so
+	// Kimchi's trust decision and call lookup see the config the adapter loads.
+	const discovered = loadUpstreamMcpConfig(configPath ?? getSharedMcpConfigPath(), cwd)
 	if (!configPath) return { config: discovered, warnings: [] }
 
 	// pi-mcp-adapter treats configPath as a global layer, below its standard

@@ -144,6 +144,8 @@ interface FirstStartState {
 	projectTrusted: boolean
 	overridePath: string | undefined
 	cwd: string
+	/** The ctx.cwd the adapter reads its config with; options.cwd can differ from it. */
+	adapterCwd: string
 	gateway: McpGatewayServer | undefined
 	source: AdapterConfigSource
 }
@@ -520,7 +522,12 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	 * and nothing here prompts or warns. Any state that no longer matches the first start fails closed with an
 	 * empty server config, so every MCP call falls back to the normal approval flow.
 	 */
-	function refreshLookupConfig(store: McpCallCatalogStore, saved: FirstStartState, cwd: string): void {
+	function refreshLookupConfig(
+		store: McpCallCatalogStore,
+		saved: FirstStartState,
+		cwd: string,
+		adapterCwd: string,
+	): void {
 		// The adapter keeps its first programmatic config, so the lookup keeps it too.
 		if (saved.source.kind === "programmatic") return
 		const failClosed = (reason: string): void => {
@@ -531,8 +538,12 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			failClosed(`session cwd changed from ${saved.cwd} to ${cwd}`)
 			return
 		}
+		if (adapterCwd !== saved.adapterCwd) {
+			failClosed(`adapter session cwd changed from ${saved.adapterCwd} to ${adapterCwd}`)
+			return
+		}
 		try {
-			const { effectiveConfig, source } = resolveEffectiveMcpConfig({
+			const { effectiveConfig, source, selectedResult } = resolveEffectiveMcpConfig({
 				cwd: saved.cwd,
 				overridePath: saved.overridePath,
 				projectTrusted: saved.projectTrusted,
@@ -542,6 +553,10 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			if (!sameAdapterConfigSource(source, saved.source)) {
 				failClosed("adapter config source changed since the first session start")
 				return
+			}
+			// Debug only: the first start's warnings already replay to the user, so the refresh adds no UI warnings.
+			for (const warning of selectedResult.warnings) {
+				debugToolSurface(() => `[mcp] call lookup refresh warning: ${warning}`)
 			}
 			store.setConfig(effectiveConfig)
 		} catch (error) {
@@ -600,7 +615,14 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				loaded: { projectResult, userResult },
 			})
 			const { effectiveConfig, config, selectedResult, gateway, source } = resolved
-			firstStart = { projectTrusted, overridePath, cwd, gateway: adjustedGatewayServer, source }
+			firstStart = {
+				projectTrusted,
+				overridePath,
+				cwd,
+				adapterCwd: ctx.cwd,
+				gateway: adjustedGatewayServer,
+				source,
+			}
 			const { warnings: oauthWarnings } = migrateLegacyOAuthCredentials(config, { cwd })
 			const legacyConfigWarning = legacyMcpConfigWarning(cwd)
 			warnings = [
@@ -666,7 +688,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 			)
 			if (gateway !== undefined && !discoverGatewayAtStartup) registerGatewayRuntimeServer(pi, gateway)
 		} else if (catalogStore !== undefined && firstStart !== undefined) {
-			refreshLookupConfig(catalogStore, firstStart, options.cwd ?? ctx.cwd)
+			refreshLookupConfig(catalogStore, firstStart, options.cwd ?? ctx.cwd, ctx.cwd)
 		}
 		if (catalogStore !== undefined) {
 			const store = catalogStore

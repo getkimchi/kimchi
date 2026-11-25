@@ -383,7 +383,7 @@ cached catalog. The catalog is rebuilt when the config, the private catalogs,
 the `stat` of the cache file, or a TTL expiry changes. If the cache file cannot
 be `stat`ed, nothing is reused and every lookup rebuilds. Kimchi refreshes the
 config on each `session_start` in file-backed mode and keeps it in programmatic
-mode. If the config source or the session `cwd` changes, MCP calls fall back to
+mode. In file-backed mode, if the config source or the session `cwd` changes, MCP calls fall back to
 the normal approval flow until the next reload. Servers added at runtime
 resolve as `unknown` and keep the normal approval flow.
 
