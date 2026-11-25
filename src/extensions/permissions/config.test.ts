@@ -32,7 +32,9 @@ describe("loadConfig merging", () => {
 		expect(loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(12000)
 	})
 
-	it("reads the user file from the agent dir, not the home config dir", () => {
+	// Pi's getAgentDir reads PI_CODING_AGENT_DIR, which entry.ts sets from
+	// KIMCHI_CODING_AGENT_DIR; tests/smoke/binary.test.ts covers that step.
+	it("reads the user file from Pi's agent dir, not the home config dir", () => {
 		const homeDir = join(tmpCwd, ".config", "kimchi", "harness")
 		mkdirSync(homeDir, { recursive: true })
 		writeFileSync(join(homeDir, "permissions.json"), JSON.stringify({ classifierMaxTotalMs: 17000 }))

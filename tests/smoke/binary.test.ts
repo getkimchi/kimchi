@@ -206,11 +206,40 @@ describe("binary smoke tests", () => {
 				? JSON.parse(readFileSync(join(dir, "settings.json"), "utf-8")).resources
 				: undefined
 
-		it("keeps an inherited KIMCHI_CODING_AGENT_DIR", () => {
-			runBinary({ args: ["resources", "disable", "tools.web_fetch"], extraEnv: { KIMCHI_CODING_AGENT_DIR: stageDir } })
+		it("keeps an inherited KIMCHI_CODING_AGENT_DIR for Kimchi and Pi, expanding ~", { timeout: 35_000 }, () => {
+			// The stage dir sits under the temp HOME so `~/` can name it.
+			const home = resolve(getAgentDir(), "..", "..", "..")
+			const stageName = `stage-agent-${process.pid}`
+			const stage = join(home, stageName)
+			const homeSessionsBefore = new Set(listSessionFiles())
+			try {
+				runBinary({
+					args: ["-p", "hello"],
+					extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy", KIMCHI_CODING_AGENT_DIR: `~/${stageName}` },
+					throwOnError: false,
+					timeoutMs: 30_000,
+				})
 
-			expect(readResources(stageDir)).toEqual({ "tools.web_fetch": false })
-			expect(readResources(getAgentDir())?.["tools.web_fetch"]).toBeUndefined()
+				// cli.ts writes keybindings.json and Pi writes the session where entry.ts pointed them.
+				expect(existsSync(join(stage, "keybindings.json"))).toBe(true)
+				expect(listSessionFiles(join(stage, "sessions")).length).toBeGreaterThan(0)
+				expect(listSessionFiles().filter((file) => !homeSessionsBefore.has(file))).toEqual([])
+			} finally {
+				rmSync(stage, { recursive: true, force: true })
+			}
+		})
+
+		it("recomputes a derived dir inherited from another HOME", () => {
+			runBinary({
+				args: ["resources", "disable", "tools.web_fetch"],
+				extraEnv: { KIMCHI_CODING_AGENT_DIR: stageDir, KIMCHI_CODING_AGENT_DIR_DERIVED: "1" },
+			})
+			try {
+				expect(readResources(stageDir)).toBeUndefined()
+				expect(readResources(getAgentDir())?.["tools.web_fetch"]).toBe(false)
+			} finally {
+				runBinary({ args: ["resources", "reset", "tools.web_fetch"] })
+			}
 		})
 
 		it("defaults to HOME/.config/kimchi/harness", () => {
