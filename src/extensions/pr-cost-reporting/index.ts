@@ -3,7 +3,6 @@ import { Text } from "@earendil-works/pi-tui"
 import { readOutboxStatus } from "@getkimchi/kimchi-bridge/ledger"
 import {
 	dueLimitNotices,
-	type ReportingState,
 	readReportingState,
 	setReportingEnabled,
 	takeLimitNotices,
@@ -34,20 +33,19 @@ const ARGUMENT_COMPLETIONS = [
  */
 async function migrateReportingConsent(): Promise<void> {
 	if (readPrReportingConsent() !== undefined) return
-	let state: ReportingState
 	try {
-		state = await readReportingState(getAgentDir())
+		const state = await readReportingState(getAgentDir())
+		if (readPrReportingConsent() !== undefined) return
+		// followsTelemetry wins over the derived enabled bit: a default queue reads
+		// {enabled:false, followsTelemetry:true} while telemetry is off, and that inherited
+		// policy must not become an explicit opt-out that telemetry cannot revive.
+		writePrReportingConsent(state.followsTelemetry ? "follow-telemetry" : state.enabled === false ? "off" : "on")
 	} catch (error) {
-		// Migration must never block startup: log and leave the key absent, so /pr-reporting
-		// status keeps showing the legacy value until the user chooses.
+		// Migration must never block startup, including an unwritable config: log and
+		// leave the key absent, so /pr-reporting status keeps showing the legacy value
+		// until the user chooses.
 		console.error("kimchi: could not migrate PR reporting consent:", error instanceof Error ? error.message : error)
-		return
 	}
-	if (readPrReportingConsent() !== undefined) return
-	// followsTelemetry wins over the derived enabled bit: a default queue reads
-	// {enabled:false, followsTelemetry:true} while telemetry is off, and that inherited
-	// policy must not become an explicit opt-out that telemetry cannot revive.
-	writePrReportingConsent(state.followsTelemetry ? "follow-telemetry" : state.enabled === false ? "off" : "on")
 }
 
 export default function prCostReportingExtension(pi: ExtensionAPI): void {

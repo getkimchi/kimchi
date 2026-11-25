@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
@@ -408,5 +408,26 @@ describe("config-owned PR reporting consent", () => {
 		expect(readPrReportingConsent()).toBeUndefined()
 		expect(error).toHaveBeenCalled()
 		error.mockRestore()
+	})
+
+	it("does not reject session start when the consent write fails and leaves the key absent", async () => {
+		const ctx = createContext()
+		const api = trackedApi(() => ctx)
+		reportingExtension(api.api)
+		const configDir = join(homedir(), ".config", "kimchi")
+		const error = vi.spyOn(console, "error").mockImplementation(() => {})
+		// A read-only config directory makes the seed write fail like a real EACCES.
+		chmodSync(configDir, 0o500)
+		try {
+			await expect(
+				api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx),
+			).resolves.toBeUndefined()
+			expect(readPrReportingConsent()).toBeUndefined()
+			expect(error).toHaveBeenCalled()
+		} finally {
+			chmodSync(configDir, 0o755)
+			error.mockRestore()
+			await api.getHandler("session_shutdown")({}, ctx).catch(() => {})
+		}
 	})
 })
