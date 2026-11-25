@@ -59,8 +59,25 @@ function hasValidServer(input: Record<string, unknown>): boolean {
 	return input.server === undefined || (typeof input.server === "string" && input.server.length > 0)
 }
 
-function hasValidNestedArgs(input: Record<string, unknown>): boolean {
-	return input.args === undefined || typeof input.args === "string" || isObject(input.args)
+// These helpers mirror input checks that pi-mcp-adapter does not export: the `mcp`
+// schema and `parseArgs` (pi-mcp-adapter/index.ts), the `findTools` search mode
+// checks (pi-mcp-adapter/proxy-modes.ts) and the namespace schema
+// (pi-mcp-adapter/namespace-tools.ts). We do not rely on pi validating the schema
+// before `tool_call`, so inputs the adapter rejects must fail closed here.
+// No test catches drift, so compare these files on every adapter upgrade.
+function hasValidGatewayArgs(input: Record<string, unknown>): boolean {
+	const { args } = input
+	if (args === undefined || args === "" || isObject(args)) return true
+	if (typeof args !== "string") return false
+	try {
+		return isObject(JSON.parse(args))
+	} catch {
+		return false
+	}
+}
+
+function hasValidNamespaceArgs(input: Record<string, unknown>): boolean {
+	return input.args === undefined || isObject(input.args)
 }
 
 function unresolved<V extends McpCallVia>(via: V, why: UnresolvedReason): UnresolvedFacts<V> {
@@ -178,10 +195,11 @@ function isNonnegativeInteger(input: unknown): input is number {
 
 function hasValidSearchOptions(input: Record<string, unknown>): boolean {
 	return (
-		(input.searchMode === undefined || typeof input.searchMode === "string") &&
+		(input.searchMode === undefined || input.searchMode === "lexical" || input.searchMode === "semantic") &&
+		!(input.searchMode === "semantic" && input.regex === true) &&
 		(input.regex === undefined || typeof input.regex === "boolean") &&
 		(input.includeSchemas === undefined || typeof input.includeSchemas === "boolean") &&
-		(input.limit === undefined || isNonnegativeInteger(input.limit)) &&
+		(input.limit === undefined || (isNonnegativeInteger(input.limit) && input.limit >= 1)) &&
 		(input.offset === undefined || isNonnegativeInteger(input.offset)) &&
 		hasValidServer(input)
 	)
@@ -219,7 +237,7 @@ export function parseMcpGatewayInput(input: unknown): McpGatewayCall {
 		input.tool.length > 0 &&
 		hasOnlyKeys(input, TOOL_KEYS) &&
 		hasValidServer(input) &&
-		hasValidNestedArgs(input)
+		hasValidGatewayArgs(input)
 	) {
 		return { kind: "tool", tool: input.tool, server: typeof input.server === "string" ? input.server : undefined }
 	}
@@ -257,7 +275,7 @@ function resolveNamespace(toolName: string, input: unknown, catalog: McpCallCata
 		typeof input.tool !== "string" ||
 		input.tool.length === 0 ||
 		!hasOnlyKeys(input, NESTED_TOOL_KEYS) ||
-		!hasValidNestedArgs(input)
+		!hasValidNamespaceArgs(input)
 	)
 		return unresolved("namespace", "malformed")
 

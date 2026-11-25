@@ -356,9 +356,14 @@ describe("describeMcpCall unresolved calls", () => {
 			{ search: "issue", limit: 1.5 },
 			{ search: "issue", offset: -1 },
 			{ search: "issue", offset: Number.NaN },
+			{ search: "issue", limit: 0 },
+			{ search: "issue", searchMode: "fuzzy" },
+			{ search: "issue", searchMode: "semantic", regex: true },
 		]
 		for (const input of inputs) {
-			expect(describeMcpCall("mcp", input, catalog())).toEqual(unresolved("gateway", "malformed"))
+			expect(describeMcpCall("mcp", input, catalog()), JSON.stringify(input)).toEqual(
+				unresolved("gateway", "malformed"),
+			)
 		}
 	})
 
@@ -382,12 +387,52 @@ describe("describeMcpCall unresolved calls", () => {
 			{ tool: "get_issue", args: [] },
 			{ tool: "get_issue", args: 1 },
 			{ tool: "get_issue", extra: true },
+			{ tool: "get_issue", args: "{not json" },
+			{ tool: "get_issue", args: "[]" },
+			{ tool: "get_issue", args: "null" },
+			{ tool: "get_issue", args: "1" },
 		]
 		for (const input of gatewayInputs) {
-			expect(describeMcpCall("mcp", input, catalog())).toEqual(unresolved("gateway", "malformed"))
+			expect(describeMcpCall("mcp", input, catalog()), JSON.stringify(input)).toEqual(
+				unresolved("gateway", "malformed"),
+			)
 		}
-		for (const input of [{ tool: "get_issue", server: "docs" }, { tool: "get_issue", args: null }, { args: {} }]) {
-			expect(describeMcpCall("mcp__docs", input, catalog())).toEqual(unresolved("namespace", "malformed"))
+		const namespaceInputs: unknown[] = [
+			{ tool: "get_issue", server: "docs" },
+			{ tool: "get_issue", args: null },
+			{ args: {} },
+			{ tool: "get_issue", args: '{"id":"X"}' },
+			{ tool: "get_issue", args: "" },
+		]
+		for (const input of namespaceInputs) {
+			expect(describeMcpCall("mcp__docs", input, catalog()), JSON.stringify(input)).toEqual(
+				unresolved("namespace", "malformed"),
+			)
 		}
+	})
+
+	it("accepts every input shape the adapter accepts", () => {
+		const readFacts = (via: "gateway" | "namespace") => ({
+			kind: "tool",
+			via,
+			server: "docs",
+			tool: "get_issue",
+			evidence: "annotation_true",
+		})
+		expect(describeMcpCall("mcp", { tool: "get_issue", args: '{"id":"X"}' }, catalog())).toEqual(readFacts("gateway"))
+		expect(describeMcpCall("mcp", { tool: "get_issue", args: "" }, catalog())).toEqual(readFacts("gateway"))
+		for (const input of [
+			{ search: "issue", limit: 1, offset: 0, searchMode: "semantic" },
+			{ search: "issue", searchMode: "lexical" },
+			{ search: "issue", searchMode: "semantic", regex: false },
+		]) {
+			expect(describeMcpCall("mcp", input, catalog()), JSON.stringify(input)).toEqual({
+				kind: "metadata",
+				op: "search",
+			})
+		}
+		expect(describeMcpCall("mcp__docs", { tool: "get_issue", args: { id: "X" } }, catalog())).toEqual(
+			readFacts("namespace"),
+		)
 	})
 })
