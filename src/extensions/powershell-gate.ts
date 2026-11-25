@@ -6,13 +6,10 @@
  * PowerShell runtime to execute against), so its schema is dead weight
  * (~120 est tokens/round) plus a trap the model can wander into.
  *
- * The gate casts a visibility vote whenever powershell is REGISTERED on a
- * non-Windows host. Voting on registration (not activation) is required:
- * where powershell is default-active (a builtin upstream activates at
- * registration), the tool-profile snapshot layer (tool-profile-manager.ts)
- * would keep it in every profile's active surface unless a vote filters it
- * in each snapshot (getDisabledToolNames). The vote is harmless when
- * powershell never becomes active — hiding an inactive tool changes nothing.
+ * The gate casts a visibility vote on non-Windows hosts. Profiles such as
+ * `implementation-ferment` union the registry, and users can explicitly enable
+ * powershell with `+powershell`; the vote keeps it out of both surfaces.
+ * Hiding a tool the user never enabled is harmless.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { createToolVisibility } from "./prompt-construction/tool-visibility.js"

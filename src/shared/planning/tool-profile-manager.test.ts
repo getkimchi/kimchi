@@ -6,6 +6,7 @@ import { getToolsForProfile } from "./tool-catalog.js"
 import {
 	apply,
 	applyCooperativeTweak,
+	clearCurrentProfile,
 	isProviderReadOnlyTool,
 	isSnapshotAppliedThisTurn,
 	reapplyCurrentProfile,
@@ -252,6 +253,28 @@ describe("apply", () => {
 		const restored = vi.mocked(pi.setActiveTools).mock.calls.at(-1)?.[0] as string[]
 		expect(restored).toEqual(expect.arrayContaining(["read", "bash", "list_ferments"]))
 		expect(restored).not.toContain("grep")
+	})
+
+	it("plan-mode exit restores the visibility-released tools on the next idle apply", () => {
+		// Ferment re-asserts idle before planning each turn. Plan mode's exit
+		// both releases votes and reactivates the tools; those tools count as
+		// later admissions rather than being lost from the baseline permanently.
+		const hidden = ["bash", "edit", "write", "codemode"]
+		const active = ["read", "grep", "find", "ls", "list_ferments", ...hidden]
+		const pi = makeMockPi({ activeTools: [...active], allTools: [...active, "tool_search"].map((name) => ({ name })) })
+		const visibility = createToolVisibility(pi)
+
+		apply("idle", "ferment", pi)
+		visibility.disable(hidden)
+		apply("planning-adhoc", "adhoc", pi)
+		apply("idle", "ferment", pi) // another turn before exiting
+		apply("planning-adhoc", "adhoc", pi)
+		visibility.enable(hidden)
+		clearCurrentProfile(pi) // permissions forgets the plan on mode exit
+
+		apply("idle", "ferment", pi)
+		for (const name of hidden) expect(pi.getActiveTools()).toContain(name)
+		expect(pi.getActiveTools()).not.toContain("tool_search")
 	})
 
 	it("tools registered and activated mid-restrictive-profile survive its exit", () => {
