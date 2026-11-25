@@ -2,7 +2,6 @@ import { spawnSync } from "node:child_process"
 import {
 	chmodSync,
 	copyFileSync,
-	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -22,7 +21,7 @@ const allureResultsPath = join(repoRoot, "scripts", "tui-allure-results.js")
 const githubExpression = (expression: string) => `\${{ ${expression} }}`
 const allureSetupAction = "allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db"
 
-function createTuiRunnerFixture() {
+function createTuiRunnerFixture({ missingRunner = false }: { missingRunner?: boolean } = {}) {
 	const root = mkdtempSync(join(tmpdir(), "kimchi-tui-allure-test-"))
 	mkdirSync(join(root, "scripts"), { recursive: true })
 	mkdirSync(join(root, "tests", "e2e", "tui"), { recursive: true })
@@ -33,8 +32,13 @@ function createTuiRunnerFixture() {
 	writeFileSync(join(root, "tests", "e2e", "tui", "alpha.test.ts"), "")
 	writeFileSync(join(root, "tests", "e2e", "tui", "beta.test.ts"), "")
 	const fakeRunner = join(root, "node_modules", ".bin", "tui-test")
-	writeFileSync(fakeRunner, '#!/usr/bin/env node\nprocess.exit(process.argv.includes("beta") ? 1 : 0)\n')
-	chmodSync(fakeRunner, 0o755)
+	if (!missingRunner) {
+		writeFileSync(
+			fakeRunner,
+			'#!/usr/bin/env node\nconsole.log(process.argv.at(-1))\nprocess.exit(process.argv.includes("beta") ? 1 : 0)\n',
+		)
+		chmodSync(fakeRunner, 0o755)
+	}
 	return {
 		root,
 		resultsDir(relative: string) {
@@ -60,6 +64,12 @@ function readResults(resultsDir: string) {
 		.map((file) => JSON.parse(readFileSync(join(resultsDir, file), "utf8")))
 }
 
+function requireResult<T>(result: T | undefined, name: string): T {
+	expect(result, `${name} result is missing`).toBeDefined()
+	if (result === undefined) throw new Error(`${name} result is missing`)
+	return result
+}
+
 it.skipIf(process.platform === "win32")(
 	"writes one minimal Allure result per executed file and preserves the TUI exit status",
 	() => {
@@ -70,8 +80,14 @@ it.skipIf(process.platform === "win32")(
 			expect(firstRun.status).toBe(1)
 			const first = readResults(firstDir)
 			expect(first).toHaveLength(2)
-			const alpha = first.find((result) => result.name === "alpha")
-			const beta = first.find((result) => result.name === "beta")
+			const alpha = requireResult(
+				first.find((result) => result.name === "alpha"),
+				"alpha",
+			)
+			const beta = requireResult(
+				first.find((result) => result.name === "beta"),
+				"beta",
+			)
 			expect(alpha).toMatchObject({
 				name: "alpha",
 				fullName: "tests/e2e/tui/alpha.test.ts",
@@ -91,19 +107,57 @@ it.skipIf(process.platform === "win32")(
 
 			const secondDir = fixture.resultsDir("allure-second")
 			expect(fixture.run(secondDir).status).toBe(1)
-			const secondAlpha = readResults(secondDir).find((result) => result.name === "alpha")
+			const secondAlpha = requireResult(
+				readResults(secondDir).find((result) => result.name === "alpha"),
+				"alpha",
+			)
 			expect(secondAlpha.testCaseId).toBe(alpha.testCaseId)
 			expect(secondAlpha.historyId).toBe(alpha.historyId)
 			expect(secondAlpha.uuid).not.toBe(alpha.uuid)
 
-			const withoutReporting = fixture.resultsDir("allure-disabled")
-			expect(fixture.run().status).toBe(1)
-			expect(existsSync(withoutReporting)).toBe(false)
+			const disabledFixture = createTuiRunnerFixture()
+			try {
+				expect(disabledFixture.run().status).toBe(1)
+				const resultFiles = readdirSync(disabledFixture.root, { recursive: true, encoding: "utf8" }).filter((file) =>
+					file.endsWith("-result.json"),
+				)
+				expect(resultFiles).toEqual([])
+			} finally {
+				rmSync(disabledFixture.root, { recursive: true, force: true })
+			}
 		} finally {
 			rmSync(fixture.root, { recursive: true, force: true })
 		}
 	},
 )
+
+it.skipIf(process.platform === "win32")("reports spawn failure details without masking the failed test", () => {
+	const fixture = createTuiRunnerFixture({ missingRunner: true })
+	try {
+		const resultsDir = fixture.resultsDir("allure-spawn-error")
+		expect(fixture.run(resultsDir).status).toBe(1)
+		const [result] = readResults(resultsDir)
+		expect(result.statusDetails.message).toContain("spawn failed:")
+		expect(result.statusDetails.message).toContain("ENOENT")
+	} finally {
+		rmSync(fixture.root, { recursive: true, force: true })
+	}
+})
+
+it.skipIf(process.platform === "win32")("continues executing files when an Allure result cannot be written", () => {
+	const fixture = createTuiRunnerFixture()
+	try {
+		const blockedPath = fixture.resultsDir("not-a-directory")
+		writeFileSync(blockedPath, "not a directory")
+		const result = fixture.run(blockedPath)
+		expect(result.status).toBe(1)
+		expect(result.stdout).toContain("alpha")
+		expect(result.stdout).toContain("beta")
+		expect(result.stderr).toContain("allure result write failed: alpha")
+	} finally {
+		rmSync(fixture.root, { recursive: true, force: true })
+	}
+})
 
 it("configures optional non-blocking Allure uploads in the TUI workflow", () => {
 	const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", "tui-e2e.yml"), "utf8"))
@@ -114,11 +168,12 @@ it("configures optional non-blocking Allure uploads in the TUI workflow", () => 
 		ALLURE_RESULTS: "allure-results/tui",
 		ALLURE_CONTINUE_ON_ERROR: "true",
 	})
+	expect(job.env.ALLURE_TOKEN).toBeUndefined()
 
 	const setup = job.steps.find((step: { uses?: string }) => step.uses === allureSetupAction)
 	expect(setup).toMatchObject({
 		id: "allurectl",
-		if: "always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''",
+		if: "always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''",
 		"continue-on-error": true,
 		with: {
 			"allure-endpoint": githubExpression("env.ALLURE_ENDPOINT"),
@@ -136,7 +191,8 @@ it("configures optional non-blocking Allure uploads in the TUI workflow", () => 
 
 it("restricts TestOps uploads to trusted events and tags nightly repetitions", () => {
 	const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", "tui-e2e.yml"), "utf8"))
-	expect(workflow.on.push).toEqual({ branches: ["master"] })
+	expect(workflow.on.push.branches).toEqual(["master"])
+	expect(workflow.on.push["paths-ignore"]).toEqual(workflow.on.pull_request["paths-ignore"])
 	expect(workflow.on.merge_group).toBeNull()
 	expect(workflow.on.schedule).toEqual([{ cron: "17 3 * * *" }])
 
@@ -158,8 +214,9 @@ it("restricts TestOps uploads to trusted events and tags nightly repetitions", (
 
 	const setup = job.steps.find((step: { uses?: string }) => step.uses === allureSetupAction)
 	expect(setup.if).toBe(
-		"always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''",
+		"always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''",
 	)
+	expect(job.env.ALLURE_TOKEN).toBeUndefined()
 	const upload = job.steps.find((step: { name?: string }) => step.name === "Upload TUI results to Allure TestOps")
 	expect(upload.run).toContain("$ALLURE_RUN_KIND")
 	expect(upload.run).toContain("commit=$GITHUB_SHA")

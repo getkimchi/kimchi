@@ -65,7 +65,19 @@ function runTui(runArgs, stem) {
 	const stop = Date.now()
 	const status = result.status ?? 1
 	if (stem && process.env.ALLURE_RESULTS) {
-		writeTuiAllureResult({ resultsDir: process.env.ALLURE_RESULTS, stem, exitCode: status, start, stop })
+		try {
+			writeTuiAllureResult({
+				resultsDir: process.env.ALLURE_RESULTS,
+				stem,
+				exitCode: status,
+				start,
+				stop,
+				failureMessage: result.error ? `spawn failed: ${result.error.message}` : undefined,
+			})
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error)
+			console.error(`allure result write failed: ${stem}: ${message}`)
+		}
 	}
 	if (result.error) {
 		console.error(result.error)

@@ -3,6 +3,23 @@ name: TUI E2E
 on:
   push:
     branches: [master]
+    # Only root/.github markdown: *.md under src/ and resources/ ships in the binary.
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/**/*.md'
+      - '.github/ISSUE_TEMPLATE/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - 'kimchi.png'
+      - 'benchmark/**'
+      - 'docker/**'
+      - 'test-cases/**'
+      - 'src/**/*.test.ts'
+      - 'tests/unit/**'
+      - 'tests/smoke/**'
+      - 'tests/e2e/acp/**'
+      - 'tests/e2e/mcp/**'
   merge_group:
   schedule:
     - cron: "17 3 * * *"
@@ -93,7 +110,7 @@ jobs:
       ALLURE_ENDPOINT: https://castai.testops.cloud
       ALLURE_PROJECT_ID: ${{ vars.ALLURE_PROJECT_ID }}
       ALLURE_RESULTS: allure-results/tui
-      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      ALLURE_TOKEN_AVAILABLE: ${{ secrets.ALLURE_TOKEN != '' }}
       ALLURE_CONTINUE_ON_ERROR: "true"
       ALLURE_UPLOAD_ENABLED: ${{ contains(fromJSON('["push","merge_group","schedule"]'), github.event_name) }}
       ALLURE_RUN_KIND: ${{ github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || github.event_name == 'schedule' && 'nightly' || 'other' }}
@@ -120,7 +137,7 @@ jobs:
 
       - name: Install and configure allurectl
         id: allurectl
-        if: always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''
+        if: always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''
         continue-on-error: true
         uses: allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db # v1.0.3
         with:

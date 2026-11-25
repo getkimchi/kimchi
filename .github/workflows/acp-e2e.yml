@@ -42,7 +42,7 @@ jobs:
       ALLURE_ENDPOINT: https://castai.testops.cloud
       ALLURE_PROJECT_ID: ${{ vars.ALLURE_PROJECT_ID }}
       ALLURE_RESULTS: allure-results/acp
-      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      ALLURE_TOKEN_AVAILABLE: ${{ secrets.ALLURE_TOKEN != '' }}
       ALLURE_CONTINUE_ON_ERROR: "true"
       ALLURE_UPLOAD_ENABLED: ${{ contains(fromJSON('["push","merge_group"]'), github.event_name) }}
       ALLURE_RUN_KIND: ${{ github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || 'other' }}
@@ -80,7 +80,7 @@ jobs:
 
       - name: Install and configure allurectl
         id: allurectl
-        if: always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''
+        if: always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''
         continue-on-error: true
         uses: allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db # v1.0.3
         with:

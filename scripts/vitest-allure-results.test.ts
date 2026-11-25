@@ -46,10 +46,11 @@ it.each([
 			`github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || 'other'`,
 		),
 	})
+	expect(target.env.ALLURE_TOKEN).toBeUndefined()
 	const setup = target.steps.find((step: { uses?: string }) => step.uses === allureSetupAction)
 	expect(setup).toMatchObject({
 		id: "allurectl",
-		if: "always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''",
+		if: "always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''",
 		"continue-on-error": true,
 		with: {
 			"allure-endpoint": githubExpression("env.ALLURE_ENDPOINT"),

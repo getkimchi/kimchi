@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-/** Write one native Allure result for a test-file-level TUI execution. */
-export function writeTuiAllureResult({ resultsDir, stem, exitCode, start, stop }) {
+/** Write one native Allure result for an entire test file, not for its individual test cases. */
+export function writeTuiAllureResult({ resultsDir, stem, exitCode, start, stop, failureMessage }) {
 	const fullName = `tests/e2e/tui/${stem}.test.ts`
 	const identity = createHash("sha256").update(fullName).digest("hex")
 	const uuid = randomUUID()
@@ -14,7 +14,9 @@ export function writeTuiAllureResult({ resultsDir, stem, exitCode, start, stop }
 		fullName,
 		name: stem,
 		status: exitCode === 0 ? "passed" : "failed",
-		...(exitCode === 0 ? {} : { statusDetails: { message: `tui-test exited with code ${exitCode}` } }),
+		...(exitCode === 0
+			? {}
+			: { statusDetails: { message: failureMessage ?? `tui-test exited with code ${exitCode}` } }),
 		stage: "finished",
 		start,
 		stop,
