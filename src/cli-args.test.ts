@@ -3,15 +3,17 @@ import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import ts from "typescript"
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
 	applyDebugPromptsOptOut,
 	CACHEABLE_OPTION_NAMES,
 	CLI_OPTIONS,
 	dropRetiredMultiModelArg,
+	fermentLegacyFlagError,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
+	hasInitGitArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
@@ -25,8 +27,11 @@ import {
 	resolveBashProcessLimitSeconds,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
+import { FERMENT_LEGACY_RESOURCE_ID } from "./extensions/ferment/resource.js"
 import { DANGEROUS_BYPASS_FLAG } from "./extensions/permissions/constants.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
+import { resetOrgPolicyForTests } from "./org-policy.js"
+import { setOrgPolicyForTests } from "./org-policy.test-utils.js"
 
 describe("value-flag parsing", () => {
 	// Short aliases must consume their value too, or the token after them is
@@ -763,5 +768,68 @@ describe("applyDebugPromptsOptOut", () => {
 		const env = debugEnv()
 		applyDebugPromptsOptOut(args, env)
 		expect(env).toEqual(debugEnv())
+	})
+})
+
+describe("hasInitGitArg", () => {
+	it("matches --init-git and --init-git=true", () => {
+		expect(hasInitGitArg(["--init-git"])).toBe(true)
+		expect(hasInitGitArg(["--init-git=true"])).toBe(true)
+	})
+
+	it("does not match unrelated or disabled forms", () => {
+		expect(hasInitGitArg(["-p", "hello"])).toBe(false)
+		expect(hasInitGitArg(["--init-git=false"])).toBe(false)
+		expect(hasInitGitArg(["init-git=true"])).toBe(false)
+	})
+})
+
+describe("fermentLegacyFlagError", () => {
+	let agentDir: string
+
+	beforeEach(() => {
+		// Isolate the resource settings path so a developer's real settings.json
+		// can never flip the default-off legacy resource on.
+		agentDir = mkdtempSync(join(tmpdir(), "cli-args-legacy-"))
+		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+		resetOrgPolicyForTests()
+	})
+
+	afterEach(() => {
+		resetOrgPolicyForTests()
+		Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
+		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+		rmSync(agentDir, { recursive: true, force: true })
+	})
+
+	it("reports the exact --ferment-oneshot error when legacy is off", () => {
+		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toBe(
+			`--ferment-oneshot needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`,
+		)
+	})
+
+	it("names --init-git in its own error when legacy is off", () => {
+		expect(fermentLegacyFlagError(["--init-git"])).toBe(
+			`--init-git needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`,
+		)
+	})
+
+	it("catches the bare ferment-oneshot=true kwarg form (via hasFermentOneshotArg)", () => {
+		expect(fermentLegacyFlagError(["ferment-oneshot=true"])).toContain("--ferment-oneshot needs the legacy Ferment")
+	})
+
+	it("returns undefined when no V1-only flag is present", () => {
+		expect(fermentLegacyFlagError(["-p", "hello"])).toBeUndefined()
+	})
+
+	it("returns undefined when legacy is enabled via env", () => {
+		process.env.KIMCHI_ENABLE_RESOURCES = FERMENT_LEGACY_RESOURCE_ID
+		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toBeUndefined()
+	})
+
+	it("returns undefined when org policy FORCE_ON locks legacy on", async () => {
+		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "FORCE_ON" } })
+		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toBeUndefined()
 	})
 })

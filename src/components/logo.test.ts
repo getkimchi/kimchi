@@ -18,6 +18,21 @@ const { LogoHeader } = await import("./logo.js")
 const ANSI_ESCAPE = /\x1b\[[\d;]*m/g
 const stripAnsi = (s: string): string => s.replace(ANSI_ESCAPE, "")
 
+// Extract only the right-column text from each structured content row and join
+// the fragments. Rows render as `│ <left> │ <right> │`, so flattening whole rows
+// with `.join(" ")` would interleave the left column and the divider between
+// right-column fragments wrapped across lines. Joining only the right-column
+// fragments reconstructs the right-column prose contiguously.
+const rightColumnText = (lines: string[]): string =>
+	lines
+		.slice(1, -1)
+		.map((l) => {
+			const parts = stripAnsi(l).split("│")
+			return parts.length >= 4 ? parts[parts.length - 2].trim() : ""
+		})
+		.filter((s) => s.length > 0)
+		.join(" ")
+
 function createMockTheme(): Theme {
 	const COLOR_CODE: Record<string, string> = {
 		accent: "\x1b[36m",
@@ -80,10 +95,13 @@ describe("LogoHeader", () => {
 		expect(lines.length).toBeGreaterThan(11)
 
 		// Contains right column content
-		const rightText = lines.slice(1, -1).map(stripAnsi).join(" ")
+		const rightText = rightColumnText(lines)
 		expect(rightText).toContain("Kimchi's special:")
 		expect(rightText).toContain("/ferment")
-		expect(rightText).toContain("exit")
+		expect(rightText).toContain("to work on one objective until it is verified done")
+		expect(rightText).toContain("/ferment pause")
+		expect(rightText).toContain("/ferment resume")
+		expect(rightText).not.toContain("/ferment exit")
 
 		// Contains a horizontal rule in the right column
 		const hrRow = lines.slice(1, -1).find((l) => {
@@ -114,7 +132,7 @@ describe("LogoHeader", () => {
 		expect(rightText).toContain("Kimchi")
 		expect(rightText).toContain("special")
 		expect(rightText).toContain("ferment")
-		expect(rightText).toContain("exit")
+		expect(rightText).toContain("pause")
 
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(60)
@@ -135,7 +153,7 @@ describe("LogoHeader", () => {
 		expect(rightChars).toMatch(/K/i)
 		expect(rightChars).toMatch(/s\s*p\s*e\s*c/i)
 		expect(rightChars).toMatch(/f\s*e\s*r\s*m/i)
-		expect(rightChars).toMatch(/e\s*x\s*i\s*t/i)
+		expect(rightChars).toMatch(/p\s*a\s*u\s*s\s*e/i)
 		const contentRows = lines.slice(1, -1)
 		const rowsWithRightContent = contentRows.filter((l) => {
 			const stripped = stripAnsi(l)
@@ -161,7 +179,21 @@ describe("LogoHeader", () => {
 		// Highlighted commands use theme.fg("accent", ...) which wraps with accent + reset
 		const rightSection = lines.slice(1, -1).join("\n")
 		expect(rightSection).toContain("\x1b[36m/ferment\x1b[0m")
-		expect(rightSection).toContain("\x1b[36m/ferment exit\x1b[0m")
+		expect(rightSection).toContain("\x1b[36m/ferment pause\x1b[0m")
+		expect(rightSection).toContain("\x1b[36m/ferment resume\x1b[0m")
+	})
+
+	it("uses the V2 ferment tip text and never mentions /ferment exit", () => {
+		const theme = createMockTheme()
+		const header = new LogoHeader(theme)
+		const lines = header.render(120)
+		const rightText = rightColumnText(lines)
+
+		expect(rightText).toContain("/ferment")
+		expect(rightText).toContain("to work on one objective until it is verified done")
+		for (const line of lines) {
+			expect(stripAnsi(line)).not.toContain("/ferment exit")
+		}
 	})
 
 	it("shows a long blocked-Community notice instead of the secondary ferment tip", () => {

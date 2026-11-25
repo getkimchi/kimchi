@@ -37,6 +37,7 @@ import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { BUILTIN_TOOL_NAMES } from "../agents/personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../agents/personas/default-agents.js"
 import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
+import { FERMENT_LEGACY_RESOURCE_ID } from "../ferment/resource.js"
 import { loadRuntimeState } from "../ferment/runtime-state-store.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
@@ -185,7 +186,9 @@ beforeEach(cleanPermissionEnv)
 beforeEach(() => resetClassifierBreakerForTests())
 beforeEach(() => {
 	populateCliArgs([])
-	isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
+	// Legacy Ferment on by default so V1 plan-review paths (menu + start_ferment)
+	// stay exercised; legacy-off tests override this mock in-body.
+	isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID || id === FERMENT_LEGACY_RESOURCE_ID)
 })
 afterEach(() => populateCliArgs([]))
 afterEach(cleanPermissionEnv)
@@ -3226,11 +3229,50 @@ describe("plan mode assumption detection", () => {
 
 		expect(ctx.ui.select).toHaveBeenCalledWith(
 			"Plan complete. How would you like to proceed?",
-			["Execute the plan locally", "Execute the plan in a remote workspace", "Rework the plan", "Start as ferment"],
+			[
+				"Execute the plan locally",
+				"Execute the plan in a remote workspace",
+				"Rework the plan",
+				"Start as ferment (legacy)",
+			],
 			expect.anything(),
 		)
 		expect(harness.pi.sendMessage).not.toHaveBeenCalled()
 		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "flag", initiatedBy: "user" })
+	})
+
+	it("review menu hides Start as ferment when the legacy Ferment is off", async () => {
+		isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const planText =
+			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n## Verification\nRun tests."
+		const ctx = createMockContext(["Rework the plan"])
+		await submitPlan(harness, planText, ctx)
+
+		const options = vi.mocked(ctx.ui.select).mock.calls[0]?.[1] as string[]
+		expect(options).not.toContain("Start as ferment")
+		expect(options).not.toContain("Start as ferment (legacy)")
+	})
+
+	it("start_ferment with legacy off sends the notice and writes no ferment file", async () => {
+		isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-legacy-off-"))
+		try {
+			// The mock select returns the choice regardless of the offered options,
+			// so the start_ferment decision still dispatches and hits the legacy gate.
+			const ctx = createMockContext(["Start as ferment (legacy)"])
+			ctx.cwd = tmpDir
+			await submitPlan(harness, "# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.", ctx)
+			const sent = vi.mocked(harness.pi.sendMessage).mock.calls.map((c) => JSON.stringify(c[0]))
+			expect(sent.some((s) => s.includes("Start as ferment needs the legacy Ferment. Use Execute instead."))).toBe(true)
+			expect(existsSync(join(tmpDir, ".kimchi", "ferments"))).toBe(false)
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 
 	it("review menu drops the cloud option when remote run is disabled via KIMCHI_REMOTE_RUN=0", async () => {
@@ -3246,7 +3288,7 @@ describe("plan mode assumption detection", () => {
 
 			expect(ctx.ui.select).toHaveBeenCalledWith(
 				"Plan complete. How would you like to proceed?",
-				["Execute the plan locally", "Rework the plan", "Start as ferment"],
+				["Execute the plan locally", "Rework the plan", "Start as ferment (legacy)"],
 				expect.anything(),
 			)
 		} finally {
@@ -3259,7 +3301,7 @@ describe("plan mode assumption detection", () => {
 		await harness.fire("session_start", {}, createMockContext([]))
 		const tmpDir = mkdtempSync(join(tmpdir(), "plan-draft-"))
 		try {
-			const ctx = createMockContext(["Start as ferment"])
+			const ctx = createMockContext(["Start as ferment (legacy)"])
 			ctx.cwd = tmpDir
 			await submitPlan(harness, "# Plan\n\n## Goal\nAdd caching layer.", ctx)
 			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Use /ferment-legacy list to resume"))
@@ -3657,7 +3699,7 @@ describe("plan mode assumption detection", () => {
 			await harness.fire("session_start", {}, createMockContext([]))
 			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-ferment-"))
 			try {
-				const ctx = createMockContext(["Start as ferment"])
+				const ctx = createMockContext(["Start as ferment (legacy)"])
 				ctx.cwd = tmpDir
 				await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
@@ -3724,7 +3766,7 @@ describe("plan mode assumption detection", () => {
 		// Use a temp cwd so we don't pollute the repo.
 		const tmpDir = mkdtempSync(join(tmpdir(), "ferment-promo-"))
 		try {
-			const ctx = createMockContext(["Start as ferment"])
+			const ctx = createMockContext(["Start as ferment (legacy)"])
 			ctx.cwd = tmpDir
 			// Project-local ferments are gated on project trust — these tests
 			// exercise the trusted persistence path.
@@ -3768,7 +3810,7 @@ describe("plan mode assumption detection", () => {
 		// the default mock cwd ("/test") does not exist on the test runner.
 		const tmpDir = mkdtempSync(join(tmpdir(), "prof-"))
 		try {
-			const ctx = createMockContext(["Start as ferment"])
+			const ctx = createMockContext(["Start as ferment (legacy)"])
 			ctx.cwd = tmpDir
 			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
@@ -3808,7 +3850,7 @@ describe("plan mode assumption detection", () => {
 		// does not exist on the test runner.
 		const tmpDir = mkdtempSync(join(tmpdir(), "swap-"))
 		try {
-			const ctx = createMockContext(["Start as ferment"])
+			const ctx = createMockContext(["Start as ferment (legacy)"])
 			ctx.cwd = tmpDir
 			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
@@ -3849,7 +3891,7 @@ describe("plan mode assumption detection", () => {
 
 		const tmpDir = mkdtempSync(join(tmpdir(), "runtime-active-"))
 		try {
-			const ctx = createMockContext(["Start as ferment"])
+			const ctx = createMockContext(["Start as ferment (legacy)"])
 			ctx.cwd = tmpDir
 			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
@@ -3873,7 +3915,7 @@ describe("plan mode assumption detection", () => {
 
 		const tmpDir = mkdtempSync(join(tmpdir(), "ref-entry-"))
 		try {
-			const ctx = createMockContext(["Start as ferment"])
+			const ctx = createMockContext(["Start as ferment (legacy)"])
 			ctx.cwd = tmpDir
 			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
@@ -3906,7 +3948,7 @@ describe("plan mode assumption detection", () => {
 
 		const tmpDir = mkdtempSync(join(tmpdir(), "handoff-"))
 		try {
-			const ctx = createMockContext(["Start as ferment"])
+			const ctx = createMockContext(["Start as ferment (legacy)"])
 			ctx.cwd = tmpDir
 			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
@@ -3948,7 +3990,7 @@ describe("plan mode assumption detection", () => {
 		// Use a cwd that cannot be written to so resolveFermentsDir + storage.create
 		// throw and the catch block fires. Trusted so the (unwritable) project
 		// ferments path is used rather than the global fallback.
-		const ctx = createMockContext(["Start as ferment"])
+		const ctx = createMockContext(["Start as ferment (legacy)"])
 		ctx.cwd = "/dev/null/nonexistent-path-that-cannot-be-created"
 		setProjectScopeTrusted(ctx.cwd, true)
 
@@ -3987,7 +4029,7 @@ describe("plan mode assumption detection", () => {
 
 		const tmpDir = mkdtempSync(join(tmpdir(), "post-create-failure-"))
 		try {
-			const ctx = createMockContext(["Start as ferment"])
+			const ctx = createMockContext(["Start as ferment (legacy)"])
 			ctx.cwd = tmpDir
 			await submitPlan(harness, SHARED_PLAN_TEXT, ctx)
 
@@ -4018,7 +4060,7 @@ describe("plan mode assumption detection", () => {
 		const PLAN_WITHOUT_CHUNKS = "# Plan\n\n## Goal\nAdd caching layer.\n\n## Constraints\n- No new dependencies"
 		const tmpDir = mkdtempSync(join(tmpdir(), "draft-only-"))
 		try {
-			const ctx = createMockContext(["Start as ferment"])
+			const ctx = createMockContext(["Start as ferment (legacy)"])
 			ctx.cwd = tmpDir
 			setProjectScopeTrusted(tmpDir, true)
 			if (unavailable) {
@@ -8229,7 +8271,7 @@ describe("adhoc submit_plan org-policy dead-ends", () => {
 		await harness.fire("session_start", {}, createMockContext([]))
 		const tmpDir = mkdtempSync(join(tmpdir(), "plan-default-ferment-"))
 		try {
-			const ctx = createMockContext(["Start as ferment"])
+			const ctx = createMockContext(["Start as ferment (legacy)"])
 			ctx.cwd = tmpDir
 			await submitPlan(harness, PLAN, ctx)
 			await vi.waitFor(() => {

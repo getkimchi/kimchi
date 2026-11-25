@@ -412,6 +412,9 @@ async function runOneshot(options: {
 				KIMCHI_API_KEY: "fake",
 				KIMCHI_FERMENTS_DIR: options.fermentsDir,
 				KIMCHI_TELEMETRY_ENABLED: "0",
+				// V1 --ferment-oneshot is gated on the legacy Ferment resource; enable it
+				// so this lifecycle smoke exercises the legacy-on path, not the gate.
+				KIMCHI_ENABLE_RESOURCES: "extensions.ferment-legacy",
 			},
 			stdio: ["pipe", "pipe", "pipe"],
 		},

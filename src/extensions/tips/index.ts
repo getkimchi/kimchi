@@ -3,6 +3,7 @@ import { readHideTips, writeHideTips } from "../../config.js"
 import { AUTO_UPDATE_TIP } from "../auto-update/tips.js"
 import { subscribeBillingStatus } from "../billing/status.js"
 import { createBillingTipProvider } from "../billing/tips.js"
+import { isFermentLegacyEnabled } from "../ferment/resource.js"
 import { FERMENT_TIPS } from "../ferment/tips.js"
 import { createGeneralTipProvider, GENERAL_TIPS } from "./general-tips.js"
 import { TipPresenter } from "./presenter.js"
@@ -246,10 +247,12 @@ function collectAllTips(registry: TipRegistry): TipCandidate[] {
 		all.push({ ...tip, source: "kimchi.general" })
 	}
 
-	// Static ferment tips — all of them, regardless of ferment state
-	for (const tip of Object.values(FERMENT_TIPS)) {
-		seen.add(tip.id)
-		all.push({ ...tip, source: "kimchi.ferment" })
+	// Static ferment (V1) tips — only when the legacy Ferment is on.
+	if (isFermentLegacyEnabled()) {
+		for (const tip of Object.values(FERMENT_TIPS)) {
+			seen.add(tip.id)
+			all.push({ ...tip, source: "kimchi.ferment" })
+		}
 	}
 
 	// Static auto-update tip — always shown in the catalog regardless of

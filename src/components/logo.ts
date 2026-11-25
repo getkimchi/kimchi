@@ -113,10 +113,10 @@ export class LogoHeader implements Component {
 		// Right column content (static text — no dynamic tip mechanism exists yet)
 		const accentText = (text: string) => theme.fg("accent", text)
 		const labelLine = "Kimchi's special:"
-		const tip1Text = `Use ${accentText("/ferment")} to hand off a large task with minimal interruption.`
+		const tip1Text = `Use ${accentText("/ferment")} to work on one objective until it is verified done.`
 		const tip2Text =
 			this.getRightColumnNotice?.() ??
-			`To leave the Ferment mode and return to a regular coding session, use ${accentText("/ferment exit")}.`
+			`Use ${accentText("/ferment pause")} to stop it, and ${accentText("/ferment resume")} to go on.`
 
 		const labelWrap = wrapTextWithAnsi(labelLine, rightColWidth)
 		const wrap1 = wrapTextWithAnsi(tip1Text, rightColWidth)

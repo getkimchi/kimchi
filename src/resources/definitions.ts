@@ -1,5 +1,5 @@
 import { CLAUDE_CODE_SKILLS_RESOURCE_ID } from "../extensions/claude-code-skills/definition.js"
-import { FERMENT_LEGACY_RESOURCE_ID } from "../extensions/ferment/resource.js"
+import { FERMENT_LEGACY_RESOURCE_ID } from "../extensions/ferment/resource-id.js"
 import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
 import { KIMCHI_MCP_GATEWAY_RESOURCE_ID } from "../extensions/mcp/gateway.js"
 import { MEMORY_RESOURCE_ID } from "../extensions/memory/config.js"

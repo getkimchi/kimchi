@@ -11,6 +11,7 @@ import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
 	applyDebugPromptsOptOut,
 	dropRetiredMultiModelArg,
+	fermentLegacyFlagError,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -524,6 +525,18 @@ async function cliMain(): Promise<void> {
 			// steering text) can gate on it — the CLI arg is stripped from the
 			// args that reach main(), so pi.getFlag can't discover it.
 			setExperimentalFeaturesEnabled(experimentalFeatures)
+			// Gate V1-only entry points (--ferment-oneshot, --init-git) when the
+			// legacy Ferment resource is off. Org policy is already loaded above
+			// (initOrgPolicy), so a FORCE_ON lock lifts the gate. Exit through the
+			// event loop (exitCode + return), never process.exit(), like cli.ts:337.
+			// This runs before setPrintGate and the legacy-on oneshot org check below,
+			// which stay unchanged for the legacy-on path.
+			const legacyFlagError = fermentLegacyFlagError(originalArgs)
+			if (legacyFlagError !== undefined) {
+				console.error(legacyFlagError)
+				process.exitCode = 2
+				return
+			}
 			installAutoModelAdapters()
 			// Publish the print-mode gate the
 			// same way so interactive-only (questionnaire) and ferment-mode-only

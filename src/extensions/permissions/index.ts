@@ -54,6 +54,7 @@ import {
 } from "../ferment/elevation-gate.js"
 import { appendRefEntry } from "../ferment/nudge.js"
 import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
+import { isFermentLegacyEnabled } from "../ferment/resource.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { safeSendMessage } from "../ferment/safe-send.js"
 import {
@@ -1593,7 +1594,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				})
 
 				const DECLINE = "Rework the plan"
-				const START_AS_FERMENT = "Start as ferment"
+				const START_AS_FERMENT = "Start as ferment (legacy)"
 
 				const options: string[] = []
 				// Org policy: a plan-only policy leaves no mode an approved plan can
@@ -1611,7 +1612,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				}
 				options.push(DECLINE)
 				// Org policy: without an executable mode, ferment cannot run — hide it.
-				if (isFermentRunnable()) options.push(START_AS_FERMENT)
+				if (isFermentRunnable() && isFermentLegacyEnabled()) options.push(START_AS_FERMENT)
 
 				void withBlocked(pi.events, "Plan complete", () =>
 					withWorkingHidden(ctx, () =>
@@ -1780,6 +1781,18 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				}
 				await executeLocally()
 			} else if (payload.decision === "start_ferment") {
+				// Legacy-off gate: V1 "Start as ferment" is inert unless the user opted
+				// into the legacy Ferment. Send the notice, dispatch no follow-up turn,
+				// and create no ferment artifact.
+				if (!isFermentLegacyEnabled()) {
+					safeSendMessage(pi, {
+						customType: "ferment_breadcrumb",
+						content: "Start as ferment needs the legacy Ferment. Use Execute instead.",
+						display: true,
+					})
+					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
+					return
+				}
 				// Converted into a ferment — same release as the execute path.
 				activePlanSlug = undefined
 				// ── Tool-swap contract ────────────────────────────────────────────────

@@ -13,6 +13,22 @@ vi.mock("../../config.js", () => ({
 	writeHideTips: (...args: unknown[]) => mockWriteHideTips(...args),
 }))
 
+// Control the legacy-Ferment gate for the /tips catalog tests.
+const legacyEnabledState = vi.hoisted(() => ({ on: false }))
+vi.mock("../ferment/resource.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../ferment/resource.js")>()
+	return { ...actual, isFermentLegacyEnabled: () => legacyEnabledState.on }
+})
+
+// Capture the catalog the /tips command hands to the panel, with each tip's source.
+const capturedCatalog = vi.hoisted(() => ({ tips: [] as Array<{ source?: string }> }))
+vi.mock("./tips-panel.js", () => ({
+	createTipsPanel: (tips: Array<{ source?: string }>) => {
+		capturedCatalog.tips = tips
+		return { render: () => [] }
+	},
+}))
+
 type Handler = (event: unknown, ctx: unknown) => unknown
 const harnesses: Array<{ shutdown: () => unknown }> = []
 const restoreLocations: Array<() => void> = []
@@ -245,6 +261,30 @@ describe("tips extension", () => {
 			placement: "aboveEditor",
 		})
 		expect(component?.render(120).join("\n")).toContain("You ran out of credits.")
+	})
+
+	async function openCatalog(on: boolean): Promise<Array<{ source?: string }>> {
+		legacyEnabledState.on = on
+		capturedCatalog.tips = []
+		const harness = createHarness({ hasUI: true })
+		harness.start()
+		// Drive the panel path so createTipsPanel receives the full catalog.
+		harness.ui.custom.mockImplementation(
+			async (build: (tui: unknown, th: unknown, kb: unknown, done: () => void) => unknown) =>
+				build(harness.tui, theme(), {}, () => {}),
+		)
+		await harness.commands.get("tips")?.handler("", harness.ctx)
+		return capturedCatalog.tips
+	}
+
+	it("omits kimchi.ferment catalog entries when legacy is off", async () => {
+		const tips = await openCatalog(false)
+		expect(tips.some((t) => t.source === "kimchi.ferment")).toBe(false)
+	})
+
+	it("includes kimchi.ferment catalog entries when legacy is on", async () => {
+		const tips = await openCatalog(true)
+		expect(tips.some((t) => t.source === "kimchi.ferment")).toBe(true)
 	})
 
 	it("handles /tips disable command", async () => {

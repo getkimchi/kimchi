@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import { type CliMode, getCliModeArg, PROTOCOL_MODES } from "./cli-modes.js"
+import { FERMENT_LEGACY_RESOURCE_ID, isFermentLegacyEnabled } from "./extensions/ferment/resource.js"
 
 // Re-export the shared leaf-module helpers so existing callers can keep
 // importing them from cli-args.ts without touching their import paths.
@@ -494,6 +495,22 @@ export function isExperimentalFeaturesArg(args: string[]): boolean {
  * so suppression must compose. */
 export function hasFermentOneshotArg(args: readonly string[]): boolean {
 	return args.some((a) => a === "--ferment-oneshot" || a === "--ferment-oneshot=true" || a === "ferment-oneshot=true")
+}
+
+/** True when argv requests legacy git initialization `--init-git[=true]`. A
+ * V1-only entry point, so it must be gated the same way as `--ferment-oneshot`. */
+export function hasInitGitArg(args: readonly string[]): boolean {
+	return args.some((a) => a === "--init-git" || a === "--init-git=true")
+}
+
+/** Error text for a V1-only flag used while the legacy Ferment is off. Returns
+ * `undefined` when legacy is on (including an org FORCE_ON lock) or when no
+ * V1-only flag is present, so callers can gate without re-checking the flags. */
+export function fermentLegacyFlagError(args: readonly string[]): string | undefined {
+	if (isFermentLegacyEnabled()) return undefined
+	const flag = hasFermentOneshotArg(args) ? "--ferment-oneshot" : hasInitGitArg(args) ? "--init-git" : undefined
+	if (flag === undefined) return undefined
+	return `${flag} needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`
 }
 
 export function stripExperimentalFeaturesArg(args: string[]): string[] {
