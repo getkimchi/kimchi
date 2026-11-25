@@ -144,20 +144,23 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
 }
 
 function expectPanelStartup(result: PrintResult, expectedCode = 0): string {
+	const eventTypes = result.events.map((event) => [event.type, event.message?.role])
+	const diagnostic = `types=${JSON.stringify(eventTypes)}\nstderr=${result.stderr}`
 	expect(result.timedOut, `${result.stdout}\n${result.stderr}`).toBe(false)
 	expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(expectedCode)
 	expect(result.events[0]?.type).toBe("session")
 	const sessionId = result.events[0]?.id
 	expect(sessionId).toMatch(/^[0-9a-f-]{36}$/)
 	const systemIndex = result.events.findIndex((event) => event.message?.role === "system")
-	expect(
-		systemIndex,
-		`types=${JSON.stringify(result.events.map((event) => [event.type, event.message?.role]))}\nstderr=${result.stderr}`,
-	).toBeGreaterThan(0)
+	expect(systemIndex, diagnostic).toBe(1)
 	expect(result.events[systemIndex]?.message?.toolsAdded?.map((tool) => tool.name)).toEqual(
 		expect.arrayContaining(["submit_finding", "submit_summary", "submit_reply"]),
 	)
 	expect(result.events[result.events.length - 1]?.type).toBe("agent_settled")
+	expect(
+		result.events.filter((event) => event.type === "agent_settled"),
+		diagnostic,
+	).toHaveLength(1)
 	expect(result.events.some((event) => event.message?.role === "assistant")).toBe(false)
 	expect(result.events.some((event) => event.type.startsWith("tool_execution_"))).toBe(false)
 	if (!sessionId) throw new Error("The print stream did not contain a session ID.")
@@ -281,7 +284,6 @@ for (const scenario of [
 					.split("\n")
 					.some((line) => line.startsWith(`Review error [${scenario.code}]:`)),
 			).toBe(true)
-			expect(result.events).toHaveLength(4)
 		} finally {
 			await cleanup(f.tempRoot, f.fake)
 		}
