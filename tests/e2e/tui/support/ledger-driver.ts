@@ -734,6 +734,11 @@ async function readWorkRecordsCommand(agent: string): Promise<void> {
 
 async function legacyFreezeScenario(agent: string): Promise<void> {
 	const { readFileSync, writeFileSync } = await import("node:fs")
+	// The bridge queueSnapshots below reads consent and metrics through HostPorts; this
+	// standalone driver process is its own host, so install the in-process ports first.
+	process.env.PI_CODING_AGENT_DIR = agent
+	const { installKimchiHostPorts } = await import("../../../../src/extensions/work-attribution/host-ports.js")
+	installKimchiHostPorts()
 	const {
 		acknowledgeFrozenSnapshot,
 		freezeSnapshots,
