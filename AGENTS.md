@@ -47,7 +47,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/event-bus.md](docs/event-bus.md) — global UI event bus channels
 - [docs/pii-redaction-policy.md](docs/pii-redaction-policy.md) — redaction categories/entities, local and org-managed policy, custom regex entities
 - [docs/extensions/dap.md](docs/extensions/dap.md) — DAP debugger integration
-- [docs/ferment.md](docs/ferment.md) · [docs/ferment-v2.md](docs/ferment-v2.md) · [docs/ferment-storage-schema.md](docs/ferment-storage-schema.md) — autonomous project execution: concept, runtime, storage
+- [docs/ferment.md](docs/ferment.md) — legacy Ferment V1 (`/ferment-legacy`, off by default, to be removed): concept, runtime · [docs/ferment-v2.md](docs/ferment-v2.md) — current `/ferment` (Ferment V2) runtime · [docs/ferment-storage-schema.md](docs/ferment-storage-schema.md) — V1 storage schema
 - [docs/hooks.md](docs/hooks.md) — lifecycle hooks (lint:fix, session-end, compaction timeout guard, work tracking)
 - [docs/mcp-e2e-testing.md](docs/mcp-e2e-testing.md) — MCP end-to-end testing approach (live creds, real preconditions)
 - [docs/memory-extension.md](docs/memory-extension.md) · [docs/memory-residency.md](docs/memory-residency.md) — memory: LLM-extraction pipeline, disk-backed residency and display budget
