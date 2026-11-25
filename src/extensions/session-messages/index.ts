@@ -58,7 +58,7 @@ export const CROSS_SESSION_NOTICE_TYPE = "cross-session-notice"
 const MAX_FRAME_CHARS = 64 * 1024
 /** A live session answers at once; longer means it is frozen, and the list skips it. */
 const REQUEST_TIMEOUT_MS = 2000
-/** A held message waits this long for its user, as in Claude Code; then its sender hears it expired. */
+/** A held message waits this long for its user; then its sender hears it expired. */
 const HOLD_EXPIRY_MS = 5 * 60_000
 /**
  * Messages to one session until this session's user types again: room for a few questions and follow-ups,
