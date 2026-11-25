@@ -4,7 +4,7 @@
 // are sent unconditionally via `_kimchi.dev/pi_notify` (no capability gate,
 // no `[ACP]` warnings).
 
-import type { ClientCapabilities } from "@agentclientprotocol/sdk"
+import type { ClientCapabilities } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"

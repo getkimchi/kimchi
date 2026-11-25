@@ -221,7 +221,7 @@ it("uses separate calls to the selected model to continue and split Studio work 
 	const continuationText = "Implement the comma-separated download with escaped quotes from the earlier plan."
 	const unrelatedText = "Explain the phases of the Moon."
 	const planner = await newSession(active, active.workDir)
-	await active.conn.extMethod("_kimchi.dev/set_session_title", { sessionId: planner, title: "ACP export planner" })
+	await active.conn.request("_kimchi.dev/set_session_title", { sessionId: planner, title: "ACP export planner" })
 	expect((await prompt(active, planner, planningText)).stopReason).toBe("end_turn")
 	expect(mainRequests()).toHaveLength(1)
 	expect(active.fake.requests.filter(judge)).toHaveLength(0)
@@ -231,7 +231,7 @@ it("uses separate calls to the selected model to continue and split Studio work 
 		summary: planningText,
 	})
 	const implementer = await newSession(active, active.workDir)
-	await active.conn.extMethod("_kimchi.dev/set_session_title", {
+	await active.conn.request("_kimchi.dev/set_session_title", {
 		sessionId: implementer,
 		title: "ACP export implementation",
 	})

@@ -1,5 +1,5 @@
 // ACP integration test fixture. Spawns kimchi with `--mode acp`, returns a
-// `ClientSideConnection` + recording client, and loads a throwaway extension
+// `ClientContext` + recording client, and loads a throwaway extension
 // so every test triggers the fire-and-forget UI surface during `session_start`.
 // ACP speaks JSON-RPC over stdio — no node-pty like the TUI fixture.
 
@@ -10,8 +10,8 @@ import { join, resolve } from "node:path"
 import { Readable, Writable } from "node:stream"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
-import type { ClientSideConnection } from "@agentclientprotocol/sdk"
-import * as acp from "@agentclientprotocol/sdk"
+import type { ClientContext } from "@agentclientprotocol/sdk/unstable"
+import * as acp from "@agentclientprotocol/sdk/unstable"
 import {
 	DEFAULT_MODEL,
 	type FakeModel,
@@ -45,7 +45,7 @@ export interface AcpFixture {
 	workDir: string
 	fake: FakeOpenAiServer
 	proc: ChildProcess
-	conn: ClientSideConnection
+	conn: ClientContext
 	client: RecordingClient
 	/** The initialize() response captured at connection setup, so tests can assert negotiated agent capabilities without a second initialization call. */
 	initializeResponse: acp.InitializeResponse
@@ -161,7 +161,11 @@ export class RecordingClient {
 	 *  so tests asserting relative order between the two channels read this. */
 	readonly wireArrivalOrder: string[] = []
 
-	private permissionResolver: ((response: acp.RequestPermissionResponse) => acp.RequestPermissionResponse) | null = null
+	private permissionResolver:
+		| ((
+				response: acp.RequestPermissionResponse,
+		  ) => acp.RequestPermissionResponse | Promise<acp.RequestPermissionResponse>)
+		| null = null
 	private elicitationResolver: ((response: acp.CreateElicitationResponse) => acp.CreateElicitationResponse) | null =
 		null
 
@@ -239,6 +243,30 @@ export class RecordingClient {
 			const opt = req?.options.find((o) => o.kind === response.kind) ?? req?.options[0]
 			return { outcome: { outcome: "selected", optionId: opt?.optionId ?? "" } }
 		}
+	}
+
+	/**
+	 * Leave the next permission request unanswered, like a card the user has
+	 * not clicked yet. `received` resolves when the request has arrived;
+	 * `respond` answers it, at any later time.
+	 */
+	holdNextPermission(): {
+		received: Promise<acp.RequestPermissionRequest>
+		respond: (response: acp.RequestPermissionResponse) => void
+	} {
+		let arrived: (request: acp.RequestPermissionRequest) => void = () => {}
+		const received = new Promise<acp.RequestPermissionRequest>((resolve) => {
+			arrived = resolve
+		})
+		let respond: (response: acp.RequestPermissionResponse) => void = () => {}
+		const answer = new Promise<acp.RequestPermissionResponse>((resolve) => {
+			respond = resolve
+		})
+		this.permissionResolver = () => {
+			arrived(this.permissionRequests[this.permissionRequests.length - 1])
+			return answer
+		}
+		return { received, respond }
 	}
 
 	/** All agent_message_chunk text chunks concatenated, per session. */
@@ -519,13 +547,24 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 		// biome-ignore lint/style/noNonNullAssertion: defined at this point
 		const readable = Readable.toWeb(proc.stdout!) as ReadableStream<Uint8Array>
 		client = new RecordingClient()
+		const recordingClient = client
 		const stream = acp.ndJsonStream(writable, readable)
-		// biome-ignore lint/style/noNonNullAssertion: defined at this point
-		const conn = new acp.ClientSideConnection(() => client!, stream)
+		const app = acp
+			.client()
+			.onNotification(acp.methods.client.session.update, ({ params }) => recordingClient.sessionUpdate(params))
+			.onRequest(acp.methods.client.session.requestPermission, ({ params }) =>
+				recordingClient.requestPermission(params),
+			)
+			.onRequest(acp.methods.client.fs.writeTextFile, () => recordingClient.writeTextFile())
+			.onRequest(acp.methods.client.fs.readTextFile, () => recordingClient.readTextFile())
+			.onRequest(acp.methods.client.elicitation.create, ({ params }) => recordingClient.createElicitation(params))
+			.onRequest("*", ({ method, params }) => recordingClient.extMethod(method, params))
+			.onNotification("*", ({ method, params }) => recordingClient.extNotification(method, params))
+		const conn = app.connect(stream).agent
 
 		// If kimchi crashes on startup this rejects within the timeout.
 		const initResult = await Promise.race([
-			conn.initialize({
+			conn.request("initialize", {
 				protocolVersion: acp.PROTOCOL_VERSION,
 				clientCapabilities: mergeCapabilities(clientCapabilities, clientMeta),
 				...(clientInfo ? { clientInfo } : {}),

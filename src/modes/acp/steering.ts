@@ -1,4 +1,4 @@
-import type { AgentSideConnection, SessionUpdate } from "@agentclientprotocol/sdk"
+import type { AgentContext, SessionUpdate } from "@agentclientprotocol/sdk/unstable"
 
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
 import { emitExtNotification } from "./ext-notifications.js"
@@ -20,7 +20,7 @@ export type DroppedQueueReason = "cancelled" | "shutdown"
  * is preserved without awaiting.
  */
 export function notifyDroppedQueue(
-	conn: AgentSideConnection,
+	conn: AgentContext,
 	sessionId: string,
 	droppedQueue: { steering: string[]; followUp: string[] },
 	reason: DroppedQueueReason,

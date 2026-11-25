@@ -47,9 +47,9 @@ import {
 	ensureBuiltinMcpDisabled,
 	ensureHideThinkingBlockDefault,
 	ensureQuietStartupDefault,
+	firstRunSettingsDefaults,
 	getApiKeyMismatchWarning,
 	loadConfig,
-	RETRY_DEFAULTS,
 	readTelemetryConfig,
 	resolveEffectiveApiKey,
 	syncWheelScrollToPiSettings,
@@ -65,6 +65,7 @@ import idleGcExtension from "./extensions/adaptive-gc.js"
 import { installAgentEndWillRetryPatch } from "./extensions/agent-end-will-retry.js"
 import agentsExtension from "./extensions/agents/index.js"
 import { WEB_TOOL_MANAGED_FACTORIES } from "./extensions/agents/manager/subagent-web-tools.js"
+import agentsRulesExtension from "./extensions/agents-rules/index.js"
 import createApiKeyWarningExtension from "./extensions/api-key-warning.js"
 import { artifactRecorderExtension } from "./extensions/artifacts/recorder.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
@@ -184,6 +185,7 @@ import { probeKittyKeyboardSupport } from "./extensions/terminal-compat/keyboard
 import { emitTerminalCompatWarning } from "./extensions/terminal-compat/startup-warning.js"
 import themeSelectorExtension from "./extensions/theme-selector.js"
 import thinkingStepsExtension from "./extensions/thinking-steps/index.js"
+import transcriptTimestampsExtension from "./extensions/timestamps.js"
 import tipsExtension from "./extensions/tips/index.js"
 import todosExtension from "./extensions/todos/index.js"
 import toolGroupingExtension from "./extensions/tool-grouping.js"
@@ -725,10 +727,7 @@ async function cliMain(): Promise<void> {
 				readFileSync(settingsPath, "utf-8")
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-					writeFileSync(
-						settingsPath,
-						`${JSON.stringify({ quietStartup: true, theme: "kimchi-minimal", retry: RETRY_DEFAULTS, hideThinkingBlock: true }, null, 2)}\n`,
-					)
+					writeFileSync(settingsPath, `${JSON.stringify(firstRunSettingsDefaults(), null, 2)}\n`)
 				} else {
 					console.error(`Warning: could not read ${settingsPath}: ${(err as Error).message}`)
 				}
@@ -946,6 +945,7 @@ async function cliMain(): Promise<void> {
 				loopGuardExtension,
 				explorationGuardExtension,
 				...enabledExtensionFactories([
+					{ id: "extensions.agents-rules", factory: agentsRulesExtension },
 					{ id: "extensions.lsp", factory: lspExtension },
 					{ id: "extensions.dap", factory: dapExtension },
 				] satisfies ManagedExtensionFactory[]),
@@ -1048,6 +1048,9 @@ async function cliMain(): Promise<void> {
 				surveysExtension(),
 				toolRenderingExtension,
 				toolGroupingExtension,
+				// Must stay outside the existing renderers so cached content never
+				// absorbs or drops the optional display-only timestamp line.
+				transcriptTimestampsExtension,
 				...enabledExtensionFactories(WEB_TOOL_MANAGED_FACTORIES),
 				...enabledExtensionFactories([
 					{ id: MEMORY_RESOURCE_ID, factory: memoryExtension },

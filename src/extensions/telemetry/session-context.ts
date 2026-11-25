@@ -6,8 +6,7 @@ import { isAcpSessionHost } from "../../modes/acp/state.js"
 import { readEffectiveTelemetryConfig } from "../../telemetry-policy.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
 import { getDetectedVersion } from "../../utils.js"
-import { isAgentWorker } from "../agent-worker-context.js"
-import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { getAgentWorkerParentSessionId, isAgentWorker } from "../agent-worker-context.js"
 import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
 import type { TelemetryFermentV2Context } from "./ferment-v2-context.js"
@@ -357,17 +356,17 @@ export class TelemetryContext {
 
 	/**
 	 * Returns the spawning (parent) session's pi session id when this process is
-	 * inside an Agent-subagent run, undefined otherwise. The Agent runner sets
-	 * KIMCHI_PARENT_SESSION_ID for the whole subagent run; the Agent-worker async
-	 * context (or KIMCHI_SUBAGENT=1) gates the check so parent-session events are
-	 * never attributed a parent.
+	 * inside an Agent-subagent run, undefined otherwise. The Agent runner captures
+	 * the owner in the worker's per-run context and retains it for resumes; a
+	 * sibling worker cannot replace it. A legacy subprocess retains its
+	 * launch-scoped environment fallback. Parent-session events never get a parent.
 	 *
 	 * Used for both the `session.parent_id` telemetry attribute and the
 	 * X-Parent-Session-Id provider header (chat_completions pipeline).
 	 */
 	getParentSessionId(): string | undefined {
 		if (!isAgentWorker()) return undefined
-		return process.env[PARENT_SESSION_ID_ENV_KEY]
+		return getAgentWorkerParentSessionId()
 	}
 
 	private getParentSessionAttribute(): TelemetryAttributes | undefined {

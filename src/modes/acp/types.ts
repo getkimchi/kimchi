@@ -1,4 +1,4 @@
-import type { PromptResponse } from "@agentclientprotocol/sdk"
+import type { PromptResponse } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import type { ArtifactFileSnapshot, ArtifactSnapshotClaim } from "../../extensions/artifacts/detect.js"
 import type { TurnArtifactBuffer } from "./artifact-links.js"

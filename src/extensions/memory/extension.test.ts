@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { AgentSideConnection } from "@agentclientprotocol/sdk"
+import type { AgentContext } from "@agentclientprotocol/sdk/unstable"
 import type { BeforeAgentStartEvent, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
@@ -416,6 +416,7 @@ describe("memory extension", () => {
 	})
 
 	it("degrades to no-memory when the store fails — logged once, session untouched", async () => {
+		const ctx = createContext()
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
 		try {
 			const { start } = await setup(
@@ -427,9 +428,10 @@ describe("memory extension", () => {
 				}),
 			)
 			for (let turn = 0; turn < 2; turn++) {
-				const result = await start(startEvent(`turn ${turn}`), fakeCtx)
+				const result = await start(startEvent(`turn ${turn}`), ctx)
 				expect(result?.systemPrompt).toContain("captured automatically")
 			}
+			expect(vi.mocked(ctx.ui.setWidget).mock.calls.filter((call) => call[0] === "memory-recall")).toEqual([])
 			expect(consoleError).toHaveBeenCalledTimes(1)
 			expect(consoleError.mock.calls[0]?.[0]).toContain("[memory]")
 		} finally {
@@ -712,66 +714,27 @@ describe("memory extension", () => {
 		expect(driftQuery?.length).toBeLessThanOrEqual(TURN_RECALL_QUERY_MAX_CHARS)
 	})
 
-	it("shows the recall indicator while retrieval runs and clears it after", async () => {
+	it("keeps initial recall retrieval hidden while it runs and after it settles", async () => {
 		const ctx = createContext()
-		const setDuringSearch: Array<unknown> = []
+		let releaseSearch: (() => void) | undefined
+		const searchBlocked = new Promise<void>((resolve) => {
+			releaseSearch = resolve
+		})
 		const search = vi.fn(async () => {
-			// What was on screen while the search was in flight?
-			setDuringSearch.push(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1))
+			await searchBlocked
 			return [{ memory: "user prefers pnpm over npm", score: 0.7 }]
 		})
 		const { start } = await setup(
 			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 		)
-		await start(startEvent("set up the repo"), ctx)
-		// The indicator was on screen during the retrieval, and the turn
-		// ended with it cleared — nothing left behind.
-		expect(setDuringSearch).toEqual([["memory-recall", ["› set up the repo", "Recalling memory…"]]])
-		const recallCalls = vi.mocked(ctx.ui.setWidget).mock.calls.filter((call) => call[0] === "memory-recall")
-		expect(recallCalls.at(-1)).toEqual(["memory-recall", undefined])
-	})
-
-	it("truncates a long prompt to one line in the recall widget", async () => {
-		const ctx = createContext()
-		const seen: Array<unknown> = []
-		const search = vi.fn(async () => {
-			seen.push(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1))
-			return [{ memory: "user prefers pnpm over npm", score: 0.7 }]
-		})
-		const { start } = await setup(
-			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
-		)
-		await start(startEvent(`edge ${"x".repeat(200)}`), ctx)
-		// One capped line with an ellipsis — never the full 200-char payload.
-		expect(seen).toEqual([["memory-recall", [`› edge ${"x".repeat(114)}…`, "Recalling memory…"]]])
-	})
-
-	it("shows only the first line of a multi-line prompt in the recall widget", async () => {
-		const ctx = createContext()
-		const seen: Array<unknown> = []
-		const search = vi.fn(async () => {
-			seen.push(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1))
-			return [{ memory: "user prefers pnpm over npm", score: 0.7 }]
-		})
-		const { start } = await setup(
-			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
-		)
-		await start(startEvent("first line of a paste\nsecond line stays hidden"), ctx)
-		expect(seen).toEqual([["memory-recall", ["› first line of a paste", "Recalling memory…"]]])
-	})
-
-	it("falls back to the bare progress line for a whitespace-only prompt", async () => {
-		const ctx = createContext()
-		const seen: Array<unknown> = []
-		const search = vi.fn(async () => {
-			seen.push(vi.mocked(ctx.ui.setWidget).mock.calls.at(-1))
-			return [{ memory: "user prefers pnpm over npm", score: 0.7 }]
-		})
-		const { start } = await setup(
-			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
-		)
-		await start(startEvent("   "), ctx)
-		expect(seen).toEqual([["memory-recall", ["Recalling memory…"]]])
+		const pending = start(startEvent("set up the repo"), ctx)
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(1))
+		const duringSearch = vi.mocked(ctx.ui.setWidget).mock.calls.filter((call) => call[0] === "memory-recall")
+		releaseSearch?.()
+		const result = await pending
+		expect(result?.systemPrompt).toContain("user prefers pnpm over npm")
+		expect(duringSearch).toEqual([])
+		expect(vi.mocked(ctx.ui.setWidget).mock.calls.filter((call) => call[0] === "memory-recall")).toEqual([])
 	})
 
 	it("sets the memory status segment to the delivered fact count", async () => {
@@ -875,33 +838,20 @@ describe("memory extension", () => {
 		expect(vi.mocked(ctx.ui.notify).mock.calls).toContainEqual(["Recalled 2 memories", "info"])
 	})
 
-	it("clears the recall indicator even when retrieval fails", async () => {
+	it("keeps recall retrieval hidden when a detached search fails", async () => {
 		const ctx = createContext()
 		const search = vi
 			.fn()
-			.mockResolvedValueOnce([{ memory: "user prefers pnpm over npm", score: 0.7 }])
-			.mockRejectedValueOnce(new Error("gateway down"))
+			.mockRejectedValueOnce(new Error("initial gateway down"))
+			.mockRejectedValueOnce(new Error("detached gateway down"))
 		const { start } = await setup(
 			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 		)
 		await start(startEvent("set up the repo"), ctx)
-		// Only the detached recall's widget calls count from here — turn 1's
-		// digest indicator must not satisfy the "was set" assertion.
-		const callsBeforeTurn2 = vi.mocked(ctx.ui.setWidget).mock.calls.length
-		// Turn 2 drifts into uncovered territory and the search throws — the
-		// finally guard must still clear the indicator.
 		await start(startEvent("what do I bake?"), ctx)
-		await flushRecall(() =>
-			expect(lastCallFor(vi.mocked(ctx.ui.setWidget).mock.calls.slice(callsBeforeTurn2), "memory-recall")).toEqual([
-				"memory-recall",
-				undefined,
-			]),
-		)
-		const recallCalls = vi
-			.mocked(ctx.ui.setWidget)
-			.mock.calls.slice(callsBeforeTurn2)
-			.filter((call) => call[0] === "memory-recall")
-		expect(recallCalls.some((call) => call[1] !== undefined)).toBe(true)
+		await flushRecall(() => expect(search).toHaveBeenCalledTimes(2))
+		await settle()
+		expect(vi.mocked(ctx.ui.setWidget).mock.calls.filter((call) => call[0] === "memory-recall")).toEqual([])
 	})
 
 	it("never touches the widget API without a UI (headless / ACP)", async () => {
@@ -911,7 +861,7 @@ describe("memory extension", () => {
 			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) }),
 		)
 		await start(startEvent("set up the repo"), ctx)
-		// Retrieval still ran — the indicator is purely a TUI affordance.
+		// Retrieval still ran without producing recall-specific UI.
 		expect(search).toHaveBeenCalled()
 		expect(vi.mocked(ctx.ui.setWidget).mock.calls.every((call) => call[0] !== "memory-recall")).toBe(true)
 	})
@@ -1455,7 +1405,7 @@ describe("memory status over the ACP bridge", () => {
 		// unconditionally (no capability gate), proving the composition the
 		// docs claim: hasUI guard → extension emission → _kimchi.dev/pi_notify.
 		const extNotification = vi.fn(async (_method: string, _params: Record<string, unknown>) => {})
-		const conn = { extNotification } as unknown as AgentSideConnection
+		const conn = { notify: extNotification } as unknown as AgentContext
 		const acpUi = createAcpUIContext(conn, "sess-1", undefined, vi.fn())
 		const ctx = createContext({ ui: acpUi })
 		const search = vi.fn(async () => [{ memory: "user prefers pnpm over npm", score: 0.7 }])

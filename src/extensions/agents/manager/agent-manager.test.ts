@@ -63,6 +63,7 @@ import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
 import { createContext, createLiveContext } from "../../__mocks__/context.js"
 import { createExtensionApi } from "../../__mocks__/extension-api.js"
+import { isAgentWorker } from "../../agent-worker-context.js"
 import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
@@ -860,6 +861,55 @@ describe("AgentManager", () => {
 			releaseRun.resolve()
 			await wait.catch(() => {})
 		}
+	})
+
+	it("threads the run's identity into the fresh run options", async () => {
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "done",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: false,
+			steered: false,
+		})
+		manager = new AgentManager()
+		const spawningCtx = fakeCtx()
+		const record = await manager.spawnAndWait(fakePi(), spawningCtx, "Explore", "inspect the config", {
+			description: "inspect the config",
+		})
+		expect(mockRunAgent).toHaveBeenCalledWith(
+			expect.anything(),
+			"Explore",
+			expect.anything(),
+			expect.objectContaining({ agentId: record.id, description: "inspect the config" }),
+		)
+	})
+
+	it("resumes inside a fresh worker run context for its watchdog hold", async () => {
+		mockRunAgent.mockResolvedValueOnce({
+			responseText: "checkpoint",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: true,
+			abortReason: "token_budget",
+			steered: false,
+		})
+		let seenWorker: boolean | undefined
+		mockResumeAgent.mockImplementationOnce(async () => {
+			seenWorker = isAgentWorker()
+			return {
+				responseText: "resumed",
+				session: { dispose: vi.fn() } as unknown as AgentSession,
+				aborted: false,
+				steered: false,
+			}
+		})
+		manager = new AgentManager()
+		const spawningCtx = fakeCtx()
+		const record = await manager.spawnAndWait(fakePi(), spawningCtx, "Explore", "inspect the config", {
+			description: "inspect the config",
+		})
+		const resumed = await manager.resume(record.id, "continue")
+		expect(resumed?.status).toBe("completed")
+		expect(seenWorker).toBe(true)
+		expect(isAgentWorker()).toBe(false)
 	})
 
 	it("waits for active resume promises to settle so resume runner cleanup can run", async () => {
@@ -2356,7 +2406,7 @@ describe("AgentManager session hand-off", () => {
 		const b = new AgentManager()
 		b.adoptRecords(records, queued, midResumeIds, fakePi(), fakeCtx())
 
-		const res = workerReport!.submit({
+		const res = (workerReport as NonNullable<typeof workerReport>).submit({
 			status: "completed",
 			summary: "step finished",
 			steps_completed: ["one"],
@@ -2364,7 +2414,8 @@ describe("AgentManager session hand-off", () => {
 		})
 		expect(res.accepted).toBe(true) // the pre-fix blocker: false (record gone from old manager)
 		expect(b.getRecord(id)?.agentReport).toMatchObject({ attempt_id: 0, submitted_at: expect.any(Number) })
-		expect(workerReport!.isAccepted()).toBe(true)
+		const reported = workerReport as NonNullable<typeof workerReport>
+		expect(reported.isAccepted()).toBe(true)
 		runResult.resolve({
 			responseText: "done",
 			session: { dispose: vi.fn() } as unknown as AgentSession,
@@ -2445,7 +2496,7 @@ describe("AgentManager session hand-off", () => {
 		// A spared remote background run must not count... ; a foreground run must not either.
 		const remote = m.getRecord(running)
 		expect(m.countAbortableBackground()).toBe(2)
-		remote!.remote = true
+		;(remote as NonNullable<typeof remote>).remote = true
 		expect(m.countAbortableBackground()).toBe(1)
 		m.spawn(fakePi(), fakeCtx(), "Explore", "three", { description: "three" })
 		expect(m.countAbortableBackground()).toBe(1)

@@ -37,7 +37,7 @@ describe("ACP reversible redaction (token mode)", () => {
 			},
 		})
 
-		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
+		const session = await fixture.conn.request("session/new", { cwd: fixture.workDir, mcpServers: [] })
 		const result = await prompt(fixture, session.sessionId, [`echo back ${email} verbatim`].join(" "))
 		expect(result.stopReason).toBe("end_turn")
 

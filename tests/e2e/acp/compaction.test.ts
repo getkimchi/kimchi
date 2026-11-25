@@ -18,7 +18,7 @@
 //      would silently abort the running turn).
 
 import { setTimeout as delay } from "node:timers/promises"
-import type { SessionUpdate } from "@agentclientprotocol/sdk"
+import type { SessionUpdate } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { E2E_WAIT_MS, newSession, waitFor, waitForSessionUpdate } from "./support/scenarios.js"
@@ -88,7 +88,7 @@ describe("ACP integration — user-triggered compaction", () => {
 
 	it("completes and streams compaction_start/compaction_end via agent_activity", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
-		await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "hello" }] })
+		await fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "hello" }] })
 		// Turn-boundary usage updates (one per message_end) also ride the wire;
 		// the compaction refresh is asserted as the delta over this baseline.
 		const usageUpdatesBeforeCompact = fixture.client.sessionUpdates.filter(
@@ -96,10 +96,12 @@ describe("ACP integration — user-triggered compaction", () => {
 		).length
 
 		// force bypasses the keep-recent threshold on this tiny session.
-		const result = (await withTimeout(
-			fixture.conn.extMethod(COMPACT_METHOD, { sessionId, force: true }),
-			"compact",
-		)) as { status: string; summary?: string; tokensBefore: number; firstKeptEntryId?: string }
+		const result = (await withTimeout(fixture.conn.request(COMPACT_METHOD, { sessionId, force: true }), "compact")) as {
+			status: string
+			summary?: string
+			tokensBefore: number
+			firstKeptEntryId?: string
+		}
 
 		expect(result.status).toBe("completed")
 		expect(result.summary).toContain("Compacted summary")
@@ -146,20 +148,23 @@ describe("ACP integration — user-triggered compaction", () => {
 		// recorded cross-channel order is arrival-timing dependent.)
 
 		// The session is immediately usable afterwards.
-		const followUp = await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "and follow up" }] })
+		const followUp = await fixture.conn.request("session/prompt", {
+			sessionId,
+			prompt: [{ type: "text", text: "and follow up" }],
+		})
 		expect((followUp as { stopReason: string }).stopReason).toBe("end_turn")
 	})
 
 	it("rejects a prompt while compaction is in flight as a structured JSON-RPC error", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
-		await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "hello" }] })
+		await fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "hello" }] })
 
 		// Slow summarization (1.5s/chunk) keeps the compaction window open.
-		const compactPromise = fixture.conn.extMethod(COMPACT_METHOD, { sessionId, force: true })
+		const compactPromise = fixture.conn.request(COMPACT_METHOD, { sessionId, force: true })
 		await waitForActivity(fixture, "compaction_start")
 
 		const error = await fixture.conn
-			.prompt({ sessionId, prompt: [{ type: "text", text: "this must be gated" }] })
+			.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "this must be gated" }] })
 			.then(() => {
 				throw new Error("prompt should have been rejected while compacting")
 			})
@@ -174,19 +179,22 @@ describe("ACP integration — user-triggered compaction", () => {
 		// accepted again afterwards.
 		const compactResult = (await withTimeout(compactPromise, "compact")) as { status: string }
 		expect(compactResult.status).toBe("completed")
-		const after = await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "now it works" }] })
+		const after = await fixture.conn.request("session/prompt", {
+			sessionId,
+			prompt: [{ type: "text", text: "now it works" }],
+		})
 		expect((after as { stopReason: string }).stopReason).toBe("end_turn")
 	})
 
 	it("compact_abort cancels an in-flight compaction and resolves the blocking compact as cancelled", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
-		await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "hello" }] })
+		await fixture.conn.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "hello" }] })
 
-		const compactPromise = fixture.conn.extMethod(COMPACT_METHOD, { sessionId, force: true })
+		const compactPromise = fixture.conn.request(COMPACT_METHOD, { sessionId, force: true })
 		await waitForActivity(fixture, "compaction_start")
 
 		const abortResult = (await withTimeout(
-			fixture.conn.extMethod(COMPACT_ABORT_METHOD, { sessionId }),
+			fixture.conn.request(COMPACT_ABORT_METHOD, { sessionId }),
 			"compact_abort",
 		)) as { status: string }
 		expect(abortResult.status).toBe("aborted")
@@ -199,7 +207,10 @@ describe("ACP integration — user-triggered compaction", () => {
 		expect((endActivity.params as ActivityParams).aborted).toBe(true)
 
 		// Nothing was committed: a follow-up prompt responds normally.
-		const followUp = await fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "and follow up" }] })
+		const followUp = await fixture.conn.request("session/prompt", {
+			sessionId,
+			prompt: [{ type: "text", text: "and follow up" }],
+		})
 		expect((followUp as { stopReason: string }).stopReason).toBe("end_turn")
 	})
 
@@ -207,14 +218,17 @@ describe("ACP integration — user-triggered compaction", () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
 		// Response 1 streams slowly (1.5s/chunk, 3 chunks), so the turn is still
 		// live when compact arrives right after the first chunk.
-		const promptPromise = fixture.conn.prompt({ sessionId, prompt: [{ type: "text", text: "go slow" }] })
+		const promptPromise = fixture.conn.request("session/prompt", {
+			sessionId,
+			prompt: [{ type: "text", text: "go slow" }],
+		})
 		await waitForSessionUpdate(fixture, sessionId, (u) => u.sessionUpdate === "agent_message_chunk")
 
-		await expect(fixture.conn.extMethod(COMPACT_METHOD, { sessionId, force: true })).rejects.toThrow(
+		await expect(fixture.conn.request(COMPACT_METHOD, { sessionId, force: true })).rejects.toThrow(
 			/prompt turn is in progress/,
 		)
 
-		await fixture.conn.cancel({ sessionId })
+		await fixture.conn.notify("session/cancel", { sessionId })
 		const result = (await withTimeout(
 			promptPromise.catch(() => ({ stopReason: "cancelled" as const })),
 			"prompt",
@@ -284,7 +298,7 @@ describe("ACP integration — compact_abort cancels auto-compaction mid turn", (
 
 	it("aborts the in-turn compaction and lets the turn continue", async () => {
 		const sessionId = await newSession(fixture, fixture.workDir)
-		const promptPromise = fixture.conn.prompt({
+		const promptPromise = fixture.conn.request("session/prompt", {
 			sessionId,
 			prompt: [{ type: "text", text: "run the three echo steps then finish" }],
 		})
@@ -299,7 +313,7 @@ describe("ACP integration — compact_abort cancels auto-compaction mid turn", (
 		expect(textSoFar).not.toContain("AUTO_ABORT_FINAL")
 
 		const abortResult = (await withTimeout(
-			fixture.conn.extMethod(COMPACT_ABORT_METHOD, { sessionId }),
+			fixture.conn.request(COMPACT_ABORT_METHOD, { sessionId }),
 			"compact_abort",
 		)) as { status: string }
 		expect(abortResult.status).toBe("aborted")

@@ -117,7 +117,7 @@ describe(
 			expect(toolResultText(fixture.fake.requests, read)).toContain("LLM-4358: Enable MCP access in plan mode")
 
 			if (resumedRead === undefined) return
-			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+			await fixture.conn.request("session/load", { sessionId, cwd: fixture.workDir, mcpServers: [] })
 			expect((await prompt(fixture, sessionId, "Read it again after resuming the plan session")).stopReason).toBe(
 				"end_turn",
 			)
@@ -159,7 +159,7 @@ describe(
 			rmSync(fixture.mcp.configPath)
 			const server = fixture.mcp.serverDefinition
 			if (server.command === undefined) throw new Error("Expected the stdio MCP fixture")
-			const session = await fixture.conn.newSession({
+			const session = await fixture.conn.request("session/new", {
 				cwd: fixture.workDir,
 				mcpServers: [
 					{

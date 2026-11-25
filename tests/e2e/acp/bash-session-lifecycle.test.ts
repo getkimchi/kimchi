@@ -52,7 +52,7 @@ for (const otherSession of [false, true]) {
 			try {
 				writeFileSync(join(fixture.workDir, "independent.txt"), "independent work")
 				const a = await newSession(fixture, fixture.workDir)
-				const running = fixture.conn.prompt({
+				const running = fixture.conn.request("session/prompt", {
 					sessionId: a,
 					prompt: [{ type: "text", text: "Start long Bash work and draft" }],
 				})
@@ -66,7 +66,7 @@ for (const otherSession of [false, true]) {
 				)
 				pid = Number(readFileSync(join(fixture.workDir, "lifecycle.pid"), "utf8").trim())
 				expect(pid).toBeGreaterThan(0)
-				await fixture.conn.cancel({ sessionId: a })
+				await fixture.conn.notify("session/cancel", { sessionId: a })
 				expect((await running).stopReason).toBe("cancelled")
 				process.kill(pid, 0)
 				if (otherSession) {
@@ -80,7 +80,7 @@ for (const otherSession of [false, true]) {
 					expect(JSON.stringify(latestAgentChatRequest(fixture.fake.requests)?.body)).not.toContain("lifecycle.pid")
 				}
 				process.kill(pid, 0)
-				await fixture.conn.closeSession({ sessionId: a })
+				await fixture.conn.request("session/close", { sessionId: a })
 				await waitFor(
 					() => {
 						try {
@@ -94,7 +94,7 @@ for (const otherSession of [false, true]) {
 					(alive) => !alive,
 					5000,
 				)
-				await fixture.conn.loadSession({ sessionId: a, cwd: fixture.workDir, mcpServers: [] })
+				await fixture.conn.request("session/load", { sessionId: a, cwd: fixture.workDir, mcpServers: [] })
 				expect((await prompt(fixture, a, "Inspect the resumed Bash cohort")).stopReason).toBe("end_turn")
 				expect(latestAgentChatRequest(fixture.fake.requests)?.body).toMatchObject({
 					tools: expect.arrayContaining([
@@ -165,7 +165,10 @@ it(
 		try {
 			writeFileSync(join(fixture.workDir, "independent.txt"), "independent work in B")
 			const a = await newSession(fixture, fixture.workDir)
-			const initialA = fixture.conn.prompt({ sessionId: a, prompt: [{ type: "text", text: "Start A's process" }] })
+			const initialA = fixture.conn.request("session/prompt", {
+				sessionId: a,
+				prompt: [{ type: "text", text: "Start A's process" }],
+			})
 			await waitForSessionUpdate(
 				fixture,
 				a,
@@ -176,10 +179,13 @@ it(
 			)
 			pids.push(Number(readFileSync(join(fixture.workDir, "a.pid"), "utf8").trim()))
 			expect(pids[0]).toBeGreaterThan(0)
-			await fixture.conn.cancel({ sessionId: a })
+			await fixture.conn.notify("session/cancel", { sessionId: a })
 			expect((await initialA).stopReason).toBe("cancelled")
 			const b = await newSession(fixture, fixture.workDir)
-			const initialB = fixture.conn.prompt({ sessionId: b, prompt: [{ type: "text", text: "Start B's process" }] })
+			const initialB = fixture.conn.request("session/prompt", {
+				sessionId: b,
+				prompt: [{ type: "text", text: "Start B's process" }],
+			})
 			await waitForSessionUpdate(
 				fixture,
 				b,
@@ -190,9 +196,9 @@ it(
 			)
 			pids.push(Number(readFileSync(join(fixture.workDir, "b.pid"), "utf8").trim()))
 			expect(pids[1]).toBeGreaterThan(0)
-			await fixture.conn.cancel({ sessionId: b })
+			await fixture.conn.notify("session/cancel", { sessionId: b })
 			expect((await initialB).stopReason).toBe("cancelled")
-			const inspecting = fixture.conn.prompt({
+			const inspecting = fixture.conn.request("session/prompt", {
 				sessionId: a,
 				prompt: [{ type: "text", text: "Inspect only A's cohort" }],
 			})
@@ -210,12 +216,12 @@ it(
 			expect(requestA).toContain("Inspection of 1 background bash process")
 			expect(requestA).toContain("a.pid")
 			expect(requestA).not.toContain("b.pid")
-			await fixture.conn.cancel({ sessionId: a })
+			await fixture.conn.notify("session/cancel", { sessionId: a })
 			expect((await inspecting).stopReason).toBe("cancelled")
-			await fixture.conn.closeSession({ sessionId: a })
+			await fixture.conn.request("session/close", { sessionId: a })
 			expect(() => process.kill(pids[0], 0)).toThrow()
 			process.kill(pids[1], 0)
-			const workingB = fixture.conn.prompt({
+			const workingB = fixture.conn.request("session/prompt", {
 				sessionId: b,
 				prompt: [{ type: "text", text: "Read independently while B exits" }],
 			})

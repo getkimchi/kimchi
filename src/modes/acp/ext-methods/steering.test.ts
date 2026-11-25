@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { SessionNotification } from "@agentclientprotocol/sdk"
+import { methods, type SessionNotification } from "@agentclientprotocol/sdk/unstable"
 import type { ImageContent } from "@earendil-works/pi-ai"
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
@@ -350,8 +350,8 @@ describe("KimchiAcpAgent extMethod steering", () => {
 		}
 		const conn = makeAcpConn()
 		const sent: SessionNotification[] = []
-		conn.sessionUpdate = async (p: SessionNotification) => {
-			sent.push(p)
+		conn.notify = async (method: string, p: SessionNotification) => {
+			if (method === methods.client.session.update) sent.push(p)
 		}
 		const agent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
@@ -421,7 +421,7 @@ describe("KimchiAcpAgent extMethod steering", () => {
 			skills: [{ name: "steer-skill", description: "d", filePath }],
 		})
 		const conn = makeAcpConn()
-		conn.sessionUpdate = async () => {}
+		conn.notify = async () => {}
 		const agent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",

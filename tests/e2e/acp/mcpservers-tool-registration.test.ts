@@ -79,7 +79,7 @@ describe("ACP integration — mcpServers tool registration", () => {
 		writeFileSync(mcpScriptPath, MCP_SERVER_SCRIPT, "utf-8")
 
 		// Create a session with the MCP server attached
-		const res = await fixture.conn.newSession({
+		const res = await fixture.conn.request("session/new", {
 			cwd: fixture.workDir,
 			mcpServers: [
 				{
@@ -95,7 +95,7 @@ describe("ACP integration — mcpServers tool registration", () => {
 		// Give initializeMcp time to connect to the MCP server (it's async).
 		// The session_start → initializeMcp → connect pipeline is fire-and-forget,
 		// so we wait for the tool to appear in a prompt turn's tool_call updates.
-		const promptResult = fixture.conn.prompt({
+		const promptResult = fixture.conn.request("session/prompt", {
 			sessionId: res.sessionId,
 			prompt: [{ type: "text", text: "Use the echo tool to echo 'hello from ACP'" }],
 		})

@@ -78,7 +78,7 @@ describe("ACP integration — project trust surfacing", () => {
 			expect(commandNames(fixture, sessionId)).not.toContain("skill:e2e-gated-skill")
 
 			// 3. The client answers the survey; trust lands and is persisted.
-			const result = await fixture.conn.extMethod(SET_PROJECT_TRUST, { sessionId, decision: "trust" })
+			const result = await fixture.conn.request(SET_PROJECT_TRUST, { sessionId, decision: "trust" })
 			expect(result).toEqual({ trusted: true, blocked: [] })
 
 			// 4. The palette refreshes live — no session restart.
@@ -111,7 +111,7 @@ describe("ACP integration — project trust surfacing", () => {
 			// 7. Revocation sweeps too: deny_persist must drop the project skill
 			// from the live palette (not just stop advertising new ones) and
 			// store the denied decision.
-			const denyResult = await fixture.conn.extMethod(SET_PROJECT_TRUST, {
+			const denyResult = await fixture.conn.request(SET_PROJECT_TRUST, {
 				sessionId,
 				decision: "deny_persist",
 			})
@@ -149,7 +149,7 @@ describe("ACP integration — project trust surfacing", () => {
 				(u) => u !== undefined,
 			)
 
-			await expect(fixture.conn.extMethod(SET_PROJECT_TRUST, { sessionId, decision: "maybe" })).rejects.toThrow()
+			await expect(fixture.conn.request(SET_PROJECT_TRUST, { sessionId, decision: "maybe" })).rejects.toThrow()
 
 			// State unchanged: still untrusted, no decision persisted.
 			expect(lastTrustUpdate(fixture, sessionId)?.trusted).toBe(false)
@@ -158,13 +158,13 @@ describe("ACP integration — project trust surfacing", () => {
 
 			// A plain deny is in-memory only: the session is refused, but nothing
 			// is written to the trust store.
-			const denyResult = await fixture.conn.extMethod(SET_PROJECT_TRUST, { sessionId, decision: "deny" })
+			const denyResult = await fixture.conn.request(SET_PROJECT_TRUST, { sessionId, decision: "deny" })
 			expect(denyResult).toEqual({ trusted: false, blocked: ["skills"] })
 			expect(existsSync(trustPath)).toBe(false)
 
 			// trust_session is the mirror: the gate opens live (skills load) but
 			// nothing is persisted — a new session on the same cwd asks again.
-			const sessionResult = await fixture.conn.extMethod(SET_PROJECT_TRUST, {
+			const sessionResult = await fixture.conn.request(SET_PROJECT_TRUST, {
 				sessionId,
 				decision: "trust_session",
 			})
@@ -195,7 +195,7 @@ describe("ACP integration — project trust surfacing", () => {
 			)
 			expect(untrustedA?.trusted).toBe(false)
 
-			const parentResult = await fixture.conn.extMethod(SET_PROJECT_TRUST, {
+			const parentResult = await fixture.conn.request(SET_PROJECT_TRUST, {
 				sessionId: sessionA,
 				decision: "trust_parent",
 			})
@@ -257,7 +257,7 @@ describe("ACP integration — project trust surfacing", () => {
 				},
 			])
 
-			await fixture.conn.loadSession({ sessionId, cwd, mcpServers: [] })
+			await fixture.conn.request("session/load", { sessionId, cwd, mcpServers: [] })
 
 			const update = await waitFor(
 				() => lastTrustUpdate(fixture, sessionId),

@@ -51,6 +51,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/mcp-e2e-testing.md](docs/mcp-e2e-testing.md) — MCP end-to-end testing approach (live creds, real preconditions)
 - [docs/memory-extension.md](docs/memory-extension.md) · [docs/memory-residency.md](docs/memory-residency.md) — memory: LLM-extraction pipeline, disk-backed residency and display budget
 - [docs/model-routing.md](docs/model-routing.md) — auto model routing
+- [docs/permission-classifier.md](docs/permission-classifier.md) — what happens when the permission classifier fails: fail-closed policy, outage copy, circuit breaker
 - [docs/pii-redaction-tokens.md](docs/pii-redaction-tokens.md) — reversible redaction tokens (`redaction.renderMode: "tokens"`), vault lifetime, surface guarantee matrix
 - [docs/pr-cost-reporting.md](docs/pr-cost-reporting.md) — PR cost reporting and its accuracy checks ([docs/work-attribution-accuracy.md](docs/work-attribution-accuracy.md))
 - [docs/project-trust.md](docs/project-trust.md) — project-trust permission master switch and the `.kimchi/` folder contract
@@ -58,6 +59,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/session-build-entry.md](docs/session-build-entry.md) — `kimchi_build` session entry: which harness build (version/commit/dirty) produced a session
 - [docs/skills-autoload.md](docs/skills-autoload.md) — deterministic auto-load of advertised skills on declared `triggers.prompt` (extensions/keywords)
 - [docs/research/](docs/research/) — research notes (e.g. bash visibility)
+- [docs/subagent-permissions.md](docs/subagent-permissions.md) — how a subagent's tool calls are permission-checked: main-session policy, classifier, approval in the main session, host pre-approvals
 - [docs/subagents/](docs/subagents/) — built-in subagent personae (code-reviewer, research-assistant, test-writer)
 - [docs/teleport.md](docs/teleport.md) — teleporting sessions to remote sandboxes
 - [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md) — TUI wheel-scroll speed tuning

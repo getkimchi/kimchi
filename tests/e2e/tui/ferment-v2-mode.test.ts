@@ -820,7 +820,10 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 			const resumedWorkRequest = await waitForChatRequest(fixture.fake.requests, 8)
 			expect(JSON.stringify(resumedWorkRequest.body)).toContain("Finish behind the evaluator gate")
 			expect(JSON.stringify(resumedWorkRequest.body)).toContain("Verify the remaining evaluator concern")
-			await waitForText(terminal, "Reopening tactical work after the rejected completion.", { timeoutMs: 5_000 })
+			// The rejected-completion narration is interstitial commentary, which
+			// folds once the next tool call runs. Wait for the stable end state;
+			// the request above already proves the rebuilt Todo moved through it.
+			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
 			trace.step("rejected completion rebuilt the settled Todo list before further work")
 
 			await waitForText(terminal, acceptedFinal, { timeoutMs: 5_000 })

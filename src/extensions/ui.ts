@@ -369,17 +369,21 @@ function runScript(
  * upstream would call `requestRender()` every 40–200 ms, producing visible
  * full-screen redraws behind a static prompt. Uses try/finally so the
  * animator is restored even if the prompt throws or the user cancels.
+ *
+ * `keepHidden` is for a prompt that gave way to another dialog: that dialog
+ * now owns the indicator's visibility, so only the animator pause is released.
  */
 export async function withWorkingHidden<T>(
 	ctx: Pick<ExtensionContext, "ui"> | { ui?: { setWorkingVisible?: (visible: boolean) => void } },
 	fn: () => Promise<T>,
+	options: { keepHidden?: () => boolean } = {},
 ): Promise<T> {
 	pauseWorkingAnimation()
 	ctx.ui?.setWorkingVisible?.(false)
 	try {
 		return await fn()
 	} finally {
-		ctx.ui?.setWorkingVisible?.(true)
+		if (!options.keepHidden?.()) ctx.ui?.setWorkingVisible?.(true)
 		resumeWorkingAnimation()
 	}
 }

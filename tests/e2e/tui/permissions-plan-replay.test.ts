@@ -352,7 +352,9 @@ test("approved plan edits save separate files and reopen full requirements after
 
 		readCurrentPlan.function.arguments = JSON.stringify({ path: revision3Path })
 		terminal.submit("/ferment-v2 resume")
-		await waitForText(terminal, "CURRENT_PLAN_READ", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+		// The scripted "CURRENT_PLAN_READ" marker is interim commentary, which folds
+		// into the run summary once the resumed loop advances. Wait for the terminal
+		// blocked state instead — it implies the read result reached the model.
 		await waitForText(terminal, "Ferment V2 blocked.", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 		const workerRequests = fixture.fake.requests.filter((entry) => entry.url === "/openai/v1/chat/completions")
 		expect(

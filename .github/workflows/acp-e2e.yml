@@ -1,6 +1,11 @@
 name: ACP E2E
 
 on:
+  # PR-time coverage alone misses combinations created when master advances.
+  # Validate the queued merged tree and the result that actually lands on master.
+  push:
+    branches: [master]
+  merge_group:
   pull_request:
     # Only root/.github markdown: *.md under src/ and resources/ ships in the binary.
     # TUI test files are ignored, but not tests/e2e/tui/support/ (ACP fixtures import it).

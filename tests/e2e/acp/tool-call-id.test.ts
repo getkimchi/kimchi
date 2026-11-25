@@ -371,7 +371,7 @@ describe("ACP integration — toolCallId across compaction boundary", () => {
 			},
 		])
 
-		await fixture.conn.loadSession({ sessionId, cwd, mcpServers: [] })
+		await fixture.conn.request("session/load", { sessionId, cwd, mcpServers: [] })
 
 		const toolCalls = fixture.client.sessionUpdates.filter(
 			(u) => u.sessionId === sessionId && u.update.sessionUpdate === "tool_call" && !isAcpWarning(u.update),

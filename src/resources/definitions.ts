@@ -87,6 +87,14 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		restartRequired: true,
 	},
 	{
+		id: "extensions.agents-rules",
+		kind: "extensions",
+		label: "Agent rules",
+		description: "Load project rules from .agents/rules (.mdc files with globs and alwaysApply).",
+		defaultEnabled: true,
+		restartRequired: true,
+	},
+	{
 		id: "extensions.ferment",
 		kind: "extensions",
 		label: "Ferment",

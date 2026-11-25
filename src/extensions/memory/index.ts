@@ -272,36 +272,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 const MEMORY_VIEW_KEY = "memory-view"
 const MEMORY_VIEW_MAX_LINES = 10
 /**
- * Widget slot for the recall progress line. A separate key from
- * MEMORY_VIEW_KEY so the indicator and the /memory view can never clear
- * each other. Shown while memory retrieval runs inside before_agent_start —
- * the submitted prompt does not render in the history window until those
- * hooks finish, so the widget echoes it above the progress line (see
- * recallWidgetLines) for the lookup's duration.
- */
-const MEMORY_RECALL_KEY = "memory-recall"
-const MEMORY_RECALL_TEXT = "Recalling memory…"
-
-/** Cap for the one-line prompt preview shown in the recall widget. */
-const MEMORY_RECALL_PROMPT_MAX_CHARS = 120
-
-/**
- * The recall widget's lines while retrieval runs: the submitted prompt as a
- * single truncated line (a multi-line paste never renders in full) above the
- * progress line. A whitespace-only prompt degrades to the progress line
- * alone.
- */
-function recallWidgetLines(prompt: string): string[] {
-	const firstLine = prompt.split("\n", 1)[0]?.trim() ?? ""
-	if (!firstLine) return [MEMORY_RECALL_TEXT]
-	const display =
-		firstLine.length > MEMORY_RECALL_PROMPT_MAX_CHARS
-			? `${firstLine.slice(0, MEMORY_RECALL_PROMPT_MAX_CHARS - 1)}…`
-			: firstLine
-	return [`› ${display}`, MEMORY_RECALL_TEXT]
-}
-
-/**
  * The interactive browser behind /memory list and /memory search: fetches
  * the facts (search needs the gateway — errors surface as a notification)
  * and mounts the MemoryPanel through ctx.ui.custom until the user quits.
@@ -772,23 +742,6 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 			if (ctx.hasUI) ctx.ui.setWidget(MEMORY_VIEW_KEY, undefined)
 		}
 
-		// Show the submitted prompt plus the recall progress line for the
-		// duration of `work`, and always clear it — a failed or timed-out
-		// search must not leave it behind.
-		const withRecallIndicator = async <T>(
-			ctx: ExtensionContext,
-			prompt: string,
-			work: () => Promise<T>,
-		): Promise<T> => {
-			if (!ctx.hasUI) return work()
-			ctx.ui.setWidget(MEMORY_RECALL_KEY, recallWidgetLines(prompt))
-			try {
-				return await work()
-			} finally {
-				ctx.ui.setWidget(MEMORY_RECALL_KEY, undefined)
-			}
-		}
-
 		// Status-line segment (MEMORY_STATUS_KEY, shared with
 		// src/components/status-line.ts): the number of recalled facts currently
 		// in context. Set after any digest / turn-recall delivery, cleared when
@@ -1145,10 +1098,8 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 				}
 				let outcome: DigestState | null | undefined
 				try {
-					outcome = await withRecallIndicator(ctx, event.prompt, () =>
-						withRecallDeadline(deadline, () =>
-							awaitRecallDeadline(computeDigest(event.prompt, deadline, recorder, digestTelemetry), deadline),
-						),
+					outcome = await withRecallDeadline(deadline, () =>
+						awaitRecallDeadline(computeDigest(event.prompt, deadline, recorder, digestTelemetry), deadline),
 					)
 					if (generation !== recallGeneration || !memoryActive()) outcome = undefined
 				} catch (err) {
@@ -1257,11 +1208,9 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 								deadline,
 								mayDeliver: () => memoryActive() && generation === recallGeneration,
 								search: async (q) => {
-									return withRecallIndicator(ctx, q, async () => {
-										const s = await getSearcher()
-										if (!s) return undefined
-										return s.search(q)
-									})
+									const s = await getSearcher()
+									if (!s) return undefined
+									return s.search(q)
 								},
 								decideGate: makeRecallGate(query, MEMORY_PRE_REQUEST_TIMEOUT_MS, deadline),
 								deliveredFacts,

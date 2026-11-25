@@ -56,7 +56,7 @@ describe("ACP thinking-level curation", () => {
 			responses: [{ stream: ["ACP curated works."] }],
 		})
 
-		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
+		const session = await fixture.conn.request("session/new", { cwd: fixture.workDir, mcpServers: [] })
 		expect(currentModelRef(session.configOptions)).toBe("kimchi-dev/glm-5.3")
 
 		const result = await prompt(fixture, session.sessionId, "Say ok")
@@ -79,7 +79,7 @@ describe("ACP thinking-level curation", () => {
 			responses: [{ stream: ["ACP none works."] }],
 		})
 
-		const session = await fixture.conn.newSession({ cwd: fixture.workDir, mcpServers: [] })
+		const session = await fixture.conn.request("session/new", { cwd: fixture.workDir, mcpServers: [] })
 		expect(currentModelRef(session.configOptions)).toBe("kimchi-dev/minimax-m3")
 
 		const result = await prompt(fixture, session.sessionId, "Say ok")

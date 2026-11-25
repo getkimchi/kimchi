@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
-import type { SessionUpdate } from "@agentclientprotocol/sdk"
+import type { SessionUpdate } from "@agentclientprotocol/sdk/unstable"
 import { expect, it } from "vitest"
 import { STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, waitForSessionUpdate } from "./support/scenarios.js"
@@ -191,7 +191,7 @@ it(
 			// so the replay overlays the call as STILL RUNNING under the ACP id
 			// the client already knows.
 			const updatesBeforeReload = fixture.client.sessionUpdates.length
-			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+			await fixture.conn.request("session/load", { sessionId, cwd: fixture.workDir, mcpServers: [] })
 			const replayedToolCalls = fixture.client.sessionUpdates
 				.slice(updatesBeforeReload)
 				.filter(
@@ -284,7 +284,7 @@ it(
 			// Client reload, SAME harness process: replay must re-announce the
 			// call exactly once, under the live id, terminal.
 			const updatesBeforeReload = fixture.client.sessionUpdates.length
-			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+			await fixture.conn.request("session/load", { sessionId, cwd: fixture.workDir, mcpServers: [] })
 			const replayedToolCalls = fixture.client.sessionUpdates
 				.slice(updatesBeforeReload)
 				.filter(
@@ -359,7 +359,7 @@ it(
 
 			// Turn 2 runs with the process alive: steering injects into the
 			// active turn unchanged (status: injected, stopReason end_turn).
-			const secondPending = fixture.conn.prompt({
+			const secondPending = fixture.conn.request("session/prompt", {
 				sessionId,
 				prompt: [{ type: "text", text: "Read the note while the command keeps running" }],
 			})
@@ -372,7 +372,7 @@ it(
 					update.content.text.includes("Reading while it runs"),
 			)
 			expect(
-				await fixture.conn.extMethod(STEER_METHOD, { sessionId, prompt: "Quick question: what is 2+2?" }),
+				await fixture.conn.request(STEER_METHOD, { sessionId, prompt: "Quick question: what is 2+2?" }),
 			).toMatchObject({ status: "injected" })
 			expect((await secondPending).stopReason).toBe("end_turn")
 			expect(fixture.client.agentTextBySession().get(sessionId)).toContain("2+2 is 4")

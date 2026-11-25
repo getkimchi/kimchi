@@ -1,4 +1,4 @@
-import type { AgentSideConnection, ContentChunk, SessionUpdate } from "@agentclientprotocol/sdk"
+import type { AgentContext, ContentChunk, SessionUpdate } from "@agentclientprotocol/sdk/unstable"
 import { describe, expect, it, vi } from "vitest"
 import { AVAILABLE_EXT_NOTIFICATIONS } from "./capabilities.js"
 import { notifyDroppedQueue, reconcileQueue, takeSteerEchoOriginal } from "./steering.js"
@@ -131,7 +131,7 @@ describe("takeSteerEchoOriginal", () => {
 describe("notifyDroppedQueue", () => {
 	const conn = () => {
 		const extNotification = vi.fn(async (_method: string, _params: unknown) => {})
-		return { extNotification, asConn: { extNotification } as unknown as AgentSideConnection }
+		return { extNotification, asConn: { notify: extNotification } as unknown as AgentContext }
 	}
 
 	it("sends nothing when both queues are empty", () => {
@@ -168,10 +168,10 @@ describe("notifyDroppedQueue", () => {
 		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 		const { asConn } = {
 			asConn: {
-				extNotification: async () => {
+				notify: async () => {
 					throw new Error("socket closed")
 				},
-			} as unknown as AgentSideConnection,
+			} as unknown as AgentContext,
 		}
 		notifyDroppedQueue(asConn, "sess-1", { steering: ["s"], followUp: [] }, "shutdown")
 		// Let the rejection propagate through the .catch handler.
