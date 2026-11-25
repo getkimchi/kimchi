@@ -145,6 +145,20 @@ describe("session-messages", () => {
 		expect(screen).toContain("Message from alpha [aaaaa1]")
 		expect(screen).toContain("Run the tests, please.")
 		expect(screen).not.toContain("cross-session-message")
+		// A longer message shows its first line until ctrl+o expands it.
+		const longer = (expanded: boolean) =>
+			stripVTControlCharacters(
+				render(
+					{ details: { from: "alpha [aaaaa1]", text: "Run the tests, please.\nThen send me the failures." } } as never,
+					{ expanded, outputPad: 1 },
+					testTheme,
+				)
+					?.render(80)
+					.join("\n") ?? "",
+			)
+		expect(longer(false)).toContain("Run the tests, please. (ctrl+o to expand)")
+		expect(longer(false)).not.toContain("Then send me the failures.")
+		expect(longer(true)).toContain("Then send me the failures.")
 
 		expect(await beta.run("send_message", { to: "alpha [aaaaa1]", message: "Tests pass." })).toContain(
 			"Delivered to alpha [aaaaa1]: it was idle, so it starts a turn now",

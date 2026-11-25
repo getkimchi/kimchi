@@ -81,13 +81,19 @@ const UNDECIDED_NOTICE =
 let asking: Promise<boolean> | undefined
 
 /** What the receiving user sees: who wrote and what, without the wrapper and reply line meant for the model. */
-const renderMessage: MessageRenderer<{ from?: string; text?: string }> = (message, { outputPad }, theme) => {
+const renderMessage: MessageRenderer<{ from?: string; text?: string }> = (message, { expanded, outputPad }, theme) => {
 	const { from, text: body } = message.details ?? {}
 	if (!from || body === undefined) return undefined
+	const [first = "", ...rest] = body.trim().split("\n")
+	// Like tool output, a longer message shows its first line until ctrl+o expands it.
+	const shown =
+		expanded || rest.length === 0
+			? theme.fg("customMessageText", body)
+			: `${theme.fg("customMessageText", first)} ${theme.fg("dim", "(ctrl+o to expand)")}`
 	const box = new Box(outputPad, 1, (line) => theme.fg("accent", line))
 	box.addChild(new Text(theme.bold(theme.fg("customMessageLabel", `Message from ${from}`)), 0, 0))
 	box.addChild(new Spacer(1))
-	box.addChild(new Text(theme.fg("customMessageText", body), 0, 0))
+	box.addChild(new Text(shown, 0, 0))
 	return box
 }
 
