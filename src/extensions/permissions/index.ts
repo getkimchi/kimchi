@@ -642,9 +642,15 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	/**
 	 * Returns the current permission mode flag or falls back to a user default.
 	 */
-	function getRuntimePermissionMode(): PermissionModeState {
+	function getRuntimePermissionMode(toolName?: string): PermissionModeState {
 		if (isWorker) {
-			return workerMode ?? resolveMode({ env: permissionsEnvFlag, config: loaded.config.defaultMode })
+			const inherited = workerMode ?? resolveMode({ env: permissionsEnvFlag, config: loaded.config.defaultMode })
+			if (toolName && options.reviewExecution?.preApproved(toolName) && inherited.mode === "plan") {
+				// Review children have their own review-gated approvals. Parent plan
+				// mode must not block already-approved checks in isolated worktrees.
+				return { ...inherited, mode: "auto" }
+			}
+			return inherited
 		}
 		const runtimeMode = currentCtx && getPermissionMode(currentCtx.sessionManager.getSessionId())
 		return resolveMode({
@@ -2028,11 +2034,11 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	}
 
 	async function gateToolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<GateResult> {
+		const toolName = event.toolName.toLowerCase()
 		refreshWorkerPolicy(ctx)
 		if (options.role === "worker") {
-			options.reviewExecution?.captureExecution(event, ctx, getRuntimePermissionMode().mode)
+			options.reviewExecution?.captureExecution(event, ctx, getRuntimePermissionMode(toolName).mode)
 		}
-		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
 
 		if (toolName === "read") {

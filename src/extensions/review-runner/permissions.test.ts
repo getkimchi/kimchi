@@ -309,6 +309,31 @@ describe("review worker permission integration", () => {
 		expect(result).toMatchObject({ block: true, reason: expect.stringContaining("stopped") })
 	})
 
+	it("lets a fenced reviewer run an approved check when the parent session is in plan mode", async () => {
+		const planned = gate("plan", { kind: "allow-once" }, "plan-approved-check")
+		await call(planned.child, planned.ctx, "run_review_check", { id: "approved-check" })
+		for (const path of [
+			planned.controller.worktree.path,
+			planned.controller.worktree.scratchDir,
+			planned.controller.worktree.buildDir,
+			planned.controller.worktree.cacheDir,
+			planned.controller.worktree.homeDir,
+		]) {
+			mkdirSync(path, { recursive: true })
+		}
+		const bash = createReviewBashToolDefinition(planned.controller)
+		const result = await bash.execute(
+			"approved-check",
+			{ command: "printf approved" },
+			undefined,
+			undefined,
+			createToolContext({ cwd: planned.controller.worktree.path }),
+		)
+		expect(result.isError).not.toBe(true)
+		expect(planned.controller.executionFor("call-run_review_check")?.mode).toBe("auto")
+		expect(planned.controller.records.at(-1)).toMatchObject({ status: "passed", output: "approved" })
+	})
+
 	it("does not make the routine check tool a new approval path in default mode", async () => {
 		const normal = gate("default", { kind: "allow-once" })
 		expect(await call(normal.child, normal.ctx, "run_review_check", { id: "test" })).toBeUndefined()
