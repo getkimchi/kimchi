@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { EXTRACTION_SYSTEM_PROMPT } from "./capture-worker.js"
+import { EXTRACTION_SYSTEM_PROMPT, isValuationDiscard } from "./capture-worker.js"
 import {
 	buildValuationState,
 	consolidateQuestion,
@@ -13,11 +13,9 @@ import {
 	recallState,
 	supersedeQuestion,
 	supersedeState,
-	TRIAGE_DURABLE_MIN_P,
 	taskLaneEnabled,
 	triageQuestions,
 	triageVerdict,
-	VALUATION_DISCARD_MIN_P,
 	VALUATION_STATE,
 	valuationQuestion,
 } from "./gates.js"
@@ -219,8 +217,20 @@ describe("gate criteria (verbatim, taxonomy-sync)", () => {
 		})
 	})
 
-	it("valuation discard bar matches the spike's confidence calibration (E2)", () => {
-		expect(VALUATION_DISCARD_MIN_P).toBe(0.9)
+	it("discards only at or above the valuation confidence bar", () => {
+		const discard = (p: number) => ({
+			type: "choice" as const,
+			choice: "discard" as const,
+			probabilities: { discard: p },
+			confidence: 0,
+		})
+		expect(isValuationDiscard(discard(0.89))).toBe(false)
+		expect(isValuationDiscard(discard(0.9))).toBe(true)
+		expect(isValuationDiscard(discard(0.95))).toBe(true)
+		expect(
+			isValuationDiscard({ type: "choice", choice: "keep", probabilities: { discard: 0.95 }, confidence: 0 }),
+		).toBe(false)
+		expect(isValuationDiscard(undefined)).toBe(false)
 	})
 
 	describe("gateNoiseClassesEnabled (KIMCHI_MEMORY_GATE_NOISE_CLASSES)", () => {
@@ -283,8 +293,16 @@ describe("gate criteria (verbatim, taxonomy-sync)", () => {
 		})
 	})
 
-	it("triage durable bar matches the LongMemEval calibration (E5b/E6)", () => {
-		expect(TRIAGE_DURABLE_MIN_P).toBe(0.3)
+	it("skips only below the durable probability bar", () => {
+		const a = (p: number) => ({
+			type: "choice" as const,
+			choice: "no" as const,
+			probabilities: { yes: p, no: 1 - p },
+			confidence: 1 - p,
+		})
+		expect(triageVerdict({ user_stated_durable: a(0.29) }).skip).toBe(true)
+		expect(triageVerdict({ user_stated_durable: a(0.3) }).skip).toBe(false)
+		expect(triageVerdict({ user_stated_durable: a(0.31) }).skip).toBe(false)
 	})
 
 	it("states carry the request/subject context the questions reference", () => {

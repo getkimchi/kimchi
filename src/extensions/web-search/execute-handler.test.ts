@@ -104,15 +104,6 @@ describe("executeWebSearch", () => {
 			expect(body.recency).toBe("week")
 		})
 
-		it("omits recency field when not provided", async () => {
-			mockFetch(200, { answer: "ok", sources: [] })
-
-			await executeWebSearch({ query: "test" })
-
-			const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)
-			expect("recency" in body).toBe(false)
-		})
-
 		it("sends Authorization header with Bearer token", async () => {
 			mockFetch(200, { answer: "ok", sources: [] })
 

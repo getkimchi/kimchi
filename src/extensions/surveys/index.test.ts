@@ -126,7 +126,7 @@ describe("surveysExtension", () => {
 		}
 	})
 
-	it("registers no hooks when the survey has already been seen", () => {
+	it("offers no survey UI or telemetry after the third prompt when already seen", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "kimchi-surveys-"))
 		const configPath = join(tempDir, "config.json")
 		try {
@@ -141,10 +141,24 @@ describe("surveysExtension", () => {
 				}),
 			)
 			const { handlers, api } = createMockApi()
-
 			surveysExtension({ configPath })(api)
+			const extCtx = createSurveyCtx()
 
-			expect(handlers.size).toBe(0)
+			for (const handler of handlers.get("session_start") ?? []) await handler({}, extCtx)
+			for (const [source, index] of [
+				["interactive", "one"],
+				["interactive", "two"],
+				["rpc", "three"],
+			] as const) {
+				for (const handler of handlers.get("input") ?? []) await handler({ type: "input", text: index, source }, extCtx)
+				for (const handler of handlers.get("agent_end") ?? []) await handler({ messages: [] }, extCtx)
+			}
+			await Promise.resolve()
+
+			expect(extCtx.ui.custom).not.toHaveBeenCalled()
+			expect(trackSurveyShown).not.toHaveBeenCalled()
+			expect(trackSurveyAnswered).not.toHaveBeenCalled()
+			expect(trackSurveyDismissed).not.toHaveBeenCalled()
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true })
 		}

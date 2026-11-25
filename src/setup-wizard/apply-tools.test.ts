@@ -1,16 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { applyToolConfigs } from "./apply-tools.js"
 
 const logInfoSpy = vi.hoisted(() => vi.fn())
+const clackMock = vi.hoisted(() => {
+	const spinnerInstance = { start: vi.fn(), stop: vi.fn() }
+	return {
+		spinner: vi.fn(() => spinnerInstance),
+		spinnerInstance,
+		log: { info: logInfoSpy, error: vi.fn(), warn: vi.fn() },
+	}
+})
 vi.mock("@clack/prompts", () => ({
 	log: {
 		info: logInfoSpy,
 		error: vi.fn(),
 		warn: vi.fn(),
 	},
-	spinner: vi.fn(() => ({
-		start: vi.fn(),
-		stop: vi.fn(),
-	})),
+	spinner: clackMock.spinner,
 }))
 
 import "../integrations/claude-code.js"
@@ -109,23 +115,52 @@ describe("applyToolConfigs", () => {
 		ccWriteSpy.mockRestore()
 	})
 
-	it("reports empty API key error as a failure", async () => {
-		const { applyToolConfigs } = await import("./apply-tools.js")
+	it("skips the spinner for interactive-write tools", async () => {
 		const tool = byId("claudecode")
-		if (!tool) throw new Error("claudecode not registered")
-		// write() throws on empty key
-		vi.spyOn(tool, "write").mockRejectedValue(new Error("no API key"))
+		if (!tool) throw new Error("claudecode integration not registered")
+		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
 
-		const outcome = await applyToolConfigs({
+		await applyToolConfigs({
 			selectedTools: ["claudecode"],
-			apiKey: "",
+			apiKey: "test-key",
 			scope: "global" as ConfigScope,
 			mode: "override" as ConfigMode,
 			telemetryEnabled: false,
 			models: TEST_MODELS,
 		})
+		const toolSpinnerStarts = clackMock.spinnerInstance.start.mock.calls.filter(
+			(call: unknown[]) => typeof call[0] === "string" && call[0].includes("Claude Code"),
+		)
+		expect(toolSpinnerStarts).toEqual([])
+		expect(clackMock.log.info).toHaveBeenCalledWith("Configuring Claude Code…")
+		expect(clackMock.log.info).toHaveBeenCalledWith("Claude Code: configured")
 
-		expect(outcome.successes).toEqual([])
-		expect(outcome.failures).toEqual([{ id: "claudecode", error: "no API key" }])
+		writeSpy.mockRestore()
+	})
+
+	it("uses the spinner for non-interactive tools", async () => {
+		clackMock.spinnerInstance.start.mockClear()
+		clackMock.spinnerInstance.stop.mockClear()
+		clackMock.log.info.mockClear()
+		clackMock.log.error.mockClear()
+		clackMock.log.warn.mockClear()
+		const tool = byId("cursor")
+		if (!tool) throw new Error("cursor integration not registered")
+		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
+
+		await applyToolConfigs({
+			selectedTools: ["cursor"],
+			apiKey: "test-key",
+			scope: "global" as ConfigScope,
+			mode: "override" as ConfigMode,
+			telemetryEnabled: false,
+			models: TEST_MODELS,
+		})
+		const toolSpinnerStarts = clackMock.spinnerInstance.start.mock.calls.filter(
+			(call: unknown[]) => typeof call[0] === "string" && call[0].includes("Cursor"),
+		)
+		expect(toolSpinnerStarts).toEqual([["Configuring Cursor…"]])
+
+		writeSpy.mockRestore()
 	})
 })

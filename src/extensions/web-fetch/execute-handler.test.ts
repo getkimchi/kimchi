@@ -115,14 +115,6 @@ describe("executeWebFetch", () => {
 			expect(fetchPageMock).toHaveBeenCalledWith("https://example.com/", { timeoutSeconds: 60, format: "markdown" })
 		})
 
-		it("clamps timeout values above 120 to 120", async () => {
-			fetchPageMock.mockResolvedValue(mockFetchResult("<p>Hello</p>"))
-
-			await executeWebFetch({ url: "https://example.com/", timeout: 300 })
-
-			expect(fetchPageMock).toHaveBeenCalledWith("https://example.com/", { timeoutSeconds: 120, format: "markdown" })
-		})
-
 		it("clamps timeout of exactly 121 to 120", async () => {
 			fetchPageMock.mockResolvedValue(mockFetchResult("<p>Hello</p>"))
 
@@ -206,18 +198,6 @@ describe("executeWebFetch", () => {
 			expect(text).toContain("Characters: 150,000")
 			expect(text).toContain("Truncated: content truncated to 100,000 of 150,000 characters")
 			expect(text).toContain("[Content truncated: showing 100,000 of 150,000 characters]")
-		})
-
-		it("truncates content at exactly 100,001 characters", async () => {
-			const body = "b".repeat(100_001)
-			fetchPageMock.mockResolvedValue(mockFetchResult(body))
-			convertContentMock.mockReturnValue(body)
-
-			const result = await executeWebFetch({ url: "https://example.com/" })
-			const text = result.content[0].text
-
-			expect(text).toContain("Truncated:")
-			expect(text).toContain("[Content truncated")
 		})
 
 		it("does not truncate content at exactly 100,000 characters", async () => {

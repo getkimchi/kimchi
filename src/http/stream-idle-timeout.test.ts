@@ -158,21 +158,18 @@ describe("wrapFetchWithIdleTimeout", () => {
 
 	it("resolves the timeout per request, so a settings change needs no rewrap", async () => {
 		setStreamIdleTimeoutOverride(0)
+		let calls = 0
 		const original = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-			expect(init?.signal).toBeUndefined()
+			calls++
+			if (calls === 1) expect(init?.signal).toBeUndefined()
+			else expect(init?.signal).toBeInstanceOf(AbortSignal)
 			return new Response("ok")
 		})
 		const fetchFn = wrapFetchWithIdleTimeout(original as never)
 		await fetchFn(URL_UNDER_TEST)
 		setStreamIdleTimeoutOverride(1000)
-		const withTimeout = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-			expect(init?.signal).toBeInstanceOf(AbortSignal)
-			return new Response("ok")
-		})
-		const fetchFn2 = wrapFetchWithIdleTimeout(withTimeout as never)
-		await fetchFn2(URL_UNDER_TEST)
-		expect(original).toHaveBeenCalledOnce()
-		expect(withTimeout).toHaveBeenCalledOnce()
+		await fetchFn(URL_UNDER_TEST)
+		expect(original).toHaveBeenCalledTimes(2)
 	})
 
 	it("aborts the body when a chunk stalls past the idle window", async () => {

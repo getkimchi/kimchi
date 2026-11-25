@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -23,20 +23,49 @@ vi.mock("./extract.js", () => ({
 	verifyChecksum: mocks.verifyChecksum,
 }))
 
-vi.mock("./install.js", () => ({
-	atomicInstall: mocks.atomicInstall,
-	copySupportingFiles: mocks.copySupportingFiles,
-	macosCodesignReSign: mocks.macosCodesignReSign,
-	refreshBridge: mocks.refreshBridge,
-	reportBridgeRefresh: mocks.reportBridgeRefresh,
-	smokeTestBinary: mocks.smokeTestBinary,
-}))
+vi.mock("./install.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./install.js")>()
+	return {
+		...actual,
+		macosCodesignReSign: mocks.macosCodesignReSign,
+		smokeTestBinary: mocks.smokeTestBinary,
+		refreshBridge: mocks.refreshBridge,
+		reportBridgeRefresh: mocks.reportBridgeRefresh,
+	}
+})
 
 const { checkForUpdate, parseCanarySha7, applyUpdate, isRestartPending, readInstalledVersion } = await import(
 	"./workflow.js"
 )
 
 const REPO: Repo = { owner: "castai", name: "kimchi-dev", binary: "kimchi" }
+
+async function updateArchiveBytes(): Promise<Uint8Array> {
+	const files = new Map([
+		["bin/kimchi", "new-binary"],
+		["bin/kimchi.exe", "new-binary"],
+		["share/kimchi/package.json", "{}"],
+	])
+	if (process.platform === "win32") {
+		const { default: JSZip } = await import("jszip")
+		const zip = new JSZip()
+		for (const [name, content] of files) zip.file(name, content)
+		return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" })
+	}
+	const root = mkdtempSync(join(tmpdir(), "kimchi-archive-test-"))
+	try {
+		for (const [name, content] of files) {
+			mkdirSync(join(root, ...name.split("/"), ".."), { recursive: true })
+			writeFileSync(join(root, ...name.split("/")), content)
+		}
+		const archive = join(root, "archive.tar.gz")
+		const { c } = await import("tar")
+		await c({ gzip: true, cwd: root, file: archive }, ["bin", "share"])
+		return new Uint8Array(readFileSync(archive))
+	} finally {
+		rmSync(root, { recursive: true, force: true })
+	}
+}
 
 function fakeClient(release: ReleaseInfo): GitHubClient {
 	return {
@@ -312,17 +341,6 @@ describe("checkForUpdate canary path", () => {
 		})
 		expect(result.hasUpdate).toBe(true)
 	})
-
-	it("treats a non-canary local as update available under --canary", async () => {
-		const client = fakeCanaryClient({
-			tagName: "canary",
-			targetCommitish: "abc1234abc1234abc1234abc1234abc1234abc12",
-			htmlUrl: "https://example/canary",
-			name: "Canary 0.0.0-canary.20260509.abc1234",
-		})
-		const result = await checkForUpdate({ repo: REPO, currentVersion: "0.1.0", canary: true, client })
-		expect(result.hasUpdate).toBe(true)
-	})
 })
 
 describe("checkForUpdate: bare update from a canary install", () => {
@@ -394,13 +412,22 @@ describe("applyUpdate share destination", () => {
 		extractRoot = mkdtempSync(join(tmpdir(), "kimchi-extract-test-"))
 		mkdirSync(join(extractRoot, "bin"), { recursive: true })
 		mkdirSync(join(extractRoot, "share", "kimchi"), { recursive: true })
-		writeFileSync(join(extractRoot, "bin", "kimchi"), "")
+		writeFileSync(join(extractRoot, "bin", "kimchi"), "new-binary")
+		writeFileSync(join(extractRoot, "bin", "kimchi.exe"), "new-binary")
 		writeFileSync(join(extractRoot, "share", "kimchi", "package.json"), "{}")
+		mkdirSync(join(extractRoot, "share", "kimchi", "bridge"), { recursive: true })
+		writeFileSync(join(extractRoot, "share", "kimchi", "bridge", "old"), "old")
 
-		mocks.extractArchive.mockResolvedValue(extractRoot)
+		mocks.extractArchive.mockImplementation(async (archivePath) => {
+			if (process.platform === "win32") return extractRoot
+			const actual = await vi.importActual<typeof import("./extract.js")>("./extract.js")
+			return actual.extractArchive(archivePath)
+		})
 		mocks.verifyChecksum.mockResolvedValue(undefined)
 		mocks.fetchChecksum.mockResolvedValue("sha256:fff")
-		mocks.downloadArchive.mockResolvedValue(undefined)
+		mocks.downloadArchive.mockImplementation(async (_repo, _tag, destination) => {
+			writeFileSync(destination, await updateArchiveBytes())
+		})
 		mocks.atomicInstall.mockReturnValue({ backupPath: undefined })
 		mocks.copySupportingFiles.mockReturnValue(undefined)
 		mocks.macosCodesignReSign.mockReturnValue(undefined)
@@ -423,85 +450,61 @@ describe("applyUpdate share destination", () => {
 	})
 
 	it("writes share files to the sibling share when it exists", async () => {
-		// Create the sibling share directory with package.json so
-		// resolveAuxiliaryFilesDir resolves to it.
 		const siblingShare = join(fakePrefix, "share", "kimchi")
 		mkdirSync(join(siblingShare, "bridge"), { recursive: true })
 		writeFileSync(join(siblingShare, "package.json"), "{}")
-		writeFileSync(join(siblingShare, "bridge", "dropped-by-the-new-release"), "")
-
+		writeFileSync(join(siblingShare, "bridge", "stale"), "")
 		const client = {
 			fetchChecksum: mocks.fetchChecksum,
 			downloadArchive: mocks.downloadArchive,
 		} as unknown as GitHubClient
 
-		await applyUpdate({
-			tag: "v0.0.24",
-			executablePath: fakeBinPath,
-			client,
-		})
+		await applyUpdate({ tag: "v0.0.24", executablePath: fakeBinPath, client })
 
-		expect(mocks.copySupportingFiles).toHaveBeenCalledWith(join(extractRoot, "share", "kimchi"), siblingShare, "kimchi")
+		expect(readFileSync(fakeBinPath, "utf-8")).toBe("new-binary")
+		expect(existsSync(join(siblingShare, "package.json"))).toBe(true)
+		expect(existsSync(join(siblingShare, "bridge"))).toBe(false)
 		expect(mocks.refreshBridge).toHaveBeenCalledWith(siblingShare, fakeBinPath)
 		expect(mocks.reportBridgeRefresh).toHaveBeenCalledWith(siblingShare, [])
-		expect(existsSync(join(siblingShare, "bridge"))).toBe(false)
 	})
 
 	it("reports which clients the bridge refresh was dispatched for", async () => {
 		mocks.refreshBridge.mockReturnValue(["claude", "codex"])
-		const fakePrefix = mkdtempSync(join(tmpdir(), "kimchi-update-test-"))
-		try {
-			const siblingShare = join(fakePrefix, "share", "kimchi")
-			mkdirSync(join(siblingShare, "bridge"), { recursive: true })
-			writeFileSync(join(siblingShare, "package.json"), "{}")
-
-			const client = {
-				fetchChecksum: mocks.fetchChecksum,
-				downloadArchive: mocks.downloadArchive,
-			} as unknown as GitHubClient
-
-			await applyUpdate({
-				tag: "v0.0.24",
-				executablePath: join(fakePrefix, "bin", "kimchi"),
-				client,
-			})
-
-			expect(mocks.refreshBridge).toHaveBeenCalledTimes(1)
-			expect(mocks.reportBridgeRefresh).toHaveBeenCalledWith(expect.any(String), ["claude", "codex"])
-		} finally {
-			rmSync(fakePrefix, { recursive: true, force: true })
-		}
-	})
-
-	it("falls back to ~/.local/share/kimchi when the sibling share does not exist", async () => {
+		const siblingShare = join(fakePrefix, "share", "kimchi")
+		mkdirSync(join(siblingShare, "bridge"), { recursive: true })
+		writeFileSync(join(siblingShare, "package.json"), "{}")
 		const client = {
 			fetchChecksum: mocks.fetchChecksum,
 			downloadArchive: mocks.downloadArchive,
 		} as unknown as GitHubClient
 
-		await applyUpdate({
-			tag: "v0.0.24",
-			executablePath: fakeBinPath,
-			client,
-		})
+		await applyUpdate({ tag: "v0.0.24", executablePath: join(fakePrefix, "bin", "kimchi"), client })
 
-		expect(mocks.copySupportingFiles).toHaveBeenCalledWith(
-			join(extractRoot, "share", "kimchi"),
-			expect.stringContaining(".local/share/kimchi"),
-			"kimchi",
-		)
+		expect(mocks.refreshBridge).toHaveBeenCalledTimes(1)
+		expect(mocks.reportBridgeRefresh).toHaveBeenCalledWith(expect.any(String), ["claude", "codex"])
+	})
+
+	it("uses the configured data directory when the sibling share does not exist", async () => {
+		process.env.XDG_DATA_HOME = join(fakePrefix, ".local", "share")
+		const client = {
+			fetchChecksum: mocks.fetchChecksum,
+			downloadArchive: mocks.downloadArchive,
+		} as unknown as GitHubClient
+
+		await applyUpdate({ tag: "v0.0.24", executablePath: fakeBinPath, client })
+
+		expect(existsSync(join(fakePrefix, ".local", "share", "kimchi", "package.json"))).toBe(true)
 	})
 
 	it("uses kimchi.exe from Windows archives", async () => {
 		const origPlatform = process.platform
 		const origArch = process.arch
 		Object.defineProperty(process, "platform", { value: "win32" })
-		// Pin the arch too: the assertion below hard-codes amd64, which
-		// otherwise fails on arm64 development machines.
 		Object.defineProperty(process, "arch", { value: "x64" })
 		try {
 			const winBinPath = join(fakePrefix, "bin", "kimchi.exe")
-			writeFileSync(join(extractRoot, "bin", "kimchi.exe"), "")
+			writeFileSync(winBinPath, "old-binary")
+			writeFileSync(join(extractRoot, "bin", "kimchi.exe"), "new-binary")
 			const client = {
 				fetchChecksum: mocks.fetchChecksum,
 				downloadArchive: mocks.downloadArchive,
@@ -514,15 +517,13 @@ describe("applyUpdate share destination", () => {
 				client,
 			})
 
-			const newBinaryPath = join(extractRoot, "bin", "kimchi.exe")
 			expect(mocks.downloadArchive).toHaveBeenCalledWith(
 				REPO,
 				"v0.0.24",
 				expect.stringMatching(/kimchi_windows_amd64\.zip$/),
 			)
-			expect(mocks.macosCodesignReSign).toHaveBeenCalledWith(newBinaryPath)
-			expect(mocks.smokeTestBinary).toHaveBeenCalledWith(newBinaryPath)
-			expect(mocks.atomicInstall).toHaveBeenCalledWith(newBinaryPath, winBinPath)
+			expect(existsSync(winBinPath)).toBe(true)
+			expect(existsSync(`${winBinPath}.old`)).toBe(true)
 		} finally {
 			Object.defineProperty(process, "platform", { value: origPlatform })
 			Object.defineProperty(process, "arch", { value: origArch })

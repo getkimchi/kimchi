@@ -115,11 +115,6 @@ export class LoopGuard {
 		return this.warned
 	}
 
-	/** Test helper: get the current total count for a bash prefix. */
-	getTotalBashCount(prefix: string): number {
-		return this.bashCountsTotal.get(prefix) ?? 0
-	}
-
 	record(rec: ToolHistoryRecord): LoopGuardResult {
 		// Increment semantic counters for the new record before pushing.
 		const editTarget = extractEditTarget(rec)

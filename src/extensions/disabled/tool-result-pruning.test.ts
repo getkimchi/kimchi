@@ -1,13 +1,7 @@
 import type { TextContent, ToolResultMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
-import contextCompactorExtension, {
-	compactText,
-	computeCutoff,
-	pruneToolResult,
-	RETAIN_HEAD_LINES,
-	RETAIN_TAIL_LINES,
-} from "./tool-result-pruning.js"
+import contextCompactorExtension, { compactText, computeCutoff, pruneToolResult } from "./tool-result-pruning.js"
 
 // helpers
 /** Create multi-line text that will be compacted (>60 lines, >minChars chars) */
@@ -153,11 +147,6 @@ describe("compactText", () => {
 		expect(result.text).toContain("line 32")
 		expect(result.text).toContain("line 61")
 		expect(result.text).not.toContain("\nline 31\n")
-	})
-
-	it("uses default RETAIN_HEAD_LINES and RETAIN_TAIL_LINES values of 30", () => {
-		expect(RETAIN_HEAD_LINES).toBe(30)
-		expect(RETAIN_TAIL_LINES).toBe(30)
 	})
 })
 

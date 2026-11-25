@@ -209,35 +209,6 @@ describe("collapsed live preview", () => {
 	})
 })
 
-describe("body render caching", () => {
-	it.each(["collapsed", "expanded"] as const)("reuses %s lines within one message but not across messages", (mode) => {
-		let bodyRenders = 0
-		const countingTheme: ThinkingThemeLike = {
-			fg: (color, text) => {
-				if (color === "thinkingText" && text === "cached body") bodyRenders += 1
-				return text
-			},
-			bold: (text) => text,
-		}
-		const render = (cacheOwner: object) => {
-			const blocks = makeBlocks("cached body")
-			renderThinkingStepsLines(countingTheme, 80, {
-				mode,
-				blocks,
-				steps: deriveThinkingSteps(blocks),
-				isActive: true,
-				cacheOwner,
-			})
-		}
-		const cacheOwner = {}
-		render(cacheOwner)
-		render(cacheOwner)
-		expect(bodyRenders).toBe(1)
-		render({})
-		expect(bodyRenders).toBe(2)
-	})
-})
-
 describe("expanded view", () => {
 	it("renders identical lines whether the step-line cache is warm or cold", () => {
 		const text = Array.from(

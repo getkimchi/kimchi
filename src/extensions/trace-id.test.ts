@@ -158,25 +158,6 @@ describe("traceIdExtension", () => {
 			expect(appendEntry).not.toHaveBeenCalled()
 		})
 
-		it("captures single trace ID correctly on turn_end", async () => {
-			const { handlers, api, appendEntry } = createMockApi()
-			traceIdExtension(api)
-
-			const turnStart = getHandler(handlers, "turn_start")
-			const afterProviderResponse = getHandler(handlers, "after_provider_response")
-			const turnEnd = getHandler(handlers, "turn_end")
-
-			await turnStart({})
-			await afterProviderResponse({
-				headers: { "x-trace-id": "trace-single-123" },
-			})
-			await turnEnd({ turnIndex: 2 })
-
-			expect(appendEntry).toHaveBeenCalledWith("trace_ids", {
-				traceIds: ["trace-single-123"],
-			})
-		})
-
 		it("captures multiple trace IDs from multiple provider responses within a turn", async () => {
 			const { handlers, api, appendEntry } = createMockApi()
 			traceIdExtension(api)

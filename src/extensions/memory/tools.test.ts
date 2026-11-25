@@ -3,7 +3,6 @@ import { redactText } from "../pii-redaction/redactor.js"
 import { MEMORY_TELEMETRY_CHANNEL } from "./telemetry-events.js"
 import {
 	AUTHORED_PREFIX,
-	authoredEnabled,
 	createMemorySaveTool,
 	createMemorySearchTool,
 	type MemorySaveDeps,
@@ -112,15 +111,6 @@ function saveDeps(overrides: Partial<MemorySaveDeps> = {}): { deps: MemorySaveDe
 		},
 	}
 }
-
-describe("authoredEnabled flag", () => {
-	it("defaults OFF and parses KIMCHI_MEMORY_AUTHORED", () => {
-		expect(authoredEnabled({} as NodeJS.ProcessEnv)).toBe(false)
-		expect(authoredEnabled({ KIMCHI_MEMORY_AUTHORED: "0" } as NodeJS.ProcessEnv)).toBe(false)
-		expect(authoredEnabled({ KIMCHI_MEMORY_AUTHORED: "false" } as NodeJS.ProcessEnv)).toBe(false)
-		expect(authoredEnabled({ KIMCHI_MEMORY_AUTHORED: "1" } as NodeJS.ProcessEnv)).toBe(true)
-	})
-})
 
 describe("save_memory tool", () => {
 	const call = (tool: ReturnType<typeof createMemorySaveTool>, fact: string) =>

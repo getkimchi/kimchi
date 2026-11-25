@@ -69,7 +69,7 @@ describe("isDefaultToolEnabled", () => {
 		__resetSettingsWatcherForTest()
 		// A failed load surfaces through the same read-only manager; the gate
 		// must not lock tools out just because settings couldn't be parsed.
-		expect(typeof isDefaultToolEnabled("write")).toBe("boolean")
+		expect(isDefaultToolEnabled("write")).toBe(true)
 	})
 
 	describe("session cwd/trust scoping (setToolGateSession)", () => {

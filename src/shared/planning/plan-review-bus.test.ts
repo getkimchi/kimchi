@@ -268,16 +268,4 @@ describe("plan-review closed notifier", () => {
 		notifyPlanReviewClosed("session-a")
 		expect(listener).not.toHaveBeenCalled()
 	})
-
-	it("does not leak notifications across listeners for other sessions (listeners filter by sessionId)", () => {
-		const sessionA = vi.fn()
-		const sessionB: string[] = []
-		subscribePlanReviewClosed(sessionA)
-		subscribePlanReviewClosed((id) => {
-			if (id === "b") sessionB.push(id)
-		})
-		notifyPlanReviewClosed("a")
-		expect(sessionA).toHaveBeenCalledWith("a")
-		expect(sessionB).toEqual([])
-	})
 })

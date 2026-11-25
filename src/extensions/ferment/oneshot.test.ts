@@ -106,11 +106,6 @@ describe("buildOneshotNudge", () => {
 		expect(out).toContain("implementation toolset unlocks")
 		// Must reference the activation trigger.
 		expect(out).toContain("activate_ferment_phase")
-		// Must NOT contain the old static curated allowlist phrasing.
-		// The old phrasing had quoted tool names like "Agent", "get_subagent_result", "read".
-		expect(out).not.toContain('"Agent"')
-		expect(out).not.toContain('"get_subagent_result"')
-		expect(out).not.toContain('"read"')
 	})
 })
 
@@ -121,9 +116,8 @@ describe("buildOneshotNudge — delegation", () => {
 		expect(out).toContain("bash/edit/write")
 	})
 
-	it("relaxes turn discipline — no MUST end with tool call", () => {
+	it("allows a brief thinking or assessment turn", () => {
 		const out = buildOneshotNudge(makeFerment(), INTENT)
-		expect(out).not.toContain("Every turn MUST end with a ferment lifecycle tool call or an Agent spawn")
 		expect(out).toContain("may take a brief thinking or assessment turn")
 	})
 

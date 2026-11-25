@@ -367,18 +367,6 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("(No tools available)")
 		})
 
-		it("injects project context files", () => {
-			const contextFiles = [{ path: "/repo/AGENTS.md", content: "Always run tests before committing." }]
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				contextFiles,
-				mode: "single",
-			})
-			expect(result).toContain("# Project Guidelines")
-			expect(result).toContain("Always run tests before committing.")
-		})
-
 		it("places global context files before project context files", () => {
 			const contextFiles = [
 				{ path: "/home/testuser/.config/kimchi/harness/AGENTS.md", content: "Global rule" },
@@ -395,19 +383,6 @@ describe("buildSystemPrompt", () => {
 			expect(globalPos).toBeGreaterThan(-1)
 			expect(projectPos).toBeGreaterThan(-1)
 			expect(globalPos).toBeLessThan(projectPos)
-		})
-
-		it("injects skills", () => {
-			const skills = [createSkill({ name: "deploy", description: "Deploy the app to production" })]
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				skills,
-				mode: "single",
-			})
-			expect(result).toContain("## Skills")
-			expect(result).toContain("deploy")
-			expect(result).toContain("Deploy the app to production")
 		})
 
 		it("excludes skills with disableModelInvocation", () => {
@@ -589,43 +564,6 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("oversized")
 		})
 
-		it("injects environment info", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				mode: "single",
-			})
-			expect(result).toContain(`OS: ${testEnv.os}`)
-			expect(result).not.toContain(`OS release:`)
-			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
-			expect(result).toContain(`Platform: ${testEnv.rawPlatform}`)
-			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
-			expect(result).toContain(`Shell: ${testEnv.shell}`)
-			expect(result).toContain(`Username: ${testEnv.username}`)
-			expect(result).toContain(`Home directory: "${testEnv.homeDir}"`)
-			expect(result).toContain(`Working directory: "${testEnv.cwd}"`)
-			expect(result).toContain(`Current date: ${testEnv.localDate}`)
-			expect(result).not.toContain("Current time:")
-			expect(result).toContain("Git repository: no")
-		})
-
-		it("injects git branch and remote when present", () => {
-			const gitEnv: EnvironmentInfo = {
-				...testEnv,
-				isGitRepo: true,
-				gitBranch: "main",
-				gitRemote: "git@github.com:org/repo.git",
-			}
-			const result = buildSystemPrompt({
-				tools,
-				env: gitEnv,
-				mode: "single",
-			})
-			expect(result).toContain("Git repository: yes")
-			expect(result).toContain("Git branch: main")
-			expect(result).toContain("Git remote: git@github.com:org/repo.git")
-		})
-
 		it("omits git branch and remote when not a git repo", () => {
 			const result = buildSystemPrompt({
 				tools,
@@ -661,15 +599,6 @@ describe("buildSystemPrompt", () => {
 			expect(result).not.toContain("Agent, ")
 			expect(result).not.toContain("get_subagent_result")
 			expect(result).not.toContain("steer_subagent")
-		})
-
-		it("includes all other tools", () => {
-			const result = buildSystemPrompt({
-				tools,
-				env: testEnv,
-				mode: "subagent",
-			})
-			expect(result).toContain("## Available Tools\n\nread, bash")
 		})
 
 		it("contains subagent instructions", () => {

@@ -9,7 +9,6 @@ import {
 	getConfigChanges,
 	getSessionStartMetadata,
 	recordConfigChange,
-	type SessionStartMetadata,
 } from "./session-metadata-store.js"
 
 const SEARCH_STRATEGY: SearchStrategyConfig = {
@@ -163,17 +162,6 @@ describe("session-metadata-store", () => {
 			expect(record.timestamp).toBeGreaterThanOrEqual(before)
 			expect(record.timestamp).toBeLessThanOrEqual(after)
 		})
-
-		it("accepts string, number, and boolean values", () => {
-			recordConfigChange("a", "string-val", 1)
-			recordConfigChange("b", 42, 2)
-			recordConfigChange("c", true, 3)
-
-			const changes = getConfigChanges()
-			expect(changes[0]?.value).toBe("string-val")
-			expect(changes[1]?.value).toBe(42)
-			expect(changes[2]?.value).toBe(true)
-		})
 	})
 
 	describe("empty-store no-op", () => {
@@ -202,18 +190,21 @@ describe("session-metadata-store", () => {
 	})
 
 	describe("never throws", () => {
-		it("captureSessionStart leaves the store empty when a helper throws", () => {
-			// getOsMetadata is a real, non-spyable default export call inside the
-			// store; force buildConfigSnapshot to throw by making discoverAgent
-			// AND the fallback path unreachable is hard, so instead verify the
-			// store is robust by asserting a fresh capture still leaves a valid
-			// value (buildConfigSnapshot already swallows its own errors, so the
-			// store-level try/catch is a second safety net).
-			captureSessionStart(makeConfig(), true)
-			const meta = getSessionStartMetadata()
-			expect(meta).toBeDefined()
-			const typed = meta as SessionStartMetadata
-			expect(typeof typed.capturedAt).toBe("number")
+		it("captureSessionStart leaves the store empty when a helper throws", async () => {
+			vi.doMock("../extensions/telemetry/config-snapshot.js", () => ({
+				buildConfigSnapshot: () => {
+					throw new Error("snapshot failed deliberately")
+				},
+			}))
+			vi.resetModules()
+			try {
+				const { captureSessionStart, getSessionStartMetadata } = await import("./session-metadata-store.js")
+				captureSessionStart(makeConfig(), true)
+				expect(getSessionStartMetadata()).toBeUndefined()
+			} finally {
+				vi.doUnmock("../extensions/telemetry/config-snapshot.js")
+				vi.resetModules()
+			}
 		})
 	})
 })

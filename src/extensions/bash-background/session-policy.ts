@@ -67,11 +67,6 @@ export function getBackgroundRunsPermitted(): boolean {
 	return backgroundRunsPermitted
 }
 
-/** Test hook: restore the default between cases. */
-export function resetBackgroundRunsPermittedForTest(): void {
-	backgroundRunsPermitted = false
-}
-
 /** Resolve the session kind for one session, once. */
 export function resolveBashSessionKind(inputs: BashSessionKindInputs): BashSessionKind {
 	// Workers are unattended even under a user-facing parent: their "user"

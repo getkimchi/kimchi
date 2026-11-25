@@ -1543,34 +1543,6 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(select).toHaveBeenCalledTimes(3)
 	})
 
-	it("the push & pull consent is a three-way gate: push, custom steer, or Cancel", async () => {
-		mockStreamRemotePatch.mockImplementation((opts: { onChunk: (v: 1, chunk: string) => void }) => {
-			opts.onChunk(1, "diff --git a/a.ts b/a.ts\n+x\n")
-			return { cancel: vi.fn(), promise: Promise.resolve({ bytesAppended: 25, cancelled: false }) }
-		})
-		mockPushBranchRemotely.mockResolvedValue({ ok: true })
-		const pi = makePi()
-		const ctx = makeCtx()
-		const select = ctx.ui.select as ReturnType<typeof vi.fn>
-		select
-			.mockResolvedValueOnce("Push remote changes, pull and continue locally")
-			.mockResolvedValueOnce("Push kimchi/fix-login to origin and pull it locally")
-
-		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
-			remoteSession: REMOTE,
-			acpSessionId: "acp-9",
-			gitWorkflow: GIT,
-		})
-
-		const consentCall = select.mock.calls[1] as [string, string[]]
-		expect(consentCall[1]).toEqual([
-			"Push kimchi/fix-login to origin and pull it locally",
-			"Custom instructions (steer the remote agent)",
-			"Cancel",
-		])
-		expect(mockPushBranchRemotely).toHaveBeenCalledTimes(1)
-	})
-
 	it("sandbox push failure offers the local fallback only as an explicit choice", async () => {
 		mockStreamRemotePatch.mockImplementation((opts: { onChunk: (v: 1, chunk: string) => void }) => {
 			opts.onChunk(1, "diff --git a/a.ts b/a.ts\n+x\n")

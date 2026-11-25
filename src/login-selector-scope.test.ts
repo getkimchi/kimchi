@@ -62,13 +62,6 @@ function extractMethod(source: string, signature: string): string {
 }
 
 describe("sessionId injection is scoped to the method that declares it", () => {
-	it("showModelSelector no longer injects sessionId", () => {
-		const body = extractMethod(readInteractiveModeSource(), "showModelSelector(initialSearchInput) {")
-
-		// The injection only served the removed multi-model picker row.
-		expect(body).not.toContain("sessionId")
-	})
-
 	it("showLoginProviderSelector does not reference sessionId", () => {
 		const body = extractMethod(readInteractiveModeSource(), "showLoginProviderSelector(authType, initialSearchInput) {")
 

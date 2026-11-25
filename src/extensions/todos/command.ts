@@ -282,9 +282,3 @@ export function registerTodosCommand(pi: ExtensionAPI): void {
 	}
 	registerCommand(TODOS_COMMAND)
 }
-
-export {
-	applyTodoAction as __test_applyTodoAction,
-	parseTodoArgs as __test_parseTodoArgs,
-	parseTodoIndex as __test_parseTodoIndex,
-}

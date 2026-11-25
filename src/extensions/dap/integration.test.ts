@@ -206,20 +206,6 @@ describe("DAP integration — Node.js (js-debug)", () => {
 		30_000,
 	)
 
-	it.skipIf(!HAS_JS_DEBUG)(
-		"debug_state_at terminates the session (no leak)",
-		async () => {
-			await debugStateAt(deps, {
-				file: fixturePath,
-				line: 6,
-			})
-			// The afterAll no-leak assertion covers this; here we verify the call
-			// returns without error (session.terminate() ran in the finally block).
-			expect(true).toBe(true)
-		},
-		30_000,
-	)
-
 	// Real-adapter integration test, run via the dedicated script (the file is
 	// excluded from the main parallel `pnpm run test` — see vitest.config.ts).
 	// js-debug delivers the debuggee's final stdout AFTER the terminated event;
@@ -283,18 +269,6 @@ describe("DAP integration — Go (dlv dap)", () => {
 			// The backtrace should include the main function frame
 			expect(result.backtrace.length).toBeGreaterThan(0)
 			expect(result.backtrace[0]?.name).toMatch(/main/)
-		},
-		30_000,
-	)
-
-	it.skipIf(!HAS_DLV)(
-		"debug_state_at terminates the session (no leak)",
-		async () => {
-			await debugStateAt(deps, {
-				file: fixturePath,
-				line: 10,
-			})
-			expect(true).toBe(true)
 		},
 		30_000,
 	)

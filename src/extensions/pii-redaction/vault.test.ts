@@ -94,7 +94,7 @@ describe("substituteTokens", () => {
 		expect(substituteTokens(vault, "see [EMAIL_ADDRESS_1")).toBe("see [EMAIL_ADDRESS_1")
 	})
 
-	it("fast-paths text without brackets", () => {
+	it("passes text without brackets through unchanged", () => {
 		const vault = createTokenVault()
 		expect(substituteTokens(vault, "no tokens here")).toBe("no tokens here")
 	})
@@ -407,9 +407,18 @@ describe("session lifecycle", () => {
 		})
 	})
 
-	it("deepStrings walks objects, arrays and primitives with a depth cap", () => {
-		const texts = [...deepStrings({ a: ["x", { b: "y" }, 3, null] })]
-		expect(texts).toEqual(["x", "y"])
+	it("deepStrings traverses arrays and objects, excludes numbers/null, and caps depth at 24", () => {
+		const nestedAt = (depth: number) => {
+			let nested: unknown = { value: "nested value" }
+			for (let i = 0; i < depth; i++) nested = { child: nested }
+			return nested
+		}
+		expect([...deepStrings({ a: ["x", { b: "y" }, 3, null], nested: nestedAt(22) })]).toEqual([
+			"x",
+			"y",
+			"nested value",
+		])
+		expect([...deepStrings({ a: ["x", { b: "y" }, 3, null], nested: nestedAt(23) })]).toEqual(["x", "y"])
 	})
 
 	it("returns undefined vault for unknown or empty session ids", async () => {

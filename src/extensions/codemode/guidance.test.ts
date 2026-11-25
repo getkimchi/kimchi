@@ -34,8 +34,6 @@ it("steers filtering and mechanical chains to codemode, independent full-result 
 	expect(CODEMODE_SELECTION_GUIDANCE).toContain("filter large results")
 	expect(CODEMODE_SELECTION_GUIDANCE).toContain("chain calls whose arguments depend on earlier results")
 	expect(CODEMODE_SELECTION_GUIDANCE).toContain("call tools directly in one turn")
-	// No worked example script: it cost ~250 tokens per request without moving adoption.
-	expect(codemodeDescription()).not.toContain("const hits")
 	// A chaining script has to parse grep output; the format is stated instead.
 	expect(CODEMODE_SELECTION_GUIDANCE).toContain("`path:line: text`")
 })

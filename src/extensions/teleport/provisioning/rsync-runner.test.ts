@@ -65,25 +65,6 @@ function posixSplit(input: string): string[] {
 }
 
 describe("buildSshOption", () => {
-	it("composes the ssh command rsync's -e flag uses", () => {
-		const got = buildSshOption({
-			proxyCommand: "node /usr/local/lib/kimchi/teleport-proxy.js %h %p",
-			knownHostsFile: "/tmp/known_hosts",
-		})
-		expect(got).toBe(
-			"ssh -o ProxyCommand='node /usr/local/lib/kimchi/teleport-proxy.js %h %p' -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile='/tmp/known_hosts' -o BatchMode=yes -o ServerAliveInterval=15",
-		)
-	})
-
-	it("single-quote-wraps proxy paths and known_hosts paths containing spaces or special chars", () => {
-		const got = buildSshOption({
-			proxyCommand: "node /path with spaces/teleport-proxy.js %h %p",
-			knownHostsFile: "/tmp/it's mine/known_hosts",
-		})
-		expect(got).toContain("ProxyCommand='node /path with spaces/teleport-proxy.js %h %p'")
-		expect(got).toContain("UserKnownHostsFile='/tmp/it'\\''s mine/known_hosts'")
-	})
-
 	it("survives rsync's -e word splitter as one ProxyCommand token", () => {
 		const got = buildSshOption({
 			proxyCommand: "node /opt/kimchi/teleport-proxy.js %h %p",

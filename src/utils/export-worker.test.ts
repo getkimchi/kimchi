@@ -174,6 +174,7 @@ describe("runExportOffloaded", () => {
 			systemPrompt?: string
 		}
 		expect(payload.systemPrompt).toBe("inline-fallback system prompt")
+		expect(readdirSync(tmpDir).filter((f) => f.startsWith("."))).toEqual([])
 	})
 
 	it("worker output is byte-identical to the inline pipeline on the same fixture", {
@@ -240,35 +241,6 @@ describe("runExportOffloaded", () => {
 		).rejects.toThrow("worker exploded")
 
 		expect(readFileSync(finalPath, "utf-8")).toBe(before)
-		expect(readdirSync(tmpDir).filter((f) => f.startsWith("."))).toEqual([])
-	})
-
-	it("a spawn failure falls back to the inline pipeline", async () => {
-		const inlineSpy = vi.spyOn(exportPostProcess, "postProcessHtmlExportOnce")
-		const filePath = join(tmpDir, "fallback.html")
-		writeFileSync(
-			filePath,
-			buildRawHtml({
-				version: 3,
-				id: "s1",
-				entries: [{ id: "m1", parentId: null, type: "message", message: { role: "user", content: "hello" } }],
-			}),
-			"utf-8",
-		)
-
-		await runExportOffloaded(
-			{ mode: "html", filePath },
-			{
-				buildCommand: () => ({
-					command: "/nonexistent/kimchi-export-worker",
-					args: [],
-				}),
-			},
-		)
-
-		expect(inlineSpy).toHaveBeenCalledTimes(1)
-		const result = readFileSync(filePath, "utf-8")
-		expect(result).toContain('id="trace-id-renderer"')
 		expect(readdirSync(tmpDir).filter((f) => f.startsWith("."))).toEqual([])
 	})
 

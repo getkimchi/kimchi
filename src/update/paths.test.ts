@@ -146,18 +146,21 @@ describe("isHomebrewInstall", () => {
 	})
 
 	it("retries after an unexpected probe error leaves the cache cold", () => {
-		const binPath = join(tmp, "bin", "kimchi")
+		const keg = join(tmp, "Cellar", "kimchi", "1.2.3")
+		const binPath = join(keg, "bin", "kimchi")
 		touch(binPath)
 		setExecPath(binPath)
 		process.env.HOMEBREW_PREFIX = tmp
 		vi.mocked(existsSync).mockImplementationOnce(() => {
 			throw new Error("unexpected probe failure")
 		})
-
 		expect(isHomebrewInstall).toThrow("unexpected probe failure")
-		const callsAfterFailure = vi.mocked(realpathSync).mock.calls.length
-		expect(isHomebrewInstall()).toBe(false)
-		expect(vi.mocked(realpathSync).mock.calls.length).toBeGreaterThan(callsAfterFailure)
+
+		mkdirSync(join(tmp, "opt"), { recursive: true })
+		const optKeg = join(tmp, "opt", "kimchi")
+		symlinkSync(keg, optKeg)
+		expect(isHomebrewInstall()).toBe(true)
+		expect(stableExecutablePath()).toBe(join(optKeg, "bin", "kimchi"))
 	})
 
 	it("returns false when Cellar directory does not exist under prefix", () => {

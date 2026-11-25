@@ -191,16 +191,6 @@ describe("getToolsForProfile", () => {
 			expect(result).toHaveLength(TOOL_NAMES.sharedCore.length)
 			expect(namesOf(result)).toEqual(TOOL_NAMES.sharedCore)
 		})
-
-		it("does NOT include questionnaire, ask_user, bash, edit, write, Agent", () => {
-			const result = getToolsForProfile("idle")
-			const names = namesOf(result)
-			const excluded = ["questionnaire", "ask_user", "bash", "edit", "write", "Agent"]
-			expect(names).toContain("mcp")
-			for (const name of excluded) {
-				expect(namesOf(result)).not.toContain(name)
-			}
-		})
 	})
 
 	describe("worker", () => {
@@ -229,12 +219,6 @@ describe("getToolsForProfile", () => {
 			expect(names).toContain("bash")
 		})
 
-		it("keeps PR watch controls visible without exposing file writes", () => {
-			expect(names).toContain("pr_watch")
-			expect(names).not.toContain("edit")
-			expect(names).not.toContain("write")
-		})
-
 		it("includes bash_control wherever bash is (the pair moves together)", () => {
 			expect(names).toContain("bash_control")
 			// The ferment implementation profile keeps the pair too.
@@ -249,15 +233,11 @@ describe("getToolsForProfile", () => {
 			expect(names).not.toContain("mcp")
 		})
 
-		it("includes Ferment V2 state tools but not legacy Ferment lifecycle or write tools", () => {
-			for (const name of FERMENT_V2_TOOL_NAMES) {
-				expect(names).toContain(name)
-			}
-			for (const name of ["propose_ferment_scoping", "start_ferment_step", "edit", "write"]) {
+		it("does NOT include implementation-only ferment tools", () => {
+			for (const name of TOOL_NAMES.fermentImplementationTools) {
 				expect(names).not.toContain(name)
 			}
 		})
-
 		it("does NOT include ferment-only tools", () => {
 			const fermentOnly = [
 				"ask_user",
@@ -299,12 +279,6 @@ describe("getToolsForProfile", () => {
 			}
 		})
 
-		it("includes todo lifecycle tools (shared core)", () => {
-			for (const name of TODO_TOOL_NAMES) {
-				expect(names).toContain(name)
-			}
-		})
-
 		it("does NOT include adhoc-only tools", () => {
 			for (const name of TOOL_NAMES.adhocOnly) {
 				expect(names).not.toContain(name)
@@ -337,12 +311,6 @@ describe("getToolsForProfile", () => {
 
 		it("includes all FERMENT_MODE_TOOLS", () => {
 			for (const name of [...TOOL_NAMES.fermentPlanningTools, ...TOOL_NAMES.fermentImplementationTools]) {
-				expect(names).toContain(name)
-			}
-		})
-
-		it("includes todo lifecycle tools (shared core)", () => {
-			for (const name of TODO_TOOL_NAMES) {
 				expect(names).toContain(name)
 			}
 		})

@@ -873,46 +873,6 @@ describe("parseTaggedFacts (three observed model shapes)", () => {
 	it("throws on prose with no parseable shape", () => {
 		expect(() => parseTaggedFacts("just talking, nothing durable")).toThrow(/unparseable/)
 	})
-
-	describe("task lane ([task] prefix hunts down in every shape)", () => {
-		it("object shape: [task] strings lose their prefix", () => {
-			expect(
-				parseTaggedFacts(
-					'{"personal": [], "project": [], "task": ["[task] schema ts is ms", "already bare"]}',
-					"personal",
-					{
-						taskScope: true,
-					},
-				),
-			).toEqual({ personal: [], project: [], task: ["schema ts is ms", "already bare"] })
-		})
-
-		it("fact-object shape: scope=task strips a literal [task] prefix", () => {
-			expect(
-				parseTaggedFacts(
-					'[{"fact": "[task] keep identifiers exact", "scope": "task"}, {"fact": "bare task fact", "scope": "task"}]',
-					"personal",
-					{ taskScope: true },
-				),
-			).toEqual({ personal: [], project: [], task: ["keep identifiers exact", "bare task fact"] })
-		})
-
-		it("bare-array shape: [task] strings route and strip (unchanged)", () => {
-			expect(
-				parseTaggedFacts('["[task] ts is ms", "[personal] dog is Fred"]', "personal", { taskScope: true }),
-			).toEqual({
-				personal: ["dog is Fred"],
-				project: [],
-				task: ["ts is ms"],
-			})
-		})
-
-		it("markdown-list shape: [task] lines route and strip", () => {
-			expect(
-				parseTaggedFacts("- [task] keep units in ms\n- [personal] dog is Fred", "personal", { taskScope: true }),
-			).toEqual({ personal: ["dog is Fred"], project: [], task: ["keep units in ms"] })
-		})
-	})
 })
 
 describe("chatJson retry behavior", () => {
@@ -1885,28 +1845,6 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 		expect(extraction[0]).toContain("FIRST")
 		expect(extraction[1]).toContain("FAILME")
 		expect(existsSync(jobFile)).toBe(false)
-	})
-
-	it("a staged write that outlived a lost ledger state still re-adds without re-extracting", async () => {
-		const jobFile = writeJob("job1", [msg("user", "ledger crash marker")])
-		const transcripts: string[] = []
-		await expect(
-			runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
-				llm: makeFakeLlm(transcripts),
-				createBackend: () => Promise.resolve(makeFakeBackend({ failAdds: true }).backend),
-			}),
-		).rejects.toThrow("1 capture job(s) failed")
-		// The ledger save is commit-gated anyway; the staged coverage that
-		// prevents re-extraction lives in the job file itself.
-		expect(existsSync(jobFile)).toBe(true)
-		const fake = makeFakeBackend()
-		const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
-			llm: makeFakeLlm(transcripts),
-			createBackend: () => Promise.resolve(fake.backend),
-		})
-		expect(captured).toBe(1)
-		expect(fake.added).toEqual(["ledger crash marker"])
-		expect(transcripts).toHaveLength(1) // staged coverage prevented re-extraction
 	})
 
 	it("the staged rewrite preserves the job file's mtime (drain order / sweep age)", async () => {
@@ -3598,6 +3536,7 @@ describe("task-scope capture ([task] grammar + routing)", () => {
 		},
 		fact_objects: {
 			input: JSON.stringify([
+				{ fact: "[task] keep identifiers exact", scope: "task" },
 				{ fact: "Identifiers in the ledger store use the `entry_` prefix", scope: "task" },
 				{ fact: "The user reviews merges on Fridays", scope: "personal" },
 			]),
@@ -3605,20 +3544,20 @@ describe("task-scope capture ([task] grammar + routing)", () => {
 			expected: {
 				personal: ["The user reviews merges on Fridays"],
 				project: [],
-				task: ["Identifiers in the ledger store use the `entry_` prefix"],
+				task: ["keep identifiers exact", "Identifiers in the ledger store use the `entry_` prefix"],
 			},
 		},
 		object_shape: {
 			input: JSON.stringify({
 				personal: ["The user drafts specs in English"],
 				project: ["The gateway service owns rate limiting"],
-				task: ["Negative amounts never appear in the ledger store"],
+				task: ["[task] schema ts is ms", "Negative amounts never appear in the ledger store"],
 			}),
 			defaultScope: "personal",
 			expected: {
 				personal: ["The user drafts specs in English"],
 				project: ["The gateway service owns rate limiting"],
-				task: ["Negative amounts never appear in the ledger store"],
+				task: ["schema ts is ms", "Negative amounts never appear in the ledger store"],
 			},
 		},
 		// Leading tag decides the lane (exactly one lane per string); a trailing

@@ -18,13 +18,6 @@ const templateDir = resolve(projectRoot, "resources/oauth")
 // "templates can't be read" (any silent fallback we might reintroduce).
 const KIMCHI_LOGO_ORANGE = "#FF521D"
 
-it("scripts/patch-pi-ai-oauth.js has been applied to node_modules", () => {
-	const source = readFileSync(patchedFile, "utf-8")
-	expect(source, "Run `pnpm install` (or `node scripts/patch-pi-ai-oauth.js`) first").toContain(
-		"KIMCHI_OAUTH_TEMPLATE_DIR",
-	)
-})
-
 it("does not create a stray file when the upstream target is missing", () => {
 	const cwd = mkdtempSync(resolve(tmpdir(), "kimchi-oauth-patch-"))
 	try {

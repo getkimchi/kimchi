@@ -25,13 +25,6 @@ describe("GENERAL_TIPS", () => {
 		expect(messages).toContain("Run `/bug` to create GitHub issue with a bug report (PII-scrubbed).")
 	})
 
-	it("no longer recommends multi-model routing or roles (deprecated since the Auto default, #1357)", () => {
-		for (const tip of GENERAL_TIPS) {
-			expect(tip.message, tip.id).not.toMatch(/multi-model/i)
-			expect(tip.id).not.toMatch(/multi-model/)
-		}
-	})
-
 	it("only names slash commands that /help lists (so every tip points at a real, discoverable command)", () => {
 		// A tip that names `/foo` must refer to a command users can find; the
 		// /help list is itself checked against the registered commands

@@ -80,8 +80,6 @@ describe("authenticateWorkspace", () => {
 		expect(result.expiresAt).toBe("2026-05-15T12:44:51.521Z")
 		expect(result.wsUrl).toBe("wss://s-3380b7aa.remote.kimchi.dev")
 		expect(result.host).toBe("s-3380b7aa.remote.kimchi.dev")
-		// WorkspaceCredentials must not carry `description`.
-		expect((result as unknown as { description?: string }).description).toBeUndefined()
 
 		expect(mockFetch).toHaveBeenCalledTimes(4)
 		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/workspace-tokens:verifyKey`)

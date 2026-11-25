@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest"
 import { extractPptx } from "../extractors/pptx.js"
+import { openOoxml } from "../ooxml/package.js"
+import { byTag } from "../ooxml/xml.js"
 import type { DeckSpec } from "../writers/pptx-model.js"
 import { enforcePitfalls } from "./pitfalls.js"
 import { parseDeckMarkdown, writePptx } from "./pptx.js"
-import { slideNeedsLightText } from "./pptx-layout.js"
 
 function slideWith(element: unknown): DeckSpec["slides"][number] {
 	return { index: 1, elements: [element as DeckSpec["slides"][number]["elements"][number]], notes: [] }
@@ -82,20 +83,16 @@ describe("pitfall guards", () => {
 		)
 	})
 
-	it("slideNeedsLightText flags dark backgrounds only", () => {
-		expect(slideNeedsLightText("#102030")).toBe(true)
-		expect(slideNeedsLightText("#FFFFFF")).toBe(false)
-		expect(slideNeedsLightText(undefined)).toBe(false)
-	})
-
 	it("dark background decks get white body text (repair-free round trip)", async () => {
 		const spec = parseDeckMarkdown("# Dark\n\n- bullet\n---\nbackground is the template's job\n")
 		spec.slides[0].background = "#102030"
 		const bytes = await writePptx(spec)
 		const doc = await extractPptx(bytes)
 		expect(doc.units[0].markdown).toContain("bullet")
-		// The written XML must carry an explicit white solid fill on the body box.
-		const xml = new TextDecoder().decode(bytes)
-		void xml
+		const pkg = await openOoxml(bytes)
+		const slide = pkg.getXml("ppt/slides/slide1.xml")
+		const run = byTag(slide, "r").find((el) => byTag(el, "t").some((text) => text.textContent === "bullet"))
+		expect(run).toBeDefined()
+		expect(run ? byTag(run, "srgbClr").map((color) => color.getAttribute("val")) : []).toContain("FFFFFF")
 	})
 })

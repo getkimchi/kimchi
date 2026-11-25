@@ -218,20 +218,6 @@ describe("runAttachSession", () => {
 		expect(listSessionsMock).not.toHaveBeenCalled()
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/API key/), "error")
 	})
-
-	it("does not touch preflight or rsync paths (dirty-tree regression guard)", async () => {
-		// Attach succeeds with no preflight/rsync imports in this test file at all —
-		// if attach.ts ever started calling them, this file's vi.mock setup wouldn't
-		// have them mocked and the suite would fail. The happy-path test above also
-		// asserts overlay opens without any provisioning step calls.
-		listSessionsMock.mockResolvedValue([{ name: "x", agentMode: "PTY" }])
-		const { ctx } = makeCtx()
-
-		await runAttachSession({ workspaceId: "w-1", sessionName: "x" }, ctx)
-
-		expect(overlayMock).toHaveBeenCalledOnce()
-	})
-
 	it("does not sync harness config (config sync is teleport-only)", async () => {
 		listSessionsMock.mockResolvedValue([{ name: "x", agentMode: "PTY" }])
 		const { ctx } = makeCtx()

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { QuotaUsage } from "../../../sandbox/cloud/types.js"
 import type { QuotaInput } from "./quota-footer.js"
 import type { RemoteSessionNode, RemoteWorkspaceNode } from "./remote-sessions-panel.js"
-import { createRemoteSessionsPanel, RemoteSessionsPanel } from "./remote-sessions-panel.js"
+import { createRemoteSessionsPanel, type RemoteSessionsPanel } from "./remote-sessions-panel.js"
 
 const NOW = new Date("2026-05-17T12:00:00Z")
 
@@ -513,15 +513,6 @@ describe("RemoteSessionsPanel", () => {
 			const { panel: empty } = makePanel([], { termRows: 20 })
 			const { panel: full } = makePanel(treeNodes, { termRows: 20 })
 			expect(empty.render(120).length).toBe(full.render(120).length)
-		})
-	})
-
-	describe("direct instantiation", () => {
-		it("can be constructed without the helper", () => {
-			const tui = { requestRender: vi.fn(), terminal: { rows: 24, cols: 80 } }
-			const done = vi.fn()
-			const panel = new RemoteSessionsPanel(treeNodes, tui, done)
-			expect(panel.render(80).length).toBeGreaterThan(0)
 		})
 	})
 

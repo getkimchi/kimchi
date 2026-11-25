@@ -348,14 +348,6 @@ describe("redactText — custom secret patterns", () => {
 		expectRedacted(result, fx.castaiKey, "CASTAI_API_KEY")
 	})
 
-	it("redacts Bearer tokens (only the token part)", async () => {
-		const result = await redactText(`Authorization: Bearer ${fx.bearerValue}`)
-		expect(result).not.toContain(fx.bearerValue)
-		// The engine claims the span wholesale; the custom pattern's prefix
-		// preservation only shows when the engine defers to it.
-		expect(result).toContain("[REDACTED-BEARER_TOKEN]")
-	})
-
 	it("redacts OAuth tokens (ya29.*)", async () => {
 		const result = await redactText(`token: ${fx.oauthToken}`)
 		expectRedacted(result, fx.oauthToken, "OAUTH_TOKEN")

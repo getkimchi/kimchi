@@ -1,8 +1,14 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import * as fs from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createToolOutputStore, makeMarker, parseMarker, TOOL_OUTPUT_MARKER_PREFIX } from "./tool-output-store.js"
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>()
+	return { ...actual, openSync: vi.fn(actual.openSync) }
+})
 
 const INT_KEYS = ["KIMCHI_TOOL_OUTPUT_STORE", "KIMCHI_TOOL_OUTPUT_EXTERNALIZE_BYTES", "KIMCHI_TOOL_OUTPUT_CACHE_BYTES"]
 
@@ -58,22 +64,6 @@ describe("tool-output-store", () => {
 		expect(store.read(h3)).toBe(big)
 	})
 
-	it("pinned-entry behavior removed: LRU eviction applies to every cached entry", () => {
-		// The pin/unpin refcount mechanism was dead code (no production callers)
-		// and was removed. What remains observable: pure LRU eviction by age.
-		const store = createToolOutputStore(dir, 50)
-		const h1 = store.record("y".repeat(40))
-		store.read(h1) // cached (40B ≤ 50)
-		const h2 = store.record("q".repeat(40))
-		store.read(h2) // evicts h1 (older) to fit the 50-byte budget
-		expect(store.stats().cacheEntries).toBe(1)
-		const h3 = store.record("r".repeat(40))
-		store.read(h3) // evicts h2 (older)
-		expect(store.stats().cacheEntries).toBe(1)
-		// evicted handles stay readable through direct reads
-		expect(store.read(h1)).toBe("y".repeat(40))
-	})
-
 	it("does not cache entries larger than the budget (direct read only)", () => {
 		const store = createToolOutputStore(dir, 10)
 		const big = "w".repeat(64)
@@ -89,25 +79,31 @@ describe("tool-output-store", () => {
 		expect(store.stats().cacheEntries).toBe(0)
 	})
 
-	it("read failures are surfaced as console.error; spoofed paths return undefined silently", () => {
+	it("rejects spoofed paths silently", () => {
 		const store = createToolOutputStore(dir)
-		const errors: unknown[] = []
-		const original = console.error
-		console.error = (...args: unknown[]) => errors.push(args)
-		try {
-			// Path confinement: a handle pointing at a non-store file returns
-			// undefined WITHOUT logging (spoofed markers are silently rejected).
-			expect(store.read({ file: join(dir, "absent.log"), offset: 0, length: 1 })).toBeUndefined()
-			expect(store.read({ file: dir, offset: 0, length: 1 })).toBeUndefined()
-			expect(errors.length).toBe(0)
-			// A genuine read failure on the store's OWN file surfaces via console.error.
-			const storeFile = store.stats().file
-			writeFileSync(storeFile, "")
-			// existsSync check returns undefined for an empty file with out-of-range offset
-			expect(store.read({ file: storeFile, offset: 0, length: 4 })).toBeUndefined()
-		} finally {
-			console.error = original
-		}
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		expect(store.read({ file: join(dir, "absent.log"), offset: 0, length: 1 })).toBeUndefined()
+		expect(store.read({ file: dir, offset: 0, length: 1 })).toBeUndefined()
+		expect(errorSpy).not.toHaveBeenCalled()
+	})
+
+	it("logs genuine read failures on the store file", () => {
+		const store = createToolOutputStore(dir)
+		const file = store.record("x").file
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		const openSpy = vi
+			.mocked(fs.openSync)
+			.mockClear()
+			.mockImplementation(() => {
+				throw new Error("read failed deliberately")
+			})
+
+		expect(store.read({ file, offset: 0, length: 1 })).toBeUndefined()
+		expect(openSpy).toHaveBeenCalledOnce()
+		expect(errorSpy).toHaveBeenCalledWith(
+			`[tool-output-store] read failed for ${file}@0:`,
+			expect.objectContaining({ message: "read failed deliberately" }),
+		)
 	})
 
 	it("marker encode/decode round-trip and reject malformed text", () => {

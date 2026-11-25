@@ -115,7 +115,7 @@ async function executeTool(
 // =============================================================================
 
 const FAKE_THEME: Theme = {
-	fg: () => "",
+	fg: (_color: string, text: string) => text,
 	bold: (s: string) => s,
 } as unknown as Theme
 
@@ -331,17 +331,18 @@ describe("Layer 1 DAP tools", () => {
 			const container = render({ session_id: "abcdef1234567890" }, FAKE_THEME, {
 				lastComponent: undefined,
 			}) as unknown as Container
-			// We can't easily inspect Container internals without the TUI runtime,
-			// but we can assert it doesn't throw and returns a Container instance.
-			expect(container).toBeDefined()
+			const text = container.render(80).join("\n")
+			expect(text).toContain("DAP: Test")
+			expect(text).toContain("abcdef12")
 		})
-
 		it("renders without a session_id (debug_launch case)", () => {
 			const render = dapRenderCall("DAP: Launch")
 			const container = render({ program: "/tmp/app.ts" }, FAKE_THEME, {
 				lastComponent: undefined,
 			}) as unknown as Container
-			expect(container).toBeDefined()
+			const text = container.render(80).join("\n")
+			expect(text).toContain("DAP: Launch")
+			expect(text).toContain("/tmp/app.ts")
 		})
 	})
 })

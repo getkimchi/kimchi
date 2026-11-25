@@ -685,13 +685,6 @@ export class FermentStorage {
 		return this.updateStep(id, phaseId, stepId, { status: "running", startedAt: new Date().toISOString() })
 	}
 
-	completeStep(id: string, phaseId: string, stepId: string): Ferment | undefined {
-		return this.updateStep(id, phaseId, stepId, {
-			status: "done",
-			completedAt: new Date().toISOString(),
-		})
-	}
-
 	skipStep(id: string, phaseId: string, stepId: string): Ferment | undefined {
 		return this.updateStep(id, phaseId, stepId, {
 			status: "skipped",
@@ -705,10 +698,6 @@ export class FermentStorage {
 			completedAt: result.completedAt,
 			result,
 		})
-	}
-
-	setStepGrade(id: string, phaseId: string, stepId: string, grade: JudgeGrade): Ferment | undefined {
-		return this.updateStep(id, phaseId, stepId, { grade })
 	}
 
 	setPhaseGrade(id: string, phaseId: string, grade: JudgeGrade): Ferment | undefined {

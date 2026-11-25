@@ -184,27 +184,6 @@ describe("handleTransportError", () => {
 		)
 	})
 
-	it("handles missing optional fields gracefully", () => {
-		const sessionCtx = mockSessionCtx()
-		const piCtx = mockPiCtx({ sessionId: "sess-2" })
-		handleTransportError(sessionCtx as TelemetryContext, piCtx, {
-			message: {
-				role: "assistant",
-				stopReason: "error",
-				errorMessage: "socket connection was closed unexpectedly",
-			} as AssistantMessage,
-		})
-		expect(sessionCtx.emit).toHaveBeenCalledWith(
-			"error",
-			{
-				error_type: "transport_error",
-				error_message: "Transport: socket closed unexpectedly",
-				canonicalization: "v1",
-			},
-			piCtx,
-		)
-	})
-
 	it("canonicalizes a long transport error instead of leaking its raw tail", () => {
 		const sessionCtx = mockSessionCtx()
 		const longMessage = `socket connection was closed unexpectedly ${"x".repeat(400)}`

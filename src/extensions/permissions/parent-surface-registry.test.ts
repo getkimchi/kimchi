@@ -86,15 +86,6 @@ describe("parent surface registry", () => {
 		unregisterSecond()
 	})
 
-	it("forwards the notice level to the surface", () => {
-		const surface = makeSurface()
-		const notifySpy = vi.spyOn(surface, "notify")
-		registerParentSurface("session-f", surface)
-		getParentSurface("session-f")?.notify("Permission classifier is back.", "info")
-		expect(notifySpy).toHaveBeenCalledWith("Permission classifier is back.", "info")
-		unregisterParentSurface("session-f", surface)
-	})
-
 	it("carries an optional requestPermission route for escalated prompts", () => {
 		const surface: ParentSurface = {
 			notify: () => {},

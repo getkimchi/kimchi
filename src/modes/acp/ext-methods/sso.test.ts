@@ -175,10 +175,7 @@ describe("SsoFlowManager", () => {
 			})
 		})
 
-		it("uses the configured region when the region param is omitted and the pinned region when given", async () => {
-			const h = makeHarness()
-			await h.manager.begin({})
-			expect(h.exchangeAuthorizationCode).not.toHaveBeenCalled() // sanity: no flow advanced
+		it("uses the pinned region when given", async () => {
 			const second = makeHarness()
 			const begin: SsoBeginResponse = await second.manager.begin({ region: "eu" })
 			expect(new URL(begin.authorizeUrl).origin).toBe("https://login.eu.kimchi.dev")
@@ -249,12 +246,6 @@ describe("SsoFlowManager", () => {
 			expect(retry.requestId).not.toBe(abandoned.requestId)
 			// The abandoned flow is dead: its requestId no longer resolves.
 			await expectSsoError(h.manager.awaitResult({ requestId: abandoned.requestId }), "SSO_REQUEST_NOT_FOUND")
-		})
-
-		it("still rejects SSO_IN_PROGRESS for a live flow even after a previous flow expired", async () => {
-			const h = makeHarness()
-			await h.manager.begin({})
-			await expectSsoError(h.manager.begin({}), "SSO_IN_PROGRESS")
 		})
 	})
 

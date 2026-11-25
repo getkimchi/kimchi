@@ -248,12 +248,20 @@ describe("connectToIde", () => {
 		const notifications: unknown[] = []
 		conn.setNotificationHandler((msg) => notifications.push(msg))
 
-		// Trigger a notification message by calling the internal transport.onmessage
-		// We need to access the transport. Since it's private, we can rely on the
-		// fact that setNotificationHandler wraps transport.onmessage.
-		// Let's verify the handler is attached by checking that calling close works.
+		const transport = mockClientConnect.mock.calls.at(-1)?.[0] as { onmessage?: (message: unknown) => unknown }
+		if (!transport) throw new Error("No transport captured from Client.connect")
+		const original = vi.fn(transport.onmessage)
+		transport.onmessage = original
+		conn.setNotificationHandler((msg) => notifications.push(msg))
+
+		transport.onmessage?.({ jsonrpc: "2.0", method: "notify" })
+		transport.onmessage?.({ jsonrpc: "2.0", id: 1, result: {} })
+		expect(new Set(notifications.map((msg) => JSON.stringify(msg)))).toEqual(
+			new Set(['{"jsonrpc":"2.0","method":"notify"}']),
+		)
+		expect(original).toHaveBeenCalledWith({ jsonrpc: "2.0", method: "notify" })
+		expect(original).toHaveBeenCalledWith({ jsonrpc: "2.0", id: 1, result: {} })
 		await conn.close()
-		expect(mockClientClose).toHaveBeenCalled()
 	})
 
 	it("throws for unsupported transport", async () => {

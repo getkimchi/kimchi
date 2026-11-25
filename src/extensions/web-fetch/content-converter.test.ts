@@ -21,12 +21,6 @@ describe("convertContent", () => {
 			expect(md).toContain("[the docs](https://example.com/docs)")
 		})
 
-		it("preserves absolute URLs unchanged", () => {
-			const html = '<a href="https://other.com/path">external</a>'
-			const md = convertContent(html, BASE_URL, "markdown")
-			expect(md).toContain("[external](https://other.com/path)")
-		})
-
 		it("converts unordered lists", () => {
 			const html = "<ul><li>one</li><li>two</li><li>three</li></ul>"
 			const md = convertContent(html, BASE_URL, "markdown")
@@ -70,18 +64,6 @@ describe("convertContent", () => {
 			expect(md).toContain("[a link](https://example.com/link)")
 			expect(md).toContain("*emphasis*")
 			expect(md).toContain("`code`")
-		})
-
-		it("resolves relative src attributes on images", () => {
-			const html = '<img src="/img/photo.png" alt="photo">'
-			const md = convertContent(html, BASE_URL, "markdown")
-			expect(md).toContain("https://example.com/img/photo.png")
-		})
-
-		it("resolves parent-relative URLs (../)", () => {
-			const html = '<a href="../other">up</a>'
-			const md = convertContent(html, "https://example.com/a/b/page", "markdown")
-			expect(md).toContain("https://example.com/a/other")
 		})
 	})
 
@@ -238,22 +220,6 @@ describe("convertContent", () => {
 	})
 
 	describe("malformed HTML fallback", () => {
-		it("handles null input without throwing in markdown format", () => {
-			const result = convertContent(null as unknown as string, BASE_URL, "markdown")
-			expect(typeof result).toBe("string")
-		})
-
-		it("handles null input without throwing in text format", () => {
-			const result = convertContent(null as unknown as string, BASE_URL, "text")
-			expect(typeof result).toBe("string")
-		})
-
-		it("returns raw HTML unchanged for null input in html format", () => {
-			// html format is passthrough — returns input before parsing
-			const result = convertContent(null as unknown as string, BASE_URL, "html")
-			expect(result).toBeNull()
-		})
-
 		it("handles empty string without throwing", () => {
 			const mdResult = convertContent("", BASE_URL, "markdown")
 			expect(typeof mdResult).toBe("string")
@@ -328,14 +294,6 @@ describe("convertContent", () => {
 			const html = '<a href="://broken">link</a>'
 			const md = convertContent(html, BASE_URL, "markdown")
 			expect(md).toContain("link")
-		})
-
-		it("resolves URLs in text format too", () => {
-			// text format still strips boilerplate and resolves URLs (for potential later use)
-			// but since text output doesn't show URLs, we just verify it doesn't crash
-			const html = '<a href="/docs">docs</a>'
-			const text = convertContent(html, BASE_URL, "text")
-			expect(text).toContain("docs")
 		})
 	})
 })

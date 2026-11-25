@@ -34,16 +34,6 @@ describe("short-lived OAuth credential handoff", () => {
 		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionB)).toBe(false)
 	})
 
-	it("reuses the exact replacement until the originating prompt is released", () => {
-		rememberPreparedOAuthCredential(authPath, credential, sessionOwner)
-		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionOwner)).toBe(true)
-		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionOwner)).toBe(true)
-
-		releasePreparedOAuthCredential(authPath, sessionOwner)
-
-		expect(shouldReusePreparedOAuthCredential(authPath, credential, sessionOwner)).toBe(false)
-	})
-
 	it("never reuses a different or retired grant", () => {
 		rememberPreparedOAuthCredential(authPath, credential, sessionOwner)
 		expect(

@@ -412,10 +412,6 @@ export function transition(
 
 // ─── Status mapping ───────────────────────────────────────────────────────────
 
-function assertNever(value: never): never {
-	throw new Error(`Unhandled FSM value: ${String(value)}`)
-}
-
 /** Maps a Ferment's domain status to its FSM state. */
 export function fermentStatusToFsmState(fermentStatus: FermentStatus): FsmState {
 	switch (fermentStatus) {
@@ -432,35 +428,4 @@ export function fermentStatusToFsmState(fermentStatus: FermentStatus): FsmState 
 		case "abandoned":
 			return FSM_STATES.ABANDONED
 	}
-	return assertNever(fermentStatus)
-}
-
-/** Maps an FSM state back to a Ferment domain status. */
-export function fsmStateToFermentStatus(fsmState: FsmState): FermentStatus {
-	switch (fsmState) {
-		case FSM_STATES.DRAFT:
-		case FSM_STATES.SCOPING:
-		case FSM_STATES.PLANNED:
-			return "planned"
-		case FSM_STATES.PHASE_ACTIVE:
-		case FSM_STATES.STEP_RUNNING:
-			return "running"
-		case FSM_STATES.PAUSED:
-			return "paused"
-		case FSM_STATES.COMPLETE:
-			return "complete"
-		case FSM_STATES.ABANDONED:
-			return "abandoned"
-	}
-	return assertNever(fsmState)
-}
-
-// ─── Utility helpers ──────────────────────────────────────────────────────────
-
-export function isTerminalState(state: FsmState): boolean {
-	return state === FSM_STATES.COMPLETE || state === FSM_STATES.ABANDONED
-}
-
-export function getValidEvents(state: FsmState): FsmEvent[] {
-	return Object.keys(TRANSITIONS[state]) as FsmEvent[]
 }

@@ -141,24 +141,26 @@ describe("createBranchPoller", () => {
 		expect(onChange).toHaveBeenCalledTimes(1)
 	})
 
-	it("skips overlapping refreshes", () => {
-		let _calls = 0
-		const refreshBranch = vi.fn((cb: (b: string | undefined) => void) => {
-			_calls++
-			cb("main")
+	it("skips overlapping refreshes and resumes after the pending callback completes", () => {
+		const pending: Array<(branch: string | undefined) => void> = []
+		const refreshBranch = vi.fn((cb: (branch: string | undefined) => void) => {
+			pending.push(cb)
 		})
 		const onChange = vi.fn()
-
 		const poller = createBranchPoller({ refreshBranch }, 100)
 		poller.start(onChange)
 
 		vi.advanceTimersByTime(50)
 		expect(refreshBranch).toHaveBeenCalledTimes(1)
+		vi.advanceTimersByTime(100)
+		expect(refreshBranch).toHaveBeenCalledTimes(1)
 
+		pending[0]?.("main")
 		vi.advanceTimersByTime(100)
 		expect(refreshBranch).toHaveBeenCalledTimes(2)
+		expect(onChange).not.toHaveBeenCalled()
 
-		vi.advanceTimersByTime(100)
-		expect(refreshBranch).toHaveBeenCalledTimes(3)
+		pending[1]?.("feature")
+		expect(onChange).toHaveBeenCalledOnce()
 	})
 })

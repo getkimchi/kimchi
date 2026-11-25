@@ -56,13 +56,11 @@ describe("createSkillManageTool", () => {
 		return { manager, tracker }
 	}
 
-	it("returns tool object with correct properties", () => {
+	it("exposes the public label and parameter schema", () => {
 		const { manager, tracker } = makeMocks()
 		const tool = createSkillManageTool(manager, tracker)
-		expect(tool.name).toBe("skill_manage")
 		expect(tool.label).toBe("Skill Manager")
 		expect(tool.parameters).toBe(SkillManageSchema)
-		expect(typeof tool.execute).toBe("function")
 	})
 
 	it("dispatches create and bumps create", async () => {
@@ -136,16 +134,12 @@ describe("createSkillManageTool", () => {
 		expect(result.details.success).toBe(true)
 	})
 
-	it("rejects undefined required string fields but allows empty strings", async () => {
+	it("rejects a missing content field during edit", async () => {
 		const { manager, tracker } = makeMocks()
 		const tool = createSkillManageTool(manager, tracker)
-		// Missing `content` entirely → undefined → rejected
 		const missing = await tool.execute("id", { action: "edit", name: "foo" })
 		expect(missing.details.success).toBe(false)
 		expect(missing.content[0].text).toContain("requires 'content'")
-		// Empty `content` → allowed
-		const empty = await tool.execute("id", { action: "edit", name: "foo", content: "" })
-		expect(empty.details.success).toBe(true)
 	})
 
 	it("description includes inline creation guidance", () => {

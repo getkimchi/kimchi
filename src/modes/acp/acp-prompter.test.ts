@@ -156,34 +156,6 @@ describe("request_permission payloads mirror execution (redaction guardrail)", (
 		expect(sent[0]?.toolCall.rawInput).toEqual({ path: "c.txt", oldText: token, newText: token })
 	})
 
-	/* The original single-purpose guardrail below predates the mirror rule; it
-	 * pins the byte-faithful branch of the same contract the "edit/write"
-	 * test pins for derefed tools. */
-
-	it("sends vault tokens verbatim for byte-faithful tools — approvals show what executes", async () => {
-		const sent: Array<{ sessionId: string; toolCall: ToolCall }> = []
-		const conn = {
-			request: vi.fn(async (_method: string, payload: { sessionId: string; toolCall: ToolCall }) => {
-				sent.push(payload)
-				return { outcome: { outcome: "cancelled" } }
-			}),
-		} as unknown as AgentContext
-		const prompter = createAcpPermissionPrompter(conn, "sess-1", {} as never, () => "acp-1")
-		const token = "[EMAIL_ADDRESS_3]"
-		const outcome = await prompter.request({
-			...baseReq,
-			toolName: "bash",
-			input: { command: `mail ${token}` },
-		})
-		expect(outcome).toEqual({ kind: "denied-by-client" })
-		// The prompt is a decision about EXECUTION, and what executes is the
-		// literal token: title and rawInput must carry it verbatim, never the
-		// original it stands for (docs/pii-redaction-tokens.md).
-		expect(sent).toHaveLength(1)
-		expect(sent[0]?.toolCall.rawInput).toEqual({ command: `mail ${token}` })
-		expect(sent[0]?.toolCall.title).toBe(`mail ${token}`)
-	})
-
 	it("bash_control wait prompts keep rawInput as agent input; live cohort rides _meta when a registry is live", async () => {
 		setSessionState("sess-wait", {
 			registry: {

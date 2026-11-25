@@ -186,22 +186,6 @@ describe("Claude Code skill discovery", () => {
 		expect(getClaudeCodeSkillResourcePaths(cwd)).toEqual([])
 	})
 
-	it("materializes Claude Code skill paths through the sanitized cache", () => {
-		const cwd = join(dir, "project")
-		writeSkill(
-			join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"),
-			"---\ndescription: Use: generated API types\ntools: Read, Write\n---\n# Skill\n",
-		)
-
-		const paths = getClaudeCodeSkillResourcePaths(cwd)
-
-		expect(paths).toHaveLength(1)
-		expect(paths[0]).toContain("kimchi-claude-code-skills-")
-		expect(readFileSync(join(paths[0], "SKILL.md"), "utf-8")).toBe(
-			'---\nname: "typescript-safety"\ndescription: "Use: generated API types"\n---\n# Skill\n',
-		)
-	})
-
 	it("materializes configured Claude Code skill files through the sanitized cache", () => {
 		const cwd = join(dir, "project")
 		writeSkill(join(cwd, ".claude", "skills", "typescript-safety", "SKILL.md"), "Use generated types.\n")

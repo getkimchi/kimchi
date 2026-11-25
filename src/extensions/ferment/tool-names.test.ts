@@ -32,10 +32,6 @@ function collectRegisteredToolNames(): string[] {
 }
 
 describe("ferment tool name constants", () => {
-	it("derives the public tool-name list from the constant object", () => {
-		expect(FERMENT_TOOL_NAMES).toEqual(Object.values(FERMENT_TOOLS))
-	})
-
 	it("contains every registered Ferment tool", () => {
 		expect(collectRegisteredToolNames().sort()).toEqual([...FERMENT_TOOL_NAMES].sort())
 	})

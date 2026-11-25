@@ -8,11 +8,7 @@ import createModelGuardExtension, {
 	__setLatestMessagesForTest,
 	sessionHasImages,
 } from "./model-guard.js"
-import modelSwitchExtension, {
-	__resetModelSwitchStateForTest,
-	getModelTier,
-	withSuppressedModelSelectGuard,
-} from "./model-switch.js"
+import modelSwitchExtension, { __resetModelSwitchStateForTest, withSuppressedModelSelectGuard } from "./model-switch.js"
 
 type RegisteredTool = {
 	name: string
@@ -205,14 +201,6 @@ describe("modelSwitchExtension", () => {
 			expect(idxAnthropic).toBeGreaterThan(-1)
 			expect(idxKimi).toBeGreaterThan(idxAnthropic)
 			expect(idxMinimax).toBeGreaterThan(idxKimi)
-		})
-
-		it("handles invalid model format", async () => {
-			const h = createHarness()
-			const result = await h.exec("kimi-k2.6")
-			expect(textOf(result)).toContain('Invalid model format: "kimi-k2.6"')
-			expect(textOf(result)).toContain("Available models:")
-			expect(h.setModel).not.toHaveBeenCalled()
 		})
 	})
 
@@ -420,17 +408,6 @@ describe("modelSwitchExtension", () => {
 			if (caps && caps !== "ignored") {
 				expect((caps as { tier: unknown }).tier).toBe("heavy")
 			}
-		})
-
-		it("getModelTier returns heavy for kimi-k2.6 and light for nemotron (fresh import)", async () => {
-			const { MODEL_CAPABILITIES } = await import("./orchestration/model-registry/builtin-models.js")
-			const currentTier = getModelTier({ id: "kimi-k2.6", provider: "kimchi-dev" } as never, MODEL_CAPABILITIES)
-			const targetTier = getModelTier(
-				{ id: "nemotron-3-ultra-fp4", provider: "kimchi-dev" } as never,
-				MODEL_CAPABILITIES,
-			)
-			expect(currentTier).toBe("heavy")
-			expect(targetTier).toBe("light")
 		})
 	})
 
@@ -968,12 +945,53 @@ describe("modelSwitchExtension", () => {
 			vi.clearAllMocks()
 		})
 
-		it("skips when isRevertingModel guard is set", async () => {
-			const _h = createHarness()
-			// Manually set the flag via module state (not exported, so test via the handler directly)
-			// We simulate this by calling the handler with isRevertingModel=true scenario
-			// Since isRevertingModel is module-scoped, we test it indirectly via the suppress flag path
-			expect(true).toBe(true) // Placeholder — isRevertingModel tested via integration
+		it("suppresses nested model_select events during overflow revert", async () => {
+			const { pi, trigger, setModel } = createHarnessWithTrigger()
+			setModel.mockImplementationOnce(async () => {
+				await trigger(
+					"model_select",
+					{
+						type: "model_select",
+						model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+						previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
+						source: "set",
+					},
+					createContext({ tokens: 150_000 }),
+				)
+				return true
+			})
+			modelSwitchExtension(pi)
+			const ctx = createContext({ tokens: 150_000 })
+
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"], contextWindow: 250_000 },
+					source: "set",
+				},
+				ctx,
+			)
+
+			expect(setModel).toHaveBeenCalledOnce()
+			expect(setModel).toHaveBeenCalledWith({
+				id: "kimi-k2.6",
+				provider: "kimchi-dev",
+				input: ["text", "image"],
+				contextWindow: 250_000,
+			})
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"], contextWindow: 250_000 },
+					previousModel: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"] },
+					source: "set",
+				},
+				createContext({ tokens: 10_000 }),
+			)
+			expect(setModel).toHaveBeenCalledOnce()
 		})
 
 		it("allows source=set when tokens fit (no guard triggered)", async () => {

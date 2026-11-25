@@ -291,11 +291,6 @@ describe("modelListExtension", () => {
 			expect(text).toContain("kimchi-dev/haiku | 100000 | not curated | no | yes")
 			expect(text).toContain("kimchi-dev/embedding | 100000 | off | no | no")
 		})
-
-		it("exposes registered levels through the shared registry helper", () => {
-			registerModelThinkingLevels("kimchi-dev/kimi-k9", ["off"])
-			expect(getModelThinkingLevels("kimchi-dev/kimi-k9")).toEqual(["off"])
-		})
 	})
 
 	describe("formatCurrentModelLine", () => {

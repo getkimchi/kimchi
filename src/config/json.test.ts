@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -84,9 +84,7 @@ describe("readJson / writeJson", () => {
 		const path = join(dir, "atomic.json")
 		writeJson(path, { ok: true })
 		expect(readFileSync(path, "utf-8")).toContain('"ok": true')
-		// No leftover .tmp files in the same directory
-		const leftover = readFileSync(path, "utf-8")
-		expect(leftover).not.toContain("tmp")
+		expect(readdirSync(dir)).toEqual(["atomic.json"])
 	})
 
 	describe("readJsonCached", () => {

@@ -66,11 +66,7 @@ describe("rotatePdf", () => {
 		const out = await rotatePdf(data, { pages: [2], degrees: 90 })
 		const doc = await PDFDocument.load(out)
 		expect(doc.getPage(0).getRotation().angle % 360).toBe(0)
-		expect([90, 270 + 180 + 90, 90 + 360]).toContain(
-			doc.getPage(1).getRotation().angle % 360 === 0
-				? doc.getPage(1).getRotation().angle + 360
-				: doc.getPage(1).getRotation().angle,
-		)
+		expect(doc.getPage(1).getRotation().angle % 360).toBe(90)
 	})
 })
 

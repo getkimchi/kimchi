@@ -204,13 +204,3 @@ export function dispatch(event: EntryTriggerEvent): ModeState {
 export function clear(): void {
 	triggers.clear()
 }
-
-/** Number of registered triggers. Diagnostic helper for tests. */
-export function size(): number {
-	return triggers.size
-}
-
-/** Whether a trigger is registered under the given key. Diagnostic helper. */
-export function has(key: string): boolean {
-	return triggers.has(key)
-}

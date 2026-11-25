@@ -226,23 +226,6 @@ export function clear(): void {
 	registry.clear()
 }
 
-/**
- * Diagnostic helper. Returns the number of registered entries. Useful for
- * tests that want to assert "registry is empty after clear" or "registry
- * grew by N after a register call" without depending on the internal Map.
- */
-export function size(): number {
-	return registry.size
-}
-
-/**
- * Diagnostic helper. Returns true if `key` is currently registered. Useful
- * for tests asserting that a particular consumer wired itself up.
- */
-export function has(key: string): boolean {
-	return registry.has(key)
-}
-
 // Re-export the upstream block type so consumers who want to accept *any*
 // pi-mono-compatible block can do so without a second import. The shape is
 // structurally compatible — `PromptBlock` is a narrower subtype of

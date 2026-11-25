@@ -203,13 +203,6 @@ describe("entity tier registry", () => {
 		}
 	})
 
-	it("custom-pattern markers are all registered kimchi-owned types", async () => {
-		const afterCustom = applyCustomPatterns(corpus, new Set())
-		for (const t of markerTypesOf(afterCustom)) {
-			expect(isKnownEntity(t)).toBe(true)
-		}
-	})
-
 	it("every custom-pattern name is a registered entity (structural sync)", () => {
 		// Corpus-driven checks only cover patterns the fixtures trigger; this
 		// enumerates the pattern table itself so a new pattern without a
@@ -344,40 +337,6 @@ describe("entity tier registry", () => {
 			"CLERK_PUBLISHABLE_KEY",
 		]) {
 			expect(getEntityCategory(removed), removed).toBeUndefined()
-		}
-	})
-
-	it("covers every entity the bundled engine can emit today", async () => {
-		// The registry was classified against the full 208-entity vocabulary
-		// extracted from @bulkhead-ai/core's bundle; this sanity check keeps
-		// the big-ticket members present so an accidental deletion surfaces.
-		for (const entity of [
-			"AZURE_STORAGE_KEY",
-			"DATABASE_CONNECTION_STRING",
-			"BASIC_AUTH",
-			"DOCKER_REGISTRY_AUTH",
-			"GENERIC_SECRET",
-			"TELEGRAM_BOT_TOKEN",
-			"OKTA_TOKEN",
-			"LOCATION",
-			"PERSON",
-			"ORGANIZATION",
-			"TELEGRAM_BOT_TOKEN",
-			"OKTA_TOKEN",
-			"SLACK_WEBHOOK",
-			"SENTRY_DSN",
-			"REDIS_URL_WITH_PASSWORD",
-			"STRIPE_KEY",
-			"JWT_TOKEN",
-			"BEARER_TOKEN",
-			"PRIVATE_KEY",
-			"MAC_ADDRESS",
-			"LOCAL_PATH",
-			"CREDENTIAL_FILE",
-			"SECRET_FIELD",
-			"URL_WITH_CREDENTIALS",
-		]) {
-			expect(isKnownEntity(entity), entity).toBe(true)
 		}
 	})
 

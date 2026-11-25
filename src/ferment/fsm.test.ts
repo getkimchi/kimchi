@@ -3,16 +3,7 @@
  */
 
 import { describe, expect, it } from "vitest"
-import {
-	type FermentFsmContext,
-	FSM_EVENTS,
-	FSM_STATES,
-	fermentStatusToFsmState,
-	fsmStateToFermentStatus,
-	getValidEvents,
-	isTerminalState,
-	transition,
-} from "./fsm.js"
+import { type FermentFsmContext, FSM_EVENTS, FSM_STATES, fermentStatusToFsmState, transition } from "./fsm.js"
 
 // ─── Test Helpers ─────────────────────────────────────────────────────────────
 
@@ -72,20 +63,6 @@ describe("fermentStatusToFsmState", () => {
 	})
 })
 
-describe("fsmStateToFermentStatus", () => {
-	it("maps DRAFT back to planned", () => {
-		expect(fsmStateToFermentStatus(FSM_STATES.DRAFT)).toBe("planned")
-	})
-
-	it("maps PHASE_ACTIVE back to running", () => {
-		expect(fsmStateToFermentStatus(FSM_STATES.PHASE_ACTIVE)).toBe("running")
-	})
-
-	it("maps COMPLETE back to complete", () => {
-		expect(fsmStateToFermentStatus(FSM_STATES.COMPLETE)).toBe("complete")
-	})
-})
-
 // ─── Valid Transitions ────────────────────────────────────────────────────────
 
 describe("Valid Transitions", () => {
@@ -109,18 +86,6 @@ describe("Valid Transitions", () => {
 
 	describe("PLANNED state", () => {
 		it("handles ACTIVATE_PHASE → PHASE_ACTIVE", () => {
-			const ctx = makeContext({
-				fermentStatus: "planned",
-				phases: [makePhaseContext("phase-1", 1, "planned")],
-			})
-			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
-				phaseId: "phase-1",
-			})
-			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
-			expect(result.error).toBeUndefined()
-		})
-
-		it("transitions cleanly when activating a planned phase", () => {
 			const ctx = makeContext({
 				fermentStatus: "planned",
 				phases: [makePhaseContext("phase-1", 1, "planned")],
@@ -303,18 +268,6 @@ describe("Illegal Transitions (Guards)", () => {
 			})
 			expect(result.error).toBeDefined()
 			expect(result.error).toContain('expected "planned"')
-		})
-
-		it("accepts ACTIVATE_PHASE for failed phase", () => {
-			const ctx = makeContext({
-				fermentStatus: "planned",
-				phases: [makePhaseContext("phase-1", 1, "failed")],
-			})
-			const result = transition(FSM_STATES.PLANNED, FSM_EVENTS.ACTIVATE_PHASE, ctx, {
-				phaseId: "phase-1",
-			})
-			expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
-			expect(result.error).toBeUndefined()
 		})
 	})
 
@@ -508,30 +461,6 @@ describe("Pause/Resume Cycle", () => {
 		})
 		expect(result.state).toBe(FSM_STATES.PHASE_ACTIVE)
 	})
-
-	it("pause/resume preserves context correctly", () => {
-		const ctx = makeContext({
-			fermentStatus: "running",
-			activePhaseId: "phase-1",
-			phases: [
-				makePhaseContext("phase-1", 1, "active", [
-					makeStepContext("step-1", 1, "pending"),
-					makeStepContext("step-2", 2, "pending"),
-				]),
-			],
-		})
-
-		// Pause
-		const pauseResult = transition(FSM_STATES.PHASE_ACTIVE, FSM_EVENTS.PAUSE, ctx)
-		expect(pauseResult.state).toBe(FSM_STATES.PAUSED)
-
-		// Resume
-		const resumeResult = transition(FSM_STATES.PAUSED, FSM_EVENTS.RESUME, ctx, {
-			phaseId: "phase-1",
-		})
-		expect(resumeResult.state).toBe(FSM_STATES.PHASE_ACTIVE)
-		expect(resumeResult.error).toBeUndefined()
-	})
 })
 
 // `nextAction` was deleted — see §4.1 of docs/ferment-review.md. The "what
@@ -539,48 +468,6 @@ describe("Pause/Resume Cycle", () => {
 // engine.test.ts). The FSM is a transition validator, not a planner.
 
 // ─── Utility Functions ────────────────────────────────────────────────────────
-
-describe("Utility Functions", () => {
-	describe("isTerminalState", () => {
-		it("returns true for COMPLETE", () => {
-			expect(isTerminalState(FSM_STATES.COMPLETE)).toBe(true)
-		})
-
-		it("returns true for ABANDONED", () => {
-			expect(isTerminalState(FSM_STATES.ABANDONED)).toBe(true)
-		})
-
-		it("returns false for non-terminal states", () => {
-			expect(isTerminalState(FSM_STATES.DRAFT)).toBe(false)
-			expect(isTerminalState(FSM_STATES.PLANNED)).toBe(false)
-			expect(isTerminalState(FSM_STATES.PHASE_ACTIVE)).toBe(false)
-			expect(isTerminalState(FSM_STATES.STEP_RUNNING)).toBe(false)
-			expect(isTerminalState(FSM_STATES.PAUSED)).toBe(false)
-		})
-	})
-
-	describe("getValidEvents", () => {
-		it("returns valid events for DRAFT", () => {
-			const events = getValidEvents(FSM_STATES.DRAFT)
-			expect(events).toContain(FSM_EVENTS.SCOPE_FERMENT)
-			expect(events).toContain(FSM_EVENTS.ABANDON)
-			expect(events).not.toContain("set_mode")
-		})
-
-		it("returns valid events for PHASE_ACTIVE", () => {
-			const events = getValidEvents(FSM_STATES.PHASE_ACTIVE)
-			expect(events).toContain(FSM_EVENTS.START_STEP)
-			expect(events).toContain(FSM_EVENTS.COMPLETE_PHASE)
-			expect(events).toContain(FSM_EVENTS.PAUSE)
-			expect(events).toContain(FSM_EVENTS.ABANDON)
-		})
-
-		it("returns empty array for ABANDONED (terminal state)", () => {
-			const events = getValidEvents(FSM_STATES.ABANDONED)
-			expect(events).toHaveLength(0)
-		})
-	})
-})
 
 // ─── Edge Cases ───────────────────────────────────────────────────────────────
 

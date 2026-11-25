@@ -15,7 +15,6 @@ import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setResourceOverride } from "../../resources/store.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import piiRedactionExtension from "../pii-redaction/index.js"
-import { PII_REDACTION_EVENTS } from "../pii-redaction/redaction-events.js"
 import { resetRedactorEngine } from "../pii-redaction/redactor.js"
 import { PII_REDACTION_RESOURCE_ID } from "../pii-redaction/resource.js"
 import telemetryExtension from "./index.js"
@@ -112,22 +111,5 @@ describe("pii-redaction → telemetry OTLP pipeline (shared bus)", () => {
 		const redacted = events.filter((e) => e.eventName === "pii_redaction.redacted")
 		expect(redacted.map((e) => e.attrs.entity_type)).toEqual(["EMAIL_ADDRESS"])
 		expect(redacted.map((e) => e.attrs.category)).toEqual(["person_data"])
-	})
-
-	it("subscription exists: telemetry factory registers a handler for the redaction channel", () => {
-		const bus = createMiniEventBus()
-		const telemetryHooks = new Map<string, HookFn>()
-		telemetryExtension(makeConfig())(makePi(bus, telemetryHooks))
-
-		const seen: unknown[] = []
-		bus.events.on(PII_REDACTION_EVENTS.REDACTED, (raw: unknown) => seen.push(raw))
-		bus.emit(PII_REDACTION_EVENTS.REDACTED, {
-			surface: "user_input",
-			entity_type: "EMAIL_ADDRESS",
-			count: 1,
-			strings_scanned: 1,
-			is_subagent: false,
-		})
-		expect(seen).toHaveLength(1)
 	})
 })

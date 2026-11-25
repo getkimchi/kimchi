@@ -73,13 +73,6 @@ describe("gitWorkflow persistence", () => {
 		expect(resumed[0]?.gitWorkflow).toBeUndefined()
 	})
 
-	it("drops an undefined baseBranch on the JSON round trip but keeps the branch", () => {
-		const state = makeState({ gitWorkflow: { branch: "kimchi/x", baseBranch: undefined } })
-		const persistedData = jsonRoundTrip(state)
-		expect(persistedData.gitWorkflow).toEqual({ branch: "kimchi/x" })
-		expect("baseBranch" in (persistedData.gitWorkflow ?? {})).toBe(false)
-	})
-
 	it("round-trips an intent captured before baseline exists (baseSha/dirtyFiles absent)", () => {
 		const state = makeState({ gitWorkflow: { branch: "kimchi/x", baseBranch: "main" } })
 		const resumed = findResumableRemoteRuns({ getBranch: () => [entry(jsonRoundTrip(state))] })

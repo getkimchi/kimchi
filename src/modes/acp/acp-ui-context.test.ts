@@ -248,17 +248,6 @@ describe("createAcpUIContext — confirm via request_permission fallback", () =>
 		await expect(real.confirm("T", "M")).resolves.toBe(false)
 	})
 
-	it("resolves false when request_permission rejects (transport error)", async () => {
-		const requestPermission = vi.fn(async (_params: unknown) => {
-			throw new Error("client offline")
-		})
-		const { conn, send } = makeConn({
-			requestPermission: requestPermission as unknown as RequestPermissionFn,
-		})
-		const real = createAcpUIContext(conn, "sess-1", uiMethodsClientCapabilities(), send)
-		await expect(real.confirm("T", "M")).resolves.toBe(false)
-	})
-
 	it("resolves false when requestPermission rejects (transport error)", async () => {
 		const requestPermission = vi.fn(async (_params: unknown) => {
 			throw new Error("client doesn't implement requestPermission")
@@ -499,26 +488,6 @@ describe("createAcpUIContext — input via elicitation", () => {
 			extNotification: vi.fn(async () => {}),
 		})
 		const real = createAcpUIContext(conn, "sess-1", uiMethodsClientCapabilities(), send)
-		await expect(real.input("Workspace name", "type a name")).resolves.toBeUndefined()
-		expect(createElicitation).not.toHaveBeenCalled()
-		expect(extNotification).toHaveBeenCalledTimes(1)
-		const [method, params] = extNotification.mock.calls[0]
-		expect(method).toBe("_kimchi.dev/pi_notify")
-		expect(params).toEqual({
-			id: expect.any(String),
-			type: "extension_ui_request",
-			method: "notify",
-			sessionId: "sess-1",
-			message: 'Input requested: "Workspace name" (not supported by this client)',
-			notifyType: "warning",
-		})
-	})
-
-	it("falls back to notify when the client supports no elicitation and no _kimchi.dev methods", async () => {
-		const { conn, extNotification, createElicitation, send } = makeConn({
-			extNotification: vi.fn(async () => {}),
-		})
-		const real = createAcpUIContext(conn, "sess-1", undefined, send)
 		await expect(real.input("Workspace name", "type a name")).resolves.toBeUndefined()
 		expect(createElicitation).not.toHaveBeenCalled()
 		expect(extNotification).toHaveBeenCalledTimes(1)

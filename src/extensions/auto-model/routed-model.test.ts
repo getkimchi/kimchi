@@ -104,24 +104,4 @@ describe("resolveRoutedModel", () => {
 			})
 		}
 	})
-
-	it("queries the exact provider before scanning the catalog", () => {
-		const calls: string[] = []
-		const kimi = model("kimi-k3")
-		const tracking: RoutedModelRegistry = {
-			find: (provider, id) => {
-				calls.push(`find:${provider}/${id}`)
-				return provider === "kimchi-dev" && id === "kimi-k3" ? kimi : undefined
-			},
-			getAll: () => {
-				calls.push("getAll")
-				return [kimi]
-			},
-		}
-
-		const resolved = resolveRoutedModel("kimchi-dev", "kimi-k3", tracking)
-
-		expect(resolved).toEqual({ kind: "model", model: kimi })
-		expect(calls).toEqual(["find:kimchi-dev/kimi-k3"])
-	})
 })

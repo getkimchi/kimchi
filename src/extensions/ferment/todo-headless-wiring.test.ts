@@ -19,7 +19,7 @@ import { createEventBus } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../../ferment/types.js"
 import { createContext } from "../__mocks__/context.js"
-import { __test_renderTodoStateMarkdown, renderTodoStateBlock } from "../todos/state-markdown.js"
+import { renderTodoStateBlock } from "../todos/state-markdown.js"
 import { __resetTodoStore, applyWriteTodos, getTodosForScope, resolveTodoScope } from "../todos/store.js"
 import { emitFermentDomainEvent } from "./domain-events-emitter.js"
 import { setActive } from "./state.js"
@@ -33,6 +33,10 @@ import {
 } from "./todo-sync.js"
 
 const TEST_SESSION_ID = "test-session"
+
+function renderStateForTest(sessionId: string): string | undefined {
+	return renderTodoStateBlock(createContext({ sessionManager: { getSessionId: () => sessionId } }))
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -524,7 +528,7 @@ describe("stall detection via step todo write tracking", () => {
 
 			// The rendered block no longer carries volatile staleness text — it
 			// must stay byte-stable between real store writes for prefix caching.
-			const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+			const md = renderStateForTest(TEST_SESSION_ID)
 			expect(md).not.toContain("have not been updated")
 
 			// The pressure is delivered as a one-shot persistent steer instead.
@@ -582,7 +586,7 @@ describe("stall detection via step todo write tracking", () => {
 			// Only 3 turns — below threshold
 			for (let i = 0; i < 3; i++) bumpStallCounter(TEST_SESSION_ID)
 
-			const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+			const md = renderStateForTest(TEST_SESSION_ID)
 			expect(md).not.toContain("\u26a0 Step todos have not been updated")
 		} finally {
 			unsubscribe()

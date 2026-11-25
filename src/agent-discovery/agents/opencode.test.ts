@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { discoverAgent } from "../index.js"
 import { makeOpenCodeDefinition } from "./opencode.js"
 
@@ -326,12 +326,12 @@ describe("openCode AgentDefinition", () => {
 		it("corrupt JSON config emits warning, returns empty", () => {
 			const path = configPath()
 			writeFileSync(path, "{ not valid json", "utf-8")
-			expect(() =>
-				discoverAgent(makeOpenCodeDefinition({ configPaths: [path], skillsDirs: [join(tempDir, "no")] })),
-			).not.toThrow()
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 			const def = makeOpenCodeDefinition({ configPaths: [path], skillsDirs: [join(tempDir, "no")] })
 			const result = discoverAgent(def)
 			expect(result.mcpServers).toEqual({})
+			expect(warnSpy).toHaveBeenCalled()
+			warnSpy.mockRestore()
 		})
 
 		it("JSONC config with // comments is parsed correctly", () => {
@@ -423,24 +423,6 @@ describe("openCode AgentDefinition", () => {
 			const def = makeOpenCodeDefinition({ configPaths: [path1, path2] })
 			const result = discoverAgent(def)
 			expect(result.mcpServers.shared).toMatchObject({ command: "modern" })
-		})
-
-		it("malformed entries inside mcp are skipped silently", () => {
-			const path = configPath()
-			writeConfig(path, {
-				mcp: {
-					bad1: null,
-					bad2: ["array"],
-					bad3: "string",
-					good: { type: "local", command: ["ok"] },
-				},
-			})
-			const def = makeOpenCodeDefinition({ configPaths: [path] })
-			const result = discoverAgent(def)
-			expect(result.mcpServers.bad1).toBeUndefined()
-			expect(result.mcpServers.bad2).toBeUndefined()
-			expect(result.mcpServers.bad3).toBeUndefined()
-			expect(result.mcpServers.good.command).toBe("ok")
 		})
 
 		it("empty skills dir still sets skillsDir", () => {

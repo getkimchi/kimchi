@@ -150,18 +150,6 @@ describe("builtin-model guideline content", () => {
 		expect(result).toContain("When exploring")
 	})
 
-	it("kimi-k2.6 plan: contains family and per-model layers", () => {
-		const result = resolveRoleGuideline("plan", "kimi-k2.6", registry)
-		expect(result).toContain("Chunks")
-		expect(result).toContain("per-chunk acceptance criteria")
-	})
-
-	it("minimax-m2.7 build: contains family and per-model layers", () => {
-		const result = resolveRoleGuideline("build", "minimax-m2.7", registry)
-		expect(result).toContain("Outline-then-diff")
-		expect(result).toContain("mutex")
-	})
-
 	it("minimax-m2.7 review: contains family and per-model layers", () => {
 		const result = resolveRoleGuideline("review", "minimax-m2.7", registry)
 		expect(result).toContain("scope creep")

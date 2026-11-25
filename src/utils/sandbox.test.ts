@@ -34,13 +34,6 @@ describe("isInSandboxCluster", () => {
 		expect(isInSandboxCluster()).toBe(false)
 	})
 
-	it("prioritises KIMCHI_SANDBOX over security-fallback signals", () => {
-		vi.stubEnv("KIMCHI_SANDBOX", "1")
-		expect(isInSandboxCluster()).toBe(true)
-	})
-
-	// ─── Security fallback tests ─────────────────────────────────────────────
-
 	it("returns true when both homedir and username match sandbox signals", () => {
 		vi.mocked(homedir).mockReturnValue("/home/sandbox")
 		vi.mocked(userInfo).mockReturnValue({

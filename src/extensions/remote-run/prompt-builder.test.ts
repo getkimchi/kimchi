@@ -1,12 +1,7 @@
 import { describe, expect, it, type vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "./git-workflow.js"
-import {
-	buildRemotePlanPrompt,
-	buildRemotePlanPromptWithIntent,
-	buildRemoteSteerPrompt,
-	type RemotePlanOrigin,
-} from "./prompt-builder.js"
+import { buildRemotePlanPrompt, buildRemotePlanPromptWithIntent, buildRemoteSteerPrompt } from "./prompt-builder.js"
 
 describe("buildRemotePlanPrompt", () => {
 	const samplePlan = "## Goal\nBuild a feature\n\n## Chunks\n### Chunk 1\nDo something"
@@ -21,12 +16,6 @@ describe("buildRemotePlanPrompt", () => {
 			const prompt = buildRemotePlanPrompt(samplePlan, { origin: "ferment" })
 			expect(prompt).toContain("wants it executed as a ferment")
 			expect(prompt).toContain("Start a ferment with this plan")
-		})
-
-		it("includes different instructions for each origin", () => {
-			const planPrompt = buildRemotePlanPrompt(samplePlan, { origin: "plan-mode" })
-			const fermentPrompt = buildRemotePlanPrompt(samplePlan, { origin: "ferment" })
-			expect(planPrompt).not.toBe(fermentPrompt)
 		})
 	})
 
@@ -64,18 +53,6 @@ describe("buildRemotePlanPrompt", () => {
 			const planIndex = prompt.indexOf(samplePlan)
 			expect(planIndex).toBeGreaterThan(separatorIndex)
 		})
-	})
-
-	describe("both origins include all parts", () => {
-		const origins: RemotePlanOrigin[] = ["plan-mode", "ferment"]
-		for (const origin of origins) {
-			it(`includes handoff note, separator, and plan text for ${origin} origin`, () => {
-				const prompt = buildRemotePlanPrompt(samplePlan, { origin })
-				expect(prompt).toContain("[Remote execution]")
-				expect(prompt).toContain("---")
-				expect(prompt).toContain(samplePlan)
-			})
-		}
 	})
 
 	describe("git workflow section", () => {

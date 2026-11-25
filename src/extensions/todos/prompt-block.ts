@@ -21,5 +21,3 @@ export function registerTodoPromptBlock(pi: ExtensionAPI): void {
 		render: renderTodoPromptBlock,
 	})
 }
-
-export { renderTodoPromptBlock as __test_renderTodoPromptBlock }

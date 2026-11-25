@@ -115,15 +115,6 @@ describe("resolveRedactionPolicy — legacy excludedEntities path", () => {
 		expect(resolved.disabledEntities).toEqual(new Set(["GUID"]))
 	})
 
-	it("permanently-excluded names survive the wholesale replace", () => {
-		const resolved = resolveRedactionPolicy(undefined, { legacyExcluded: ["DATE_TIME"] })
-		// The permanent set never becomes detectable — the legacy list may
-		// drop every other engine exclusion, but not these; a legacy entry
-		// naming a permanent member collapses into the union.
-		expect([...resolved.engineExclusions].sort()).toEqual([...PERMANENT_ENGINE_EXCLUSIONS].sort())
-		expect(resolved.disabledEntities).toEqual(new Set(["DATE_TIME"]))
-	})
-
 	it("managed states still apply per key on top of the legacy result", () => {
 		const resolved = resolveRedactionPolicy(
 			{ entities: { LOCAL_PATH: "off", US_SSN: "on" } },

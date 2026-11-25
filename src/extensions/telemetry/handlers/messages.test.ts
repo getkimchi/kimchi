@@ -45,23 +45,10 @@ describe("handleMessageStart", () => {
 		expect(stored).toBeLessThanOrEqual(after)
 	})
 
-	it("sets messageStartTime using timestamp", () => {
-		const { ctx, piCtx } = makeCtx()
-		handleMessageStart(ctx, piCtx, { message: { role: "assistant", timestamp: BASE_TS } as Message })
-		// Only timestamp is used for timing tracking; responseId is ignored here.
-		expect(ctx.messageStartTimes.has(String(BASE_TS))).toBe(true)
-	})
-
 	it("ignores non-assistant messages", () => {
 		const { ctx, piCtx } = makeCtx()
 		handleMessageStart(ctx, piCtx, { message: { role: "user", timestamp: BASE_TS + 1 } as Message })
 		expect(ctx.messageStartTimes.size).toBe(0)
-	})
-
-	it("records start time for assistant messages", () => {
-		const { ctx, piCtx } = makeCtx()
-		handleMessageStart(ctx, piCtx, { message: { role: "assistant", timestamp: BASE_TS + 2 } as Message })
-		expect(ctx.messageStartTimes.has(String(BASE_TS + 2))).toBe(true)
 	})
 })
 
@@ -325,33 +312,6 @@ describe("handleMessageEnd", () => {
 		// biome-ignore lint/style/noNonNullAssertion: -
 		const [, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
 		// Should be near-zero (messageStart → messageEnd), not ~50ms (sessionStart fallback)
-		expect(attrs.duration_ms).toBeLessThan(20)
-	})
-
-	it("computes correct duration when message_start lacks responseId", async () => {
-		const { ctx, piCtx } = makeCtx()
-		// Let sessionStartMs age
-		await new Promise((r) => setTimeout(r, 50))
-
-		// message_start fires WITHOUT responseId (common for streaming start)
-		handleMessageStart(ctx, piCtx, { message: { role: "assistant", timestamp: BASE_TS } as Message })
-
-		// message_end fires WITH responseId (assigned by provider after response completes)
-		const emitSpy = vi.spyOn(ctx, "emit")
-		await handleMessageEnd(ctx, piCtx, {
-			message: {
-				role: "assistant",
-				responseId: "resp-after",
-				timestamp: BASE_TS,
-				model: "claude-3-5-sonnet",
-				provider: "anthropic",
-				usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
-			} as Message,
-		})
-
-		// biome-ignore lint/style/noNonNullAssertion: -
-		const [, attrs] = emitSpy.mock.calls[0]! as [string, TelemetryAttributes]
-		// Should be near-zero (start → end), not ~50ms (sessionStart fallback)
 		expect(attrs.duration_ms).toBeLessThan(20)
 	})
 

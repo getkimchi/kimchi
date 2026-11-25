@@ -152,18 +152,6 @@ describe("notifyDroppedQueue", () => {
 		})
 	})
 
-	it("passes the dropped-queue arrays through by reference", () => {
-		// Callers hand over ownership of the drained arrays (clearQueue()
-		// returns fresh copies) — no defensive copy, by contract.
-		const { extNotification, asConn } = conn()
-		const steering = ["steer"]
-		const followUp = ["fu"]
-		notifyDroppedQueue(asConn, "sess-1", { steering, followUp }, "shutdown")
-		const params = extNotification.mock.calls[0]?.[1] as { steering: string[]; followUp: string[] }
-		expect(params.steering).toBe(steering)
-		expect(params.followUp).toBe(followUp)
-	})
-
 	it("swallows transport errors instead of rejecting (fire-and-forget)", async () => {
 		const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
 		const { asConn } = {

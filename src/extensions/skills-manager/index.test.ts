@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { createContext } from "../__mocks__/context.js"
+import { createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import skillsManagerExtension from "./index.js"
 
@@ -37,11 +37,42 @@ describe("skillsManagerExtension", () => {
 		expect(names).toEqual(["skill_view"])
 	})
 
-	it("subscribes to before_agent_start and session_shutdown for the discovered inventory", () => {
-		const { api, getHandler } = createExtensionApi()
-		skillsManagerExtension(api, { skillsDir: "/tmp/test-skills" })
-		expect(getHandler("before_agent_start")).toBeDefined()
-		expect(getHandler("session_shutdown")).toBeDefined()
+	it("refreshes the discovered inventory before agent start and clears it on shutdown", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-skills-refresh-"))
+		const skillDir = join(dir, "deploy")
+		mkdirSync(skillDir, { recursive: true })
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			"---\nname: deploy\ndescription: deploy helper\ntriggers:\n  prompt:\n    keywords: [deploy]\n---\n\n# deploy body\n",
+		)
+		const fixture = createExtensionApi()
+		skillsManagerExtension(fixture.api, { skillsDir: join(dir, "harness-skills") })
+		const skill = {
+			name: "deploy",
+			description: "deploy helper",
+			filePath: join(skillDir, "SKILL.md"),
+			baseDir: skillDir,
+			sourceInfo: {
+				path: join(skillDir, "SKILL.md"),
+				source: "local" as const,
+				scope: "project" as const,
+				origin: "top-level" as const,
+				baseDir: skillDir,
+			},
+			disableModelInvocation: false,
+		}
+		await fixture.emit("before_agent_start", { systemPromptOptions: { skills: [skill] } }, ctxFor("refresh-session"))
+		const tool = fixture.getRegisteredTools().find((candidate) => candidate.name === "skill_view")
+		expect(tool).toBeDefined()
+		const loaded = await tool!.execute("call-1", { name: "deploy" }, undefined, undefined, createToolContext())
+		expect(loaded.details).toMatchObject({ success: true })
+		const text = loaded.content[0]
+		expect(text?.type).toBe("text")
+		if (text?.type === "text") expect(text.text).toContain("# deploy body")
+
+		await fixture.emit("session_shutdown", {}, ctxFor("skill-lifecycle-test"))
+		const cleared = await tool!.execute("call-2", { name: "deploy" }, undefined, undefined, createToolContext())
+		expect(cleared.details).toMatchObject({ success: false })
 	})
 
 	it("seeds discovered skills from pi's skill commands before the first agent start", async () => {

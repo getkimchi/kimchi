@@ -223,29 +223,4 @@ describe("survey telemetry", () => {
 
 		await ctx.drain()
 	})
-
-	it("emits triggered survey events with the survey response fields", async () => {
-		const ctx = new TelemetryContext(makeConfig())
-
-		emitSurveyShown(ctx, { survey: TEST_SURVEY, trigger: "ferment_completed" })
-		emitSurveyAnswered(ctx, {
-			survey: TEST_SURVEY,
-			submissionId: "submission-1",
-			answerId: "worked_great",
-			trigger: "ferment_completed",
-		})
-		emitSurveyDismissed(ctx, {
-			survey: TEST_SURVEY,
-			trigger: "ferment_completed",
-			reason: "ctrl_c",
-		})
-
-		expect(attrs(ctx.logBuffer[0]).survey_id).toBe(TEST_SURVEY.id)
-		expect(attrs(ctx.logBuffer[1]).answer_value).toBe("Went great")
-		expect(attrs(ctx.logBuffer[1]).survey_submission_id).toBe("submission-1")
-		expect(attrs(ctx.logBuffer[1]).survey_completed).toBe("true")
-		expect(attrs(ctx.logBuffer[2]).survey_id).toBe(TEST_SURVEY.id)
-
-		await ctx.drain()
-	})
 })

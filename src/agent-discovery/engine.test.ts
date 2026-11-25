@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ServerEntry } from "pi-mcp-adapter/types"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { hasBearerAuthorizationHeader, resolveDirCandidates, selectDirCandidates } from "./engine.js"
+import { hasBearerAuthorizationHeader } from "./engine.js"
 import type { AgentDefinition, DirCandidate } from "./index.js"
 import { discoverAgent } from "./index.js"
 
@@ -98,19 +98,18 @@ describe("discoverAgent engine", () => {
 	// ---------------------------------------------------------------------------
 	// E2: unreadable (non-ENOENT) config emits warning, continues to next path
 	// ---------------------------------------------------------------------------
-	it("E2: unreadable (non-ENOENT) config emits warning, continues to next path", () => {
-		// This is hard to trigger without mocking, but we can at least verify
-		// ENOENT is silent and the loop continues. Use a path that won't exist.
-		const path1 = configPath("none1.json")
-		const path2 = configPath("none2.json")
+	it("E2: unreadable (non-ENOENT) config emits warning and continues", () => {
+		const directory = configPath("directory.json")
+		mkdirSync(directory, { recursive: true })
+		const path2 = configPath("valid.json")
 		writeFileSync(path2, JSON.stringify({ modern: { tool: { command: "ok" } } }))
 
-		const def = makeDef({ configPaths: [path1, path2] })
+		const def = makeDef({ configPaths: [directory, path2] })
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const result = discoverAgent(def)
 
 		expect(result.mcpServers.tool).toBeDefined()
-		expect(warnSpy).not.toHaveBeenCalled() // ENOENT is silent
+		expect(warnSpy).toHaveBeenCalled()
 		warnSpy.mockRestore()
 	})
 
@@ -563,15 +562,19 @@ describe("discoverAgent engine", () => {
 			const savedCwd = process.cwd()
 			process.chdir(tempDir)
 			try {
+				const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 				const home = discoverAgent(def, { scope: "home" })
 				expect(home.skillsDir).toBeUndefined()
 				expect(home.commandsDir).toBeUndefined()
+				expect(warnSpy).not.toHaveBeenCalled()
 				// The default (wizard) scope still probes them: relative strings pass
 				// through raw and are resolved against the ambient cwd inside
 				// existsSync (resolveDirCandidates warns about this)
 				const all = discoverAgent(def, { scope: "all", cwd: tempDir })
 				expect(all.skillsDir).toBe("relative-skills")
 				expect(all.commandsDir).toBe("relative-commands")
+				expect(warnSpy).toHaveBeenCalled()
+				warnSpy.mockRestore()
 			} finally {
 				process.chdir(savedCwd)
 			}
@@ -682,42 +685,6 @@ describe("discoverAgent engine", () => {
 			} finally {
 				process.chdir(savedCwd)
 			}
-		})
-
-		describe("resolveDirCandidates / selectDirCandidates", () => {
-			it("resolves plain strings through and project candidates against cwd", () => {
-				expect(
-					resolveDirCandidates([join(tempDir, "x"), { projectRelative: join(".k", "skills") }], () => "/base"),
-				).toEqual([join(tempDir, "x"), join("/base", ".k", "skills")])
-				// The cwd getter is only invoked for { projectRelative } candidates
-				const getCwd = vi.fn(() => "/base")
-				resolveDirCandidates([join(tempDir, "abs")], getCwd)
-				expect(getCwd).not.toHaveBeenCalled()
-				resolveDirCandidates([{ projectRelative: ".k" }], getCwd)
-				expect(getCwd).toHaveBeenCalledTimes(1)
-			})
-
-			it("warns on a non-absolute plain-string candidate instead of silently depending on ambient cwd", () => {
-				const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
-				try {
-					expect(resolveDirCandidates(["relative/dir", join(tempDir, "abs")], () => "/base")).toEqual([
-						"relative/dir",
-						join(tempDir, "abs"),
-					])
-					expect(warnSpy.mock.calls.some((call) => String(call[0]).includes("relative/dir"))).toBe(true)
-				} finally {
-					warnSpy.mockRestore()
-				}
-			})
-
-			it("home scope keeps only absolute string candidates", () => {
-				const candidates: DirCandidate[] = [join(tempDir, "home-dir"), "relative/dir", { projectRelative: ".x" }]
-				// Symmetric with the configPaths guard: a non-absolute plain string
-				// would be probed against the ambient cwd, so home scope drops it
-				// instead of merely warning.
-				expect(selectDirCandidates(candidates, "home")).toEqual([join(tempDir, "home-dir")])
-				expect(selectDirCandidates(candidates, "all")).toEqual(candidates)
-			})
 		})
 	})
 

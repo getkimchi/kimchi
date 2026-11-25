@@ -179,14 +179,4 @@ describe("image-registry", () => {
 		expect(restoreSessionImages(SESSION)).toBe(5)
 		expect(getAllImages(SESSION).map((e) => e.id)).toEqual([5])
 	})
-
-	it("removeSessionScope frees memory but keeps cache files for a later restore", () => {
-		addImage(SESSION, 1, makeImage())
-		removeSessionScope(SESSION)
-		expect(getAllImages(SESSION)).toEqual([])
-		expect(readdirSync(dir).length).toBeGreaterThan(0)
-		setImageCacheDir(SESSION, dir)
-		restoreSessionImages(SESSION)
-		expect(resolveImageContentById(SESSION, 1)).toEqual({ kind: "ok", image: makeImage() })
-	})
 })

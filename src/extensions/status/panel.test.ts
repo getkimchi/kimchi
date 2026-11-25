@@ -43,13 +43,4 @@ describe("createStatusPanelComponent", () => {
 		panel.handleInput?.("\u001b") // Esc
 		expect(done).toHaveBeenCalledTimes(2)
 	})
-
-	it("caches rendered lines per width and invalidates on demand", () => {
-		const panel = createStatusPanelComponent(makeTheme(), ["Version:        1.2.3"], () => {})
-		const first = panel.render(40)
-		expect(panel.render(40)).toBe(first)
-		expect(panel.render(80)).not.toBe(first)
-		panel.invalidate()
-		expect(panel.render(40)).not.toBe(first)
-	})
 })

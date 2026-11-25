@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs"
-import { homedir, tmpdir } from "node:os"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { AGENT_DEFINITIONS, discoverAgent } from "../index.js"
@@ -55,12 +55,15 @@ describe("skills-only agents", () => {
 		expect(discovery.skillCount).toBe(0)
 	})
 
-	it("defaults to the project-relative skills dir first, then the global fallback", () => {
-		const def = makeSkillsOnlyAgent("codex", "Codex", ".codex")
-		// The project-relative candidate is resolved per discovery call against
-		// the caller's cwd (see discoverAgent), never frozen at module load.
-		expect(def.skillsDirs[0]).toEqual({ projectRelative: join(".codex", "skills") })
-		expect(def.skillsDirs[1]).toBe(join(homedir(), ".codex", "skills"))
+	it("falls back to the global candidate when no project skills directory exists", () => {
+		const fallback = join(tempDir, "global-skills")
+		mkdirSync(join(fallback, "alpha"), { recursive: true })
+		const def = makeSkillsOnlyAgent("codex", "Codex", ".codex", {
+			skillsDirs: [{ projectRelative: join(".codex", "skills") }, fallback],
+		})
+		const discovery = discoverAgent(def, { scope: "home", cwd: tempDir })
+		expect(discovery.skillsDir).toBe(fallback)
+		expect(discovery.skillCount).toBe(1)
 	})
 
 	it("resolves the default project-relative candidate against the discovery cwd", () => {

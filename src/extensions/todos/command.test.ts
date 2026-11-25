@@ -1,51 +1,68 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { __test_applyTodoAction, __test_parseTodoArgs, registerTodosCommand } from "./command.js"
+import { createContext } from "../__mocks__/context.js"
+import { registerTodosCommand } from "./command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "./constants.js"
 import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "./store.js"
 
 const TEST_SESSION_ID = "test-session"
+
+async function executeTodosCommand(input: string) {
+	const commands = new Map<string, { handler: (args: string, ctx: never) => Promise<void> | void }>()
+	registerTodosCommand({
+		appendEntry: vi.fn(),
+		registerCommand: (name: string, config: { handler: (args: string, ctx: never) => Promise<void> | void }) => {
+			commands.set(name, config)
+		},
+	} as never)
+	const handler = commands.get("todos")?.handler
+	if (!handler) throw new Error("todos command was not registered")
+	const notify = vi.fn()
+	await handler(
+		input,
+		createContext({
+			hasUI: true,
+			sessionManager: { getSessionId: () => TEST_SESSION_ID },
+			ui: { notify },
+		}) as never,
+	)
+	return notify
+}
 
 describe("/todos command helpers", () => {
 	beforeEach(() => {
 		__resetTodoStore()
 	})
 
-	it("parses supported subcommands", () => {
-		expect(__test_parseTodoArgs("")).toEqual({ action: "open", text: "", index: null })
-		expect(__test_parseTodoArgs("add ship it")).toEqual({ action: "add", text: "ship it", index: null })
-		expect(__test_parseTodoArgs("done 2")).toEqual({ action: "done", text: "", index: 1 })
-		expect(__test_parseTodoArgs("start 1")).toEqual({ action: "start", text: "", index: 0 })
-		expect(__test_parseTodoArgs("block 3")).toEqual({ action: "block", text: "", index: 2 })
-		expect(__test_parseTodoArgs("remove 4")).toEqual({ action: "delete", text: "", index: 3 })
-		expect(__test_parseTodoArgs("expand all")).toEqual({ action: "expand_all", text: "", index: null })
-		expect(__test_parseTodoArgs("show all")).toEqual({ action: "expand_all", text: "", index: null })
-		expect(__test_parseTodoArgs("all")).toEqual({ action: "expand_all", text: "", index: null })
+	it("handles supported subcommands through the registered command", async () => {
+		expect((await executeTodosCommand("add ship it")).mock.calls[0]?.[0]).toBe("Added todo: ship it")
+		await executeTodosCommand("start 1")
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "in_progress" })
+		await executeTodosCommand("block 1")
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "blocked" })
+		await executeTodosCommand("done 1")
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "completed" })
+		await executeTodosCommand("remove 1")
+		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toEqual([])
 	})
 
-	it("adds and updates todos through store writes", () => {
-		const addResult = __test_applyTodoAction(
-			{ action: "add", text: " first task ", index: null },
-			{ sessionId: TEST_SESSION_ID },
-		)
-		expect(addResult).toEqual({
-			message: "Added todo: first task",
-			level: "info",
-		})
+	it("adds and updates todos through store writes", async () => {
+		const addResult = await executeTodosCommand("add first task")
+		expect(addResult.mock.calls[0]).toEqual(["Added todo: first task", "info"])
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toEqual([
 			{ id: 1, content: "first task", status: "pending" },
 		])
 
-		__test_applyTodoAction({ action: "start", text: "", index: 0 }, { sessionId: TEST_SESSION_ID })
+		await executeTodosCommand("start 1")
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "in_progress" })
 
-		__test_applyTodoAction({ action: "block", text: "", index: 0 }, { sessionId: TEST_SESSION_ID })
+		await executeTodosCommand("block 1")
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "blocked" })
 
-		__test_applyTodoAction({ action: "done", text: "", index: 0 }, { sessionId: TEST_SESSION_ID })
+		await executeTodosCommand("done 1")
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)[0]).toMatchObject({ status: "completed" })
 	})
 
-	it("removes and clears todos", () => {
+	it("removes and clears todos", async () => {
 		applyWriteTodos(
 			{
 				todos: [
@@ -56,10 +73,10 @@ describe("/todos command helpers", () => {
 			TEST_SESSION_ID,
 		)
 
-		__test_applyTodoAction({ action: "delete", text: "", index: 0 }, { sessionId: TEST_SESSION_ID })
+		await executeTodosCommand("remove 1")
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID).map((todo) => todo.content)).toEqual(["two"])
 
-		__test_applyTodoAction({ action: "clear", text: "", index: null }, { sessionId: TEST_SESSION_ID })
+		await executeTodosCommand("clear")
 		expect(getTodosForScope(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)).toEqual([])
 	})
 

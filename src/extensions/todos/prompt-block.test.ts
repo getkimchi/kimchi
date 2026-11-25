@@ -11,12 +11,16 @@ import {
 	registerFermentTodoSync,
 } from "../ferment/todo-sync.js"
 import { FERMENT_TODO_GUIDANCE, renderFermentTodoPromptBlock } from "./ferment-prompt-block.js"
-import { __test_renderTodoPromptBlock } from "./prompt-block.js"
-import { __test_renderTodoStateMarkdown, renderTodoStateBlock } from "./state-markdown.js"
+import { renderTodoPromptBlock } from "./prompt-block.js"
+import { renderTodoStateBlock } from "./state-markdown.js"
 import { __resetTodoStore, applyWriteTodos, bumpToolCallsSinceTodoWrite, GLOBAL_TODO_SCOPE } from "./store.js"
 import type { TodoStatus } from "./types.js"
 
 const TEST_SESSION_ID = "test-session"
+
+function renderStateForTest(sessionId: string): string | undefined {
+	return renderTodoStateBlock(createContext({ sessionManager: { getSessionId: () => sessionId } }))
+}
 
 // ─── Test helpers ───────────────────────────────────────────────────────────
 
@@ -34,12 +38,6 @@ function writeTodoAndBump(
 ): void {
 	writeTodo(content, status, sessionId)
 	for (let i = 0; i < bumps; i++) bumpToolCallsSinceTodoWrite(GLOBAL_TODO_SCOPE, sessionId)
-}
-
-/** Create a todo list then write it a second time to mark it as "updated" (not create-and-forget). */
-function createAndUpdateTodo(content: string, status: TodoStatus, sessionId: string = TEST_SESSION_ID): void {
-	writeTodo(content, status, sessionId)
-	writeTodo(content, status, sessionId)
 }
 
 // ─── Cross-session stall-counter helpers ────────────────────────────────────
@@ -126,7 +124,7 @@ describe("todo prompt block", () => {
 	})
 
 	it("renders guidance without a current list", () => {
-		const block = __test_renderTodoPromptBlock()
+		const block = renderTodoPromptBlock()
 		expect(block).toContain("## Todos")
 		expect(block).toContain("contract with the user")
 		expect(block).toContain("code changes, debugging, reviews, investigations")
@@ -140,7 +138,6 @@ describe("todo prompt block", () => {
 		expect(block).toContain("staleness warning")
 		expect(block).toContain("never authorize")
 		expect(block).toContain("explicit user approval")
-		expect(block).not.toContain("before your final response")
 	})
 
 	it("keeps guidance stable when todos exist", () => {
@@ -154,9 +151,9 @@ describe("todo prompt block", () => {
 			TEST_SESSION_ID,
 		)
 
-		expect(__test_renderTodoPromptBlock()).not.toContain("Current global todos:")
-		expect(__test_renderTodoPromptBlock()).not.toContain("alpha")
-		expect(__test_renderTodoPromptBlock()).not.toContain("bravo")
+		expect(renderTodoPromptBlock()).not.toContain("Current global todos:")
+		expect(renderTodoPromptBlock()).not.toContain("alpha")
+		expect(renderTodoPromptBlock()).not.toContain("bravo")
 	})
 })
 
@@ -166,12 +163,12 @@ describe("todo state prompt block (headless)", () => {
 	})
 
 	it("returns undefined when the store is empty", () => {
-		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toBeUndefined()
+		expect(renderStateForTest(TEST_SESSION_ID)).toBeUndefined()
 	})
 
 	it("returns undefined when only the global scope is empty", () => {
 		applyWriteTodos({ scope: { kind: "global" }, todos: [] }, TEST_SESSION_ID)
-		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toBeUndefined()
+		expect(renderStateForTest(TEST_SESSION_ID)).toBeUndefined()
 	})
 
 	it("renders global todos with widget-style glyphs", () => {
@@ -188,7 +185,7 @@ describe("todo state prompt block (headless)", () => {
 			TEST_SESSION_ID,
 		)
 
-		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		const md = renderStateForTest(TEST_SESSION_ID)
 		expect(md).toBeDefined()
 		expect(md).toContain("## Current Todos")
 		expect(md).toContain("**Global**")
@@ -212,7 +209,7 @@ describe("todo state prompt block (headless)", () => {
 			TEST_SESSION_ID,
 		)
 
-		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		const md = renderStateForTest(TEST_SESSION_ID)
 		expect(md).toContain("1/4 done · 2 active · 1 blocked")
 	})
 
@@ -230,7 +227,7 @@ describe("todo state prompt block (headless)", () => {
 			TEST_SESSION_ID,
 		)
 
-		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		const md = renderStateForTest(TEST_SESSION_ID)
 		expect(md).toContain("**[Phase 1] Test Phase**")
 		expect(md).toContain("- ✓ ↳ Step 1")
 		expect(md).toContain("- ▶ ↳ Step 2")
@@ -246,7 +243,7 @@ describe("todo state prompt block (headless)", () => {
 			TEST_SESSION_ID,
 		)
 
-		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		const md = renderStateForTest(TEST_SESSION_ID)
 		expect(md).toContain("**Step phase-1/step-2**")
 		expect(md).toContain("- ▶ agent-written plan bullet")
 	})
@@ -280,7 +277,7 @@ describe("todo state prompt block (headless)", () => {
 			TEST_SESSION_ID,
 		)
 
-		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		const md = renderStateForTest(TEST_SESSION_ID)
 		// Sections in order: Global, Phase 1, Phase 2
 		const globalIdx = md?.indexOf("**Global**") ?? -1
 		const phase1Idx = md?.indexOf("**[Phase 1] First**") ?? -1
@@ -291,7 +288,7 @@ describe("todo state prompt block (headless)", () => {
 	})
 
 	it("reflects subsequent writes (renders fresh state each call)", () => {
-		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toBeUndefined()
+		expect(renderStateForTest(TEST_SESSION_ID)).toBeUndefined()
 
 		applyWriteTodos(
 			{
@@ -300,7 +297,7 @@ describe("todo state prompt block (headless)", () => {
 			},
 			TEST_SESSION_ID,
 		)
-		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toContain("- ○ first")
+		expect(renderStateForTest(TEST_SESSION_ID)).toContain("- ○ first")
 
 		applyWriteTodos(
 			{
@@ -309,7 +306,7 @@ describe("todo state prompt block (headless)", () => {
 			},
 			TEST_SESSION_ID,
 		)
-		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toContain("- ✓ first")
+		expect(renderStateForTest(TEST_SESSION_ID)).toContain("- ✓ first")
 	})
 })
 
@@ -320,28 +317,20 @@ describe("state markdown purity (cache-safety contract)", () => {
 
 	it("renders byte-identical output across staleness counter changes", () => {
 		writeTodo("work", "in_progress")
-		const baseline = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		const baseline = renderStateForTest(TEST_SESSION_ID)
 
 		for (let i = 0; i < 30; i++) bumpToolCallsSinceTodoWrite(GLOBAL_TODO_SCOPE, TEST_SESSION_ID)
 
-		expect(__test_renderTodoStateMarkdown(TEST_SESSION_ID)).toBe(baseline)
+		expect(renderStateForTest(TEST_SESSION_ID)).toBe(baseline)
 	})
 
 	it("contains no staleness or create-and-forget warnings at any counter value", () => {
 		writeTodoAndBump("work", "in_progress", 30)
 
-		const md = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
+		const md = renderStateForTest(TEST_SESSION_ID)
 		expect(md).toContain("work")
 		expect(md).not.toContain("changes since last update")
 		expect(md).not.toContain("never updated")
-	})
-
-	it("two renders of the same store are byte-identical", () => {
-		createAndUpdateTodo("work", "completed")
-
-		const first = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
-		const second = __test_renderTodoStateMarkdown(TEST_SESSION_ID)
-		expect(second).toBe(first)
 	})
 })
 
@@ -397,40 +386,6 @@ describe("todo state block visibility", () => {
 	})
 })
 
-describe("todo state block rendering", () => {
-	beforeEach(() => {
-		__resetTodoStore()
-	})
-
-	it("renders todo state markdown when the store is populated", () => {
-		applyWriteTodos(
-			{
-				scope: { kind: "ferment", phaseId: "phase-1" },
-				todos: [
-					{ content: "[Phase 1] Build", status: "in_progress" },
-					{ content: "↳ Write code", status: "pending" },
-				],
-			},
-			TEST_SESSION_ID,
-		)
-
-		const ctx = createContext({ hasUI: true, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
-		// renderTodoStateBlock in TUI mode: state lives in the context event, not
-		// the system prompt — the block is just the same markdown renderer.
-		const md = renderTodoStateBlock(ctx)
-		expect(md).toContain("## Current Todos")
-		expect(md).toContain("[Phase 1] Build")
-		expect(md).toContain("↳ Write code")
-	})
-
-	it("does not append todo state when store is empty", () => {
-		const ctx = createContext({ hasUI: true, sessionManager: { getSessionId: () => TEST_SESSION_ID } })
-		// Empty store → undefined (the context handler skips injection).
-		const md = renderTodoStateBlock(ctx)
-		expect(md).toBeUndefined()
-	})
-})
-
 describe("ferment-conditional todo guidance", () => {
 	function makeFerment(): Ferment {
 		return {
@@ -452,9 +407,9 @@ describe("ferment-conditional todo guidance", () => {
 	})
 
 	it("renderTodoPromptBlock is independent of ferment state", () => {
-		const withoutFerment = __test_renderTodoPromptBlock()
+		const withoutFerment = renderTodoPromptBlock()
 		setActive(makeFerment())
-		const withFerment = __test_renderTodoPromptBlock()
+		const withFerment = renderTodoPromptBlock()
 		expect(withFerment).toBe(withoutFerment)
 		expect(withFerment).not.toContain("When working inside a ferment step")
 	})
@@ -532,7 +487,7 @@ describe("cross-session stall steer isolation", () => {
 		expect((steers[0] as [{ content: string }])[0].content).toContain("Step todos have not been updated for 12 turns")
 
 		// And the stalling session's own state block stays free of stall text.
-		const mdA = __test_renderTodoStateMarkdown("session-a")
+		const mdA = renderStateForTest("session-a")
 		expect(mdA).not.toContain("have not been updated")
 
 		unsubA()

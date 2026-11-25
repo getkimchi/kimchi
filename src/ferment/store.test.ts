@@ -301,14 +301,6 @@ describe("FermentStorage v4", () => {
 			expect(step?.startedAt).toBeTruthy()
 		})
 
-		it("completes a step", () => {
-			storage.startStep(f.id, "p1", "s1")
-			const updated = storage.completeStep(f.id, "p1", "s1")
-			const step = updated?.phases[0]?.steps[0]
-			expect(step?.status).toBe("done")
-			expect(step?.completedAt).toBeTruthy()
-		})
-
 		it("skips a step", () => {
 			const updated = storage.skipStep(f.id, "p1", "s1")
 			const step = updated?.phases[0]?.steps[0]

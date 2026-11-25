@@ -140,51 +140,6 @@ describe("inputHistoryExtension", () => {
 		expect(ctx.ui.setEditorComponent).not.toHaveBeenCalled()
 	})
 
-	it("wrapping factory produces editor with history loaded (observable behavior)", async () => {
-		const { SessionManager } = await import("@earendil-works/pi-coding-agent")
-
-		vi.mocked(SessionManager.list).mockResolvedValue([
-			{
-				path: "/tmp/session",
-				modified: new Date("2025-01-01"),
-				id: "s1",
-				cwd: "/tmp",
-				created: new Date(),
-				messageCount: 1,
-				firstMessage: "",
-				allMessagesText: "",
-			},
-		])
-		vi.mocked(SessionManager.open).mockReturnValue({
-			getEntries: () => [makeUserMessageEntry("past prompt")],
-		} as never)
-
-		const { pi, trigger } = makeMockPI()
-		const ctx = makeMockCtx()
-
-		const { default: ext } = await import("./input-history.js")
-		ext(pi)
-		await trigger("session_start", {}, ctx)
-
-		expect(ctx.ui.setEditorComponent).toHaveBeenCalled()
-
-		// Extract the factory that was passed to setEditorComponent
-		const wrappingFactory = (ctx.ui.setEditorComponent as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as (
-			t: unknown,
-			th: unknown,
-			tb: unknown,
-		) => { addToHistory: ReturnType<typeof vi.fn> }
-
-		// Invoke the factory the way the TUI would
-		const tui = {} as never
-		const theme = {} as never
-		const keybindings = {} as never
-		const editor = wrappingFactory(tui, theme, keybindings)
-
-		// The editor must have addToHistory called with the loaded prompt
-		expect(editor.addToHistory).toHaveBeenCalledWith("past prompt")
-	})
-
 	it("skips assistant messages and empty user content", async () => {
 		const { SessionManager } = await import("@earendil-works/pi-coding-agent")
 

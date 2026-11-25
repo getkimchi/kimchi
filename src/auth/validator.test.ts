@@ -88,15 +88,28 @@ describe("validateApiKey", () => {
 		expect(result.error).toMatch(/Network error/)
 	})
 
-	it("aborts the request after the configured timeout", async () => {
-		const slow: typeof globalThis.fetch = (_url, init) =>
-			new Promise((_resolve, reject) => {
-				const signal = init?.signal as AbortSignal | undefined
-				signal?.addEventListener("abort", () => reject(new Error("aborted")))
+	it("aborts the request at exactly the configured 5 ms timeout", async () => {
+		vi.useFakeTimers()
+		try {
+			const slow: typeof globalThis.fetch = (_url, init) =>
+				new Promise((_resolve, reject) => {
+					const signal = init?.signal as AbortSignal | undefined
+					signal?.addEventListener("abort", () => reject(new Error("aborted")))
+				})
+			let settled = false
+			const pending = validateApiKey("k", { fetch: slow, timeoutMs: 5 }).then((result) => {
+				settled = true
+				return result
 			})
-		const result = await validateApiKey("k", { fetch: slow, timeoutMs: 5 })
-		expect(result.valid).toBe(false)
-		expect(result.error).toMatch(/Network error/)
+			await vi.advanceTimersByTimeAsync(4)
+			expect(settled).toBe(false)
+			await vi.advanceTimersByTimeAsync(1)
+			const result = await pending
+			expect(result.valid).toBe(false)
+			expect(result.error).toMatch(/Network error/)
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	it("forwards Authorization: Bearer header to the validation endpoint", async () => {

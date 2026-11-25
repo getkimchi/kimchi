@@ -54,10 +54,6 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 16 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(16)
-	})
-
 	it("every entry has id, label, description", () => {
 		for (const el of STATUS_LINE_ELEMENTS) {
 			expect(typeof el.id).toBe("string")

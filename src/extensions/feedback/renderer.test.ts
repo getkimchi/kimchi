@@ -43,6 +43,11 @@ describe("feedbackSummaryRenderer", () => {
 		expect(text).toContain("Your rating: Good")
 		expect(text).toContain("Reason: Solved my task")
 		expect(text.indexOf("Thanks, feedback received!")).toBeLessThan(text.indexOf("Your rating: Good"))
+		expect(text.indexOf("Your rating: Good")).toBeLessThan(text.indexOf("Reason: Solved my task"))
+		expect(text).not.toContain("Details:")
+		expect(text).not.toContain("Feedback:")
+		expect(text).not.toContain("Rating: good")
+		expect(text).not.toContain("Rating: bad")
 	})
 
 	it("renders the rating and reason for negative sentiment", () => {
@@ -56,24 +61,6 @@ describe("feedbackSummaryRenderer", () => {
 		expect(text).toContain("Your rating: Bad")
 		expect(text).toContain("Reason: Didn't solve the task")
 		expect(text.indexOf("Thanks, feedback received!")).toBeLessThan(text.indexOf("Your rating: Bad"))
-	})
-
-	it("renders rating above feedback", () => {
-		const details: FeedbackSummaryDetails = {
-			sentiment: "positive",
-			reason: "Fast response",
-		}
-		const container = feedbackSummaryRenderer(makeEntry(details), makeOptions(), makeTheme())
-		const text = container?.render(80).map(stripAnsi).join("\n") ?? ""
-		expect(text).toContain("Thanks, feedback received!")
-		expect(text).toContain("Your rating: Good")
-		expect(text).toContain("Reason: Fast response")
-		expect(text.indexOf("Thanks, feedback received!")).toBeLessThan(text.indexOf("Your rating: Good"))
-		expect(text.indexOf("Your rating: Good")).toBeLessThan(text.indexOf("Reason: Fast response"))
-		expect(text).not.toContain("Details:")
-		expect(text).not.toContain("Feedback:")
-		expect(text).not.toContain("Rating: good")
-		expect(text).not.toContain("Rating: bad")
 	})
 
 	it("omits the reason line when the user submitted no reason", () => {

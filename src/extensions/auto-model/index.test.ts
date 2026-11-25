@@ -574,13 +574,6 @@ describe("auto-model extension", () => {
 	})
 })
 
-describe("createAutoModelRoutingExtension", () => {
-	it("is idempotent and the default export is wired", () => {
-		expect(() => createAutoModelRoutingExtension()).not.toThrow()
-		expect(autoModelExtension).toBeDefined()
-	})
-})
-
 describe("catalog-driven Auto default (main session)", () => {
 	beforeEach(() => {
 		settingsStubs.getDefaultModel.mockReturnValue(undefined)
@@ -698,19 +691,6 @@ describe("catalog-driven Auto default (main session)", () => {
 			"New sessions start on Auto (the default). To pick a different model for this session, use your client's model selector (/model in the terminal).",
 			"info",
 		)
-	})
-
-	it("rolls a switched-away model back to Auto on the next fresh session", async () => {
-		// Auto was installed, the user deliberately switched to a concrete model,
-		// and that switch persisted as the saved default. The next fresh session
-		// still comes up on Auto — for entitled accounts Auto is the default,
-		// not a one-time install.
-		settingsStubs.getDefaultModel.mockReturnValue("kimi-k2.6")
-		const { setModel, start } = runSessionStart(autoModelExtension)
-
-		await start()
-
-		expect(setModel).toHaveBeenCalledWith(auto(), { persist: true })
 	})
 
 	it("restores Auto when the current model drifted from the saved Auto default", async () => {

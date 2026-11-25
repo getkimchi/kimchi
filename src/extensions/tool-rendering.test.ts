@@ -307,6 +307,10 @@ describe("execution timestamp tracking", () => {
 		patchToolRenderCacheInvalidation()
 	})
 
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
 	function createMockComponent(): ToolExecutionComponent {
 		return new ToolExecutionComponent(
 			"bash",
@@ -320,51 +324,55 @@ describe("execution timestamp tracking", () => {
 		)
 	}
 
-	it("records _executionStartedAt when markExecutionStarted is called", () => {
+	function elapsed(component: ToolExecutionComponent): number {
+		const context = component as unknown as { getRenderContext: (last: unknown) => ToolRenderContext }
+		return getToolElapsedMs(context.getRenderContext(undefined))
+	}
+
+	it("tracks elapsed time after execution starts", () => {
+		vi.useFakeTimers().setSystemTime(1_000)
 		const component = createMockComponent()
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
-		expect((component as any).rendererState._executionStartedAt).toBeUndefined()
 		component.markExecutionStarted()
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
-		expect(typeof (component as any).rendererState._executionStartedAt).toBe("number")
+		vi.setSystemTime(1_500)
+		expect(elapsed(component)).toBe(500)
 	})
 
-	it("records _executionEndedAt when updateResult is called with isPartial=false", () => {
+	it("uses the completion timestamp when an explicit non-partial result arrives", () => {
+		vi.useFakeTimers().setSystemTime(1_000)
 		const component = createMockComponent()
 		component.markExecutionStarted()
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
-		expect((component as any).rendererState._executionEndedAt).toBeUndefined()
+		vi.setSystemTime(2_500)
 		component.updateResult({ content: [], isError: false }, false)
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
-		expect(typeof (component as any).rendererState._executionEndedAt).toBe("number")
+		expect(elapsed(component)).toBe(1_500)
 	})
 
-	it("does not overwrite _executionStartedAt on duplicate calls", () => {
+	it("does not reset the start timestamp on duplicate starts", () => {
+		vi.useFakeTimers().setSystemTime(1_000)
 		const component = createMockComponent()
 		component.markExecutionStarted()
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
-		const first = (component as any).rendererState._executionStartedAt
+		vi.setSystemTime(4_000)
 		component.markExecutionStarted()
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
-		expect((component as any).rendererState._executionStartedAt).toBe(first)
+		vi.setSystemTime(6_000)
+		component.updateResult({ content: [], isError: false }, false)
+		expect(elapsed(component)).toBe(5_000)
 	})
 
-	it("records _executionEndedAt when updateResult is called with one argument (default isPartial=false)", () => {
+	it("uses the completion timestamp for a default non-partial result", () => {
+		vi.useFakeTimers().setSystemTime(3_000)
 		const component = createMockComponent()
 		component.markExecutionStarted()
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
-		expect((component as any).rendererState._executionEndedAt).toBeUndefined()
+		vi.setSystemTime(5_000)
 		component.updateResult({ content: [], isError: false })
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
-		expect(typeof (component as any).rendererState._executionEndedAt).toBe("number")
+		expect(elapsed(component)).toBe(2_000)
 	})
 
-	it("does not record _executionEndedAt when isPartial is true", () => {
+	it("keeps elapsed time running for a partial result", () => {
+		vi.useFakeTimers().setSystemTime(1_000)
 		const component = createMockComponent()
 		component.markExecutionStarted()
+		vi.setSystemTime(3_500)
 		component.updateResult({ content: [], isError: false }, true)
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
-		expect((component as any).rendererState._executionEndedAt).toBeUndefined()
+		expect(elapsed(component)).toBe(2_500)
 	})
 })
 

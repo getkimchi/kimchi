@@ -6,6 +6,7 @@ import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetOrgPolicyForTests } from "../org-policy.js"
 import { setOrgPolicyForTests } from "../org-policy.test-utils.js"
+import { getResourceDefinitions } from "./definitions.js"
 import { getResourceOverride, isResourceEnabled } from "./store.js"
 import { createResourceManager } from "./ui.js"
 
@@ -56,16 +57,20 @@ describe("ResourceManagerComponent", () => {
 		rmSync(dir, { recursive: true, force: true })
 	})
 
-	it("keeps the selected row after toggling a resource", () => {
-		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, {} as Theme, vi.fn(), "hooks")
-
-		expect(selectedIndex(component)).toBe(0)
-		expect(isResourceEnabled("hooks.bash")).toBe(true)
-
+	it("renders the selected resource after moving and toggling a real row", () => {
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as unknown as Theme
+		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn())
+		const second = getResourceDefinitions()[1]
+		expect(second).toBeDefined()
+		component.handleInput("\x1b[B")
 		component.handleInput(" ")
 
-		expect(isResourceEnabled("hooks.bash")).toBe(false)
-		expect(selectedIndex(component)).toBe(0)
+		const text = component.render(80).join("\n")
+		expect(text).toContain(second.id)
 	})
 
 	it("shows experimental resources in their own tab without changing their persisted id", () => {

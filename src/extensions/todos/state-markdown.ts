@@ -137,5 +137,3 @@ export function renderTodoStateMarkdown(sessionId: string): string | undefined {
 export function renderTodoStateBlock(ctx: ExtensionContext): string | undefined {
 	return renderTodoStateMarkdown(ctx.sessionManager.getSessionId())
 }
-
-export { renderTodoStateMarkdown as __test_renderTodoStateMarkdown }

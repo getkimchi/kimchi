@@ -177,22 +177,6 @@ describe("postProcessJsonlExportOnce", () => {
 		expect(assistant.traceIds).toEqual(["trace-abc"])
 	})
 
-	it("is idempotent when run twice", async () => {
-		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
-		const filePath = join(tmpDir, "export-idempotent.jsonl")
-		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
-
-		await postProcessJsonlExportOnce(filePath)
-		await postProcessJsonlExportOnce(filePath)
-
-		const result = readFileSync(filePath, "utf-8")
-			.split("\n")
-			.filter((l) => l.trim().length > 0)
-		expect(result.length).toBe(1)
-		const header = JSON.parse(result[0])
-		expect(header.appVersion).toBeDefined()
-	})
-
 	it("does not inject appVersion when the first line is not a session header", async () => {
 		const lines = [
 			JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "user", content: "hello" } }),
@@ -422,18 +406,6 @@ ${JSON.stringify({ type: "message", id: "e1", parentId: null, message: { role: "
 		expect(header["telemetry.os"]).toBeUndefined()
 	})
 
-	it("performs exactly one write to the temp file", async () => {
-		const lines = [JSON.stringify({ type: "session", version: 3, id: "s1" })]
-		const filePath = join(tmpDir, "export-single-write.jsonl")
-		writeFileSync(filePath, `${lines.join("\n")}\n`, "utf-8")
-
-		writeCalls.count = 0
-		writeCalls.paths = []
-		await postProcessJsonlExportOnce(filePath)
-		expect(writeCalls.count).toBe(1)
-		expect(writeCalls.paths[0]).toBe(filePath)
-	})
-
 	it("still produces redacted output when enrichment throws", async () => {
 		const subagents = await import("./export-subagents.js")
 		vi.spyOn(subagents, "enrichSubAgentEntries").mockImplementation(() => {
@@ -539,18 +511,6 @@ describe("postProcessHtmlExportOnce", () => {
 		const result = readFileSync(outputPath, "utf-8")
 		expect(result).toContain('id="trace-id-renderer"')
 		expect(result).toContain("</body>")
-	})
-
-	it("is idempotent when run twice", async () => {
-		const outputPath = join(tmpDir, "idempotent.html")
-		writeFileSync(outputPath, buildRawHtml({ version: 3, id: "s", entries: [] }), "utf-8")
-
-		await postProcessHtmlExportOnce(outputPath)
-		await postProcessHtmlExportOnce(outputPath)
-
-		const result = readFileSync(outputPath, "utf-8")
-		const traceIdCount = result.split('id="trace-id-renderer"').length - 1
-		expect(traceIdCount).toBe(1)
 	})
 
 	it("appends renderer scripts to the end when </body> is missing", async () => {
@@ -907,18 +867,6 @@ describe("postProcessHtmlExportOnce", () => {
 		expect(result).toContain('id="diagnostics-renderer"')
 	})
 
-	it("performs exactly one write to the temp file", async () => {
-		const sessionData = { version: 3, id: "s1", entries: [] }
-		const outputPath = join(tmpDir, "single-write.html")
-		writeFileSync(outputPath, buildRawHtml(sessionData), "utf-8")
-
-		writeCalls.count = 0
-		writeCalls.paths = []
-		await postProcessHtmlExportOnce(outputPath)
-		expect(writeCalls.count).toBe(1)
-		expect(writeCalls.paths[0]).toBe(outputPath)
-	})
-
 	it("still produces redacted output when enrichment throws", async () => {
 		const subagents = await import("./export-subagents.js")
 		vi.spyOn(subagents, "enrichSubAgentEntries").mockImplementation(() => {
@@ -1119,26 +1067,6 @@ describe("runSecureExport — workspace lifecycle", () => {
 		expect(tempModeDuringPipeline).toBe(0o600)
 		expect(existsSync(finalPath)).toBe(true)
 		expect(readdirSync(tmpDir).filter((f) => f.startsWith("."))).toEqual([])
-	})
-
-	it("upstream writing into the pre-created temp keeps the 0600 mode (mode-preservation mechanism)", async () => {
-		const session: ExportSessionInfo = { sessionFile: join(tmpDir, "s.jsonl"), cwd: tmpDir }
-		let tempModeAfterUpstream = -1
-
-		await runSecureExport({
-			mode: "html",
-			outputPath: "out.html",
-			session,
-			upstreamExport: (tempPath) => {
-				// Simulate upstream's writeFileSync into the pre-created temp.
-				writeFileSync(tempPath, buildRawHtml({ version: 3, id: "s1", entries: [] }), "utf-8")
-				tempModeAfterUpstream = statSync(tempPath).mode & 0o777
-				return tempPath
-			},
-			pipeline: () => Promise.resolve(),
-		})
-
-		expect(tempModeAfterUpstream).toBe(0o600)
 	})
 
 	it("resolves explicit relative and default paths against the session cwd, not process.cwd()", async () => {

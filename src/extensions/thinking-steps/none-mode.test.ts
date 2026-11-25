@@ -71,31 +71,15 @@ describe("none thinking view mode", () => {
 		expect(childrenCount(THINKING_ONLY, true)).toBe(0)
 	})
 
-	it("control: non-none modes render the collapsed marker", () => {
-		setThinkingStepsMode("expanded")
-		expect(childrenCount(THINKING_ONLY, true)).toBeGreaterThan(0)
-	})
-
 	it("renders nothing for active thinking when thinking is hidden", () => {
 		setThinkingStepsMode("none")
 		setActiveThinkingState({ active: true, messageTimestamp: 1000 })
 		expect(childrenCount(THINKING_ONLY, true)).toBe(0)
 	})
 
-	it("control: non-none modes render the live preview while active", () => {
-		setThinkingStepsMode("expanded")
-		setActiveThinkingState({ active: true, messageTimestamp: 1000 })
-		expect(childrenCount(THINKING_ONLY, true)).toBeGreaterThan(0)
-	})
-
 	it("renders nothing when the thinking steps view is enabled", () => {
 		setThinkingStepsMode("none")
 		expect(childrenCount(THINKING_ONLY, false)).toBe(0)
-	})
-
-	it("control: non-none modes render the thinking steps view", () => {
-		setThinkingStepsMode("expanded")
-		expect(childrenCount(THINKING_ONLY, false)).toBeGreaterThan(0)
 	})
 
 	it("still renders the text content of a mixed message", () => {

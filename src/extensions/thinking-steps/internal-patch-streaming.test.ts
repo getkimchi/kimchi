@@ -117,35 +117,13 @@ describe("streaming thinking renders the tail preview", () => {
 })
 
 describe("per-message derivation memo", () => {
-	it("reuses the derived steps across renders of the same message", () => {
-		const first = renderedChildren(THINKING_ONLY, false).find(isThinkingSteps)
-		const second = renderedChildren(THINKING_ONLY, false).find(isThinkingSteps)
-		expect(first).toBeDefined()
-		expect((first as any).steps).toBe((second as any).steps)
-	})
-
-	it("reuses the derivation across streaming spreads of the same message", () => {
-		// The agent loop emits every message_update as `message: { ...partialMessage }`:
-		// a fresh object per delta sharing the accumulating message's content array.
-		const first = renderedChildren(THINKING_ONLY, false).find(isThinkingSteps)
-		const spread = { ...THINKING_ONLY }
-		const second = renderedChildren(spread, false).find(isThinkingSteps)
-		expect((second as any).steps).toBe((first as any).steps)
-	})
-
-	it("re-derives when the shared content's thinking grows in place", () => {
+	it("renders newly grown thinking instead of stale content", () => {
 		const message = makeMessage([{ type: "thinking", thinking: "short reasoning", redacted: false }])
-		const before = renderedChildren(message, false).find(isThinkingSteps)
 		;(message.content[0] as any).thinking = "much longer reasoning text that changes the signature entirely"
 		const after = renderedChildren({ ...message }, false).find(isThinkingSteps)
-		expect((after as any).steps).not.toBe((before as any).steps)
-	})
-
-	it("does not share derivations between different messages with equal thinking", () => {
-		const other = makeMessage([{ type: "thinking", thinking: "I should inspect the config first.", redacted: false }])
-		const first = renderedChildren(THINKING_ONLY, false).find(isThinkingSteps)
-		const second = renderedChildren(other, false).find(isThinkingSteps)
-		expect((first as any).steps).not.toBe((second as any).steps)
+		const rendered = after?.render(80).join("\n") ?? ""
+		expect(rendered).toContain("much longer reasoning text")
+		expect(rendered).not.toContain("short reasoning")
 	})
 })
 

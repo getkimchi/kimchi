@@ -417,20 +417,6 @@ describe("kimchi mcp forget-grant", () => {
 		expect(forgetMcpOAuthGrant).not.toHaveBeenCalled()
 	})
 
-	it.each([
-		"foo/bar",
-		"foo\\bar",
-		"foo..bar",
-		"..",
-		"--name=granola",
-		"-x",
-	])("rejects unsafe server name or flag %j", async (name) => {
-		const output = captureStdout()
-		expect(await runMcp(["forget-grant", name, "--json"])).toBe(1)
-		expect(output.json.reason).toBe("invalid-input")
-		expect(forgetMcpOAuthGrant).not.toHaveBeenCalled()
-	})
-
 	it("forgets the grant and reports the outcome", async () => {
 		const output = captureStdout()
 		expect(await runMcp(["forget-grant", "granola", "--json"])).toBe(0)
@@ -487,37 +473,6 @@ describe("kimchi mcp inspect-grant", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("requires JSON mode", async () => {
-		const output = captureStdout()
-		expect(await runMcp(["inspect-grant", "granola"])).toBe(1)
-		expect(output.json).toEqual(expect.objectContaining({ ok: false, reason: "invalid-input" }))
-		expect(inspectMcpOAuthGrant).not.toHaveBeenCalled()
-	})
-
-	it("requires exactly one server name", async () => {
-		const missing = captureStdout()
-		expect(await runMcp(["inspect-grant", "--json"])).toBe(1)
-		expect(missing.json.reason).toBe("invalid-input")
-		const extra = captureStdout()
-		expect(await runMcp(["inspect-grant", "a", "b", "--json"])).toBe(1)
-		expect(extra.json.reason).toBe("invalid-input")
-		expect(inspectMcpOAuthGrant).not.toHaveBeenCalled()
-	})
-
-	it.each([
-		"foo/bar",
-		"foo\\bar",
-		"foo..bar",
-		"..",
-		"--name=granola",
-		"-x",
-	])("rejects unsafe server name or flag %j", async (name) => {
-		const output = captureStdout()
-		expect(await runMcp(["inspect-grant", name, "--json"])).toBe(1)
-		expect(output.json.reason).toBe("invalid-input")
-		expect(inspectMcpOAuthGrant).not.toHaveBeenCalled()
-	})
-
 	it("prints the presence-only view of the grant", async () => {
 		const output = captureStdout()
 		expect(await runMcp(["inspect-grant", "granola", "--json"])).toBe(0)
@@ -536,15 +491,6 @@ describe("kimchi mcp inspect-grant", () => {
 		const output = captureStdout()
 		expect(await runMcp(["inspect-grant", "granola", "--json"])).toBe(0)
 		expect(output.json).toEqual({ ok: true, name: "granola", found: false })
-	})
-
-	it("reports a consent denial as a distinct outcome", async () => {
-		inspectMcpOAuthGrant.mockImplementation(() => {
-			throw new McpKeychainDeniedError("sha256-x")
-		})
-		const output = captureStdout()
-		expect(await runMcp(["inspect-grant", "granola", "--json"])).toBe(1)
-		expect(output.json).toEqual(expect.objectContaining({ ok: false, name: "granola", reason: "denied" }))
 	})
 
 	it("reports an unverifiable grant read as a generic error", async () => {

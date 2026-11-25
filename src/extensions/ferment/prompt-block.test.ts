@@ -408,17 +408,6 @@ describe("buildFermentPromptBlock", () => {
 		it("uses the active ferment name in the planner role line", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
 			expect(out).toContain('ferment "Runtime Plan"')
-			// Phase-grade-based self-improvement was removed when per-phase grading
-			// went away. Corrective-step pipeline now lives in complete_ferment_phase
-			// retries — surfaced via tool error text, not via a prompt section.
-			expect(out).not.toContain("## Self-Improvement Feedback")
-		})
-
-		it("does not prescribe concrete worker models — orchestrator owns that policy now", () => {
-			const out = buildFermentPromptBlock(makeMockCtx(), PI_ONESHOT, makeRuntime()) ?? ""
-			expect(out).not.toContain("minimax-m2.7")
-			expect(out).not.toContain("kimi-k2.5")
-			expect(out).not.toContain("worker_model")
 		})
 		// Regression: the scope_ferment rule must differ between interactive and one-shot.
 		it("tells interactive planners to avoid scope_ferment and use propose_ferment_scoping", () => {
@@ -504,8 +493,6 @@ describe("buildFermentPromptBlock", () => {
 		expect(out).toContain("Implementation phase")
 		// It must reference the activation trigger.
 		expect(out).toContain("activate_ferment_phase")
-		// It must NOT contain the old "does not narrow" text.
-		expect(out).not.toContain("does not narrow")
 	})
 
 	it("combines bounded worker limits with report-aware exhaustion recovery", () => {

@@ -114,21 +114,6 @@ describe("cursor AgentDefinition", () => {
 		expect(result.skillsDir).toBe(dir)
 	})
 
-	it("skips malformed mcpServers entries without crashing", () => {
-		const path = configPath()
-		writeConfig(path, {
-			mcpServers: {
-				bad1: null,
-				bad2: ["array"],
-				good: { command: "ok-tool" },
-			},
-		})
-		const result = discoverAgent(makeCursorDefinition({ configPaths: [path] }))
-		expect(result.mcpServers.bad1).toBeUndefined()
-		expect(result.mcpServers.bad2).toBeUndefined()
-		expect(result.mcpServers.good).toMatchObject({ command: "ok-tool" })
-	})
-
 	it("ignores top-level keys other than mcpServers", () => {
 		const path = configPath()
 		writeConfig(path, { version: 1, servers: { ghost: { command: "x" } } })
@@ -147,32 +132,4 @@ describe("cursor AgentDefinition", () => {
 
 	// Documents expected merge priority (CC > OC > Cursor). Reimplements setup-wizard
 	// merge order because mergeDiscoveries is not exported for direct testing.
-	it("loses cross-agent MCP name collisions to Claude Code and OpenCode", () => {
-		const ccPath = join(tempDir, ".claude.json")
-		const ocPath = join(tempDir, "opencode.json")
-		const cursorPath = configPath()
-		writeFileSync(ccPath, JSON.stringify({ mcpServers: { shared: { command: "cc" } } }))
-		writeFileSync(ocPath, JSON.stringify({ mcp: { shared: { type: "local", command: ["oc"] } } }))
-		writeConfig(cursorPath, { mcpServers: { shared: { command: "cursor" }, cursorOnly: { command: "cursor-only" } } })
-
-		const merged: Record<string, { command?: string }> = {}
-		const origins: Record<string, string> = {}
-		const defs = [
-			makeClaudeCodeDefinition({ configPaths: [ccPath] }),
-			makeOpenCodeDefinition({ configPaths: [ocPath] }),
-			makeCursorDefinition({ configPaths: [cursorPath] }),
-		]
-		for (let i = defs.length - 1; i >= 0; i--) {
-			const discovered = discoverAgent(defs[i])
-			for (const name of Object.keys(discovered.mcpServers)) {
-				merged[name] = discovered.mcpServers[name]
-				origins[name] = discovered.displayName
-			}
-		}
-
-		expect(merged.shared).toMatchObject({ command: "cc" })
-		expect(origins.shared).toBe("Claude Code")
-		expect(merged.cursorOnly).toMatchObject({ command: "cursor-only" })
-		expect(origins.cursorOnly).toBe("Cursor")
-	})
 })

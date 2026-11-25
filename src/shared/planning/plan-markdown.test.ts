@@ -149,11 +149,6 @@ describe("savePlanMarkdown", () => {
 		expect(readFileSync(path, "utf8")).toBe(`<!-- kimchi-work-id: ${workId} -->`)
 	})
 
-	it("does not use timestamped filenames", () => {
-		const { path: filePath } = savePlanMarkdown({ cwd: tmpDir, name: "Timing Check", planText: "x\n" })
-		expect(filePath).not.toMatch(/plan-\d+\.md$/)
-	})
-
 	it("writes distinct files for distinct ferment plan names", () => {
 		savePlanMarkdown({ cwd: tmpDir, name: fermentPlanFileName("A", "11111111-aaaa-2222"), planText: "a\n" })
 		savePlanMarkdown({ cwd: tmpDir, name: fermentPlanFileName("A", "22222222-bbbb-3333"), planText: "b\n" })

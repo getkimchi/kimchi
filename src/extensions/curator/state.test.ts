@@ -17,12 +17,11 @@ describe("shouldRunNow", () => {
 		expect(shouldRunNow(state, 3 * 3600, now)).toBe(false)
 	})
 
-	it("clears stale lock when running and last_run_at > 4h ago (blocked by 7d interval)", () => {
+	it("clears a stale running lock once the run interval has elapsed", () => {
 		const now = new Date("2026-05-07T12:00:00Z")
-		const staleRun = new Date(now.getTime() - 5 * 3600 * 1000).toISOString()
+		const staleRun = new Date(now.getTime() - 8 * 24 * 3600 * 1000).toISOString()
 		const state = { ...DEFAULT_CURATOR_STATE, running: true, last_run_at: staleRun }
-		// stale lock cleared, but 5h < 7d so still blocked by interval check
-		expect(shouldRunNow(state, 3 * 3600, now)).toBe(false)
+		expect(shouldRunNow(state, 3 * 3600, now)).toBe(true)
 	})
 
 	it("returns false when last_run_at is within 7 days", () => {

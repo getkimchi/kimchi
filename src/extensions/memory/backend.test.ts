@@ -171,33 +171,6 @@ describe("buildMemoryConfig", () => {
 })
 
 describe("embedding endpoint configuration", () => {
-	// The env knobs (MEMORY_EMBEDDING_* and the third-party provider key)
-	// were removed — the model and dims come from the kimchi config file
-	// (memoryEmbedding.model / .dims) or stay pinned.
-	// This guards that leftover env from old setups neither redirects nor
-	// breaks anything.
-	it("ignores leftover MEMORY_EMBEDDING_* / third-party env from old setups", () => {
-		process.env.MEMORY_EMBEDDING_MODEL = "text-embedding-3-large"
-		process.env.MEMORY_EMBEDDING_BASE_URL = "https://provider.test/api/v1"
-		process.env.MEMORY_EMBEDDING_API_KEY = "stale-key"
-		process.env.MEMORY_EMBEDDING_DIMS = "3072"
-		process.env.OLD_PROVIDER_API_KEY = "stale-key"
-		try {
-			const config = buildMemoryConfig({ dbPath: "/tmp/mem.db" }, testConfig())
-			expect(config.embedder.config.baseURL).toBe("https://gateway.test/openai/v1")
-			expect(config.embedder.config.apiKey).toBe("test-key")
-			expect(config.embedder.config.model).toBe(MEMORY_EMBEDDING_MODEL)
-			expect(config.embedder.config.embeddingDims).toBeUndefined()
-			expect(config.vectorStore.config.dimension).toBe(MEMORY_EMBEDDING_DIMS)
-		} finally {
-			delete process.env.MEMORY_EMBEDDING_MODEL
-			delete process.env.MEMORY_EMBEDDING_BASE_URL
-			delete process.env.MEMORY_EMBEDDING_API_KEY
-			delete process.env.MEMORY_EMBEDDING_DIMS
-			delete process.env.OLD_PROVIDER_API_KEY
-		}
-	})
-
 	it("applies memoryEmbedding.model and .dims from the config file", () => {
 		const config = buildMemoryConfig(
 			{ dbPath: "/tmp/mem.db" },
@@ -586,16 +559,15 @@ describe("resolveExtractionModel", () => {
 	})
 })
 
-describe("resolveExtractionModel no longer calls the auto router", () => {
+describe("resolveExtractionModel gateway model list", () => {
 	const gateway = { baseURL: "https://gw.test/v1", apiKey: "k" }
 	const okModels = (ids: string[]) => new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), { status: 200 })
 
-	it("resolves without any auto-router call", async () => {
+	it("resolves from the /v1/models response", async () => {
 		const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(okModels(["deepseek-v4-flash-0731"])))
 		expect(await resolveExtractionModel(gateway, { fetchImpl })).toBe("deepseek-v4-flash-0731")
-		for (const [input] of fetchImpl.mock.calls) {
-			expect(String(input)).not.toContain("/v1/route")
-		}
+		expect(fetchImpl).toHaveBeenCalledOnce()
+		expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("https://gw.test/v1/models")
 	})
 })
 

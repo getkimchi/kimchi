@@ -42,10 +42,6 @@ describe("runCodex", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("is exported as a function", () => {
-		expect(typeof runCodex).toBe("function")
-	})
-
 	it("returns 1 when prepareTool yields null (no API key)", async () => {
 		vi.mocked(prepareTool).mockResolvedValue(null)
 		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})

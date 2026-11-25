@@ -45,10 +45,4 @@ describe("getNativeClipboard (mocked)", () => {
 		const second = getNativeClipboard()
 		expect(first).toBe(second) // same cached mock result
 	})
-
-	it("is called by clipboard-read when upstream returns null on Darwin", () => {
-		vi.mocked(getNativeClipboard).mockReturnValue({ clipboard: {} as NativeClipboard, error: null })
-		getNativeClipboard()
-		expect(vi.mocked(getNativeClipboard)).toHaveBeenCalled()
-	})
 })

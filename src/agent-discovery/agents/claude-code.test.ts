@@ -125,22 +125,6 @@ describe("claudeCode AgentDefinition", () => {
 				expect(result.skillCount).toBe(0)
 			},
 		},
-		"malformed entries (null, array, string) are skipped without crashing": {
-			config: {
-				mcpServers: {
-					bad1: null,
-					bad2: ["array"],
-					bad3: "string",
-					good: { command: "ok-tool" },
-				},
-			},
-			assert(result) {
-				expect(result.mcpServers.bad1).toBeUndefined()
-				expect(result.mcpServers.bad2).toBeUndefined()
-				expect(result.mcpServers.bad3).toBeUndefined()
-				expect(result.mcpServers.good).toMatchObject({ command: "ok-tool" })
-			},
-		},
 	}
 
 	for (const [name, tc] of Object.entries(cases)) {

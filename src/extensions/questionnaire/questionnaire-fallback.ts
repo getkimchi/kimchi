@@ -83,7 +83,7 @@ function parseLabelInput(trimmed: string, options: QuestionOption[], otherIndex:
 }
 
 /** Returns 1-based selection. `options` must be a list of option labels of the same order and length as the available options. */
-export function parseMultipleChoiceInput(input: string, options: QuestionOption[]): ParsedChoice[] {
+function parseMultipleChoiceInput(input: string, options: QuestionOption[]): ParsedChoice[] {
 	if (options.length === 0) return []
 
 	const trimmed = input.trim()

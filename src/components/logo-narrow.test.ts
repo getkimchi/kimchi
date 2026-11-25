@@ -8,7 +8,7 @@ vi.mock("../utils.js", () => ({
 	getGitBranch: () => "main",
 }))
 
-const { LogoHeader, computeHeaderLayout } = await import("./logo.js")
+const { LogoHeader } = await import("./logo.js")
 
 function createMockTheme(): Theme {
 	const COLOR_CODE: Record<string, string> = {
@@ -30,16 +30,6 @@ function createMockTheme(): Theme {
 		extensions: {},
 	} as unknown as Theme
 }
-
-// Layout constants from src/components/logo.ts. The header is two cells: left
-// holds logo + info lines centered in `span = logoWidth + 2*gutter`; right
-// holds the tips in `rightColWidth` with one CELL_PAD space each side.
-const CHROME = 3
-const CELL_PAD = 1
-const FULL_LOGO_RIGHT_MIN = 9
-const COMPACT_LOGO_WIDTH = 7
-const FULL_LOGO_WIDTH = 36
-const COMPACT_BREAKPOINT = FULL_LOGO_WIDTH + CHROME + 2 * CELL_PAD + FULL_LOGO_RIGHT_MIN // 50
 
 describe("LogoHeader — narrow terminals", () => {
 	// Regression: on terminals narrower than the fixed-width logo column the
@@ -129,10 +119,20 @@ describe("LogoHeader — narrow terminals", () => {
 
 		for (const { width, span, right } of anchors) {
 			it(`at width ${width}: span=${span}, rightCol=${right}`, () => {
-				const logoWidth = width < COMPACT_BREAKPOINT ? COMPACT_LOGO_WIDTH : FULL_LOGO_WIDTH
-				const layout = computeHeaderLayout(width, logoWidth)
-				expect(layout.span).toBe(span)
-				expect(layout.rightColWidth).toBe(right)
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: measure visible renderer text
+				const strip = (line: string): string => line.replace(/\x1b\[[0-9;]*m/g, "")
+				const row = new LogoHeader(createMockTheme())
+					.render(width)
+					.map(strip)
+					.find((line) => line.split("│").length === 4)
+				if (width === 11) {
+					expect(row).toBeUndefined()
+					return
+				}
+				expect(row).toBeDefined()
+				const segments = (row ?? "").split("│")
+				expect(segments[1]).toHaveLength(span)
+				expect(segments[2]).toHaveLength(right + 2)
 			})
 		}
 	})
@@ -173,9 +173,14 @@ describe("LogoHeader — narrow terminals", () => {
 
 		it("logo cell is capped at the previous max of 56 cols in wide regime", () => {
 			for (const width of [126, 150, 200]) {
-				const logoWidth = width < COMPACT_BREAKPOINT ? COMPACT_LOGO_WIDTH : FULL_LOGO_WIDTH
-				const { span } = computeHeaderLayout(width, logoWidth)
-				expect(span).toBeLessThanOrEqual(56)
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: measure visible renderer text
+				const strip = (line: string): string => line.replace(/\x1b\[[0-9;]*m/g, "")
+				const row = new LogoHeader(createMockTheme())
+					.render(width)
+					.map(strip)
+					.find((line) => line.split("│").length === 4)
+				const left = (row ?? "").split("│")[1] ?? ""
+				expect(left.length).toBeLessThanOrEqual(56)
 			}
 		})
 	})

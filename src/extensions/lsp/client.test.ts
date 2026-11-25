@@ -17,7 +17,6 @@
 //
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import {
-	beginClientWork,
 	ensureFileOpen,
 	evictClient,
 	getAllClients,
@@ -929,18 +928,26 @@ describe("eviction/respawn lifecycle races", () => {
 		b.lastActivity = 2_000
 		// Simulate lifecycle work on A (e.g. a file read inside ensureFileOpen;
 		// without the fix A would be the evictable LRU chain).
-		const endWork = beginClientWork(a)
+		let finishFileRead!: (content: string) => void
+		;(globalThis as any).Bun.file = () => ({
+			text: () =>
+				new Promise<string>((resolve) => {
+					finishFileRead = resolve
+				}),
+		})
+		const opening = ensureFileOpen(a, `${CWD}/busy.ts`)
 
 		await makeClientAt(`${CWD}/c`)
 
-		// A is busy: eviction falls to the next-LRU idle chain (B), not A.
+		// The pending file read makes A busy: eviction falls to the next-LRU idle chain B.
 		const cwds = getAllClients()
 			.map((cl) => cl.cwd)
 			.sort()
 		expect(cwds).toEqual([`${CWD}/a`, `${CWD}/c`])
-		expect(fakes[0].isKilled()).toBe(false) // A's process untouched
+		expect(fakes[0].isKilled()).toBe(false)
 
-		endWork()
+		finishFileRead("content")
+		await opening
 	})
 
 	it("never evicts a chain that is still initializing (project-load wait)", async () => {
@@ -984,12 +991,21 @@ describe("eviction/respawn lifecycle races", () => {
 		const client = await makeClientAt(CWD)
 		client.lastActivity = 0 // ancient
 
-		const endWork = beginClientWork(client)
+		let finishFileRead!: (content: string) => void
+		;(globalThis as any).Bun.file = () => ({
+			text: () =>
+				new Promise<string>((resolve) => {
+					finishFileRead = resolve
+				}),
+		})
+		const opening = ensureFileOpen(client, `${CWD}/waited.ts`)
 		const evicted: string[] = []
 		expect(reapIdleClients(Date.now(), LSP_IDLE_EVICT_MS, (c) => void evicted.push(c.name))).toBe(0)
-		endWork()
+		finishFileRead("content")
+		await opening
+		client.lastActivity = 0
 
-		// Once the span ends the ancient chain is reaped normally.
+		// Once the real file operation ends the ancient chain is reaped normally.
 		expect(reapIdleClients(Date.now(), LSP_IDLE_EVICT_MS, (c) => void evicted.push(c.name))).toBe(1)
 		expect(evicted).toEqual([client.name])
 	})

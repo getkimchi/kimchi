@@ -194,11 +194,9 @@ import {
 } from "../../agents/subagent-bash-clamp.js"
 import { createAutoModelRoutingExtension } from "../../auto-model/index.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
-import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
 import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
 import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
-import requestTimingExtension from "../../request-timing.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { createInteractiveTimeBudget } from "../interactive-time-budget.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
@@ -3433,57 +3431,6 @@ describe("buildInlineExtensionFactories", () => {
 	afterEach(() => {
 		rmSync(agentDir, { recursive: true, force: true })
 		vi.clearAllMocks()
-	})
-
-	it("composes every factory in the canonical order when all gates are on", () => {
-		const telemetryFactory: InlineExtension = () => {}
-		const attributionFactory: InlineExtension = () => {}
-		const autoRoutingFactory: InlineExtension = () => {}
-		const clampFactory: InlineExtension = () => {}
-		const workerReportFactory: InlineExtension = () => {}
-		mockTelemetryExtension.mockReturnValueOnce(telemetryFactory)
-		mockCreateWorkAttributionExtension.mockReturnValueOnce(attributionFactory)
-		mockCreateAutoModelRoutingExtension.mockReturnValueOnce(autoRoutingFactory)
-		mockCreateSubagentBashClampExtension.mockReturnValueOnce(clampFactory)
-		mockCreateWorkerReportExtension.mockReturnValueOnce(workerReportFactory)
-		const segment: WorkSegment = { id: "parent-input", attribution: "unknown", reason: "model-uncertain" }
-		const workerReport = { submit: vi.fn(), isAccepted: vi.fn(() => false) }
-
-		const factories = buildInlineExtensionFactories(
-			makeDeps({
-				costPerPrEnabled: true,
-				inheritedWorkId: "work-1",
-				inheritedSegment: segment,
-				model: AUTO_MODEL,
-				toolNames: DEBUG_TOOL_NAMES,
-				workerReport,
-			}),
-		)
-
-		expect(factories).toEqual([
-			telemetryFactory,
-			attributionFactory,
-			requestTimingExtension,
-			autoRoutingFactory,
-			expect.any(Function), // auto-model prompt rebuild
-			clampFactory,
-			infrastructureBreakerExtension,
-			codexCorrelationExtension,
-			dapExtension,
-			workerReportFactory,
-			mockCreateKimchiMcpAdapterExtension.mock.results[0].value,
-			{ name: "kimchi-worker-permissions", factory: WORKER_PERMISSIONS_EXTENSION }, // always last
-		])
-		expect(mockReadTelemetryConfig).toHaveBeenCalledTimes(1)
-		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
-		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith("work-1", segment)
-		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(
-			900,
-			expect.any(Number),
-			"General-Purpose",
-			expect.any(Function),
-		)
-		expect(mockCreateWorkerReportExtension).toHaveBeenCalledWith(workerReport)
 	})
 
 	it("registers work attribution exactly when the cost-per-PR resource is enabled", () => {

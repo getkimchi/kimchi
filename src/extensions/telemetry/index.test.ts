@@ -1203,33 +1203,6 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		expect(attrs.phase_completion_ratio).toBe("0.5")
 	})
 
-	it("ferment:stalled → ferment.stalled event emitted for crash-recovery path", async () => {
-		const { handlers, events } = await setup()
-		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
-
-		events.emit(FERMENT_EVENTS.STALLED, {
-			fermentId: "f-stall-crash",
-			name: "Crashed Ferment",
-			lifecycleStage: "running",
-			idleDurationMs: 3600000, // 1 hour
-			completedPhases: 0,
-			totalPhases: 2,
-			phaseCompletionRatio: 0,
-		})
-		await getHandler(handlers, "session_shutdown")({ reason: "test" })
-
-		const rec = extractRecords().find((r) => r.eventName === "ferment.stalled")
-		expect(rec).toBeDefined()
-		const attrs = attrsOf(rec as NonNullable<typeof rec>)
-		expect(attrs.ferment_id).toBe("f-stall-crash")
-		expect(attrs.ferment_name).toBe("Crashed Ferment")
-		expect(attrs.lifecycle_stage).toBe("running")
-		expect(attrs.idle_duration_ms).toBe("3600000")
-		expect(attrs.completed_phases).toBe("0")
-		expect(attrs.total_phases).toBe("2")
-		expect(attrs.phase_completion_ratio).toBe("0")
-	})
-
 	it("ferment:phase_started → ferment.phase.started with phase_id", async () => {
 		const { handlers, events } = await setup()
 		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
@@ -1513,33 +1486,6 @@ describe("edge case coverage", () => {
 		expect(rec).toBeDefined()
 		const attrs = attrsOf(rec as NonNullable<typeof rec>)
 		expect(Number(attrs.duration_ms)).toBeGreaterThan(0)
-	})
-
-	it("skip_phase emits ferment.phase.completed", async () => {
-		const { handlers, events } = await setup()
-		const { FERMENT_EVENTS } = await import("../ferment/domain-events.js")
-
-		events.emit(FERMENT_EVENTS.PHASE_STARTED, {
-			fermentId: "f-s",
-			phaseId: "ph-skip",
-			phaseIndex: 1,
-			phaseName: "Skipped",
-		})
-		events.emit(FERMENT_EVENTS.PHASE_COMPLETED, {
-			fermentId: "f-s",
-			phaseId: "ph-skip",
-			phaseIndex: 1,
-			phaseName: "Skipped",
-			durationMs: 0,
-			deltaInputTokens: 0,
-			deltaOutputTokens: 0,
-			blockRetries: 0,
-		})
-		await getHandler(handlers, "session_shutdown")({ reason: "test" })
-
-		const rec = extractRecords().find((r) => r.eventName === "ferment.phase.completed")
-		expect(rec).toBeDefined()
-		expect(attrsOf(rec as NonNullable<typeof rec>).phase_id).toBe("ph-skip")
 	})
 
 	it("skip_step emits ferment.step.completed with success=true", async () => {
@@ -2318,34 +2264,6 @@ describe("subagent bash-clamp telemetry via pi.events", () => {
 			remainingMs: 9_000,
 		})
 		expect(fetchMock).not.toHaveBeenCalled()
-	})
-
-	it("does not double-emit when the telemetry factory is loaded twice (orphaned instance never bound)", async () => {
-		// agent-runner used to reload the child loader twice around bindExtensions; each
-		// reload re-invokes the inline extension factories against the loader's
-		// SHARED event bus. The first instance is bound to the session
-		// (session_start fired); the second is orphaned — its pi.on handlers
-		// never dispatch, but its channel subscription survives on the SAME bus.
-		// One clamp emission on that shared bus must produce exactly one record:
-		// the bound-instance guard suppresses the orphan's copy.
-		const sharedBus = createMockEventBus()
-		const bound = await setup(sharedBus)
-		const orphan = await setupUnbound(sharedBus)
-		const { SUBAGENT_BASH_CLAMP_EVENTS } = await import("../agents/subagent-bash-clamp-events.js")
-
-		// ONE emission on the shared bus — both instances hear it.
-		sharedBus.emit(SUBAGENT_BASH_CLAMP_EVENTS.CLAMPED, {
-			toolCallId: "tc-clamp-shared",
-			reason: "budget_tail",
-			requestedTimeoutS: 120,
-			clampedToS: 10,
-			remainingMs: 10_000,
-		})
-		await getHandler(bound.handlers, "session_shutdown")({ reason: "test" })
-		await getHandler(orphan.handlers, "session_shutdown")({ reason: "test" })
-
-		const clamped = extractRecords().filter((r) => r.eventName === "subagent.bash_clamped")
-		expect(clamped).toHaveLength(1)
 	})
 })
 

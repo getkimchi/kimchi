@@ -5,6 +5,7 @@
 // @earendil-works/pi-coding-agent and is exercised manually in the
 // harness itself — booting the TUI in vitest is out of scope.
 
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const mockCheckForUpdate = vi.fn()
@@ -130,17 +131,28 @@ describe("auto-update setting reflects in the toggle label state", () => {
 	// the menu handler relies on. Booting the TUI select list in vitest
 	// is out of scope.
 
-	it("returns true when the toggle is on — label would read 'Auto-update: ON'", () => {
-		mockLoadAutoUpdateSetting.mockReturnValue(true)
-		expect(loadAutoUpdateSetting()).toBe(true)
-	})
+	it("shows the current label and flips it after a toggle selection", async () => {
+		let enabled = true
+		mockLoadAutoUpdateSetting.mockImplementation(() => enabled)
+		mockSaveAutoUpdateSetting.mockImplementation((next: boolean) => {
+			enabled = next
+		})
+		let handler: ExtensionCommandContext["ui"] extends never
+			? never
+			: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined
+		defaultExport({
+			on: vi.fn(),
+			registerCommand: (name: string, definition: { handler: typeof handler }) => {
+				if (name === "update") handler = definition.handler
+			},
+		} as unknown as ExtensionAPI)
+		const select = vi.fn().mockResolvedValueOnce("Auto-update: ON (toggle off)").mockResolvedValueOnce("Back")
+		const ctx = { mode: "tui", ui: { select, notify: vi.fn() } } as unknown as ExtensionCommandContext
+		await handler?.("", ctx)
 
-	it("returns false after saveAutoUpdateSetting(false) — label would read 'Auto-update: OFF'", () => {
-		mockLoadAutoUpdateSetting.mockReturnValueOnce(false)
-		// Simulate the toggle handler calling save then re-reading:
-		saveAutoUpdateSetting(false)
+		expect(select.mock.calls[0]?.[1]).toContain("Auto-update: ON (toggle off)")
+		expect(select.mock.calls[1]?.[1]).toContain("Auto-update: OFF (toggle on)")
 		expect(mockSaveAutoUpdateSetting).toHaveBeenCalledWith(false)
-		expect(loadAutoUpdateSetting()).toBe(false)
 	})
 })
 

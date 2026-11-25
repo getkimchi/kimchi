@@ -12,15 +12,12 @@ import {
 } from "./helpers.js"
 
 describe("nowNano", () => {
-	it("returns a string of nanoseconds > 0", () => {
-		const result = nowNano()
-		expect(typeof result).toBe("string")
-		expect(Number(result)).toBeGreaterThan(0)
-	})
-
-	it("returns a value approximately equal to Date.now() * 1_000_000", () => {
+	it("returns a positive string approximately equal to Date.now() * 1_000_000", () => {
 		const before = Date.now() * 1_000_000
-		const result = Number(nowNano())
+		const raw = nowNano()
+		const result = Number(raw)
+		expect(typeof raw).toBe("string")
+		expect(result).toBeGreaterThan(0)
 		const after = Date.now() * 1_000_000
 		expect(result).toBeGreaterThanOrEqual(before)
 		expect(result).toBeLessThanOrEqual(after)

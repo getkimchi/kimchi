@@ -15,12 +15,6 @@ describe("FermentRuntime", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("does not expose a coordination store accessor", () => {
-		// Regression: we deliberately removed the kanban/coordination
-		// substrate. Make sure the runtime surface stays clean.
-		expect("getCoord" in runtime).toBe(false)
-	})
-
 	it("defaults to manual continuation policy for interactive runtime state", () => {
 		expect(runtime.getContinuationPolicy()).toBe("manual")
 		expect(runtime.isAutomatedContinuationEnabled()).toBe(false)

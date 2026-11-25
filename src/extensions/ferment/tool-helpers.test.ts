@@ -80,36 +80,30 @@ describe("createApplyAndPersist", () => {
 		expect(setActive).toHaveBeenCalledWith(expect.objectContaining({ id: ferment.id, status: "planned" }))
 	})
 
-	it("notifies the runtime after a successful lifecycle transition", () => {
+	it("does not reset an exhausted lifecycle obligation after a rejected transition", () => {
 		const { runtime, storage } = createRuntime()
-		const onLifecycleTransitionApplied = vi.fn()
-		runtime.onLifecycleTransitionApplied = onLifecycleTransitionApplied
 		const applyAndPersist = createApplyAndPersist(runtime)
-		const ferment = storage.create("Transition Notification", undefined, process.cwd())
-
-		const outcome = applyAndPersist(ferment.id, {
-			type: "scope",
-			goal: "Goal",
-			successCriteria: ["Works"],
-			constraints: [],
-			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
+		const planned = scopeDraft(applyAndPersist, storage.create("Rejected Recovery", undefined, process.cwd()))
+		const phase = planned.phases[0]
+		const step = phase.steps[0]
+		expect(applyAndPersist(planned.id, { type: "activate_phase", phaseId: phase.id }).ok).toBe(true)
+		expect(applyAndPersist(planned.id, { type: "start_step", phaseId: phase.id, stepId: step.id }).ok).toBe(true)
+		const failure = applyAndPersist(planned.id, {
+			type: "fail_step",
+			phaseId: phase.id,
+			stepId: step.id,
+			error: "failure",
 		})
+		if (!failure.ok) throw new Error(failure.error.message)
+		const obligation = deriveObligation(failure.ferment, "automated")
+		if (!obligation) throw new Error("expected the recovery obligation")
+		evaluateLifecycleStop(obligation)
+		evaluateLifecycleStop(obligation)
+		expect(evaluateLifecycleStop(obligation)).toMatchObject({ type: "exhausted", report: true })
 
-		expect(outcome.ok).toBe(true)
-		expect(onLifecycleTransitionApplied).toHaveBeenCalledOnce()
-		expect(onLifecycleTransitionApplied).toHaveBeenCalledWith(ferment.id)
-	})
-
-	it("does not notify the runtime when a lifecycle transition is rejected", () => {
-		const { runtime } = createRuntime()
-		const onLifecycleTransitionApplied = vi.fn()
-		runtime.onLifecycleTransitionApplied = onLifecycleTransitionApplied
-		const applyAndPersist = createApplyAndPersist(runtime)
-
-		const outcome = applyAndPersist("missing-ferment", { type: "complete_ferment" })
-
-		expect(outcome.ok).toBe(false)
-		expect(onLifecycleTransitionApplied).not.toHaveBeenCalled()
+		const rejected = applyAndPersist(planned.id, { type: "activate_phase", phaseId: phase.id })
+		expect(rejected.ok).toBe(false)
+		expect(evaluateLifecycleStop(obligation).type).toBe("exhausted")
 	})
 
 	it("grants a fresh retry budget when an exhausted obligation recurs after lifecycle progress", () => {
@@ -151,24 +145,6 @@ describe("createApplyAndPersist", () => {
 		if (!recurringObligation) throw new Error("expected the recurring recovery obligation")
 		expect(recurringObligation.key).toBe(firstObligation.key)
 		expect(evaluateLifecycleStop(recurringObligation)).toMatchObject({ type: "retry", attempt: 1 })
-	})
-
-	it("writes state-machine commands through mutateWithEvents", () => {
-		const { runtime, storage } = createRuntime()
-		const mutateSpy = vi.spyOn(storage, "mutateWithEvents")
-		const applyAndPersist = createApplyAndPersist(runtime)
-		const ferment = storage.create("Event Backed", undefined, process.cwd())
-
-		const outcome = applyAndPersist(ferment.id, {
-			type: "scope",
-			goal: "Goal",
-			successCriteria: ["Works"],
-			constraints: [],
-			phases: [{ name: "Phase", goal: "Build", steps: [{ description: "Do it" }] }],
-		})
-
-		expect(outcome.ok).toBe(true)
-		expect(mutateSpy).toHaveBeenCalledTimes(1)
 	})
 
 	it("uses the injected clock for state-machine timestamps", () => {

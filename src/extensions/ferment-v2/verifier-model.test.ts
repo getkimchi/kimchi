@@ -164,13 +164,18 @@ describe("resolveFermentV2VerifierModel", () => {
 		})
 	})
 
-	it("reads available models from the registry for every configured ref", async () => {
+	it("reports unusable refs in configured order when selecting an independent model", async () => {
 		const registry = createModelRegistry([independent])
-		await resolveFermentV2VerifierModel({ model: implementer, modelRegistry: registry }, [
+		const choice = await resolveFermentV2VerifierModel({ model: implementer, modelRegistry: registry }, [
 			"kimchi-dev/kimi-k3",
 			"missing/model",
 		])
-		expect(registry.getAvailable).toHaveBeenCalledTimes(2)
+		expect(choice).toEqual({
+			model: independent,
+			ref: "kimchi-dev/kimi-k3",
+			sameAsImplementer: false,
+			unusableRefs: ["missing/model"],
+		})
 	})
 })
 

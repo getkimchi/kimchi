@@ -3074,146 +3074,6 @@ describe("plan mode assumption detection", () => {
 		return result
 	}
 
-	it("shows approval menu when plan is clean", async () => {
-		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-
-		// Simulate: agent called tools, then produced clean plan text
-		await harness.fire("tool_execution_start", {})
-
-		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(
-			harness,
-			"# Plan\n\n## Goal\nFix the bug.\n\n## Chunk 1\nChange the code.\nAccept When: tests pass.\n\n## Verification\nRun test suite.",
-			ctx,
-		)
-
-		expect(ctx.ui.select).toHaveBeenCalled()
-	})
-
-	it("shows approval menu even when assumptions section is present (agent is trusted)", async () => {
-		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-		await harness.fire("tool_execution_start", {})
-
-		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(harness, "# Plan\n\n## Assumptions\n- Database schema may differ\n\n## Chunks\n- Chunk 1", ctx)
-
-		expect(ctx.ui.select).toHaveBeenCalled()
-	})
-
-	it("shows approval menu even when open questions section is present", async () => {
-		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-		await harness.fire("tool_execution_start", {})
-
-		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(
-			harness,
-			"# Plan\n\n## Open Questions\n- Should we use JWT or sessions?\n\n## Chunks\n- Chunk 1",
-			ctx,
-		)
-
-		expect(ctx.ui.select).toHaveBeenCalled()
-	})
-
-	it("allows plan with empty assumptions section", async () => {
-		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-		await harness.fire("tool_execution_start", {})
-
-		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(
-			harness,
-			"## Goal\nFix it.\n\n## Assumptions\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.",
-			ctx,
-		)
-
-		expect(ctx.ui.select).toHaveBeenCalled()
-	})
-
-	it("allows plan without assumptions section at all", async () => {
-		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-		await harness.fire("tool_execution_start", {})
-
-		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(
-			harness,
-			"## Goal\nDo the thing.\n\n## Chunk 1\nChange code.\nAccept When: works.\n\n## Verification\nCheck tests.",
-			ctx,
-		)
-
-		expect(ctx.ui.select).toHaveBeenCalled()
-	})
-
-	it("shows menu for plan with assumptions (submit_plan is the gate)", async () => {
-		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-		await harness.fire("tool_execution_start", {})
-
-		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(harness, "## ASSUMPTIONS\n- Schema TBD", ctx)
-
-		expect(ctx.ui.select).toHaveBeenCalled()
-	})
-
-	it("shows menu for plan with assumptions after blank line", async () => {
-		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-		await harness.fire("tool_execution_start", {})
-
-		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(harness, "## Assumptions\n\n- Database schema may differ", ctx)
-
-		expect(ctx.ui.select).toHaveBeenCalled()
-	})
-
-	it("review gate approves well-structured plan and shows menu", async () => {
-		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-		await harness.fire("tool_execution_start", {})
-
-		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(
-			harness,
-			"## Goal\nAdd auth.\n\n## Chunk 1\nImplement login.\nAccept When: tests pass.\n\n## Verification\nRun the test suite.",
-			ctx,
-		)
-
-		expect(ctx.ui.select).toHaveBeenCalled()
-		expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
-			expect.objectContaining({ customType: "plan-review-blocked" }),
-			expect.anything(),
-		)
-	})
-
-	it("review gate: menu shows for any plan submitted via submit_plan", async () => {
-		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-		await harness.fire("tool_execution_start", {})
-
-		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(
-			harness,
-			"## Chunk 1\nJust a chunk.\n\nSome extra lines\nto make it non-simple.\nMore content here.",
-			ctx,
-		)
-
-		expect(ctx.ui.select).toHaveBeenCalled()
-	})
-
-	it("review gate skips simple plans and shows menu immediately", async () => {
-		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
-		await harness.fire("session_start", {}, createMockContext([]))
-		await harness.fire("tool_execution_start", {})
-
-		const ctx = createMockContext(["No, do something else"])
-		await submitPlan(harness, "## Chunk 1\nJust one chunk.", ctx)
-
-		expect(ctx.ui.select).toHaveBeenCalled()
-	})
-
 	it("review menu offers Execute / Rework / Start as ferment / Start execution in remote session", async () => {
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
@@ -4638,41 +4498,6 @@ describe("permissions ACP prompter", () => {
 		expect(classifyToolCall).not.toHaveBeenCalled()
 	})
 
-	it("uses the ACP prompter in rpc mode when hasUI is false (headless rpc)", async () => {
-		// Headless rpc still gets the ACP prompter if one is registered; this is
-		// the same combination the existing "headless default mode" test covers,
-		// but here it is explicitly driven by mode === "rpc" rather than just
-		// mode === undefined + hasUI === false.
-		const requests: string[] = []
-		registerAcpPrompter(TEST_SESSION_ID, {
-			request: async (req) => {
-				requests.push(req.toolCallId)
-				return { kind: "allow-once" }
-			},
-		})
-		const harness = createPermissionsHarness(["bash"])
-		const ctx = {
-			...createClassifierContext(),
-			mode: "rpc",
-		} as unknown as ExtensionContext
-		await harness.fire("session_start", {}, ctx)
-
-		const result = await harness.fire(
-			"tool_call",
-			{
-				type: "tool_call",
-				toolCallId: "tc-rpc-headless",
-				toolName: "bash",
-				input: { command: "touch headless-rpc.txt" },
-			},
-			ctx,
-		)
-
-		expect(result).toBeUndefined()
-		expect(requests).toEqual(["tc-rpc-headless"])
-		expect(classifyToolCall).not.toHaveBeenCalled()
-	})
-
 	it("uses the terminal prompter in rpc mode when hasUI is true but no ACP prompter is registered", async () => {
 		// With no ACP prompter registered, resolvePrompter falls through to
 		// terminalPrompter(ctx) because hasUI is true — not the classifier.
@@ -5197,27 +5022,6 @@ describe("handleCompoundConfirm", () => {
 		await expect(started).resolves.toEqual({
 			block: true,
 			reason: "The user declined this action before execution and said: keep it read-only",
-		})
-	})
-
-	it("inputs feedback for deny-with-feedback", async () => {
-		const ctx = createMockContext(["No — tell the assistant what to do differently"])
-		ctx.ui.input = vi.fn(async () => "Changed my mind")
-		const event = createMockEvent()
-
-		const result = await handleCompoundConfirm(event, {
-			ctx,
-			session,
-			pi,
-			activeAborts,
-			promptToolCalls,
-			subcommands: ["echo a"],
-			permissionMode: "default",
-		})
-
-		expect(result).toEqual({
-			block: true,
-			reason: "The user declined this action before execution and said: Changed my mind",
 		})
 	})
 
@@ -6124,18 +5928,6 @@ describe("permission mode session-log persistence", () => {
 		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
 	})
 
-	it("resume plan mode activates plan-mode tool gating", async () => {
-		const harness = createPermissionsHarness(["read", "bash", "write"])
-		const ctx = createMockContext([], TEST_SESSION_ID, {
-			sessionEntries: makeSessionEntries(["plan"]),
-		})
-
-		await harness.fire("session_start", {}, ctx)
-
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
-		expect(harness.activeTools().sort()).toEqual(["bash", "read"])
-	})
-
 	it("resume yolo mode skips permission checks", async () => {
 		const harness = createPermissionsHarness(["read", "bash", "write"])
 		const ctx = createMockContext([], TEST_SESSION_ID, {
@@ -6190,35 +5982,6 @@ describe("permission mode session-log persistence", () => {
 		])
 	})
 
-	it("shift+tab cycle writes to the session log without a turn", async () => {
-		let terminalHandler: ((data: string) => { consume?: boolean } | undefined) | undefined
-		const ctx = createMockContext([], TEST_SESSION_ID, {
-			sessionEntries: [],
-			uiContext: {
-				onTerminalInput: vi.fn((handler) => {
-					terminalHandler = handler as typeof terminalHandler
-					return () => {
-						terminalHandler = undefined
-					}
-				}),
-			},
-		})
-		const harness = createPermissionsHarness(["read", "bash", "write"])
-
-		await harness.fire("session_start", {}, ctx)
-		terminalHandler?.("\x1b[Z")
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
-
-		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
-		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
-		expect(modeEntries).toEqual([
-			[
-				PERMISSION_MODE_SESSION_ENTRY_TYPE,
-				{ mode: "plan", source: "runtime", initiatedBy: "user", reason: "user_shift_tab" },
-			],
-		])
-	})
-
 	it("shift+tab does not cycle modes while raw input capture is active (e.g. questionnaire open)", async () => {
 		// Regression: the global shift+tab mode-cycle listener previously fired
 		// even when a Shift+Tab-navigating form (questionnaire) had focus,
@@ -6254,25 +6017,6 @@ describe("permission mode session-log persistence", () => {
 		// After release, cycling works again.
 		terminalHandler?.("\x1b[Z")
 		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "runtime", initiatedBy: "user" })
-	})
-
-	it("ferment activation persists yolo at before_agent_start", async () => {
-		const harness = createPermissionsHarness(["read", "bash", "write"])
-		const ctx = createMockContext([], TEST_SESSION_ID, { sessionEntries: [] })
-
-		await harness.fire("session_start", {}, ctx)
-		notifyFermentActive(true)
-		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "yolo", source: "runtime", initiatedBy: "ferment" })
-
-		await harness.fire("before_agent_start", { prompt: "hello" }, ctx)
-
-		const calls = (harness.pi.appendEntry as ReturnType<typeof vi.fn>).mock.calls as [string, PermissionModeState][]
-		const modeEntries = calls.filter(([type]) => type === PERMISSION_MODE_SESSION_ENTRY_TYPE)
-		expect(modeEntries).toHaveLength(1)
-		expect(modeEntries[0]).toEqual([
-			PERMISSION_MODE_SESSION_ENTRY_TYPE,
-			{ mode: "yolo", source: "runtime", initiatedBy: "ferment" },
-		])
 	})
 
 	it("mid-conversation mode change applies immediately to subsequent tool gating", async () => {

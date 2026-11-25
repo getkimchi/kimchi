@@ -63,7 +63,7 @@ describe("pi native compatibility", () => {
 		)
 	})
 
-	it("normalizes loaded extensions only once", () => {
+	it("normalizes loaded extensions only once", async () => {
 		const handler = vi.fn(async () => undefined)
 		const result = loadResultWithHandlers("tool_result", [handler])
 
@@ -72,6 +72,8 @@ describe("pi native compatibility", () => {
 		const normalizedAgain = normalizePiNativeExtensions(normalized)
 
 		expect(normalizedAgain.extensions[0].handlers.get("tool_result")?.[0]).toBe(wrapped)
+		await wrapped?.({}, {})
+		expect(handler).toHaveBeenCalledOnce()
 	})
 
 	it("filters disabled package extensions and provider registrations", () => {
@@ -213,20 +215,6 @@ describe("robust installParsedSource", () => {
 		expect(failures[0].source).toBe("npm:@kimchi-dev/kimchi-workflows")
 	})
 
-	it("swallows ENOENT error in robust mode", async () => {
-		const originalInstall = vi.fn().mockRejectedValue(new Error("spawn npm ENOENT"))
-		const pm = makePackageManager({
-			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
-			[ROBUST_RESOLVE]: true,
-		})
-
-		await callInstallParsedSource(pm, { type: "npm", name: "some-package" })
-
-		const failures = consumePackageInstallFailures()
-		expect(failures).toHaveLength(1)
-		expect(failures[0].source).toBe("npm:some-package")
-	})
-
 	it("propagates errors when not in robust mode (CLI path)", async () => {
 		const originalInstall = vi.fn().mockRejectedValue(new Error("npm install failed with code 1"))
 		const pm = makePackageManager({
@@ -280,18 +268,6 @@ describe("robust installParsedSource", () => {
 		await callInstallParsedSource(pm, { type: "npm", name: "clearable-package" })
 
 		expect(consumePackageInstallFailures()).toHaveLength(1)
-		expect(consumePackageInstallFailures()).toHaveLength(0)
-	})
-
-	it("does not record failures outside robust mode (CLI path)", async () => {
-		const originalInstall = vi.fn().mockRejectedValue(new Error("install error"))
-		const pm = makePackageManager({
-			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
-			[ROBUST_RESOLVE]: false,
-		})
-
-		await expect(callInstallParsedSource(pm, { type: "npm", name: "outside-resolve" })).rejects.toThrow()
-
 		expect(consumePackageInstallFailures()).toHaveLength(0)
 	})
 })

@@ -8,6 +8,6 @@ vi.mock("@earendil-works/pi-coding-agent", () => {
 	throw new Error("This suite does not use the SDK or ledger")
 })
 
-it.each([1, 2])("does not import the ledger dependencies in an unrelated test (%i)", () => {
+it("does not import the ledger dependencies in an unrelated test", () => {
 	expect(sdk.loads).toBe(0)
 })

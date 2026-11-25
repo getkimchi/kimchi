@@ -90,8 +90,17 @@ describe("createTipsPanel", () => {
 			const lines = panel.render(50)
 
 			// The tip content should appear across more than just the header+1 line
-			const tipLines = lines.filter((l) => l.includes("1.") || l.includes("  "))
-			expect(tipLines.length).toBeGreaterThan(1)
+			expect(lines.length).toBeGreaterThan(1)
+			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(50)
+			const text = lines.join(" ").replace(/\s+/g, " ")
+			const words = longMsg.split(" ")
+			for (const word of words) expect(text).toContain(word)
+			let cursor = 0
+			for (const word of words) {
+				const position = text.indexOf(word, cursor)
+				expect(position).toBeGreaterThanOrEqual(cursor)
+				cursor = position + word.length
+			}
 		})
 	})
 

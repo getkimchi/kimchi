@@ -12,8 +12,6 @@ import {
 	resolveContextTokens,
 	sessionHasImages,
 } from "./model-guard.js"
-import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
-import type { ModelTier } from "./orchestration/model-registry/types.js"
 import { shouldSuppressInteractiveTools } from "./print-mode.js"
 
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
@@ -34,20 +32,6 @@ let isRevertingModel = false
 export function __resetModelSwitchStateForTest(): void {
 	suppressModelSelectGuard = false
 	isRevertingModel = false
-}
-
-/**
- * Extract tier from a model descriptor via MODEL_CAPABILITIES.
- * In tests, pass the capabilities map explicitly to avoid module-isolation issues.
- */
-export function getModelTier(
-	model: Model<Api> | undefined,
-	capsMap: ReadonlyMap<string, unknown> = MODEL_CAPABILITIES,
-): ModelTier | undefined {
-	if (!model) return undefined
-	const caps = capsMap.get(model.id)
-	if (!caps || caps === "ignored") return undefined
-	return (caps as { tier: ModelTier }).tier
 }
 
 type StartNewSessionWithModel = (

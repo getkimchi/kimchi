@@ -186,9 +186,12 @@ describe("KimchiAcpAgent prompt gating during compaction", () => {
 
 	it("accepts a prompt again once compaction has ended", async () => {
 		const session = new FakeAgentSession("sess-1")
-		session.isCompacting = false
+		session.isCompacting = true
 		const agent = await makeReadyAgent(session)
-
+		await expect(agent.prompt({ sessionId: "sess-1", prompt: [{ type: "text", text: "hello" }] })).rejects.toThrow(
+			/compaction is in progress/,
+		)
+		session.isCompacting = false
 		const promptPromise = agent.prompt({ sessionId: "sess-1", prompt: [{ type: "text", text: "hello" }] })
 		await Promise.resolve()
 		session.finishTurn()

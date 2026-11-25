@@ -248,14 +248,6 @@ describe("TerminalComponent CJK wide-char rendering", () => {
 })
 
 describe("TerminalComponent writeRemoteData", () => {
-	it("processes remote data", async () => {
-		const session = mockSession()
-		const component = new TerminalComponent(mockTui(), session, createXtermCore())
-		await component.writeRemoteData("hello")
-		const lines = component.render(80)
-		expect(lines[0].trimEnd()).toBe("hello")
-	})
-
 	it("handles OSC sequence terminated with ST (ESC\\\\)", async () => {
 		const session = mockSession()
 		const component = new TerminalComponent(mockTui(), session, createXtermCore())

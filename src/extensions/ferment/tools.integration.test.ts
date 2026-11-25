@@ -1217,14 +1217,6 @@ describe("add_ferment_memory", () => {
 	})
 })
 
-// ─── retired mode tool ────────────────────────────────────────────────────────
-
-describe("retired mode tool", () => {
-	it("does not expose set_ferment_mode on the tool surface", () => {
-		expect(h.tools.has("set_ferment_mode")).toBe(false)
-	})
-})
-
 // ─── update_ferment_scope_field ───────────────────────────────────────────────────────
 
 describe("update_ferment_scope_field", () => {

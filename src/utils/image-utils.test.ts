@@ -14,21 +14,6 @@ import {
 
 const PNG_MAGIC = PNG_SIGNATURE
 
-describe("IMAGE_EXT_TO_MIME", () => {
-	it("maps known extensions", () => {
-		expect(IMAGE_EXT_TO_MIME[".png"]).toBe("image/png")
-		expect(IMAGE_EXT_TO_MIME[".jpg"]).toBe("image/jpeg")
-		expect(IMAGE_EXT_TO_MIME[".jpeg"]).toBe("image/jpeg")
-		expect(IMAGE_EXT_TO_MIME[".gif"]).toBe("image/gif")
-		expect(IMAGE_EXT_TO_MIME[".webp"]).toBe("image/webp")
-	})
-
-	it("returns undefined for unknown extensions", () => {
-		expect(IMAGE_EXT_TO_MIME[".txt"]).toBeUndefined()
-		expect(IMAGE_EXT_TO_MIME[".pdf"]).toBeUndefined()
-	})
-})
-
 describe("sniffImageMimeType", () => {
 	it("detects PNG", () => {
 		expect(sniffImageMimeType(new Uint8Array([...PNG_MAGIC, 0, 0, 0, 0]))).toBe("image/png")
@@ -71,13 +56,26 @@ describe("readImageFileFromDisk", () => {
 		rmSync(tmpDir, { recursive: true, force: true })
 	})
 
-	it("reads a valid image file", () => {
-		const path = join(tmpDir, "test.png")
-		writeFileSync(path, Buffer.from(PNG_MAGIC))
-		const result = readImageFileFromDisk(path)
-		expect(result).not.toBeNull()
-		expect(result?.mimeType).toBe("image/png")
-		expect(result?.bytes.length).toBe(8)
+	it("reads every supported image signature and rejects unsupported types", () => {
+		const samples = [
+			{ name: "test.png", bytes: PNG_MAGIC, mime: "image/png" },
+			{ name: "test.jpg", bytes: [...JPEG_SIGNATURE, 0xe0], mime: "image/jpeg" },
+			{ name: "test.gif", bytes: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61], mime: "image/gif" },
+			{ name: "test.webp", bytes: [0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50], mime: "image/webp" },
+		]
+		for (const sample of samples) {
+			const path = join(tmpDir, sample.name)
+			writeFileSync(path, Buffer.from(sample.bytes))
+			const result = readImageFileFromDisk(path)
+			expect(result?.mimeType).toBe(sample.mime)
+			expect(result?.bytes).toEqual(new Uint8Array(sample.bytes))
+		}
+
+		for (const extension of [".txt", ".pdf"]) {
+			const path = join(tmpDir, `not-image${extension}`)
+			writeFileSync(path, "not an image")
+			expect(readImageFileFromDisk(path)).toBeNull()
+		}
 	})
 
 	it("rejects an image extension whose content is not an image (renamed PDF)", () => {

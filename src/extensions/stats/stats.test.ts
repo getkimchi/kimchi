@@ -4,7 +4,7 @@ import { formatCount } from "../format.js"
 import { getTimeRange } from "./api.js"
 import { formatAnalyticsSummary } from "./display.js"
 import { parseStatsArgs } from "./index.js"
-import type { GenerateAnalyticsResponse, ModelCost, ModelTokenStat } from "./types.js"
+import type { GenerateAnalyticsResponse, ModelTokenStat } from "./types.js"
 import {
 	aggregateTokens,
 	formatAnalyticsVisual,
@@ -277,21 +277,6 @@ function makeModelTokenStat(overrides: Partial<ModelTokenStat> = {}): ModelToken
 	}
 }
 
-function _makeModelCost(overrides: Partial<ModelCost> = {}): ModelCost {
-	return {
-		model: "gpt-4",
-		provider: "openai",
-		castaiApiKey: "key-1",
-		providerName: "pi-otel",
-		totalCost: "0",
-		totalCostPerMillionTokens: "0",
-		castaiApiKeyMetadata: { id: "1", name: "", ownerType: "", ownerId: "", ownerEmail: "" },
-		inputTokenCost: "0",
-		outputTokenCost: "0",
-		...overrides,
-	}
-}
-
 describe("formatAnalyticsVisual", () => {
 	it("uses new tokens field when present", () => {
 		const data: GenerateAnalyticsResponse = {
@@ -462,34 +447,6 @@ describe("formatAnalyticsSummary", () => {
 					{
 						executionTime: "2026-06-09T09:00:00Z",
 						models: [makeModelTokenStat({ inputTokens: 3000, outputTokens: 1500 })],
-					},
-				],
-			},
-		}
-
-		const lines = formatAnalyticsSummary(data, mockTheme)
-		const joined = lines.join("\n")
-
-		expect(joined).toContain("4.5k")
-		expect(joined).toContain("3.0k")
-		expect(joined).toContain("1.5k")
-	})
-
-	it("aggregates model and source correctly", () => {
-		const data: GenerateAnalyticsResponse = {
-			stepDuration: "0s",
-			tokens: {
-				items: [
-					{
-						executionTime: "2026-06-09T09:00:00Z",
-						models: [
-							makeModelTokenStat({
-								model: "gpt-4",
-								providerName: "pi-otel",
-								inputTokens: 3000,
-								outputTokens: 1500,
-							}),
-						],
 					},
 				],
 			},

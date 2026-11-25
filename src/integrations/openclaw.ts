@@ -240,18 +240,18 @@ function openClawConfigGet(path: string): unknown | null {
 }
 
 /** Narrow an unknown value to a plain object, defaulting to `{}` for any other type. */
-export function asObject(v: unknown): Record<string, unknown> {
+function asObject(v: unknown): Record<string, unknown> {
 	return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
 }
 
 /** Merge fallbacks with an existing array, deduping entries. */
-export function mergeFallbacks(existing: unknown, fallbacks: string[]): string[] {
+function mergeFallbacks(existing: unknown, fallbacks: string[]): string[] {
 	const current = Array.isArray(existing) ? (existing as string[]) : []
 	return [...new Set([...current, ...fallbacks])]
 }
 
 /** Merge models catalog with an existing object, with new entries taking precedence. */
-export function mergeModelsCatalog(existing: unknown, catalog: Record<string, unknown>): Record<string, unknown> {
+function mergeModelsCatalog(existing: unknown, catalog: Record<string, unknown>): Record<string, unknown> {
 	return { ...asObject(existing), ...catalog }
 }
 

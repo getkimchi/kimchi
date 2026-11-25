@@ -163,17 +163,6 @@ function allRegisteredNames(): Set<string> {
 	return new Set([...ENV_VARS.map((v) => v.name), ...IGNORED_ENV_VARS, ...TEST_SUITE_ENV_VARS])
 }
 
-describe("comment stripping", () => {
-	it("preserves comment markers inside literal text", () => {
-		const source =
-			"const text = String.raw`before /* word */ after`;\nprocess.env.KIMCHI_MEMORY_DRAIN_CONCURRENCY = 3\n// another comment"
-		const stripped = stripComments(source)
-		expect(stripped).toContain("KIMCHI_MEMORY_DRAIN_CONCURRENCY")
-		expect(stripped).toContain("before /* word */ after")
-		expect(stripped).not.toContain("another comment")
-	})
-})
-
 describe("env var registry", () => {
 	// Full-repository parsing and I/O varies on shared CI runners. Keep a
 	// generous but bounded timeout for that cold path rather than narrowing coverage.
@@ -198,21 +187,6 @@ describe("env var registry", () => {
 		).toEqual([])
 		expect(typos, `prefixed names that are not SCREAMING_SNAKE_CASE — typos?:\n${typos.join("\n")}`).toEqual([])
 	}, 30_000)
-
-	it("detects prefixed names destructured from process.env", () => {
-		const sources = new Map([
-			[
-				"fake-scan-target.ts",
-				"const { KIMCHI_FAKE_SCAN_VAR, KIMCHI_FAKE_RENAMED: alias, KIMCHI_FAKE_DEFAULT = 'x', OTHER, ...rest } = process.env",
-			],
-		])
-		const referenced = collectReferencedEnvVars(sources)
-		expect([...referenced.keys()].sort()).toEqual([
-			"KIMCHI_FAKE_DEFAULT",
-			"KIMCHI_FAKE_RENAMED",
-			"KIMCHI_FAKE_SCAN_VAR",
-		])
-	})
 
 	it("flags registry entries for variables removed from business logic", () => {
 		// Reverse direction of the scan above. For ENV_VARS and

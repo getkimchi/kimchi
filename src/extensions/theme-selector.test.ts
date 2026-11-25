@@ -29,8 +29,18 @@ class MockContainer {
 	addChild(child: unknown) {
 		this.children.push(child)
 	}
-	render(_width: number): string[] {
-		return []
+	render(width: number): string[] {
+		return this.children.flatMap((child) => {
+			if (child instanceof MockText) return [child.text]
+			if (child instanceof MockSelectList) {
+				const end = child.selectedIndex + 1
+				return child.items.slice(Math.max(0, end - child.maxVisible), end).map((item) => item.label)
+			}
+			if (child && typeof (child as { render?: (width: number) => string[] }).render === "function") {
+				return (child as { render: (width: number) => string[] }).render(width)
+			}
+			return []
+		})
 	}
 	invalidate(): void {}
 	constructor() {
@@ -68,7 +78,11 @@ class MockSpacer {
 }
 
 class MockText {
-	constructor(_text?: string, _x?: number, _y?: number) {
+	constructor(
+		public text = "",
+		_x?: number,
+		_y?: number,
+	) {
 		mockInstances.Text.push(this)
 	}
 }
@@ -196,17 +210,16 @@ describe("theme-selector extension", () => {
 		const { pi, commands } = makePi()
 		const { ctx, ui } = makeCtx([{ name: "light" }, { name: "dark" }], "light")
 		themeSelectorExtension(pi)
-		await runCommandAndCaptureFactory(pi, commands, ctx, ui)
-
-		// Container holds: [border, title, spacer, description, spacer,
-		//                  selectList, spacer, hint, border]
-		// = 9 children total.
+		const { selectList } = await runCommandAndCaptureFactory(pi, commands, ctx, ui)
+		selectList.setSelectedIndex(1)
 		const container = mockInstances.Container[0]
-		expect(container.children.length).toBe(9)
-		// Title, description, and hint are 3 Text nodes.
-		expect(mockInstances.Text.length).toBe(3)
-		// Three spacers separate the sections.
-		expect(mockInstances.Spacer.length).toBe(3)
+		const text = container.render(40).join("\n")
+		expect(text).toContain("Theme")
+		expect(text).toContain("Select color theme")
+		expect(text).toContain("Enter to select · Esc to go back")
+		expect(text).toContain("light")
+		expect(text).toContain("dark")
+		expect(text).toContain("─".repeat(40))
 	})
 
 	it("passes themes in upstream order without re-sorting", async () => {
@@ -226,13 +239,18 @@ describe("theme-selector extension", () => {
 		expect(selectList.selectedIndex).toBe(2)
 	})
 
-	it("uses upstream's maxVisible (10) and layout shape", async () => {
+	it("caps visible options at ten and can navigate to the remainder", async () => {
 		const { pi, commands } = makePi()
-		const { ctx, ui } = makeCtx([{ name: "light" }], "light")
+		const themes = Array.from({ length: 12 }, (_, i) => ({ name: `theme-${i + 1}` }))
+		const { ctx, ui } = makeCtx(themes, "theme-1")
 		themeSelectorExtension(pi)
 		const { selectList } = await runCommandAndCaptureFactory(pi, commands, ctx, ui)
-		expect(selectList.maxVisible).toBe(1) // min(items.length, 10)
+		const container = mockInstances.Container[0]
+		expect(selectList.maxVisible).toBe(10)
 		expect(selectList.layout).toEqual({ minPrimaryColumnWidth: 12, maxPrimaryColumnWidth: 32 })
+		expect(container.render(60)).not.toContain("theme-11")
+		selectList.setSelectedIndex(11)
+		expect(container.render(60)).toContain("theme-12")
 	})
 
 	it("preview on arrow key calls previewTheme (never setTheme) — persistence bug guard", async () => {
@@ -269,16 +287,6 @@ describe("theme-selector extension", () => {
 		onSelect({ value: "broken", label: "broken" })
 		expect(ui.setTheme).toHaveBeenCalledWith("broken")
 		expect(ui.showError).toHaveBeenCalledWith('Failed to load theme "broken": bad json\nFell back to dark theme.')
-	})
-
-	it("Enter on success does NOT call showError", async () => {
-		const { pi, commands } = makePi()
-		const { ctx, ui } = makeCtx([{ name: "light" }, { name: "dark" }], "light", { success: true })
-		themeSelectorExtension(pi)
-		const { selectList } = await runCommandAndCaptureFactory(pi, commands, ctx, ui)
-		const onSelect = selectList.onSelect as (item: { value: string; label: string }) => void
-		onSelect({ value: "dark", label: "dark" })
-		expect(ui.showError).not.toHaveBeenCalled()
 	})
 
 	it("Esc restores original theme via previewTheme (never setTheme)", async () => {

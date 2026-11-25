@@ -1,7 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { pathToFileURL } from "node:url"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { TurnArtifactBuffer } from "../../modes/acp/artifact-links.js"
 import { createContext } from "../__mocks__/context.js"
@@ -886,10 +885,5 @@ describe("artifact-recorder", () => {
 		expect(names).toContain("plan.md")
 		expect(names).toContain("s39.md")
 		expect(names).not.toContain("s0.md")
-	})
-
-	it("round-trip URI can be rebuilt from the recorded row (replay assumption)", () => {
-		const abs = join(cwd, "a.md")
-		expect(pathToFileURL(abs).href).toContain("a.md")
 	})
 })

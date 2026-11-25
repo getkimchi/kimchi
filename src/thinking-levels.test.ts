@@ -185,7 +185,7 @@ describe("thinkingLevelName", () => {
 
 describe("thinkingLevelDescription", () => {
 	it("returns the use-case line for a canonical level", () => {
-		expect(thinkingLevelDescription("high")).toBe(THINKING_LEVEL_DESCRIPTIONS.high)
+		expect(thinkingLevelDescription("high")).toBe("Complex features, tricky bugs")
 	})
 
 	it("returns undefined for an unknown value", () => {

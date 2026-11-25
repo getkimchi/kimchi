@@ -1518,7 +1518,7 @@ describe("markImagesAsStripped", () => {
 		expect(sessionHasImages()).toBe(true)
 	})
 
-	it("resets imagesStripped flag when __resetImagesDetectedForTest is called", async () => {
+	it("resets imagesStripped on session_start", async () => {
 		const { pi, trigger } = makeMockPI()
 		modelGuardExtension(pi)
 		const ctx = makeMockCtx({
@@ -1532,10 +1532,9 @@ describe("markImagesAsStripped", () => {
 		markImagesAsStripped()
 		expect(sessionHasImages()).toBe(false)
 
-		// Reset should restore initial state (images still present but not stripped)
-		__resetImagesDetectedForTest()
+		await trigger("session_start", {}, ctx)
 
-		// After reset, triggering context with images should detect them again
+		// A new session with images is detected independently of the prior state
 		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
 		expect(sessionHasImages()).toBe(true)
 	})

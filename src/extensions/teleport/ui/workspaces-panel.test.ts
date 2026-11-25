@@ -2,7 +2,7 @@ import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import type { QuotaUsage } from "../../../sandbox/cloud/types.js"
 import type { QuotaInput } from "./quota-footer.js"
-import { createWorkspacesPanel, WorkspacesPanel } from "./workspaces-panel.js"
+import { createWorkspacesPanel, type WorkspacesPanel } from "./workspaces-panel.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
 
 const NOW = new Date("2026-05-17T12:00:00Z")
@@ -218,15 +218,6 @@ describe("WorkspacesPanel", () => {
 			panel.handleInput("\r")
 			panel.handleInput("d")
 			expect(done).not.toHaveBeenCalled()
-		})
-	})
-
-	describe("WorkspacesPanel direct instantiation", () => {
-		it("can be constructed without the createWorkspacesPanel helper", () => {
-			const tui = { requestRender: vi.fn(), terminal: { rows: 24, cols: 80 } }
-			const done = vi.fn()
-			const panel = new WorkspacesPanel(testRows, tui, done)
-			expect(panel.render(80).length).toBeGreaterThan(0)
 		})
 	})
 

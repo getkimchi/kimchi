@@ -5,14 +5,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { TEST_MODELS } from "./__fixtures__/models.js"
 import { findBinary } from "./detect.js"
-import {
-	asObject,
-	buildOpenClawModelsCatalog,
-	buildOpenClawProviderBlock,
-	mergeFallbacks,
-	mergeModelsCatalog,
-	writeOpenClawEnv,
-} from "./openclaw.js"
+import { buildOpenClawModelsCatalog, buildOpenClawProviderBlock, writeOpenClawEnv } from "./openclaw.js"
 import { byId } from "./registry.js"
 
 vi.mock("./detect.js", async () => {
@@ -144,57 +137,33 @@ describe("openclaw tool registration", () => {
 	})
 })
 
-describe("asObject", () => {
-	it("returns the object when passed a plain object", () => {
-		expect(asObject({ foo: "bar" })).toEqual({ foo: "bar" })
-	})
-	it("returns {} for null", () => {
-		expect(asObject(null)).toEqual({})
-	})
-	it("returns {} for arrays", () => {
-		expect(asObject([1, 2, 3])).toEqual({})
-	})
-	it("returns {} for primitives", () => {
-		expect(asObject("string")).toEqual({})
-		expect(asObject(42)).toEqual({})
-		expect(asObject(true)).toEqual({})
-	})
-	it("returns {} for undefined", () => {
-		expect(asObject(undefined)).toEqual({})
-	})
-})
+describe("writeOpenClawDirect normalization", () => {
+	let tmp: string
+	let prevHome: string | undefined
 
-describe("mergeFallbacks", () => {
-	it("appends new fallbacks to an existing array", () => {
-		expect(mergeFallbacks(["a", "b"], ["c", "d"])).toEqual(["a", "b", "c", "d"])
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "kimchi-openclaw-direct-"))
+		prevHome = process.env.HOME
+		process.env.HOME = tmp
 	})
-	it("dedupes entries across existing and new", () => {
-		expect(mergeFallbacks(["a", "b"], ["b", "c"])).toEqual(["a", "b", "c"])
-	})
-	it("treats non-array existing as empty", () => {
-		expect(mergeFallbacks(null, ["a"])).toEqual(["a"])
-		expect(mergeFallbacks("string", ["a"])).toEqual(["a"])
-		expect(mergeFallbacks({ foo: "bar" }, ["a"])).toEqual(["a"])
-	})
-	it("returns only new fallbacks when existing is undefined", () => {
-		expect(mergeFallbacks(undefined, ["a", "b"])).toEqual(["a", "b"])
-	})
-})
 
-describe("mergeModelsCatalog", () => {
-	it("merges catalog entries into existing object", () => {
-		expect(mergeModelsCatalog({ existing: true }, { newKey: "value" })).toEqual({
-			existing: true,
-			newKey: "value",
-		})
+	afterEach(() => {
+		if (prevHome === undefined) process.env.HOME = undefined
+		else process.env.HOME = prevHome
+		rmSync(tmp, { recursive: true, force: true })
 	})
-	it("new catalog entries take precedence over existing keys", () => {
-		expect(mergeModelsCatalog({ same: "old" }, { same: "new" })).toEqual({ same: "new" })
-	})
-	it("treats non-object existing as empty", () => {
-		expect(mergeModelsCatalog(null, { a: 1 })).toEqual({ a: 1 })
-		expect(mergeModelsCatalog([1, 2], { a: 1 })).toEqual({ a: 1 })
-		expect(mergeModelsCatalog("string", { a: 1 })).toEqual({ a: 1 })
+
+	it("normalizes a null nested model into a usable configuration", async () => {
+		const configDir = join(tmp, ".openclaw")
+		mkdirSync(configDir, { recursive: true })
+		writeFileSync(join(configDir, "openclaw.json"), JSON.stringify({ agents: { defaults: { model: null } } }), "utf-8")
+
+		await byId("openclaw")?.write("global", "test-key-123", TEST_MODELS)
+
+		const written = JSON.parse(readFileSync(join(configDir, "openclaw.json"), "utf-8"))
+		expect(written.agents.defaults.model.primary).toBe("kimchi/kimi-k2.6")
+		expect(written.agents.defaults.model.fallbacks.length).toBeGreaterThan(0)
+		expect(written.agents.defaults.models["kimchi/kimi-k2.6"]).toEqual({ alias: "Kimi K2.6" })
 	})
 })
 
@@ -227,6 +196,7 @@ describe("writeOpenClawDirect integration", () => {
 						fallbacks: ["other/model"],
 					},
 					models: {
+						"kimchi/kimi-k2.6": { alias: "Incorrect" },
 						"other/model": { alias: "Other" },
 					},
 				},
@@ -244,7 +214,8 @@ describe("writeOpenClawDirect integration", () => {
 		expect(written.agents.defaults.model.fallbacks).toContain("kimchi/nemotron-3-ultra-fp4")
 		expect(written.agents.defaults.model.fallbacks).toContain("kimchi/minimax-m2.7")
 		expect(written.agents.defaults.models["other/model"]).toEqual({ alias: "Other" })
-		expect(written.agents.defaults.models["kimchi/kimi-k2.6"]).toBeDefined()
+		expect(new Set(written.agents.defaults.model.fallbacks).size).toBe(written.agents.defaults.model.fallbacks.length)
+		expect(written.agents.defaults.models["kimchi/kimi-k2.6"]).toEqual({ alias: "Kimi K2.6" })
 		expect(written.models.providers.kimchi).toBeDefined()
 	})
 })

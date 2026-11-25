@@ -14,16 +14,6 @@ function fakeConn(): { conn: AgentContext; sent: Array<{ method: string; params:
 	return { conn, sent }
 }
 
-describe("run-boundary wire methods", () => {
-	it("registers both boundary notifications in the ext-notification table", () => {
-		// The canonical home for outbound ext-notification wire names: clients
-		// and emitters alike reference AVAILABLE_EXT_NOTIFICATIONS, so an
-		// unregistered method here means the notification cannot be gated on.
-		expect(AVAILABLE_EXT_NOTIFICATIONS.background_run_start).toBe("_kimchi.dev/background_run_start")
-		expect(AVAILABLE_EXT_NOTIFICATIONS.background_run_end).toBe("_kimchi.dev/background_run_end")
-	})
-})
-
 describe("run-boundary emission", () => {
 	it("background_run_start carries the v2-shaped running state and reason", () => {
 		const { conn, sent } = fakeConn()

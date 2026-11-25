@@ -1631,11 +1631,6 @@ describe("readGitToken / writeGitToken", () => {
 		writeGitToken("github.com", "new", configPath)
 		expect(readGitToken("github.com", configPath)).toBe("new")
 	})
-
-	it("round-trips write then read", () => {
-		writeGitToken("github.com", "ghp_roundtrip", configPath)
-		expect(readGitToken("github.com", configPath)).toBe("ghp_roundtrip")
-	})
 })
 
 describe("readTeleportCompactHintEnabled / writeTeleportCompactHintEnabled", () => {
@@ -1895,6 +1890,7 @@ describe("firstRunSettingsDefaults", () => {
 	it("keeps collapseWork at the read-time fallback so /settings shows it", () => {
 		expect(firstRunSettingsDefaults().collapseWork).toBe("off")
 	})
+
 
 	it("returns a fresh object each call so callers cannot corrode the defaults", () => {
 		const first = firstRunSettingsDefaults()

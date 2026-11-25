@@ -218,8 +218,10 @@ describe("writeConfigSetting", () => {
 	it("does not write when value is unchanged (no-op optimization)", () => {
 		seed({ theme: "dark" })
 		const before = readBack()
+		const writeSpy = vi.spyOn({ writeJson }, "writeJson")
 		writeConfigSetting("theme", "dark")
 		const after = readBack()
+		expect(writeSpy).not.toHaveBeenCalled()
 		expect(after).toEqual(before)
 	})
 

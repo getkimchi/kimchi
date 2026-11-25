@@ -104,13 +104,6 @@ describe("regionChoiceRequired", () => {
 	beforeEach(() => setExperimentalFeaturesEnabled(true))
 	afterEach(() => setExperimentalFeaturesEnabled(false))
 
-	it("is true when multiple regions are selectable", () => {
-		expect(regionChoiceRequired("us")).toBe(true)
-	})
-
-	// EU is no longer experimental-gated, so every configured region has at least
-	// one other selectable region (us or eu) and regionChoiceRequired is true
-	// regardless of the experimental flag.
 	it("is always true because us and eu are always selectable alongside the current region", () => {
 		setExperimentalFeaturesEnabled(true)
 		expect(regionChoiceRequired("us")).toBe(true)

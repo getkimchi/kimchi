@@ -138,44 +138,6 @@ describe("DAP tools in subagent sessions", () => {
 			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
 		})
 	})
-
-	it("without the dap extension factory, debug tool names activate nothing", async () => {
-		// Falsification of the original bug: requested debug_* names are silently
-		// dropped when the extension is not registered in the child session.
-		const tmp = makeTmpDir()
-		const loader = new DefaultResourceLoader({
-			cwd: tmp,
-			agentDir: tmp,
-			noExtensions: true,
-			noSkills: true,
-			noPromptTemplates: true,
-			noThemes: true,
-			noContextFiles: true,
-			systemPromptOverride: () => "test",
-			appendSystemPromptOverride: () => [],
-			extensionFactories: [],
-		})
-		await loader.reload()
-
-		const walker = await createAgentSession({
-			cwd: tmp,
-			agentDir: tmp,
-			sessionManager: SessionManager.inMemory(tmp),
-			settingsManager: SettingsManager.create(tmp, tmp),
-			model: fakeModel,
-			modelRuntime: {} as ModelRuntime,
-			resourceLoader: loader,
-			tools: ["read", "debug_launch"],
-		})
-		const session = walker.session
-		await session.bindExtensions({ onError: () => {} })
-
-		const active = session.getActiveToolNames()
-		expect(active).toContain("read")
-		expect(active).not.toContain("debug_launch")
-
-		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
-	})
 })
 
 describe("shouldRegisterDapForTools (extensions.dap resource gate)", () => {

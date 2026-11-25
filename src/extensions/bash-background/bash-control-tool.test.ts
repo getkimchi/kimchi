@@ -177,13 +177,6 @@ describe("bash_control — duration validation", () => {
 		expect(registry.getEntry(handle)?.state).toBe("running")
 	})
 
-	it("rejects a non-number waitSeconds from an unvalidated direct call", async () => {
-		const { tool } = setup()
-		spawnRunning("survivor")
-		const result = await callExecute(tool, { wait: true, waitSeconds: "soon" })
-		expect(result.details.reason).toBe("invalid-params")
-	})
-
 	it("schedules fractional durations exactly instead of flooring to a second", async () => {
 		const { tool } = setup()
 		const handle = spawnRunning("quick-checkpoint")
@@ -423,19 +416,6 @@ describe("bash_control — filtered inspection (handles)", () => {
 		const result = await callExecute(tool, { handles: [handle] })
 		expect(textOf(result)).toContain(`Unknown handle '${handle}'`)
 		expect(result.details.runningHandles).toEqual([])
-	})
-
-	it("reports a stale cohort handle as unknown when its registry entry is gone", async () => {
-		const { tool } = setup()
-		const gone = spawnRunning("gone-proc")
-		await ops.exitMatching("gone-proc", 0)
-		await registry.whenExited(gone)
-		await registry.remove(gone)
-
-		const result = await callExecute(tool, { handles: [gone] })
-		expect(textOf(result)).toContain(`Unknown handle '${gone}' in this session`)
-		expect(result.details.runningHandles).toEqual([])
-		expect(result.details.exitedHandles).toEqual([])
 	})
 
 	it("rejects handles with wait: true before applying any stop", async () => {

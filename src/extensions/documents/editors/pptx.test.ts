@@ -24,10 +24,25 @@ describe("set_shape_text", () => {
 
 	it("preserves run properties by cloning the last run's rPr", async () => {
 		const pkg = await openOoxml(await makeSimplePptx())
+		const before = pkg.getXml("ppt/slides/slide1.xml")
+		const body = byTag(before, "sp").find((el) =>
+			byTag(el, "cNvPr").some((prop) => prop.getAttribute("name") === "Body 1"),
+		)
+		const run = body && byTag(body, "r")[0]
+		const rPr = run ? before.createElementNS(run.namespaceURI, `${run.prefix ?? "a"}:rPr`) : undefined
+		rPr?.setAttribute("b", "1")
+		rPr?.setAttribute("i", "1")
+		rPr?.setAttribute("sz", "2400")
+		if (run && rPr) run.insertBefore(rPr, run.firstChild)
+		pkg.putXml("ppt/slides/slide1.xml", before)
+
 		applyPptxOps(pkg, [{ type: "set_shape_text", slide: 1, shape: "Body 1", value: "calm" }])
 		const doc = pkg.getXml("ppt/slides/slide1.xml")
 		const sp = byTag(doc, "sp").find((el) => byTag(el, "t").some((t) => t.textContent === "calm"))
-		expect(sp).toBeDefined()
+		const cloned = sp && byTag(sp, "rPr")[0]
+		expect(cloned?.getAttribute("b")).toBe("1")
+		expect(cloned?.getAttribute("i")).toBe("1")
+		expect(cloned?.getAttribute("sz")).toBe("2400")
 	})
 
 	it("errors with the slide's shape roster when the name is wrong", async () => {

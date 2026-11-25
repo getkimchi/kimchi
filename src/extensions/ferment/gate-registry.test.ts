@@ -170,7 +170,10 @@ describe("renderGateGuidance", () => {
 		expect(md).toContain("**F3**")
 	})
 
-	it("returns an empty string for a turn with no gates", () => {
-		expect(renderGateGuidance("scope_ferment" as never).length).toBeGreaterThan(0)
+	it("renders plan gates for scope_ferment", () => {
+		const md = renderGateGuidance("scope_ferment")
+		expect(md).toContain("**P1**")
+		expect(md).toContain("**P2**")
+		expect(md).toContain("**P3**")
 	})
 })

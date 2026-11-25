@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { PromptBlock } from "./prompt-supplement-registry.js"
-import { clear, compose, has, register, size } from "./prompt-supplement-registry.js"
+import { clear, compose, register } from "./prompt-supplement-registry.js"
 
 describe("prompt-supplement-registry", () => {
 	beforeEach(() => {
@@ -135,43 +135,6 @@ describe("prompt-supplement-registry", () => {
 		})
 	})
 
-	describe("clear()", () => {
-		it("drops all registered blocks", () => {
-			const block: PromptBlock = { id: "test", render: () => "test" }
-			register("key", block)
-
-			expect(size()).toBe(1)
-			clear()
-			expect(size()).toBe(0)
-
-			const adhocBlocks = compose("adhoc")
-			const fermentBlocks = compose("ferment")
-			expect(adhocBlocks).toHaveLength(0)
-			expect(fermentBlocks).toHaveLength(0)
-		})
-	})
-
-	describe("has()", () => {
-		it("returns true for registered key", () => {
-			const block: PromptBlock = { id: "test", render: () => "test" }
-			register("my-key", block)
-
-			expect(has("my-key")).toBe(true)
-		})
-
-		it("returns false for unregistered key", () => {
-			expect(has("nonexistent")).toBe(false)
-		})
-
-		it("returns false after clear", () => {
-			const block: PromptBlock = { id: "test", render: () => "test" }
-			register("my-key", block)
-			clear()
-
-			expect(has("my-key")).toBe(false)
-		})
-	})
-
 	describe("invalid mode throws", () => {
 		it("throws when registering with invalid mode", () => {
 			const block: PromptBlock = { id: "test", render: () => "test" }
@@ -203,62 +166,6 @@ describe("prompt-supplement-registry", () => {
 			expect(adhocBlocks).toHaveLength(2)
 			expect(adhocBlocks[0]).toBe(block1)
 			expect(adhocBlocks[1]).toBe(block2)
-		})
-	})
-
-	describe("block render is callable through compose", () => {
-		it("confirms render can be called on composed block", () => {
-			const block: PromptBlock = {
-				id: "test-render",
-				render: (ctx) => `mode: ${ctx.mode}`,
-			}
-			register("test-key", block, { modes: ["adhoc"] })
-
-			const adhocBlocks = compose("adhoc")
-			const rendered = adhocBlocks[0].render({ mode: "single" })
-			expect(rendered).toBe("mode: single")
-		})
-
-		it("confirms suppress can be called on composed block", () => {
-			const block: PromptBlock = {
-				id: "test-suppress",
-				render: () => "content",
-				suppress: () => new Set(["orchestration" as const]),
-			}
-			register("test-key", block, { modes: ["ferment"] })
-
-			const fermentBlocks = compose("ferment")
-			const suppressSet = fermentBlocks[0].suppress?.({ mode: "single" })
-			expect(suppressSet).toBeInstanceOf(Set)
-			expect(suppressSet?.has("orchestration")).toBe(true)
-		})
-	})
-
-	describe("size()", () => {
-		it("returns 0 when empty", () => {
-			expect(size()).toBe(0)
-		})
-
-		it("returns count of registered blocks", () => {
-			const block1: PromptBlock = { id: "b1", render: () => "1" }
-			const block2: PromptBlock = { id: "b2", render: () => "2" }
-
-			register("k1", block1)
-			expect(size()).toBe(1)
-
-			register("k2", block2)
-			expect(size()).toBe(2)
-		})
-
-		it("does not grow when re-registering same key", () => {
-			const block1: PromptBlock = { id: "b1", render: () => "1" }
-			const block2: PromptBlock = { id: "b2", render: () => "2" }
-
-			register("k", block1)
-			expect(size()).toBe(1)
-
-			register("k", block2)
-			expect(size()).toBe(1)
 		})
 	})
 })

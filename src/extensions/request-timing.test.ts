@@ -190,8 +190,9 @@ describe("requestTimingExtension", () => {
 		const { handlers, api, appendEntry } = createMockApi()
 		requestTimingExtension(api)
 
-		const headers = new Headers()
-		headers.append("X-Trace-Id", "entries-trace")
+		const headers = {
+			entries: () => [["X-Trace-Id", "entries-trace"] as [string, string]],
+		} as unknown as Headers
 
 		await completeProviderCall(handlers, { status: 200, headers })
 

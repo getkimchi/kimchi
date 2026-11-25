@@ -216,13 +216,6 @@ describe("ContinuationNudge.evaluateTurn", () => {
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(false)
 	})
-
-	it("still nudges on a normal stopReason: stop turn", () => {
-		// Regression guard — the abort check must not regress the normal path.
-		const guard = new ContinuationNudge()
-		simulateSessionWithPriorToolCall(guard)
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
-	})
 })
 
 describe("ContinuationNudge session-level tool tracking", () => {
@@ -245,15 +238,6 @@ describe("ContinuationNudge session-level tool tracking", () => {
 		guard.resetForNewUserInput()
 		guard.recordToolCall() // first tool call of session
 		guard.resetForNewUserInput() // new cycle begins after the tool call
-		expect(guard.hasToolBeenCalledThisSession()).toBe(true)
-		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
-	})
-
-	it("session-level latch persists across user-input cycles", () => {
-		const guard = new ContinuationNudge()
-		guard.resetForNewUserInput()
-		guard.recordToolCall()
-		guard.resetForNewUserInput() // new user input arrives later
 		expect(guard.hasToolBeenCalledThisSession()).toBe(true)
 		expect(guard.evaluateTurn(textOnlyMessage)).toBe(true)
 	})
@@ -437,14 +421,6 @@ describe("ContinuationNudge.isDoneSignalReceived", () => {
 })
 
 describe("ContinuationNudge nudge-response-pending state", () => {
-	it("marks nudge response pending after evaluateTurn fires", () => {
-		const guard = new ContinuationNudge()
-		simulateSessionWithPriorToolCall(guard)
-		expect(guard.isNudgeResponsePending()).toBe(false)
-		guard.evaluateTurn(textOnlyMessage)
-		expect(guard.isNudgeResponsePending()).toBe(true)
-	})
-
 	it("remains pending when model responds without tool calls (handler must check stopReason)", () => {
 		// After a nudge fires and the model responds with text-only (no <done>),
 		// isNudgeResponsePending() stays true because recordToolCall() is never
@@ -460,15 +436,6 @@ describe("ContinuationNudge nudge-response-pending state", () => {
 		expect(guard.isDoneSignalReceived()).toBe(false)
 		// At this point the handler checks stopReason === "stop" to break
 		// the nudge cycle instead of falling through to evaluateTurn again.
-	})
-
-	it("clears pending state when model calls a tool after nudge", () => {
-		const guard = new ContinuationNudge()
-		simulateSessionWithPriorToolCall(guard)
-		guard.evaluateTurn(textOnlyMessage) // nudge fires
-		expect(guard.isNudgeResponsePending()).toBe(true)
-		guard.recordToolCall() // model obeyed the nudge
-		expect(guard.isNudgeResponsePending()).toBe(false)
 	})
 })
 

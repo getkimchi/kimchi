@@ -33,7 +33,7 @@ function truncateDescription(description: string): string {
  * finally the " — " sentinel suffix of the registered display name.
  *
  * The lookup functions are injectable so tests stay deterministic without a
- * populated global description registry (see getModelTier's capsMap default).
+ * populated global description registry.
  */
 export function resolveModelDescription(
 	model: Model<Api>,

@@ -74,13 +74,6 @@ describe("update state cache", () => {
 		})
 	})
 
-	it("preserves entries for other repos when updating one", () => {
-		saveRepoState("a", "b", { checked_at: "2026-01-01T00:00:00Z", latest_version: "1.0.0" })
-		saveRepoState("c", "d", { checked_at: "2026-01-02T00:00:00Z", latest_version: "2.0.0" })
-		expect(loadRepoState("a", "b")?.latest_version).toBe("1.0.0")
-		expect(loadRepoState("c", "d")?.latest_version).toBe("2.0.0")
-	})
-
 	it("writes on disk in snake_case + RFC3339", () => {
 		saveRepoState("a", "b", {
 			checked_at: "2023-11-14T22:13:20.000Z",

@@ -46,13 +46,11 @@ describe("droppedImagePathCandidate", () => {
 	})
 
 	it("keeps backslash-alphanumeric sequences intact (Windows-style separators)", () => {
-		// `\c` must stay `\c`; a Windows path with a real image extension would
-		// resolve via the drive root, which does not exist here → null, but the
-		// important part is the candidate was not mangled into `C:dir...`
-		const escaped = droppedImagePathCandidate(`${dir.replaceAll("/", "\\").replaceAll(" ", "_")}\\cat.png`, dir)
-		expect(escaped).toBeNull()
-		// Sanity: same path with forward slashes does resolve.
-		expect(droppedImagePathCandidate(join(dir, "cat.png"), dir)?.resolvedPath).toBe(join(dir, "cat.png"))
+		const name = "dropped\\cat.png"
+		writeFileSync(join(dir, name), Buffer.from(PNG_SIGNATURE))
+		const escaped = droppedImagePathCandidate(name, dir)
+		expect(escaped?.resolvedPath).toBe(join(dir, name))
+		expect(escaped?.image.mimeType).toBe("image/png")
 	})
 
 	it("resolves a relative path against cwd", () => {

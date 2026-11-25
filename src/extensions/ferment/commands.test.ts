@@ -1120,20 +1120,20 @@ describe("registerFermentCommands", () => {
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("/ferment mode is no longer a command", async () => {
+	it("rejects an unknown command without changing active ferment state", async () => {
 		const h = createHarness()
 		const controller = new FermentCommandController()
-		const ferment = h.storage.create("Legacy Mode Command", undefined, process.cwd())
+		const ferment = h.storage.create("Unknown Command", undefined, process.cwd())
 		h.runtime.setActive(ferment)
 
 		const result = await controller.execute(
-			{ type: "unknown", input: "mode exec" },
-			{ raw: "mode exec", pi: h.pi, ctx: h.ctx, runtime: h.runtime },
+			{ type: "unknown", input: "not_a_real_subcommand" },
+			{ raw: "not_a_real_subcommand", pi: h.pi, ctx: h.ctx, runtime: h.runtime },
 		)
 
 		expect(result).toEqual({ handled: true })
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
-		expect(h.storage.get(ferment.id)).not.toHaveProperty("mode")
+		expect(h.storage.get(ferment.id)?.status).toBe("draft")
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Unknown /ferment command"))
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})

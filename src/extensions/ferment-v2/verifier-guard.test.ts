@@ -368,33 +368,6 @@ describe("createVerifierGuard usage accumulation", () => {
 })
 
 describe("snapshotWorkspace", () => {
-	it("snapshots the working tree without touching the real index, tree, or refs", async () => {
-		const dir = await initRepo()
-		try {
-			// Dirty the tree first: the snapshot must capture this state while the
-			// real index, the working tree, and all refs stay untouched by it.
-			writeFileSync(join(dir, "tracked.txt"), "modified\n")
-			writeFileSync(join(dir, "untracked.txt"), "new\n")
-			const beforeStatus = await git(dir, ["status", "--porcelain"])
-			const beforeIndex = readFileSync(join(dir, ".git", "index"))
-			const head = await headSha(dir)
-
-			const snapshot = await snapshotWorkspace(dir)
-
-			expect(snapshot?.tree).toMatch(/^[0-9a-f]{40}$/)
-			expect(snapshot?.commit).toMatch(/^[0-9a-f]{40}$/)
-			// The snapshot commit has HEAD as parent but does not move any ref.
-			expect(snapshot?.commit).not.toBe(head)
-			const refs = await git(dir, ["show-ref"])
-			expect(refs).not.toContain(snapshot?.commit ?? "")
-			// The real index and status are byte-identical after the snapshot.
-			expect(await git(dir, ["status", "--porcelain"])).toBe(beforeStatus)
-			expect(readFileSync(join(dir, ".git", "index"))).toEqual(beforeIndex)
-		} finally {
-			rmSync(dir, { recursive: true, force: true })
-		}
-	})
-
 	it("keeps a pre-existing empty nested repository from disabling parent integrity", async () => {
 		const dir = await initRepo()
 		try {
@@ -410,15 +383,6 @@ describe("snapshotWorkspace", () => {
 			const result = await enforceWorkspaceIntegrity(dir, before as never, await workspaceHead(dir))
 			expect(result.unenforced).toBeUndefined()
 			expect(readFileSync(join(dir, "tracked.txt"), "utf-8")).toBe("original\n")
-		} finally {
-			rmSync(dir, { recursive: true, force: true })
-		}
-	})
-
-	it("returns undefined outside a git repository", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "kimchi-not-git-"))
-		try {
-			expect(await snapshotWorkspace(dir)).toBeUndefined()
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}

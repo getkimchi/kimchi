@@ -39,8 +39,6 @@ function makePi(): ExtensionAPI & {
 
 describe("sessionMetadataExtension", () => {
 	// biome-ignore lint/suspicious/noExplicitAny: mock spy refs typed loosely to avoid vitest MockInstance generic friction
-	let watcherSpy: any
-	// biome-ignore lint/suspicious/noExplicitAny: mock spy refs typed loosely to avoid vitest MockInstance generic friction
 	let recordSpy: any
 	// Captured emit callback handed to startSettingsChangeWatcher by the
 	// extension under test. Invoking it simulates the watcher firing.
@@ -53,7 +51,7 @@ describe("sessionMetadataExtension", () => {
 
 		emit = () => {}
 		stopWatcher = vi.fn()
-		watcherSpy = vi.spyOn(settingsChangeEmitter, "startSettingsChangeWatcher").mockImplementation((cb: unknown) => {
+		vi.spyOn(settingsChangeEmitter, "startSettingsChangeWatcher").mockImplementation((cb: unknown) => {
 			emit = cb as (event: string, properties: Record<string, string | number | boolean>) => void
 			return stopWatcher
 		})
@@ -63,17 +61,6 @@ describe("sessionMetadataExtension", () => {
 	afterEach(() => {
 		vi.restoreAllMocks()
 		_resetSessionMetadataStore()
-	})
-
-	it("exports a default factory function", () => {
-		expect(typeof sessionMetadataExtension).toBe("function")
-	})
-
-	it("starts the settings-change watcher on init", () => {
-		const pi = makePi()
-		sessionMetadataExtension()(pi)
-
-		expect(watcherSpy).toHaveBeenCalledTimes(1)
 	})
 
 	it("records config_changed events via recordConfigChange with the exact key/value", () => {

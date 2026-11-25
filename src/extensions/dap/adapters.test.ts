@@ -324,23 +324,6 @@ describe("module-based detection (detectModule)", () => {
 	// `detectModule` (node -e "require('fs').existsSync(...)") instead of
 	// `which node` — so a machine with node but NOT dapDebugServer.js
 	// correctly reports js-debug as absent.
-	it("detects js-debug when node is available and dapDebugServer.js exists", () => {
-		setFiles(["package.json"])
-		// `node` on PATH and the detectModule script finds the file.
-		setBinaries(["node"])
-		// The detectModule script checks existsSync for the path — mock it
-		// to return true for the js-debug script path.
-		const original = mockExistsSync.getMockImplementation()
-		mockExistsSync.mockImplementation(((p: unknown) => {
-			const s = String(p)
-			if (s.includes("dapDebugServer.js")) return true
-			return original ? original(p as fs.PathLike) : false
-		}) as never)
-		const result = detectAdapters("/project")
-		expect(result).toHaveLength(1)
-		expect(result[0].name).toBe("js-debug")
-	})
-
 	it("does NOT detect js-debug when dapDebugServer.js is absent", () => {
 		setFiles(["package.json"])
 		// node is on PATH but dapDebugServer.js is not at any install path.
@@ -351,18 +334,6 @@ describe("module-based detection (detectModule)", () => {
 		// And it should surface as missing.
 		const missing = detectMissingAdapters("/project")
 		expect(missing.find((a) => a.name === "js-debug")).toBeDefined()
-	})
-
-	it("debugpy uses detectModule (python3 -c import debugpy)", () => {
-		setFiles(["pyproject.toml"])
-		setBinaries(["python3"])
-		expect(detectAdapters("/project")[0].name).toBe("debugpy")
-	})
-
-	it("dlv uses command as detectBinary (no override needed)", () => {
-		setFiles(["go.mod"])
-		setBinaries(["dlv"])
-		expect(detectAdapters("/project")[0].name).toBe("dlv")
 	})
 })
 

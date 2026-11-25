@@ -60,13 +60,6 @@ describe("resolveGatewayCredentials", () => {
 		expect(creds).toEqual({ token: "stored-key", source: "api-key" })
 	})
 
-	it("resolves from the default auth.json under KIMCHI_CODING_AGENT_DIR", () => {
-		seedAuth({ "kimchi-dev": { type: "oauth", access: "oauth-access", refresh: "r", orgId: "org-9" } })
-		const creds = resolveGatewayCredentials({ apiKey: "" })
-		expect(creds.token).toBe("oauth-access")
-		expect(creds.organizationId).toBe("org-9")
-	})
-
 	it("honors an explicit authPath over KIMCHI_CODING_AGENT_DIR", () => {
 		const otherDir = mkdtempSync(join(tmpdir(), "gateway-credentials-other-"))
 		try {

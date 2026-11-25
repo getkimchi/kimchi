@@ -190,15 +190,6 @@ describe("matchPrompt", () => {
 		expect(matchPrompt(registry, "convert it to pdf")[0].matched).toBe("kw:pdf")
 	})
 
-	it("matches the failing session's literal prompt", () => {
-		const registry = buildTriggerRegistry([
-			{ name: "pdf", content: docWith("triggers:\n  prompt:\n    extensions: [pdf]"), origin: "bundled" },
-		])
-		const prompt =
-			"Autopilot morning: I got the mail migration runbook — ~/q4-mail-migration/mail-migration-runbook-q4-hard.pdf.\nRead it and execute whatever it requires, end to end."
-		expect(matchPrompt(registry, prompt)).toEqual([{ name: "pdf", matched: "ext:.pdf" }])
-	})
-
 	it("stays fast on hostile prompts (no regex from skill content)", () => {
 		const registry = buildTriggerRegistry([
 			{

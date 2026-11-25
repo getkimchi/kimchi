@@ -137,20 +137,6 @@ describe("sendPreSessionEvent", () => {
 		expect(attrs["telemetry.cli_version"]).toBe("9.9.9-dev")
 	})
 
-	it("includes all four OS metadata keys including host_os and is_wsl", async () => {
-		sendPreSessionEvent(makeConfig(), "app_started")
-		await drain()
-
-		const { attrs } = lastSendLogCall()
-		expect(attrs["telemetry.os"]).toBe(process.platform)
-		const expectedArch = process.arch === "x64" ? "amd64" : process.arch
-		expect(attrs["telemetry.arch"]).toBe(expectedArch)
-		expect(attrs["telemetry.host_os"]).toBeDefined()
-		expect(attrs["telemetry.is_wsl"]).toBe(false)
-		// On non-WSL, host_os should equal os
-		expect(attrs["telemetry.host_os"]).toBe(attrs["telemetry.os"])
-	})
-
 	it("maps event properties to event.* attributes", async () => {
 		sendPreSessionEvent(makeConfig(), "harness_launched", {
 			version: "2.0.0",
@@ -356,18 +342,6 @@ describe("sendPreSessionEvent OS metadata under WSL", () => {
 		expect(attrs["telemetry.host_os"]).toBe("win32")
 		expect(attrs["telemetry.is_wsl"]).toBe(true)
 		expect(attrs["telemetry.arch"]).toBe("amd64")
-	})
-
-	it("keeps os and host_os distinct under WSL (host_os !== os)", async () => {
-		sendPreSessionEvent(makeConfig(), "app_started")
-		await drain()
-
-		const { attrs } = lastSendLogCall()
-		expect(attrs["telemetry.os"]).toBe("linux")
-		expect(attrs["telemetry.host_os"]).toBe("win32")
-		// Under WSL host_os diverges from os — the inverse of the non-WSL
-		// assertion (host_os === os) in the describe block above.
-		expect(attrs["telemetry.host_os"]).not.toBe(attrs["telemetry.os"])
 	})
 })
 

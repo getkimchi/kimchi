@@ -1,6 +1,6 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
-import { parseMultipleChoiceInput, promptQuestionnaireFallback } from "./questionnaire-fallback.js"
+import { promptQuestionnaireFallback } from "./questionnaire-fallback.js"
 import { type Question, type QuestionOption, YES_NO_OPTIONS } from "./questionnaire-reducer.js"
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -779,7 +779,7 @@ describe("promptQuestionnaireFallback — multi-question flow", () => {
 	})
 })
 
-describe("parseMultipleChoiceInput", () => {
+describe("parseMultipleChoiceInput", async () => {
 	const baseOptions: QuestionOption[] = [
 		{ id: "r", label: "Rabbit" },
 		{ id: "c", label: "Carrot" },
@@ -792,154 +792,177 @@ describe("parseMultipleChoiceInput", () => {
 		{ id: "__other__", label: "Other" },
 	]
 
-	describe("numbered input", () => {
-		it("parses a single number", () => {
-			expect(parseMultipleChoiceInput("1", baseOptions)).toEqual([{ type: "selected", index: 1 }])
+	async function parseMultipleChoiceInput(input: string, options: QuestionOption[]) {
+		const result = await promptQuestionnaireFallback(makeUI({ input: () => Promise.resolve(input) }), [
+			{
+				id: "q",
+				label: "q",
+				required: true,
+				type: "multi",
+				prompt: "Choose options",
+				options,
+				allowOther: options.some((option) => option.id === "__other__"),
+			},
+		])
+		const answer = result.answers[0]
+		if (!answer) return []
+		return (answer.indices ?? []).map((index, position) => {
+			const option = options[index - 1]
+			if (option?.id === "__other__") {
+				return { type: "custom", index, value: answer.labels?.[position] ?? answer.label }
+			}
+			return { type: "selected", index }
+		})
+	}
+
+	describe("numbered input", async () => {
+		it("parses a single number", async () => {
+			expect(await parseMultipleChoiceInput("1", baseOptions)).toEqual([{ type: "selected", index: 1 }])
 		})
 
-		it("parses a single number with dot", () => {
-			expect(parseMultipleChoiceInput("1.", baseOptions)).toEqual([{ type: "selected", index: 1 }])
+		it("parses a single number with dot", async () => {
+			expect(await parseMultipleChoiceInput("1.", baseOptions)).toEqual([{ type: "selected", index: 1 }])
 		})
 
-		it("parses a single number with dash", () => {
-			expect(parseMultipleChoiceInput("1-", baseOptions)).toEqual([{ type: "selected", index: 1 }])
+		it("parses a single number with dash", async () => {
+			expect(await parseMultipleChoiceInput("1-", baseOptions)).toEqual([{ type: "selected", index: 1 }])
 		})
 
-		it("parses a single number with parentheses", () => {
-			expect(parseMultipleChoiceInput("(1)", baseOptions)).toEqual([{ type: "selected", index: 1 }])
+		it("parses a single number with parentheses", async () => {
+			expect(await parseMultipleChoiceInput("(1)", baseOptions)).toEqual([{ type: "selected", index: 1 }])
 		})
 
-		it("parses a single number with closing paren", () => {
-			expect(parseMultipleChoiceInput("1)", baseOptions)).toEqual([{ type: "selected", index: 1 }])
+		it("parses a single number with closing paren", async () => {
+			expect(await parseMultipleChoiceInput("1)", baseOptions)).toEqual([{ type: "selected", index: 1 }])
 		})
 
-		it("parses multiple comma-separated numbers", () => {
-			expect(parseMultipleChoiceInput("1, 3", baseOptions)).toEqual([
+		it("parses multiple comma-separated numbers", async () => {
+			expect(await parseMultipleChoiceInput("1, 3", baseOptions)).toEqual([
 				{ type: "selected", index: 1 },
 				{ type: "selected", index: 3 },
 			])
 		})
 
-		it("parses multiple newline-separated numbers", () => {
-			expect(parseMultipleChoiceInput("1.\n2.\n3.", baseOptions)).toEqual([
+		it("parses multiple newline-separated numbers", async () => {
+			expect(await parseMultipleChoiceInput("1.\n2.\n3.", baseOptions)).toEqual([
 				{ type: "selected", index: 1 },
 				{ type: "selected", index: 2 },
 				{ type: "selected", index: 3 },
 			])
 		})
 
-		it("ignores out-of-range numbers", () => {
-			expect(parseMultipleChoiceInput("1, 5", baseOptions)).toEqual([{ type: "selected", index: 1 }])
+		it("ignores out-of-range numbers", async () => {
+			expect(await parseMultipleChoiceInput("1, 5", baseOptions)).toEqual([{ type: "selected", index: 1 }])
 		})
 
-		it("ignores zero and negative numbers", () => {
-			expect(parseMultipleChoiceInput("0, -1, 2", baseOptions)).toEqual([{ type: "selected", index: 2 }])
+		it("ignores zero and negative numbers", async () => {
+			expect(await parseMultipleChoiceInput("0, -1, 2", baseOptions)).toEqual([{ type: "selected", index: 2 }])
 		})
 
-		it("returns empty array for no valid numbers", () => {
-			expect(parseMultipleChoiceInput("yes please", baseOptions)).toEqual([])
+		it("returns empty array for no valid numbers", async () => {
+			expect(await parseMultipleChoiceInput("yes please", baseOptions)).toEqual([])
 		})
 	})
 
-	describe("label input", () => {
-		it("matches a single label", () => {
-			expect(parseMultipleChoiceInput("Rabbit", baseOptions)).toEqual([{ type: "selected", index: 1 }])
+	describe("label input", async () => {
+		it("matches a single label", async () => {
+			expect(await parseMultipleChoiceInput("Rabbit", baseOptions)).toEqual([{ type: "selected", index: 1 }])
 		})
 
-		it("matches multiple comma-separated labels", () => {
-			expect(parseMultipleChoiceInput("Rabbit, Carrot", baseOptions)).toEqual([
+		it("matches multiple comma-separated labels", async () => {
+			expect(await parseMultipleChoiceInput("Rabbit, Carrot", baseOptions)).toEqual([
 				{ type: "selected", index: 1 },
 				{ type: "selected", index: 2 },
 			])
 		})
 
-		it("matches multiple newline-separated labels", () => {
-			expect(parseMultipleChoiceInput("Rabbit\nCarrot", baseOptions)).toEqual([
+		it("matches multiple newline-separated labels", async () => {
+			expect(await parseMultipleChoiceInput("Rabbit\nCarrot", baseOptions)).toEqual([
 				{ type: "selected", index: 1 },
 				{ type: "selected", index: 2 },
 			])
 		})
 
-		it("is case-insensitive", () => {
-			expect(parseMultipleChoiceInput("RABBIT, carrot", baseOptions)).toEqual([
+		it("is case-insensitive", async () => {
+			expect(await parseMultipleChoiceInput("RABBIT, carrot", baseOptions)).toEqual([
 				{ type: "selected", index: 1 },
 				{ type: "selected", index: 2 },
 			])
 		})
 
-		it("returns correct indexes for answers out of order", () => {
+		it("returns correct indexes for answers out of order", async () => {
 			// Lettuce=3, Rabbit=1
-			expect(parseMultipleChoiceInput("Lettuce\nRabbit", baseOptions)).toEqual([
+			expect(await parseMultipleChoiceInput("Lettuce\nRabbit", baseOptions)).toEqual([
 				{ type: "selected", index: 1 },
 				{ type: "selected", index: 3 },
 			])
 		})
 
-		it("does not partial match labels", () => {
-			expect(parseMultipleChoiceInput("Rabb", baseOptions)).toEqual([])
+		it("does not partial match labels", async () => {
+			expect(await parseMultipleChoiceInput("Rabb", baseOptions)).toEqual([])
 		})
 
-		it("returns empty array for unrecognized labels without __other__", () => {
-			expect(parseMultipleChoiceInput("Broccoli", baseOptions)).toEqual([])
+		it("returns empty array for unrecognized labels without __other__", async () => {
+			expect(await parseMultipleChoiceInput("Broccoli", baseOptions)).toEqual([])
 		})
 	})
 
-	describe("__other__ option — numbered input", () => {
-		it("captures trailing text after other option number", () => {
-			expect(parseMultipleChoiceInput("3: Broccoli", optionsWithOther)).toEqual([
+	describe("__other__ option — numbered input", async () => {
+		it("captures trailing text after other option number", async () => {
+			expect(await parseMultipleChoiceInput("3: Broccoli", optionsWithOther)).toEqual([
 				{ type: "custom", index: 3, value: "Broccoli" },
 			])
 		})
 
-		it("captures other value alongside selected options", () => {
-			expect(parseMultipleChoiceInput("1, 3: Broccoli", optionsWithOther)).toEqual([
+		it("captures other value alongside selected options", async () => {
+			expect(await parseMultipleChoiceInput("1, 3: Broccoli", optionsWithOther)).toEqual([
 				{ type: "selected", index: 1 },
 				{ type: "custom", index: 3, value: "Broccoli" },
 			])
 		})
 
-		it("ignores other option number with no trailing value", () => {
-			expect(parseMultipleChoiceInput("1, 3", optionsWithOther)).toEqual([{ type: "selected", index: 1 }])
+		it("ignores other option number with no trailing value", async () => {
+			expect(await parseMultipleChoiceInput("1, 3", optionsWithOther)).toEqual([{ type: "selected", index: 1 }])
 		})
 	})
 
-	describe("__other__ option — label input", () => {
-		it("captures unrecognized label as custom value", () => {
-			expect(parseMultipleChoiceInput("Broccoli", optionsWithOther)).toEqual([
+	describe("__other__ option — label input", async () => {
+		it("captures unrecognized label as custom value", async () => {
+			expect(await parseMultipleChoiceInput("Broccoli", optionsWithOther)).toEqual([
 				{ type: "custom", index: 3, value: "Broccoli" },
 			])
 		})
 
-		it("captures custom value alongside matched labels", () => {
-			expect(parseMultipleChoiceInput("Rabbit, Broccoli", optionsWithOther)).toEqual([
+		it("captures custom value alongside matched labels", async () => {
+			expect(await parseMultipleChoiceInput("Rabbit, Broccoli", optionsWithOther)).toEqual([
 				{ type: "selected", index: 1 },
 				{ type: "custom", index: 3, value: "Broccoli" },
 			])
 		})
 
-		it("captures multiple unrecognized parts as separate custom values", () => {
-			expect(parseMultipleChoiceInput("Broccoli, Spinach", optionsWithOther)).toEqual([
+		it("captures multiple unrecognized parts as separate custom values", async () => {
+			expect(await parseMultipleChoiceInput("Broccoli, Spinach", optionsWithOther)).toEqual([
 				{ type: "custom", index: 3, value: "Broccoli" },
 				{ type: "custom", index: 3, value: "Spinach" },
 			])
 		})
 	})
 
-	describe("edge cases", () => {
-		it("handles empty string", () => {
-			expect(parseMultipleChoiceInput("", baseOptions)).toEqual([])
+	describe("edge cases", async () => {
+		it("handles empty string", async () => {
+			expect(await parseMultipleChoiceInput("", baseOptions)).toEqual([])
 		})
 
-		it("handles whitespace-only input", () => {
-			expect(parseMultipleChoiceInput("   ", baseOptions)).toEqual([])
+		it("handles whitespace-only input", async () => {
+			expect(await parseMultipleChoiceInput("   ", baseOptions)).toEqual([])
 		})
 
-		it("handles empty options list", () => {
-			expect(parseMultipleChoiceInput("1, 2", [])).toEqual([])
+		it("handles empty options list", async () => {
+			expect(await parseMultipleChoiceInput("1, 2", [])).toEqual([])
 		})
 
-		it("handles extra whitespace around inputs", () => {
-			expect(parseMultipleChoiceInput("  Rabbit  ,  Carrot  ", baseOptions)).toEqual([
+		it("handles extra whitespace around inputs", async () => {
+			expect(await parseMultipleChoiceInput("  Rabbit  ,  Carrot  ", baseOptions)).toEqual([
 				{ type: "selected", index: 1 },
 				{ type: "selected", index: 2 },
 			])

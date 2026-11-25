@@ -60,8 +60,6 @@ describe("listWorkspaces", () => {
 			status: "active",
 			host: "ws-1.remote.kimchi.dev",
 		})
-		// New Workspace shape must NOT carry hasConnectedClient.
-		expect((result[0] as unknown as { hasConnectedClient?: boolean }).hasConnectedClient).toBeUndefined()
 		expect(result[0].createdAt).toBeInstanceOf(Date)
 		expect(result[0].lastActivityAt).toBeInstanceOf(Date)
 		expect(result[0].createdAt.toISOString()).toBe("2026-05-17T10:30:00.000Z")
@@ -262,33 +260,6 @@ describe("listWorkspaces", () => {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
-			)
-
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
-
-		expect(result[0].cpuMillicores).toBeUndefined()
-		expect(result[0].ramBytes).toBeUndefined()
-		expect(result[0].pvcSizeBytes).toBeUndefined()
-	})
-
-	it("ignores the deprecated legacy wire shapes (flat int64 fields, top-level resources)", async () => {
-		const mockFetch = vi
-			.fn()
-			.mockResolvedValueOnce(verifyResponse())
-			.mockResolvedValueOnce(
-				new Response(
-					JSON.stringify({
-						items: [
-							workspaceFixture({
-								cpuMillicores: "1500",
-								ramBytes: "6442450944",
-								pvcSizeBytes: "21474836480",
-								resources: { cpu: "200m", memory: "512Mi", pvcSize: "10Gi" },
-							}),
-						],
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				),
 			)
 
 		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })

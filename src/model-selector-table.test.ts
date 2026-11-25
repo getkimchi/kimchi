@@ -392,19 +392,6 @@ describe("/model selector capability table (installed patch)", () => {
 		const lines = renderPlain(100)
 		expect(lines.some((l) => l.includes("No matching models"))).toBe(true)
 	})
-
-	it("applies the patch hunk inside updateList of the installed dist (source cross-check)", () => {
-		const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
-		const distFile = resolve(
-			projectRoot,
-			"node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/model-selector.js",
-		)
-		const source = readFileSync(distFile, "utf-8")
-		const updateList = source.slice(source.indexOf("updateList() {"), source.indexOf("handleSelect(model) {"))
-		expect(updateList).toContain("__kimchiRenderModelTable")
-		expect(updateList).toContain("__kimchiModelDescriptions")
-		expect(updateList).toContain('"Default for new sessions."')
-	})
 })
 
 // Keep vi referenced for the future use of mocks in this file's helpers.

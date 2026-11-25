@@ -7,7 +7,7 @@ import {
 	getResourceDefinitions,
 	invalidateResourceDefinitionsCache,
 } from "../../resources/definitions.js"
-import { discoverCommandHookResources, FULL_COMMAND_HOOK_EVENTS } from "../hook-adapters/discovery.js"
+import { discoverCommandHookResources } from "../hook-adapters/discovery.js"
 import { PLUGIN_PACKAGE_HOOK_ADAPTER_DEFINITION } from "./definition.js"
 
 // Isolate filesystem env
@@ -187,9 +187,7 @@ describe("discoverCommandHookResources with pluginRoot", () => {
 		expect(new Set(ids).size).toBe(2)
 	})
 
-	it("supports the full Claude Code hook lifecycle", () => {
-		expect(PLUGIN_PACKAGE_HOOK_ADAPTER_DEFINITION.supportedEvents).toEqual(FULL_COMMAND_HOOK_EVENTS)
-
+	it("discovers every required lifecycle event from real hook files", () => {
 		const pkgRoot = join(dir, "pkg-full")
 		const hooksFile = makeHooksFile(join(pkgRoot, "hooks"))
 		const definition = {
@@ -198,7 +196,7 @@ describe("discoverCommandHookResources with pluginRoot", () => {
 		}
 
 		const resources = discoverCommandHookResources(definition)
-		expect(resources.map((r) => r.eventName).sort()).toEqual(["PostToolUse", "PreToolUse", "SessionStart"])
+		expect(new Set(resources.map((r) => r.eventName))).toEqual(new Set(["SessionStart", "PreToolUse", "PostToolUse"]))
 	})
 })
 
@@ -210,9 +208,5 @@ describe("resource definition registry", () => {
 		const defs = getResourceDefinitions()
 		expect(defs.some((d) => d.id === "extensions.plugin-package-hook-adapter")).toBe(false)
 		expect(defs.some((d) => d.id.startsWith("hooks.plugin-package."))).toBe(false)
-	})
-
-	it("getResourceDefinitions() does not throw or infinite-loop", () => {
-		expect(() => getResourceDefinitions()).not.toThrow()
 	})
 })

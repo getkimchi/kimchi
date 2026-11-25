@@ -41,16 +41,6 @@ describe("canonicalRepoUrl", () => {
 	it("normalizes ssh:// form", () => {
 		expect(canonicalRepoUrl("ssh://git@github.com/o/r")).toBe("github.com/o/r")
 	})
-
-	it("treats all three forms as equal", () => {
-		const a = canonicalRepoUrl("git@github.com:o/r.git")
-		const b = canonicalRepoUrl("https://user@github.com/o/r.git")
-		const c = canonicalRepoUrl("ssh://git@github.com/o/r")
-		expect(a).toBe("github.com/o/r")
-		expect(a).toBe(b)
-		expect(b).toBe(c)
-	})
-
 	it("is host case-insensitive", () => {
 		expect(canonicalRepoUrl("git@GitHub.COM:o/r.git")).toBe("github.com/o/r")
 		expect(canonicalRepoUrl("git@GitHub.COM:o/r.git")).toBe(canonicalRepoUrl("git@github.com:o/r.git"))

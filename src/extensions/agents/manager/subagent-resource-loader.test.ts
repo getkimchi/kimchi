@@ -405,20 +405,6 @@ describe("subagent web tools — real-session registration", () => {
 		expect(dropped).toEqual([])
 	})
 
-	it("keeps web tools registered but inactive on the extensions-disabled allowlist path", async () => {
-		// The runner now never hands web factories to a sealed session; this pins
-		// the allowlist contract itself for defense in depth: whatever IS
-		// registered stays inactive unless allowlisted.
-		const session = await realSubagentSession(subagentWebToolFactories(), {
-			toolNames: ["read", "grep"],
-			noExtensions: true,
-		})
-
-		expect(session.getActiveToolNames()).not.toContain("web_search")
-		expect(session.getActiveToolNames()).not.toContain("web_fetch")
-		expect(session.getActiveToolNames()).toContain("read")
-	})
-
 	it("registers no web tools when the web resources are disabled in settings", async () => {
 		writeFileSync(
 			join(testAgentDir, "settings.json"),

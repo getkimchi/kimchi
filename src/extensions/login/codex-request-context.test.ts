@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest"
 import {
 	beginCodexCompaction,
 	codexRequestMetadata,
-	countCompactions,
 	endCodexCompaction,
 	resetCodexSession,
 	resolveCodexSession,
@@ -79,10 +78,6 @@ describe("codex request context", () => {
 		resetCodexSession("s1")
 		expect(codexRequestMetadata("s1").windowNumber).toBe(0)
 		resetCodexSession("s1")
-	})
-
-	it("counts compaction entries only", () => {
-		expect(countCompactions([{ type: "message" }, { type: "compaction" }, { type: "compaction" }])).toBe(2)
 	})
 
 	describe("resolveCodexSession", () => {

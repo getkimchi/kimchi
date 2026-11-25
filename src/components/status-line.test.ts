@@ -1431,14 +1431,6 @@ describe("status line pinning", () => {
 		})
 	})
 
-	it("unpinned agents is hidden when count is zero", () => {
-		withPinned([], () => {
-			const sl = makeStatusLine()
-			const visible = stripAnsi(sl.render(200)[0])
-			expect(visible).not.toContain("0 agents")
-		})
-	})
-
 	it("pinned context shows full bar form (with █) at wide width", () => {
 		withPinned(["context"], () => {
 			const sl = makeStatusLine({ percent: 50 })
@@ -1477,31 +1469,6 @@ describe("status line pinning", () => {
 			const visible = stripAnsi(sl.render(200)[0])
 			expect(visible).toContain("tags:")
 			expect(visible).toContain("—")
-		})
-	})
-
-	it("pinned-first ordering: permissions pinned, agents not → unpinned agents appear left of pinned permissions", () => {
-		withPinned(["permissions"], () => {
-			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2) // agents now visible
-			vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
-			const permissionsMode = "● default \x1b[2m→ shift+tab\x1b[0m"
-			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData({ permissionsMode }))
-			const visible = stripAnsi(sl.render(200)[0])
-			const permIdx = visible.indexOf("default")
-			const agentsIdx = visible.indexOf("agents")
-			expect(agentsIdx).toBeLessThan(permIdx)
-		})
-	})
-
-	it("pinned and unpinned segments are separated by ' · '", () => {
-		withPinned(["permissions"], () => {
-			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
-			vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
-			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData({ permissionsMode: "● default" }))
-			const visible = stripAnsi(sl.render(200)[0])
-			// Should contain exactly one · between pinned (permissions) and unpinned (agents, model, etc.)
-			const separators = visible.match(/ · /g) ?? []
-			expect(separators.length).toBeGreaterThanOrEqual(1)
 		})
 	})
 

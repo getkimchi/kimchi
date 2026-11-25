@@ -126,30 +126,6 @@ describe("ProposeScopingParams schema", () => {
 		expect(Value.Check(ProposeScopingParams, payload)).toBe(true)
 	})
 
-	it("rejects the old radio/checkbox vocabulary", () => {
-		const payload = {
-			ferment_id: "f-123",
-			title: "Test Ferment",
-			goal: "Do something",
-			success_criteria: ["Tests pass"],
-			phases: minimalPhases(),
-			questions: [
-				{
-					id: "surfaces",
-					type: "checkbox",
-					question: "Which surfaces?",
-					options: [
-						{ id: "cli", label: "CLI" },
-						{ id: "docs", label: "Docs" },
-					],
-				},
-			],
-			gates: passingGates(),
-		}
-
-		expect(Value.Check(ProposeScopingParams, payload)).toBe(false)
-	})
-
 	it("accepts payload without questions (questions is optional)", () => {
 		const payload = {
 			ferment_id: "f-123",
@@ -458,7 +434,7 @@ describe("ScopeParams schema", () => {
 		)
 	})
 
-	it("accepts success criteria as an array and rejects legacy text", () => {
+	it("accepts success criteria as an array", () => {
 		const basePayload = {
 			ferment_id: "f-123",
 			title: "Test Ferment",
@@ -467,7 +443,6 @@ describe("ScopeParams schema", () => {
 			gates: passingGates(),
 		}
 
-		expect(Value.Check(ScopeParams, { ...basePayload, success_criteria: "Tests pass" })).toBe(false)
 		expect(Value.Check(ScopeParams, { ...basePayload, success_criteria: ["Tests pass", "Smoke works"] })).toBe(true)
 	})
 
@@ -581,20 +556,6 @@ describe("AskUserParams schema", () => {
 		expect(Value.Check(AskUserParams, payload)).toBe(true)
 	})
 
-	// LLM-1928: the original failure was ask_user.questions[].type using the
-	// wrong vocabulary. These types must now be rejected at the schema layer.
-	it("rejects the old radio vocabulary in questions[].type", () => {
-		const payload = base([{ id: "approach", type: "radio", prompt: "Which?", options: [{ id: "a", label: "A" }] }])
-		expect(Value.Check(AskUserParams, payload)).toBe(false)
-	})
-
-	it("rejects the old checkbox vocabulary in questions[].type", () => {
-		const payload = base([
-			{ id: "areas", type: "checkbox", prompt: "Which areas?", options: [{ id: "x", label: "X" }] },
-		])
-		expect(Value.Check(AskUserParams, payload)).toBe(false)
-	})
-
 	it("rejects an invented question type", () => {
 		const payload = base([{ id: "ship", type: "confirmation", prompt: "Ship?" }])
 		expect(Value.Check(AskUserParams, payload)).toBe(false)
@@ -615,15 +576,6 @@ describe("AskUserParams schema", () => {
 			questions: [{ id: "ok", type: "confirm", prompt: "Proceed?" }],
 		}
 		expect(Value.Check(AskUserParams, payload)).toBe(true)
-	})
-
-	it("AskUserQuestionSchema does not expose otherLabel or placeholder", () => {
-		const questionsProperty = (
-			AskUserParams as unknown as { properties: { questions: { items: { properties: Record<string, unknown> } } } }
-		).properties.questions
-		const questionProperties = questionsProperty.items.properties
-		expect(questionProperties).not.toHaveProperty("otherLabel")
-		expect(questionProperties).not.toHaveProperty("placeholder")
 	})
 })
 

@@ -15,14 +15,6 @@ describe("parseFermentCommand", () => {
 		expect(parseFermentCommand("Rewrite login")).toEqual({ type: "unknown", input: "Rewrite login" })
 	})
 
-	it("does not accept the old add alias", () => {
-		expect(parseFermentCommand('add "Rewrite login"')).toEqual({ type: "unknown", input: 'add "Rewrite login"' })
-	})
-
-	it("does not accept the old mode command", () => {
-		expect(parseFermentCommand("mode exec")).toEqual({ type: "unknown", input: "mode exec" })
-	})
-
 	it("parses switch force before the target", () => {
 		expect(parseFermentCommand('switch --force "Rewrite login"')).toEqual({
 			type: "switch",

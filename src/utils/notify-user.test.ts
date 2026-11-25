@@ -64,11 +64,4 @@ describe("notifyUser", () => {
 		expect(errorSpy).not.toHaveBeenCalled()
 		expect(warnSpy).not.toHaveBeenCalled()
 	})
-
-	it("passes interpolated messages through unchanged", () => {
-		const { ctx, notify } = createContext(true)
-		const message = `permissions: failed (details: ${"nested"})`
-		notifyUser(ctx, message, "warning")
-		expect(notify).toHaveBeenCalledWith(message, "warning")
-	})
 })

@@ -30,15 +30,6 @@ describe("isHiddenToolCall", () => {
 		expect(isHiddenToolCall("Agent", { visibility: "system" })).toBe(true)
 		expect(isHiddenToolCall("Agent", { visibility: "System" })).toBe(true)
 		expect(isHiddenToolCall("Agent", { visibility: "SYSTEM" })).toBe(true)
-	})
-
-	it("detects hidden system Agent calls", () => {
-		expect(isHiddenToolCall("Agent", { visibility: "system" })).toBe(true)
-		expect(isHiddenToolCall("Agent", { visibility: "user" })).toBe(false)
-		expect(isHiddenToolCall("bash", { visibility: "system" })).toBe(false)
-	})
-
-	it("returns true for Agent with mixed-case 'System' visibility", () => {
 		expect(isHiddenToolCall("Agent", { visibility: "SyStEm" })).toBe(true)
 	})
 })

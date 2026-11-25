@@ -31,11 +31,19 @@ describe("getVersion", () => {
 		expect(v).toBe("1.2.3")
 	})
 
-	it("memoizes the result (returns the same value on repeated calls)", async () => {
-		const { getVersion } = await import("./utils.js")
-		const v1 = getVersion()
-		const v2 = getVersion()
-		expect(v1).toBe(v2)
+	it("memoizes the result instead of rereading changed package metadata", async () => {
+		const tmpDir = mkdtempSync(resolve(tmpdir(), "kimchi-version-cache-"))
+		const packagePath = resolve(tmpDir, "package.json")
+		try {
+			writeFileSync(packagePath, JSON.stringify({ name: "kimchi-test", version: "1.2.3" }))
+			vi.stubEnv("PI_PACKAGE_DIR", tmpDir)
+			const { getVersion } = await import("./utils.js")
+			expect(getVersion()).toBe("1.2.3")
+			writeFileSync(packagePath, JSON.stringify({ name: "kimchi-test", version: "9.9.9" }))
+			expect(getVersion()).toBe("1.2.3")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 })
 
@@ -84,12 +92,25 @@ describe("getDetectedVersion", () => {
 		expect(getDetectedVersion()).toBe("dev")
 	})
 
-	it("memoizes the result (returns the same value on repeated calls)", async () => {
-		vi.stubEnv("PI_PACKAGE_DIR", "")
-		const { getDetectedVersion } = await import("./utils.js")
-		const v1 = getDetectedVersion()
-		const v2 = getDetectedVersion()
-		expect(v1).toBe(v2)
+	it("memoizes source-run detection across source package changes", async () => {
+		const tmpDir = mkdtempSync(resolve(tmpdir(), "kimchi-detected-version-cache-"))
+		const packagePath = resolve(tmpDir, "package.json")
+		try {
+			writeFileSync(packagePath, JSON.stringify({ name: "@kimchi-dev/cli", version: "0.0.0" }))
+			vi.stubEnv("PI_PACKAGE_DIR", "")
+			vi.doMock("./utils.js", async (importOriginal) => {
+				const actual = await importOriginal<typeof import("./utils.js")>()
+				return { ...actual, SOURCE_ROOT: tmpDir }
+			})
+			const { getDetectedVersion, detectVersion } = await import("./utils.js")
+			expect(getDetectedVersion()).toBe("dev")
+			expect(detectVersion(tmpDir, "9.9.9")).toBe("dev")
+			writeFileSync(packagePath, JSON.stringify({ name: "kimchi-test", version: "9.9.9" }))
+			expect(detectVersion(tmpDir, "9.9.9")).toBe("9.9.9")
+			expect(getDetectedVersion()).toBe("dev")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 })
 

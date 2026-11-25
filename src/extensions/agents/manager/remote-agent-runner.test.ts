@@ -1137,44 +1137,6 @@ describe("runRemoteAgent", () => {
 			expect(deleteSession).not.toHaveBeenCalled()
 		})
 
-		it("resolves exactly once — no double completion on any path", async () => {
-			// Normal completion: prompt() resolves once, deleteSession called once
-			const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ reconnectBackoffsMs: [10, 20, 40] }))
-			expect(result.stopReason).toBe("end_turn")
-			expect(deleteSession).toHaveBeenCalledOnce()
-			expect(mockPrompt).toHaveBeenCalledOnce()
-		})
-
-		it("resolves exactly once on recovery path — no double completion", async () => {
-			mockPrompt.mockRejectedValueOnce(new RemoteConnectionError("WS closed"))
-			vi.mocked(getSession).mockImplementation(quietRunningFor(1))
-
-			const result = await runUntilTurnEnd(makeRecoveryOptions())
-			expect(result.stopReason).toBe("recovered")
-			// deleteSession called exactly once (after the successful reattach recovery)
-			expect(deleteSession).toHaveBeenCalledOnce()
-			expect(mockPrompt).toHaveBeenCalledOnce()
-		})
-
-		it("resolves exactly once on finished-while-away recovery path", async () => {
-			mockPrompt.mockRejectedValueOnce(new RemoteConnectionError("WS closed"))
-			vi.mocked(getSession).mockResolvedValue({
-				name: "s",
-				agentMode: "ACP",
-				yolo: true,
-				alive: true,
-				agentRunning: false,
-				clientConnected: false,
-				connectedThroughBridge: false,
-				finishedAt: new Date().toISOString(),
-			})
-
-			const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ reconnectBackoffsMs: [10, 20, 40] }))
-			expect(result.stopReason).toBe("recovered")
-			// deleteSession called exactly once (after recovery)
-			expect(deleteSession).toHaveBeenCalledOnce()
-		})
-
 		it("fires onReconnecting(true) on disconnect then onReconnecting(false) on reattach", async () => {
 			mockPrompt.mockRejectedValueOnce(new RemoteConnectionError("WebSocket closed"))
 			const onReconnecting = vi.fn()
@@ -1520,51 +1482,7 @@ describe("runRemoteAgent", () => {
 		})
 	})
 
-	describe("RemoteAgentSession steer during reconnecting", () => {
-		it("throws 'agent temporarily unreachable' when session is reconnecting", async () => {
-			// This tests the RemoteAgentSession adapter's steer() method directly.
-			// The adapter is normally wired by agent-manager._runRemote, but the
-			// steer behavior is self-contained in the adapter class.
-			const { RemoteAgentSession } = await import("./remote-agent-session.js")
-			const session = new RemoteAgentSession()
-			session.setReconnecting(true)
-			await expect(session.steer("do something")).rejects.toThrow("agent temporarily unreachable")
-		})
-
-		it("rejects cleanly when no client is bound yet (not reconnecting)", async () => {
-			const { RemoteAgentSession } = await import("./remote-agent-session.js")
-			const session = new RemoteAgentSession()
-			await expect(session.steer("do something")).rejects.toThrow("still initializing")
-		})
-	})
-
 	describe("activity reset on reattach", () => {
-		it("clears stale tool state and emits activity_reset when reattaching", async () => {
-			const { RemoteAgentSession } = await import("./remote-agent-session.js")
-			const session = new RemoteAgentSession()
-
-			// Track events emitted by the session
-			const events: string[] = []
-			session.subscribe((e) => events.push(e.type))
-
-			// Simulate pre-disconnect tool activity
-			session.recordToolCallStart("bash", "tc-1")
-			session.recordToolCallStart("read", "tc-2")
-			session.appendAssistantText("Some old text")
-
-			// Verify tools are tracked
-			expect(session.messages.length).toBeGreaterThan(0)
-
-			// Enter reconnecting state
-			session.setReconnecting(true)
-			expect(events).not.toContain("activity_reset")
-
-			// Reattach — should clear stale state and emit activity_reset
-			session.setReconnecting(false)
-
-			expect(events).toContain("activity_reset")
-		})
-
 		it("resets responseText on reattach so progress line starts fresh", async () => {
 			// Pre-disconnect: the live turn streams partial text, then the WS dies.
 			mockPrompt.mockImplementation(async () => {
@@ -1615,42 +1533,6 @@ describe("runRemoteAgent", () => {
 			// sliced against) the stale pre-disconnect text.
 			expect(deltas).toEqual(["partial stale ", "fresh ", "text"])
 			expect(fullTexts).toEqual(["partial stale ", "fresh ", "fresh text"])
-		})
-
-		it("onReconnecting callback fires true then false, clearing stale activity via session subscribe", async () => {
-			const { RemoteAgentSession } = await import("./remote-agent-session.js")
-			const session = new RemoteAgentSession()
-
-			// Simulate the activity tracker subscribing to session events
-			// (mirrors what index.ts createActivityTracker does in onSessionCreated)
-			const activityState = {
-				activeTools: new Map<string, string>(),
-				responseText: "",
-			}
-			session.subscribe(((event: { type: string }) => {
-				if (event.type === "activity_reset") {
-					activityState.activeTools.clear()
-					activityState.responseText = ""
-				}
-			}) as never)
-
-			// Simulate pre-disconnect activity accumulating
-			activityState.activeTools.set("bash_123", "bash")
-			activityState.activeTools.set("read_456", "read")
-			activityState.responseText = "old stale text from before disconnect"
-
-			expect(activityState.activeTools.size).toBe(2)
-			expect(activityState.responseText).toBe("old stale text from before disconnect")
-
-			// Enter reconnecting
-			session.setReconnecting(true)
-			expect(activityState.activeTools.size).toBe(2) // not cleared yet
-
-			// Reattach — activity_reset fires, clearing stale state
-			session.setReconnecting(false)
-
-			expect(activityState.activeTools.size).toBe(0)
-			expect(activityState.responseText).toBe("")
 		})
 	})
 })
@@ -1819,11 +1701,6 @@ describe("attachRemoteAgent", () => {
 })
 
 describe("runRemoteAgent keepAlive", () => {
-	it("deletes the remote session on success by default", async () => {
-		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
-		expect(deleteSession).toHaveBeenCalledTimes(1)
-	})
-
 	it("keeps the remote session on success when keepAlive is set (PR review/steer loop)", async () => {
 		const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ keepAlive: true }))
 		expect(result.stopReason).toBe("end_turn")

@@ -39,14 +39,6 @@ describe("LoopGuard.reset", () => {
 		guard.reset()
 		expect(guard.isWarned()).toBe(false)
 	})
-
-	it("clears warned flag", () => {
-		const guard = new LoopGuard()
-		feed(guard, repeat(rec({ isError: true }), 3))
-		expect(guard.isWarned()).toBe(true)
-		guard.reset()
-		expect(guard.isWarned()).toBe(false)
-	})
 })
 
 describe("LoopGuard window of 30 records", () => {
@@ -803,14 +795,6 @@ describe("Edit-run cycle detector — task-total backstop", () => {
 		expect(guard.isWarned()).toBe(false)
 	})
 
-	it("task-total survives window eviction", () => {
-		// Push 60 records total — window only keeps last 30. The
-		// task-total counts persist across evictions.
-		const guard = new LoopGuard()
-		feedSparseEditRun(guard, 12, 12, 3)
-		expect(guard.isWarned()).toBe(true)
-	})
-
 	it("window detector still fires for concentrated loops (no task-total needed)", () => {
 		const guard = new LoopGuard()
 		const file = "/app/vm.js"
@@ -1003,33 +987,27 @@ describe("Bash-only loop detector", () => {
 		expect(guard.isWarned()).toBe(true) // task-total re-triggered
 	})
 
-	it("task-total fired keys are decremented so the same threshold doesn't fire on every subsequent record", () => {
-		// Regression test: before the fix, task-total keys were never
-		// decremented after a warn, so the same threshold would fire on
-		// every subsequent record for the rest of the session, flooding
-		// the model with repeated steers.
-		//
-		// We verify the decrement directly via getTotalBashCount rather
-		// than testing the secondary "warn doesn't fire" behavior, because
-		// the window threshold (12) is lower than the task-total threshold
-		// (15), making it impossible to reach task-total without the
-		// window detector firing first.
+	it("resets fired task-total keys after warning", () => {
 		const cmd = "curl https://api.example.com"
 		const guard = new LoopGuard()
-
-		// Feed enough to trigger task-total bash repetition (15 calls).
+		let warning: ReturnType<LoopGuard["record"]> | undefined
 		for (let i = 0; i < 15; i++) {
-			guard.record({
+			warning = guard.record({
 				toolName: "bash",
 				toolArgs: `{"command":${JSON.stringify(cmd)}}`,
 				isError: false,
 				outputFingerprint: `fp-${i}`,
 			})
 		}
-		expect(guard.isWarned()).toBe(true)
+		expect(warning?.state).toBe("warn")
 
-		// The fired key should be decremented by the threshold count (15).
-		// After warn: count = 15 - 15 = 0.
-		expect(guard.getTotalBashCount(cmd)).toBe(0)
+		const next = guard.record({
+			toolName: "bash",
+			toolArgs: `{"command":${JSON.stringify(cmd)}}`,
+			isError: false,
+			outputFingerprint: "fp-next",
+		})
+		expect(next.state).toBe("ok")
+		expect(guard.blockIfLoop({ toolName: "bash", toolArgs: `{"command":${JSON.stringify(cmd)}}` })).toBe(false)
 	})
 })

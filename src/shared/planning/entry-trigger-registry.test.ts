@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { EntryTrigger, EntryTriggerEvent } from "./entry-trigger-registry.js"
-import { clear, dispatch, has, register, size } from "./entry-trigger-registry.js"
+import { clear, dispatch, register } from "./entry-trigger-registry.js"
 
 describe("entry-trigger-registry", () => {
 	beforeEach(() => {
@@ -135,70 +135,6 @@ describe("entry-trigger-registry", () => {
 				expect(state.mode).toBe("ferment")
 				expect(state.reason).toBe("second")
 			}
-		})
-	})
-
-	describe("clear()", () => {
-		it("drops all registered triggers", () => {
-			const trigger: EntryTrigger = () => ({ kind: "noop" })
-			register("key", trigger)
-
-			expect(size()).toBe(1)
-			clear()
-			expect(size()).toBe(0)
-
-			const event: EntryTriggerEvent = { kind: "cli-flag", name: "plan", present: true }
-			const state = dispatch(event)
-			expect(state.kind).toBe("noop")
-		})
-	})
-
-	describe("size()", () => {
-		it("returns 0 when empty", () => {
-			expect(size()).toBe(0)
-		})
-
-		it("returns count of registered triggers", () => {
-			const trigger1: EntryTrigger = () => ({ kind: "noop" })
-			const trigger2: EntryTrigger = () => ({ kind: "noop" })
-
-			register("k1", trigger1)
-			expect(size()).toBe(1)
-
-			register("k2", trigger2)
-			expect(size()).toBe(2)
-		})
-
-		it("does not grow when re-registering same key", () => {
-			const trigger1: EntryTrigger = () => ({ kind: "noop" })
-			const trigger2: EntryTrigger = () => ({ kind: "noop" })
-
-			register("k", trigger1)
-			expect(size()).toBe(1)
-
-			register("k", trigger2)
-			expect(size()).toBe(1)
-		})
-	})
-
-	describe("has()", () => {
-		it("returns true for registered key", () => {
-			const trigger: EntryTrigger = () => ({ kind: "noop" })
-			register("my-key", trigger)
-
-			expect(has("my-key")).toBe(true)
-		})
-
-		it("returns false for unregistered key", () => {
-			expect(has("nonexistent")).toBe(false)
-		})
-
-		it("returns false after clear", () => {
-			const trigger: EntryTrigger = () => ({ kind: "noop" })
-			register("my-key", trigger)
-			clear()
-
-			expect(has("my-key")).toBe(false)
 		})
 	})
 

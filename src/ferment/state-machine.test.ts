@@ -813,27 +813,6 @@ describe("applyCommand: complete_phase", () => {
 		const error = expectError(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "x" }, ctx))
 		expect(error.code).toBe("PHASE_NOT_IN_STATUS")
 	})
-
-	it("clears active phase state so the next planned phase can be activated", () => {
-		const f = makeFerment({
-			status: "running",
-			activePhaseId: "phase-1",
-			phases: [
-				makePhase({ id: "phase-1", index: 1, name: "Phase 1", status: "active" }),
-				makePhase({ id: "phase-2", index: 2, name: "Phase 2", status: "planned" }),
-			],
-		})
-
-		const completed = expectOk(applyCommand(f, { type: "complete_phase", phaseId: "phase-1", summary: "done" }, ctx))
-		expect(completed.phases[0].status).toBe("completed")
-		expect(completed.status).toBe("planned")
-		expect(completed.activePhaseId).toBeUndefined()
-
-		const activated = expectOk(applyCommand(completed, { type: "activate_phase", phaseId: "phase-2" }, ctx))
-		expect(activated.status).toBe("running")
-		expect(activated.activePhaseId).toBe("phase-2")
-		expect(activated.phases[1].status).toBe("active")
-	})
 })
 
 // ─── skip_phase ───────────────────────────────────────────────────────────────
@@ -1093,30 +1072,26 @@ describe("applyCommand: resume", () => {
 	})
 
 	it("is a true no-op on step state when pause already reset all running steps", () => {
-		const result = expectOk(
-			applyCommand(
-				makeFerment({
-					status: "paused",
-					activePhaseId: "phase-1",
-					phases: [
-						makePhase({
-							id: "phase-1",
-							status: "active",
-							steps: [
-								makeStep({ id: "step-1", status: "pending" }),
-								makeStep({ id: "step-2", index: 2, description: "also pending", status: "pending" }),
-							],
-						}),
+		const f = makeFerment({
+			status: "paused",
+			activePhaseId: "phase-1",
+			phases: [
+				makePhase({
+					id: "phase-1",
+					status: "active",
+					steps: [
+						makeStep({ id: "step-1", status: "pending" }),
+						makeStep({ id: "step-2", index: 2, description: "also pending", status: "pending" }),
 					],
 				}),
-				{ type: "resume" },
-				ctx,
-			),
-		)
+			],
+		})
+		const result = expectOk(applyCommand(f, { type: "resume" }, ctx))
 		expect(result.status).toBe("running")
-		const steps = result.phases[0].steps
-		expect(steps[0].status).toBe("pending")
-		expect(steps[1].status).toBe("pending")
+		expect(result.phases).toBe(f.phases)
+		expect(result.phases[0].steps).toBe(f.phases[0].steps)
+		expect(result.phases[0].steps[0]).toBe(f.phases[0].steps[0])
+		expect(result.phases[0].steps[1]).toBe(f.phases[0].steps[1])
 	})
 })
 

@@ -132,26 +132,4 @@ describe("handleProbeMcpServer", () => {
 		expect(maxActive).toBe(1)
 		expect(order).toEqual(["start:first", "end:first", "start:second", "end:second", "start:third", "end:third"])
 	})
-
-	it("queues later probes behind a slow interactive probe and keeps the result shape", async () => {
-		const probe = createProbe(result)
-		let release!: () => void
-		const slow = new Promise<void>((resolve) => {
-			release = resolve
-		})
-		vi.mocked(probe.probeTools).mockImplementationOnce(async () => {
-			await slow
-			return result
-		})
-
-		const interactive = handleProbeMcpServer(probe, { server, serverName: "interactive" })
-		const queued = handleProbeMcpServer(probe, { server, serverName: "queued", skipAuth: true })
-		await new Promise((resolve) => setTimeout(resolve, 0))
-		expect(probe.probeTools).toHaveBeenCalledTimes(1)
-
-		release()
-		await expect(interactive).resolves.toEqual(result)
-		await expect(queued).resolves.toEqual(result)
-		expect(probe.probeTools).toHaveBeenCalledTimes(2)
-	})
 })

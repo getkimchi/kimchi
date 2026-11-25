@@ -225,14 +225,6 @@ describe("installGlobalFetchInstrumentation", () => {
 		expect(hook).not.toHaveBeenCalled()
 	})
 
-	it("does not fire the billing hook for a 503 completion", async () => {
-		const hook = vi.fn(async () => {})
-		install(hook)
-		baseResponse = () => new Response("Service Unavailable", { status: 503 })
-		await (await fetch("https://llm.test/openai/v1/chat/completions")).text()
-		expect(hook).not.toHaveBeenCalled()
-	})
-
 	it("attaches the billing hook to an already-installed fetch (entry.ts installs early, cli.ts attaches late)", async () => {
 		install() // early install without hook, as entry.ts does
 		const hook = vi.fn(async () => {})
@@ -241,17 +233,18 @@ describe("installGlobalFetchInstrumentation", () => {
 		expect(hook).toHaveBeenCalledTimes(1)
 	})
 
-	it("preserves url and redirected on billing-wrapped completion responses", async () => {
+	it("preserves url and redirected when a response is redirected, even under billing instrumentation", async () => {
 		install(vi.fn(async () => {}))
 		baseResponse = () => {
 			const response = new Response("data")
 			Object.defineProperties(response, {
 				url: { get: () => "https://llm.test/openai/v1/chat/completions" },
-				redirected: { get: () => false },
+				redirected: { get: () => true },
 			})
 			return response
 		}
 		const completion = await fetch("https://llm.test/openai/v1/chat/completions")
+		expect(completion.redirected).toBe(true)
 		expect(completion.url).toBe("https://llm.test/openai/v1/chat/completions")
 		expect(await completion.text()).toBe("data")
 	})

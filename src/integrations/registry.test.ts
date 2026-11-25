@@ -19,11 +19,6 @@ describe("integrations/registry", () => {
 	beforeEach(() => _resetRegistryForTests())
 	afterEach(() => _resetRegistryForTests())
 
-	it("starts empty", () => {
-		expect(all()).toEqual([])
-		expect(byId("opencode")).toBeUndefined()
-	})
-
 	it("returns tools in registration order", () => {
 		register(fakeTool("opencode"))
 		register(fakeTool("claudecode"))

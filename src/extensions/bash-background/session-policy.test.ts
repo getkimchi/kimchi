@@ -11,14 +11,10 @@
  * precedence over transport mode).
  */
 import { afterEach, describe, expect, it } from "vitest"
-import {
-	resetBackgroundRunsPermittedForTest,
-	resolveBashSessionKind,
-	setBackgroundRunsPermitted,
-} from "./session-policy.js"
+import { resolveBashSessionKind, setBackgroundRunsPermitted } from "./session-policy.js"
 
 afterEach(() => {
-	resetBackgroundRunsPermittedForTest()
+	setBackgroundRunsPermitted(false)
 })
 
 describe("resolveBashSessionKind — policy matrix", () => {

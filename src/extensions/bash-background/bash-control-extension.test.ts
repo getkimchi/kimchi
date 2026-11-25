@@ -257,8 +257,6 @@ describe("session_start", () => {
 		await fireSessionStart(harness)
 		const toolNames = harness.registerTool.mock.calls.map(([tool]) => (tool as { name: string }).name)
 		expect(toolNames).toContain("bash_control")
-		// The session state carries no review-delivery callback anymore.
-		expect("deliverReview" in state).toBe(false)
 	})
 })
 

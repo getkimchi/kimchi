@@ -129,17 +129,24 @@ describe("interactiveErrorSurfaceExtension (pending-state tracking)", () => {
 		__resetInteractiveErrorSurfaceState()
 	})
 
-	it("sets pending state only for retryable errors", () => {
-		const { emitMessageEnd } = createHarness()
+	it("renders one sanitized exhaustion notice for a retryable error", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
 		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: VLLM_RAW })
-		expect(__getPendingProviderError()?.rawMessage).toBe(VLLM_RAW)
-		expect(__getPendingProviderError()?.willRetry).toBe(true)
+		const notify = vi.fn()
+		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		expect(notify).toHaveBeenCalledOnce()
+		expect(notify.mock.calls[0]?.[0]).toContain("The model provider is temporarily unavailable")
+		for (const forbidden of FORBIDDEN) expect(notify.mock.calls[0]?.[0]).not.toContain(forbidden)
+		expect(__getPendingProviderError()?.notified).toBe(true)
 	})
 
-	it("does NOT set pending state for non-retryable errors", () => {
-		const { emitMessageEnd } = createHarness()
+	it("does NOT set pending state or emit an exhaustion notice for non-retryable errors", () => {
+		const { emitMessageEnd, emitAgentEnd } = createHarness()
 		emitMessageEnd({ role: "assistant", stopReason: "error", errorMessage: "BadRequestError: bad request, code 400" })
 		expect(__getPendingProviderError()).toBeUndefined()
+		const notify = vi.fn()
+		emitAgentEnd({ willRetry: false }, { ui: { notify } })
+		expect(notify).not.toHaveBeenCalled()
 	})
 
 	it("mutates retryable errorMessage to Retrying placeholder", () => {

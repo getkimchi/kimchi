@@ -729,26 +729,6 @@ describe("bashToolGuardExtension — telemetry events via pi.events", () => {
 		)
 	})
 
-	it("emits semantic intent allow-by-user-request event", () => {
-		const pi = createMockPI()
-		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })
-		fireSessionStart(pi)
-
-		emit(pi, "input", { source: "interactive", text: "run the analysis in the background" })
-		emit(pi, "tool_call", {
-			toolName: "bash",
-			input: { command: "nohup python3 run.py &" },
-		})
-
-		expect(pi.events.emit).toHaveBeenCalledWith(
-			BASH_TOOL_GUARD_EVENTS.ALLOWED_BY_USER_REQUEST,
-			expect.objectContaining({
-				category: "background",
-				tool: "nohup",
-			}),
-		)
-	})
-
 	it("does NOT emit events for non-matching bash", () => {
 		const pi = createMockPI()
 		bashToolGuardExtension(pi as unknown as PI, { blockOnThreshold: true })

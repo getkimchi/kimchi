@@ -105,13 +105,6 @@ describe("ModelRegistry — unknown model in API", () => {
 		expect(unknown?.capabilities.description).toContain("No capability information")
 	})
 
-	it("emits a warning for the unknown model", () => {
-		const registry = new ModelRegistry([...KNOWN_METADATA, metadata("brand-new-model")])
-		const warning = registry.warnings.find((w) => w.modelId === "brand-new-model")
-		expect(warning).toBeDefined()
-		expect(warning?.modelId).toBe("brand-new-model")
-	})
-
 	it("excludes the unknown model from getModelsWithCapabilities()", () => {
 		const registry = new ModelRegistry([...KNOWN_METADATA, metadata("brand-new-model")])
 		expect(registry.getModelsWithCapabilities().map((m) => m.id)).not.toContain("brand-new-model")
@@ -200,13 +193,6 @@ describe("ModelRegistry — deprecated models", () => {
 		expect(warning?.isPast).toBe(true)
 		expect(warning?.sunsetAt).toBe("2099-01-01T00:00:00Z")
 		expect(warning?.replacement).toBe("new-model")
-	})
-
-	it("emits a deprecated_model warning with modelId", () => {
-		const registry = new ModelRegistry([metadata("some-model", { deprecated_at: "2099-01-01T00:00:00Z" })])
-		const warning = registry.warnings.find((w) => w.modelId === "some-model")
-		expect(warning).toBeDefined()
-		expect(warning?.kind).toBe("deprecated_model")
 	})
 
 	it("warns for sunset-only records (vendor retirement, no announced deprecation), keeps routing", () => {

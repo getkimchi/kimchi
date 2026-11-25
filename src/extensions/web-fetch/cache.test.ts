@@ -2,10 +2,6 @@ import { describe, expect, it, vi } from "vitest"
 import { Cache, MAX_ENTRIES } from "./cache.js"
 
 describe("Cache.key", () => {
-	it("combines URL and format with :: separator", () => {
-		expect(Cache.key("https://example.com/", "markdown")).toBe("https://example.com/::markdown")
-	})
-
 	it("produces different keys for different formats", () => {
 		const md = Cache.key("https://example.com/", "markdown")
 		const txt = Cache.key("https://example.com/", "text")

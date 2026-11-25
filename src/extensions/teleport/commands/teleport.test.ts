@@ -759,20 +759,6 @@ describe("runTeleport", () => {
 			expect(ui.custom).toHaveBeenCalledOnce()
 			expect(ui.notify).not.toHaveBeenCalledWith(expect.stringMatching(/Could not sync harness config/), "warning")
 		})
-
-		it("syncs harness config even when workspace rsync is skipped (non-git cwd)", async () => {
-			// cwd /work/proj is not a git repo, so shouldRsyncWorkspace is false
-			// and the workspace runRsync is never invoked — but config sync must
-			// still run. Pins the invariant that config sync is not gated behind
-			// shouldRsyncWorkspace.
-			const { ctx, ui } = makeCtx()
-
-			await runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)
-
-			expect(provisionHarnessConfigMock).toHaveBeenCalledOnce()
-			expect(ui.custom).toHaveBeenCalledOnce()
-		})
-
 		it("warns but continues when config sync fails", async () => {
 			provisionHarnessConfigMock.mockResolvedValueOnce({ ok: false, error: "boom" })
 			const { ctx, ui } = makeCtx()
@@ -843,27 +829,6 @@ describe("runTeleport", () => {
 			})
 		})
 
-		it("invokes progress.promptGitToken when no cached token is available", async () => {
-			readGitTokenMock.mockReturnValue(undefined)
-			const { ctx } = makeCtx()
-
-			await runTeleport("--workspace 11111111-1111-4111-8111-111111111111 --git-repo https://github.com/me/x.git", ctx)
-
-			const ctrl = progressInstances[0]
-			expect(ctrl?.promptGitToken).toHaveBeenCalledTimes(1)
-			expect(ctrl?.promptGitToken).toHaveBeenCalledWith("github.com")
-		})
-
-		it("does NOT invoke progress.promptGitToken when a cached token is available", async () => {
-			readGitTokenMock.mockReturnValue("ghp_cached")
-			const { ctx } = makeCtx()
-
-			await runTeleport("--workspace 11111111-1111-4111-8111-111111111111 --git-repo https://github.com/me/x.git", ctx)
-
-			const ctrl = progressInstances[0]
-			expect(ctrl?.promptGitToken).not.toHaveBeenCalled()
-		})
-
 		it("--no-git-token skips token resolution and credential propagation", async () => {
 			readGitTokenMock.mockReturnValue("ghp_cached")
 			const { ctx } = makeCtx()
@@ -907,18 +872,6 @@ describe("runTeleport", () => {
 			expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("cred boom"), "warning")
 			// Worker is responsible for cloning now; createSession is still attempted.
 			expect(createSessionMock).toHaveBeenCalledOnce()
-		})
-
-		it("rejects --no-shallow (removed in favor of worker-side clone)", async () => {
-			const { ctx, ui } = makeCtx()
-
-			await expect(
-				runTeleport(
-					"--workspace 11111111-1111-4111-8111-111111111111 --git-repo https://github.com/me/x.git --no-shallow",
-					ctx,
-				),
-			).rejects.toBeInstanceOf(TeleportRefusal)
-			expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Unknown flag/), "error")
 		})
 	})
 

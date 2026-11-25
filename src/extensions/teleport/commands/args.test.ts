@@ -51,11 +51,6 @@ describe("parseTeleportArgs", () => {
 	it("reads --no-compact-hint as a boolean", () => {
 		expect(parseTeleportArgs("--no-compact-hint")).toEqual({ noCompactHint: true })
 	})
-
-	it("rejects --no-shallow (removed in favor of worker-side clone)", () => {
-		expect(() => parseTeleportArgs("--no-shallow")).toThrow(/Unknown flag/)
-	})
-
 	it("reads --skip-session as a boolean", () => {
 		expect(parseTeleportArgs("--skip-session")).toEqual({ skipSession: true })
 		expect(parseTeleportArgs("name --skip-session")).toEqual({ name: "name", skipSession: true })
@@ -102,13 +97,6 @@ describe("getTeleportArgumentCompletions", () => {
 		expect(labels).toContain("--git-repo")
 		expect(labels).toContain("--skip-session")
 	})
-
-	it("returns all flags for a non-dash partial like 'task-1'", () => {
-		const result = getTeleportArgumentCompletions("task-1")
-		expect(result).not.toBeNull()
-		expect(result).toHaveLength(9)
-	})
-
 	it("returns discovery items on an empty prefix", () => {
 		const result = getTeleportArgumentCompletions("")
 		expect(result).not.toBeNull()
@@ -296,11 +284,6 @@ describe("parseSyncArgs", () => {
 		expect(() => parseSyncArgs("up --workspace w --source ./a")).toThrow(/--target/)
 		expect(() => parseSyncArgs("up")).toThrow(/--workspace.*--source.*--target/)
 	})
-
-	it("rejects the removed --path flag", () => {
-		expect(() => parseSyncArgs(`up ${required} --path src/foo.ts`)).toThrow(/Unknown flag/)
-	})
-
 	it("rejects unknown flags", () => {
 		expect(() => parseSyncArgs(`up ${required} --bogus`)).toThrow(/Unknown flag/)
 	})

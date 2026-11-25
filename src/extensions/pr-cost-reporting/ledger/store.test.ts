@@ -4,8 +4,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, onTestFinished, test } from "vitest"
-import { readRecordsSincePageSql, readRecordsSinceSql } from "./records.js"
-import { LEDGER_ADDITIVE_SCHEMA } from "./schema.js"
 import { classifyUserVersion, LedgerUnavailableError, ledgerDbPath, openStore, retryOnBusy } from "./store.js"
 
 const ROOT = fileURLToPath(new URL("../../../../", import.meta.url))
@@ -237,33 +235,12 @@ describe("open via Bun driver", () => {
 	})
 })
 
-test("agentDir stays inside the OS temp dir for tests", () => {
-	mkdirSync(agentDir(), { recursive: true })
-})
-
 test("known regression: initialization rechecks a future version after obtaining the lock", { timeout: 60_000 }, () => {
 	const result = driver("known-schema-race", agentDir())
 	expect(result.opened).toBe(false)
 	expect(result.code).toBe("pr-cost-ledger/future-schema")
 	expect(result.version).toBe(777)
 	expect(result.tables).toEqual(["future_only"])
-})
-
-test("the outbox status aggregate has covering indexes available to every open", () => {
-	// LEDGER_SCHEMA only executes at database creation; pre-existing ledgers receive indexes through the
-	// additive block that store.ts runs on every open, so both statements must live there.
-	expect(LEDGER_ADDITIVE_SCHEMA).toContain(
-		"CREATE INDEX IF NOT EXISTS outbox_pending_cover ON outbox_events(account_key, acked_at, blocked)",
-	)
-	// The earliest-batch-per-account scalar lookup must not scan the batch authority either.
-	expect(LEDGER_ADDITIVE_SCHEMA).toContain(
-		"CREATE INDEX IF NOT EXISTS outbox_batches_by_account ON outbox_batches(account_key, order_key, created_at)",
-	)
-	// The incremental reconcile read filters WHERE imported_at >= ? — at six figures that is a
-	// full-table scan per pass without this index.
-	expect(LEDGER_ADDITIVE_SCHEMA).toContain(
-		"CREATE INDEX IF NOT EXISTS work_records_imported ON work_records(imported_at)",
-	)
 })
 
 test("an existing ledger gains the additive indexes on open (bun driver)", () => {
@@ -277,21 +254,14 @@ test("an existing ledger gains the additive indexes on open (bun driver)", () =>
 	expect(indexes.sort()).toEqual(expected)
 })
 
-test("the windowed read is hinted onto the imported index; unhinted SQL stays rowid-ordered", () => {
-	expect(readRecordsSinceSql(true)).toContain("INDEXED BY work_records_imported")
-	expect(readRecordsSinceSql(true)).toContain("ORDER BY rowid")
-	// An indexless open (a contended first open defers the additive apply) must degrade to the scan, not error.
-	expect(readRecordsSinceSql(false)).not.toContain("INDEXED BY")
-})
-
-test("the paged windowed read hints its first page onto the imported index; later pages ride the rowid range", () => {
-	// The first page's rowid range is the whole table: unhinted, the planner walks it to reach a
-	// tail window (a full scan per pass); the index carries it instead.
-	expect(readRecordsSincePageSql(true)).toContain("INDEXED BY work_records_imported")
-	expect(readRecordsSincePageSql(true)).not.toContain("rowid > ?")
-	// Later pages read exact rowid ranges; the hint would only cost a temp sort there.
-	expect(readRecordsSincePageSql(false)).not.toContain("INDEXED BY")
-	expect(readRecordsSincePageSql(false)).toContain("rowid > ?")
+test("paged window reads survive a missing index and resume from the page cursor", { timeout: 60_000 }, () => {
+	const result = driver("page-since", agentDir())
+	expect(result.deferredDuringLock).toBe(true)
+	expect(result.presentDuringLock).toBe(false)
+	expect(result.firstLocked).toEqual(["page-0", "page-1"])
+	expect(result.firstReopened).toEqual(["page-0", "page-1"])
+	expect(result.nextPage).toEqual(["page-2"])
+	expect(result.presentAfterRead).toBe(true)
 })
 
 test("a busy-deferred additive apply self-heals on the cached backend within one process", { timeout: 60_000 }, () => {

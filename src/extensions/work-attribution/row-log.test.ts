@@ -3,7 +3,6 @@ import {
 	COLLECTIONS,
 	type Collection,
 	commitPullRequests,
-	LOGS,
 	observeLatest,
 	ROW_KEYS,
 	type Row,
@@ -18,17 +17,27 @@ import {
  */
 
 describe("collections and keys", () => {
-	it("keeps the exact collection set plus sessions as the closing log", () => {
-		expect([...COLLECTIONS]).toEqual([
-			"workLinks",
-			"requests",
-			"plans",
-			"commits",
-			"fileTransitions",
-			"fileObservations",
-			"continuations",
-		])
-		expect([...LOGS]).toEqual([...COLLECTIONS, "sessions"])
+	it("reads every collection when computing the latest work summary", () => {
+		const visited = new Set<Collection>()
+		const summary = summaryLatest((collection) => {
+			visited.add(collection)
+			if (collection === "requests") {
+				return [{ sessionId: "s", requestId: "r", startedAt: "2026-10-04T00:00:00Z", cwd: "/w" }]
+			}
+			if (collection === "plans") {
+				return [{ sessionId: "s", path: "p", snapshotPath: "s/p", recordedAt: "2026-10-01T00:00:00Z" }]
+			}
+			if (collection === "commits")
+				return [{ sessionId: "s", sha: "a", repository: "r", worktree: "r", pullRequests: [] }]
+			if (collection === "fileTransitions") return [{ sessionId: "s", from: "a.ts", to: "b.ts" }]
+			if (collection === "fileObservations") return [{ sessionId: "s", path: "a.ts" }]
+			if (collection === "continuations") return [{ sessionId: "s", source: "a", evidence: {} }]
+			if (collection === "workLinks") return [{ sessionId: "s", workId: "w" }]
+			throw new Error(`unexpected collection ${collection}`)
+		})
+		expect(visited).toEqual(new Set(COLLECTIONS))
+		expect(summary.latest.activityAt).toBe("2026-10-04T00:00:00Z")
+		expect(summary.latest.plan?.snapshotPath).toBe("s/p")
 	})
 
 	it("keys every collection off its stable identity fields", () => {

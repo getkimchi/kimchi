@@ -6,9 +6,8 @@ import { __resetTodoStore, applyWriteTodos, registerActiveTodoScopeProvider } fr
 import type { TodoScope } from "./types.js"
 import {
 	__resetTodoCrowding,
-	__test_buildTodoLines,
-	__test_summarizeTodos,
 	buildTodoHeaderLine,
+	buildTodoLines,
 	claimTodoCrowding,
 	clearTodoCrowding,
 	expandTodoWidget,
@@ -18,6 +17,7 @@ import {
 	resetTodoWidgetState,
 	SPINNER_INTERVAL_MS,
 	setTodoAgentActive,
+	summarizeTodos,
 	syncTodoWidget,
 	toggleTodoWidget,
 } from "./widget.js"
@@ -84,7 +84,7 @@ describe("todo widget helpers", () => {
 	})
 
 	it("renders empty state", () => {
-		expect(__test_buildTodoLines(theme, TEST_SESSION_ID)).toContain("No todos yet. Add one with `/todos add <text>`.")
+		expect(buildTodoLines(theme, TEST_SESSION_ID)).toContain("No todos yet. Add one with `/todos add <text>`.")
 	})
 
 	it("summarizes and renders mixed statuses", () => {
@@ -100,8 +100,8 @@ describe("todo widget helpers", () => {
 			TEST_SESSION_ID,
 		)
 
-		expect(__test_summarizeTodos(TEST_SESSION_ID)).toBe("1/4 done · 1 blocked")
-		expect(__test_buildTodoLines(theme, TEST_SESSION_ID)).toEqual([
+		expect(summarizeTodos(TEST_SESSION_ID)).toBe("1/4 done · 1 blocked")
+		expect(buildTodoLines(theme, TEST_SESSION_ID)).toEqual([
 			"Todos · Global",
 			"",
 			"1/4 done · 1 blocked",
@@ -124,7 +124,7 @@ describe("todo widget helpers", () => {
 			TEST_SESSION_ID,
 		)
 
-		const lines = __test_buildTodoLines(theme, TEST_SESSION_ID)
+		const lines = buildTodoLines(theme, TEST_SESSION_ID)
 		expect(lines).toContain("  1.  ⠋ trace-visible id")
 		expect(lines).toContain("  2.  ○ later id")
 		expect(lines).not.toContain("  6.  ⠋ trace-visible id")
@@ -549,7 +549,7 @@ describe("todo widget helpers", () => {
 			TEST_SESSION_ID,
 		)
 
-		const globalLines = __test_buildTodoLines(theme, TEST_SESSION_ID)
+		const globalLines = buildTodoLines(theme, TEST_SESSION_ID)
 		expect(globalLines[0]).toBe("Todos · Global")
 		expect(globalLines).toContain("  1.  ○ global task")
 		expect(globalLines).toContain("  2.  ✓ global done")
@@ -576,7 +576,7 @@ describe("todo widget helpers", () => {
 				TEST_SESSION_ID,
 			)
 
-			const lines = __test_buildTodoLines(theme, TEST_SESSION_ID)
+			const lines = buildTodoLines(theme, TEST_SESSION_ID)
 
 			// Scope header shows ferment
 			expect(lines[0]).toBe("Todos · Ferment (phase-1)")
@@ -609,7 +609,7 @@ describe("todo widget helpers", () => {
 			TEST_SESSION_ID,
 		)
 
-		const lines = __test_buildTodoLines(theme, TEST_SESSION_ID)
+		const lines = buildTodoLines(theme, TEST_SESSION_ID)
 
 		expect(lines[0]).toBe("Todos · Global")
 		// Content appears but with standard global styling (not ferment accent/bold)
@@ -648,7 +648,7 @@ describe("todo widget helpers", () => {
 			TEST_SESSION_ID,
 		)
 
-		const lines = __test_buildTodoLines(theme, TEST_SESSION_ID)
+		const lines = buildTodoLines(theme, TEST_SESSION_ID)
 
 		// All three scope headers should appear
 		expect(lines).toContain("Todos · Ferment (phase-1)")

@@ -268,14 +268,6 @@ describe("KimchiAcpAgent extMethod steering", () => {
 		await promptPromise
 	})
 
-	it("throws methodNotFound for unknown extension methods", async () => {
-		const session = new FakeAgentSession("sess-1")
-		const agent = makeAgent(session)
-		await agent.initialize({ protocolVersion: 1 })
-
-		await expect(agent.extMethod("_kimchi.dev/unknown", {})).rejects.toMatchObject({ code: -32601 })
-	})
-
 	it("throws invalidParams when sessionId is missing", async () => {
 		const session = new FakeAgentSession("sess-1")
 		const agent = makeAgent(session)

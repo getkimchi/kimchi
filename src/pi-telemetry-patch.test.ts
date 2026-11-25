@@ -75,7 +75,8 @@ describe("applyPiTelemetryPatch", () => {
 		expect(open?.["HTTP-Referer"]).toBe("https://pi.dev")
 		expect(open?.["X-OpenRouter-Title"]).toBe("pi")
 
-		// After: the kill switch removes them entirely.
+		// After: the applied patch removes attribution entirely under the kill switch.
+		applyPiTelemetryPatch()
 		process.env.PI_TELEMETRY = "0"
 		expect(mergeProviderAttributionHeaders(openRouterModel, settingsManager, undefined)).toBeUndefined()
 	})

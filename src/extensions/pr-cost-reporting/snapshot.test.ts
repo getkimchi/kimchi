@@ -484,8 +484,62 @@ describe("allowlisted repository snapshots", () => {
 		const report = calculatePullRequestCosts(rows, [{ requestId, billingRecordId: billingId, costUsd: "1" }])
 		expect(buildSnapshots(rows, report, new Map()).snapshots[0].content.requests[0].billingRecordIds).toEqual([])
 	})
-	it("matches the server's per-snapshot limits", () => {
-		expect(SNAPSHOT_LIMITS).toEqual({ requests: 32_000, pullRequests: 250, bytes: 8 * 1024 * 1024 })
+	it("accepts 32,000 requests and 250 PRs, and rejects one more of each", () => {
+		const requestLimit = wire()
+		requestLimit.requests = Array.from({ length: 32_000 }, (_, index) => ({
+			...requestLimit.requests[0],
+			requestId: `10000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+		}))
+		requestLimit.coverage.observedRequests = 32_000
+		expect(() => validateSnapshot(requestLimit)).not.toThrow()
+		requestLimit.requests.push(requestLimit.requests[0])
+		requestLimit.coverage.observedRequests++
+		expect(() => validateSnapshot(requestLimit)).toThrow()
+
+		const prLimit = wire()
+		prLimit.pullRequests = Array.from({ length: 250 }, (_, index) => {
+			const { mergedAt: _mergedAt, closedAt: _closedAt, ...open } = prLimit.pullRequests[0]
+			return { ...open, id: String(index + 1), state: "open" as const }
+		})
+		expect(() => validateSnapshot(prLimit)).not.toThrow()
+		prLimit.pullRequests.push(prLimit.pullRequests[0])
+		expect(() => validateSnapshot(prLimit)).toThrow()
+	})
+
+	it("accepts exactly 8 MiB and rejects 8 MiB plus one byte", () => {
+		const value = wire()
+		const lastPull = value.pullRequests.at(-1)
+		const template = value.requests[0]
+		if (!lastPull || !template) throw new Error("byte-boundary fixture needs a PR and request")
+		lastPull.title = "x"
+		template.billingRecordIds = Array.from(
+			{ length: 8 },
+			(_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+		)
+		template.allocation = { kind: "unlinked", pullRequestIds: [], method: "session" }
+		const byteLimit = 8 * 1024 * 1024
+		const size = (count: number) => {
+			value.requests = Array.from({ length: count }, (_, index) => ({
+				...template,
+				requestId: `10000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+			}))
+			value.coverage.observedRequests = count
+			value.coverage.unpricedRequests = count
+			return Buffer.byteLength(JSON.stringify(value))
+		}
+		let fitting = 0
+		let overflowing = 32_001
+		while (overflowing - fitting > 1) {
+			const candidate = Math.floor((fitting + overflowing) / 2)
+			if (size(candidate) <= byteLimit) fitting = candidate
+			else overflowing = candidate
+		}
+		size(fitting)
+		lastPull.title += "x".repeat(byteLimit - Buffer.byteLength(JSON.stringify(value)))
+		expect(Buffer.byteLength(JSON.stringify(value))).toBe(byteLimit)
+		expect(() => validateSnapshot(value)).not.toThrow()
+		lastPull.title += "y"
+		expect(() => validateSnapshot(value)).toThrow()
 	})
 	it.each([
 		"requests",

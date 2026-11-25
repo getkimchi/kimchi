@@ -347,18 +347,6 @@ describe("integration: fetchPage + convertContent with format parameter", () => 
 		// Exact passthrough — content converter returns the HTML it received
 		expect(html).toBe(result.body)
 	})
-
-	it("does not convert non-HTML content regardless of format", async () => {
-		const result = await fetchPage(`${baseURL}/json`)
-		expect(result.isHTML).toBe(false)
-
-		// Non-HTML content should be returned as-is regardless of format
-		const asMarkdown = result.isHTML ? convertContent(result.body, result.finalURL, "markdown") : result.body
-		const asText = result.isHTML ? convertContent(result.body, result.finalURL, "text") : result.body
-
-		expect(asMarkdown).toBe(result.body)
-		expect(asText).toBe(result.body)
-	})
 })
 
 describe("integration: redirect final URL in metadata", () => {

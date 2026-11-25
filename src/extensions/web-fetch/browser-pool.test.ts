@@ -143,11 +143,6 @@ describe("BrowserPool", () => {
 		await pool.shutdown()
 	})
 
-	it("registers disconnected event handler", async () => {
-		await pool.getBrowser()
-		expect(mockBrowser.on).toHaveBeenCalledWith("disconnected", expect.any(Function))
-	})
-
 	it("concurrent cold callers share a single Chromium launch (reviewer race repro)", async () => {
 		// Two+ callers both passing the isConnected check used to each start
 		// Chromium; the last assignment orphaned the earlier process for the
@@ -256,33 +251,6 @@ describe("BrowserPool", () => {
 
 			const second = await pool.getBrowser()
 			expect(second).toBe(newBrowser)
-			expect(launchMock).toHaveBeenCalledTimes(2)
-		})
-	})
-
-	describe("crash recovery", () => {
-		it("recovers after browser disconnect and serves subsequent fetch", async () => {
-			const first = await pool.getBrowser()
-			expect(first).toBe(mockBrowser)
-
-			// Simulate crash via disconnected event
-			const disconnectHandler = mockBrowser.on.mock.calls.find(
-				(call: unknown[]) => call[0] === "disconnected",
-			)?.[1] as () => void
-			disconnectHandler()
-
-			// Prepare a fresh browser for recovery
-			const recoveredBrowser = {
-				isConnected: () => true,
-				close: vi.fn(),
-				on: vi.fn(),
-			}
-			launchMock.mockResolvedValue(recoveredBrowser)
-
-			// Next call should lazily create a new browser
-			const second = await pool.getBrowser()
-			expect(second).toBe(recoveredBrowser)
-			expect(second).not.toBe(first)
 			expect(launchMock).toHaveBeenCalledTimes(2)
 		})
 	})

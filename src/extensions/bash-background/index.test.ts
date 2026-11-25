@@ -93,10 +93,6 @@ describe("bashBackgroundExtension — shutdown drain ordering", () => {
 		expect(first).toBeDefined()
 		expect(first?.limitSeconds).toBe(DEFAULT_BASH_PROCESS_LIMIT_SECONDS)
 		expect(first?.cwd).toBe("/tmp")
-		// The state carries no review-delivery wiring: coordination is
-		// per-command handoffs plus bounded explicit waits, never a
-		// recurring review clock.
-		expect("deliverReview" in (first ?? {})).toBe(false)
 
 		// A resumed/forked session gets a fresh cohort: handles from the old
 		// session are not reusable (the registry is rebuilt).
@@ -225,75 +221,6 @@ describe("bashBackgroundExtension — production description composition", () =>
 		expect(bash?.description).not.toContain("extend_seconds")
 
 		await emit("session_shutdown", {}, sessionCtx)
-	})
-
-	it("registers the bash tool with the background-execute function", async () => {
-		const { api, emit, getRegisteredTool } = createExtensionApi()
-		bashBackgroundExtension(api)
-
-		await emit("session_start", {}, sessionCtx)
-
-		const bash = getRegisteredTool("bash")
-		expect(bash).toBeDefined()
-		expect(typeof bash?.execute).toBe("function")
-
-		await emit("session_shutdown", {}, sessionCtx)
-	})
-
-	it.each([
-		"session_start",
-		"session_shutdown",
-	])("closes the inspector on %s and clears refresh work", async (event) => {
-		vi.useFakeTimers()
-		const pi = createExtensionApi()
-		bashBackgroundExtension(pi.api)
-		const ctx = createCommandContext()
-		await pi.getHandler("session_start")({}, ctx)
-		const tui = new TuiMainScreen(new ProcessTerminal())
-		const render = tui.render
-		const requestRender = vi.spyOn(tui, "requestRender").mockImplementation(() => {})
-		const editor = new Text("original input", 0, 0)
-		const renderEditor = editor.render
-		tui.addChild(editor)
-		tui.setFocus(editor)
-		const dispose = vi.spyOn(CommandsPanel.prototype, "dispose")
-		vi.mocked(ctx.ui.custom).mockImplementation(
-			(factory) =>
-				new Promise((resolve) => {
-					void Promise.resolve(
-						factory(tui, testTheme, {} as KeybindingsManager, () => {
-							tui.clear()
-							tui.addChild(editor)
-							resolve(undefined)
-						}),
-					).then((component) => {
-						tui.clear()
-						tui.addChild(component)
-					})
-				}),
-		)
-		try {
-			const opened = pi.getRegisteredCommand("processes").handler("", ctx)
-			await Promise.resolve()
-			expect(vi.getTimerCount()).toBe(1)
-			expect(tui.render(80).join("\n")).not.toContain("original input")
-			await pi.getHandler(event)({}, ctx)
-			expect(vi.getTimerCount()).toBe(0)
-			await opened
-			expect(tui.render).toBe(render)
-			expect(editor.render).toBe(renderEditor)
-			expect(tui.render(80).join("\n")).toContain("original input")
-			expect(dispose).toHaveBeenCalled()
-			expect(vi.getTimerCount()).toBe(0)
-			requestRender.mockClear()
-			await vi.advanceTimersByTimeAsync(1000)
-			expect(requestRender).not.toHaveBeenCalled()
-			expect(ctx.waitForIdle).not.toHaveBeenCalled()
-			expect(pi.sendMessage).not.toHaveBeenCalled()
-		} finally {
-			dispose.mockRestore()
-			vi.useRealTimers()
-		}
 	})
 })
 

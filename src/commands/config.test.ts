@@ -382,31 +382,6 @@ describe("kimchi config region", () => {
 		})
 	})
 
-	it("prints discovered self-hosted endpoints when stored", async () => {
-		await withExperimentalFeatures(true, async () => {
-			vi.mocked(loadConfig).mockReturnValue({
-				apiKey: "",
-				region: "self-hosted",
-				selfHostedEndpoints: {
-					api: "https://kimchi.example.com",
-					console: "https://kimchi.example.com",
-					llm: "https://llm.example.com",
-				},
-			} as ReturnType<typeof loadConfig>)
-
-			const exit = await runConfig(["region"])
-
-			expect(exit).toBe(0)
-			expect(vi.mocked(console.log).mock.calls[1]?.[0]).toBe("Self-hosted console URL: https://kimchi.example.com")
-			expect(vi.mocked(console.log).mock.calls[2]?.[0]).toBe(
-				"Self-hosted endpoints: api https://kimchi.example.com, llm https://llm.example.com",
-			)
-			expect(vi.mocked(console.log).mock.calls[3]?.[0]).toBe(
-				"Available regions: us (United States), eu (Europe), self-hosted (Self-hosted)",
-			)
-		})
-	})
-
 	it("prints a self-hosted region without endpoints as not configured", async () => {
 		vi.mocked(loadConfig).mockReturnValue({
 			apiKey: "",

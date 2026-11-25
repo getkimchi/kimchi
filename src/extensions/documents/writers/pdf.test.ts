@@ -90,6 +90,10 @@ A paragraph with **bold words** inside.
 		const pdf = await renderBlocksToPdf(blocks, fontBytes(), { loadImage: () => new Uint8Array(png) })
 		const doc = await extractPdf(pdf)
 		expect(doc.units[0].markdown).toContain("after image")
+		const { PDFDict, PDFDocument, PDFName } = await import("@cantoo/pdf-lib")
+		const loaded = await PDFDocument.load(pdf)
+		const images = loaded.getPage(0).node.Resources()?.lookup(PDFName.of("XObject"), PDFDict)
+		expect(images?.keys()).toHaveLength(1)
 	})
 
 	it("rejects remote images", async () => {

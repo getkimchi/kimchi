@@ -1963,19 +1963,6 @@ describe("upstream MCP adapter facade", () => {
 		expect(harness.api.registerCommand).toHaveBeenCalledWith("mcp", expect.anything())
 	})
 
-	it("still resyncs synchronously when the adapter registers a tool", async () => {
-		configState.config = { mcpServers: { docs: { command: "docs" } } }
-		const harness = createExtensionApi()
-		mcpAdapterExtension(harness.api)
-		await start(harness)
-		planning.reapplyCurrentProfile.mockClear()
-
-		// registerTool must not wait out the status debounce.
-		upstream.api?.registerTool(tool("docs_get_issue", "MCP: get_issue"))
-
-		expect(planning.reapplyCurrentProfile).toHaveBeenCalledWith(harness.api)
-	})
-
 	it("drops a pending resnapshot when a replacement session starts", async () => {
 		configState.config = { mcpServers: { docs: { command: "docs" } } }
 		const harness = createExtensionApi()

@@ -160,9 +160,4 @@ describe("PromptQueue", () => {
 		await Promise.all([firstEnqueued, secondEnqueued, thirdEnqueued])
 		expect(seenWorker).toEqual([true, false])
 	})
-
-	it("entries without a signal run normally", async () => {
-		const queue = new PromptQueue()
-		await expect(queue.enqueue(() => Promise.resolve(42))).resolves.toBe(42)
-	})
 })

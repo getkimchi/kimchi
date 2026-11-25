@@ -815,9 +815,3 @@ export function registerTodoShortcut(pi: ExtensionAPI): void {
 		handler: (ctx) => toggleTodoWidget(ctx),
 	})
 }
-
-export {
-	buildTodoLines as __test_buildTodoLines,
-	resetTodoWidgetState as __test_resetTodoWidgetState,
-	summarizeTodos as __test_summarizeTodos,
-}

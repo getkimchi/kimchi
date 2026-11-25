@@ -2381,6 +2381,45 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 		store.close()
 		out({ preMigrated: true })
 	},
+	"page-since": (agent) => {
+		const seed = openStore(agent)
+		let holding = false
+		let witness: ReturnType<typeof openStore> | undefined
+		try {
+			const insert = seed.db.query(
+				"INSERT INTO work_records (record_hash, type, work_id, session_id, body, source_path, source_generation, source_offset, imported_at) VALUES (?, 'request', 'pages', 'session', '{}', 'fixture', 0, NULL, ?)",
+			)
+			for (let index = 0; index < 3; index++) insert.run(`page-${index}`, index + 1)
+			backendFor(agent)
+			closeBackends()
+			seed.db.exec("DROP INDEX IF EXISTS work_records_imported")
+			seed.db.exec("BEGIN IMMEDIATE")
+			holding = true
+			witness = openStore(agent)
+			const backend = backendFor(agent)
+			const deferredDuringLock = witness.additiveDeferred
+			const presentDuringLock = workRecordsImportedPresent(witness.db)
+			const firstLocked = backend.readRecordsSincePage(0, 0, 100, 2).map((row) => row.recordHash)
+			seed.db.exec("COMMIT")
+			holding = false
+			const firstReopened = backend.readRecordsSincePage(0, 0, 100, 2)
+			const nextPage = backend.readRecordsSincePage(0, firstReopened.at(-1)?.position ?? 0, 100, 2)
+			const presentAfterRead = workRecordsImportedPresent(witness.db)
+			out({
+				deferredDuringLock,
+				presentDuringLock,
+				firstLocked,
+				firstReopened: firstReopened.map((row) => row.recordHash),
+				nextPage: nextPage.map((row) => row.recordHash),
+				presentAfterRead,
+			})
+		} finally {
+			closeBackends()
+			witness?.close()
+			if (holding) seed.db.exec("ROLLBACK")
+			seed.close()
+		}
+	},
 	"records-since": (agent, arg) => {
 		out(readRecords(agent, { modifiedSince: Number(arg ?? "0") }))
 	},

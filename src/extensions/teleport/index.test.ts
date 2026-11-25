@@ -60,15 +60,6 @@ describe("teleportExtension", () => {
 		teleportExtension(pi)
 		expect(pi.registerCommand).toHaveBeenCalledTimes(5)
 	})
-
-	it("registers commands on WSL because WSL reports Linux", () => {
-		// WSL returns "Linux" from os.type(), so it is treated as a Linux environment.
-		osTypeMock.mockReturnValue("Linux")
-		const pi = makePi()
-		teleportExtension(pi)
-		expect(pi.registerCommand).toHaveBeenCalledTimes(5)
-	})
-
 	it("does not register commands on Windows", () => {
 		osTypeMock.mockReturnValue("Windows_NT")
 		const pi = makePi()

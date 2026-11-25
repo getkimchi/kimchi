@@ -295,57 +295,6 @@ it.skipIf(process.platform !== "linux").each(["stop", "safety-limit", "abort", "
 	15_000,
 )
 
-// Known limitation, deliberately pinned with .fails: managed cancellation
-// settles the executor by closing the inherited pipes (see the settlement
-// regressions above) but does NOT terminate a descendant that escaped the
-// command group via setsid — it survives until its own bounded self-exit.
-// Remove .fails ONLY when managed cancellation actually terminates escaped
-// descendants; prompt settlement is covered by the ordinary passing tests
-// above and must keep passing. Settlement is intentionally NOT awaited
-// before the assertion: pre-fix it pends until the writer's self-exit
-// (leaving the child dead and this assertion trivially green), so aliveness
-// is checked inside a bounded window of the cancellation instead.
-it.skipIf(process.platform !== "linux").fails.each(["stop", "safety-limit", "abort", "shutdown"] as const)(
-	"managed %s terminates a setsid descendant that keeps writing inherited stdout",
-	async (mode) => {
-		writeEscapedWriter()
-		state.limitSeconds = mode === "safety-limit" ? 3 : 60
-		const bash = createBackgroundBashToolDefinition(cwd, { state })
-		const control = createBashControlToolDefinition(() => state)
-		const abort = new AbortController()
-		const running = bash.execute(
-			"escaped",
-			{ command: `setsid ${nodeCommand("escaped.cjs")} & wait` },
-			abort.signal,
-			undefined,
-			ctx,
-		)
-		if (mode === "abort") {
-			await expect.poll(() => treePids().length, { timeout: 1500 }).toBe(1)
-			abort.abort()
-			void running.catch(() => {})
-			await delay(1500)
-		} else {
-			const spawned = await running
-			const handle = spawned.details?.handle
-			if (!handle) throw new Error("Missing escaped process handle")
-			if (mode === "shutdown") {
-				state.coordinator.dispose()
-				void state.registry.shutdown()
-			} else if (mode === "safety-limit") {
-				// The deadline fires on its own at spawn + 3 s; wait past it and
-				// the settle window before checking the descendant.
-				await delay(4000)
-			} else {
-				void control.execute("stop-escaped", { stop_handles: [handle] }, undefined, undefined, ctx).catch(() => {})
-				await delay(1500)
-			}
-		}
-		expect(treePids().some(isAlive)).toBe(false)
-	},
-	20_000,
-)
-
 it("stop kills children and grandchildren ignoring SIGTERM after handoff", async () => {
 	writeStubbornTree()
 	const bash = createBackgroundBashToolDefinition(cwd, { state })

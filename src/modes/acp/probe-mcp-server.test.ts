@@ -75,12 +75,4 @@ describe("KimchiAcpAgent MCP probe extension method", () => {
 			agent.extMethod(AVAILABLE_EXT_METHODS.probe_mcp_server, { server: { command: "node" } }),
 		).rejects.toMatchObject({ code: -32602 })
 	})
-
-	it("rejects unknown extension methods", async () => {
-		await expect(
-			createAgent(createProbe({ tools: [], needsAuth: false, error: null })).extMethod("unknown", {}),
-		).rejects.toMatchObject({
-			code: -32601,
-		})
-	})
 })

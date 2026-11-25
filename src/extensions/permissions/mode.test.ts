@@ -9,12 +9,6 @@ describe("parseModeString", () => {
 		expect(parseModeString("yolo")).toBe("yolo")
 	})
 
-	it("yolo mode is recognized", () => {
-		expect(parseModeString("yolo")).toBe("yolo")
-		expect(parseModeString("YOLO")).toBe("yolo")
-		expect(parseModeString("Yolo")).toBe("yolo")
-	})
-
 	it("is case-insensitive", () => {
 		expect(parseModeString("AUTO")).toBe("auto")
 		expect(parseModeString("Plan")).toBe("plan")
@@ -56,14 +50,6 @@ describe("resolveMode", () => {
 			config: "default",
 		})
 		expect(r).toEqual({ mode: "yolo", source: "env", initiatedBy: "user" })
-	})
-
-	it("env beats config", () => {
-		const r = resolveMode({
-			env: "plan",
-			config: "default",
-		})
-		expect(r).toEqual({ mode: "plan", source: "env", initiatedBy: "user" })
 	})
 
 	it("persisted beats config", () => {

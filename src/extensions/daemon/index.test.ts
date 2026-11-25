@@ -43,14 +43,6 @@ describe("daemonExtension", () => {
 		expect(registerTool).not.toHaveBeenCalled()
 	})
 
-	it("registers a session_shutdown handler (honesty notice, no killing)", () => {
-		const { api } = createExtensionApi()
-		daemonExtension(api)
-		const on = vi.mocked(api.on)
-		const events = on.mock.calls.map(([event]) => event)
-		expect(events).toContain("session_shutdown")
-	})
-
 	it("session_shutdown is a no-op in headless sessions", () => {
 		const { api, getHandler } = createExtensionApi()
 		daemonExtension(api)

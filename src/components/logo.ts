@@ -18,7 +18,7 @@ const GUTTER_MAX = 10
 // switches to the pepper-only mark.
 const FULL_LOGO_RIGHT_MIN = 9
 
-export interface HeaderLayout {
+interface HeaderLayout {
 	span: number
 	rightColWidth: number
 }
@@ -33,7 +33,7 @@ export interface HeaderLayout {
  * widths the right column is clamped to 1 and the final tail-truncation in
  * the caller absorbs the overflow.
  */
-export function computeHeaderLayout(width: number, logoWidth: number): HeaderLayout {
+function computeHeaderLayout(width: number, logoWidth: number): HeaderLayout {
 	const slack = width - CHROME - 2 * CELL_PAD - logoWidth - RIGHT_MIN
 	let gutter = slack >= 0 ? Math.min(GUTTER_MAX, Math.floor(slack / 2)) : 0
 	let rightColWidth = width - CHROME - 2 * CELL_PAD - logoWidth - 2 * gutter

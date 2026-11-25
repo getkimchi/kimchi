@@ -136,11 +136,6 @@ describe("PLAN_MODE_STOP_NUDGE", () => {
 		expect(PLAN_MODE_STOP_NUDGE).toContain("`submit_plan`")
 	})
 
-	it("does not reference the removed plan-completion markers", () => {
-		expect(PLAN_MODE_STOP_NUDGE).not.toContain("PLAN_COMPLETE")
-		expect(PLAN_MODE_STOP_NUDGE).not.toContain("<done>")
-	})
-
 	it("references the questionnaire tool", () => {
 		expect(PLAN_MODE_STOP_NUDGE).toContain("questionnaire")
 	})

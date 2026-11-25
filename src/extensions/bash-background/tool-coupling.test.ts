@@ -162,9 +162,9 @@ describe("coupleBashControlToolArg", () => {
 		expect(coupleBashControlToolArg(["-t", "bash", "-p"])).toEqual(["-t", "bash,bash_control", "-p"])
 	})
 
-	it("returns the same array identity when nothing changes", () => {
+	it("returns unchanged array contents when no rewrite is needed", () => {
 		const args = ["--tools", "read,write"]
-		expect(coupleBashControlToolArg(args)).toBe(args)
+		expect(coupleBashControlToolArg(args)).toEqual(args)
 		const none = ["--print"]
 		expect(coupleBashControlToolArg(none)).toBe(none)
 	})
@@ -199,7 +199,7 @@ describe("coupleBashControlToolArg", () => {
 
 	it("does not rewrite tokens after -- (prompt messages)", () => {
 		const args = ["--print", "--", "--tools", "read,bash"]
-		expect(coupleBashControlToolArg(args)).toBe(args)
+		expect(coupleBashControlToolArg(args)).toEqual(args)
 	})
 
 	it("does not mistake a value of another flag for a --tools flag", () => {
@@ -207,7 +207,7 @@ describe("coupleBashControlToolArg", () => {
 		// looks like a flag: --model's value is "--tools" here and "bash"
 		// becomes a prompt message.
 		const args = ["--model", "--tools", "bash"]
-		expect(coupleBashControlToolArg(args)).toBe(args)
+		expect(coupleBashControlToolArg(args)).toEqual(args)
 	})
 
 	it("does not mistake unknown-flag values for flags", () => {
@@ -236,7 +236,7 @@ describe("coupleBashControlToolArg", () => {
 
 	it("ignores a trailing --tools without a value (pi requires i + 1 < length)", () => {
 		const args = ["--tools"]
-		expect(coupleBashControlToolArg(args)).toBe(args)
+		expect(coupleBashControlToolArg(args)).toEqual(args)
 	})
 
 	it("treats the --tools=value equals form as inert, matching pi's parser", () => {
@@ -247,7 +247,7 @@ describe("coupleBashControlToolArg", () => {
 		// accident — and the execute-time availability check keeps such a
 		// session safe regardless (blocking bash, no runaway).
 		const args = ["--print", "--tools=read,bash"]
-		expect(coupleBashControlToolArg(args)).toBe(args)
+		expect(coupleBashControlToolArg(args)).toEqual(args)
 	})
 
 	it("preserves spacing inside the value (pi trims on split)", () => {

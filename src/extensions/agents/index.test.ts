@@ -368,20 +368,33 @@ describe("session_shutdown nudge race (integration)", () => {
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
-	it("clears batchFinalizeTimer on shutdown so finalizeBatch cannot fire", async () => {
+	it("clears an armed batchFinalizeTimer on shutdown", async () => {
 		const pi = makeMockPi()
 		agentsExtension(pi)
+		const agent = (pi.registerTool as ReturnType<typeof vi.fn>).mock.calls
+			.map(([tool]) => tool)
+			.find((tool) => tool.name === "Agent")
+		if (!agent) throw new Error("Agent tool was not registered")
+		const spawn = (type: string) =>
+			agent.execute(
+				"batch-call",
+				{
+					description: `batch ${type}`,
+					prompt: "do the work",
+					subagent_type: type,
+					run_in_background: true,
+				},
+				undefined,
+				undefined,
+				createContext(),
+			)
+		await spawn("Explore")
+		await spawn("Builder")
+		expect(vi.getTimerCount()).toBeGreaterThan(0)
 
-		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
-		expect(managerInstance).toBeDefined()
-
-		// Fire session_shutdown
 		await pi.fireShutdown()
-
-		// Advance past any batch finalize timer (100ms)
 		vi.advanceTimersByTime(200)
 
-		// No sendMessage should have been called — the batch timer was cleared
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 

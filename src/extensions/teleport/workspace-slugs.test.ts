@@ -52,10 +52,4 @@ describe("assignWorkspaceSlugs", () => {
 		const map = assignWorkspaceSlugs([ws("abcdef0123456789", "")])
 		expect(map.get("abcdef0123456789")).toBe("abcdef01")
 	})
-
-	it("does not add a suffix when only one workspace has a colliding-looking slug", () => {
-		const map = assignWorkspaceSlugs([ws("w-1", "alpha"), ws("w-2", "beta")])
-		expect(map.get("w-1")).toBe("alpha")
-		expect(map.get("w-2")).toBe("beta")
-	})
 })

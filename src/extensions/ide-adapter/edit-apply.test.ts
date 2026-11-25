@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { applyEditInput, applyEdits, normaliseEditOperations } from "./edit-apply.js"
+import { applyEdits, normaliseEditOperations } from "./edit-apply.js"
 
 describe("normaliseEditOperations", () => {
 	it("normalises the single-operation form", () => {
@@ -101,34 +101,5 @@ describe("applyEdits", () => {
 		const original = "x".repeat(100_000)
 		const newText = "y".repeat(100_000)
 		expect(applyEdits(original, [{ oldText: original, newText }])).toBe(newText)
-	})
-})
-
-describe("applyEditInput", () => {
-	it("normalises and applies the single-operation form", () => {
-		expect(applyEditInput("hello world", { oldText: "world", newText: "kimchi" })).toBe("hello kimchi")
-	})
-
-	it("normalises and applies the array form", () => {
-		expect(
-			applyEditInput("a b c", {
-				edits: [
-					{ oldText: "a", newText: "x" },
-					{ oldText: "c", newText: "z" },
-				],
-			}),
-		).toBe("x b z")
-	})
-
-	it("returns null when an operation fails", () => {
-		expect(
-			applyEditInput("hello", {
-				edits: [{ oldText: "world", newText: "kimchi" }],
-			}),
-		).toBeNull()
-	})
-
-	it("returns the original when no operations are present", () => {
-		expect(applyEditInput("hello", {})).toBe("hello")
 	})
 })

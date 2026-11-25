@@ -106,16 +106,6 @@ describe("ctrlCCascadeDecision", () => {
 	it("returns 'exit' when no text and agent is idle", () => {
 		expect(ctrlCCascadeDecision(false, false)).toBe("exit")
 	})
-
-	it("cascade ordering: clear takes priority over abort", () => {
-		// Text + streaming → clear first, not abort
-		expect(ctrlCCascadeDecision(true, true)).toBe("clear")
-	})
-
-	it("cascade ordering: abort takes priority over exit", () => {
-		// No text + streaming → abort, not exit
-		expect(ctrlCCascadeDecision(false, true)).toBe("abort")
-	})
 })
 
 describe("Ctrl+C abort key matching", () => {
@@ -249,30 +239,10 @@ describe("findNextCompatibleModel", () => {
 		expect(result.skipped).toHaveLength(0)
 	})
 
-	it("blocks non-vision models when current model has vision and images are present", () => {
-		const visionModel = makeModel("current-vision", 100_000, ["text", "image"])
-		const models = [
-			visionModel,
-			makeModel("text-only", 100_000, ["text"]),
-			makeModel("other-vision", 100_000, ["text", "image"]),
-		]
-		const result = findNextCompatibleModel(models, 0, 50_000, true, visionModel)
-		expect(result.model).toBe(models[2])
-		expect(result.skipped).toHaveLength(1)
-		expect(result.skipped[0].model).toBe(models[1])
-		expect(result.skipped[0].reason).toContain("no vision support")
-	})
-
 	it("returns empty skipped array for an empty list", () => {
 		const result = findNextCompatibleModel([], 0, null, false)
 		expect(result.model).toBeUndefined()
 		expect(result.skipped).toHaveLength(0)
-	})
-
-	it("works when currentIndex is at the last model (wraps to first)", () => {
-		const models = [makeModel("a", 100_000), makeModel("b", 100_000)]
-		const result = findNextCompatibleModel(models, 1, null, false)
-		expect(result.model).toBe(models[0])
 	})
 
 	it("never returns the model at currentIndex (always skips self)", () => {

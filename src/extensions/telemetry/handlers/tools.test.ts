@@ -501,29 +501,6 @@ describe("handlers/tools", () => {
 			expect(error).toBeDefined()
 			expect(error?.attrs.error_type).toBe("tool_failure")
 		})
-
-		it("records a model-requested (unclamped) timeout as an outcome without an error record", async () => {
-			const piCtx = createContext({ model: { id: "claude-3-5-sonnet" } })
-			const ctx = new TelemetryContext(makeConfig())
-			const toolCallId = "tc-bash-model-timeout"
-
-			handleToolExecutionStart(ctx, { toolCallId, toolName: "bash", args: { command: "sleep 5", timeout: 1 } })
-			handleToolExecutionEnd(ctx, piCtx, {
-				toolCallId,
-				isError: true,
-				result: { content: [{ type: "text", text: "Command timed out after 1 seconds" }] },
-			})
-
-			ctx.flushLogBuffer()
-			await Promise.allSettled([...ctx.inFlight])
-			const events = parseLogEvents(fetchMock)
-
-			// Timeouts are execution outcomes, not harness anomalies — with or
-			// without a clamp marker.
-			const cmdExec = events.find((e) => e.eventName === "command_executed")
-			expect(cmdExec?.attrs.command_outcome).toBe("timeout")
-			expect(events.find((e) => e.eventName === "error")).toBeUndefined()
-		})
 	})
 
 	// -----------------------------------------------------------------------

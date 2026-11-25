@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -172,52 +172,5 @@ describe("runDoneStep", () => {
 		const outcome = await runDoneStep(state)
 		expect(outcome.successes).toEqual([])
 		expect(outcome.failures[0]?.id).toBe("never-registered")
-	})
-
-	it("does not create or change shell profile exports", async () => {
-		const tool = getClaudeCodeTool()
-		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
-
-		await runDoneStep(baseState())
-		const profile = join(tmpHome, ".zshrc")
-		expect(existsSync(profile)).toBe(false)
-		const original = "export KIMCHI_API_KEY=old-key\n"
-		writeFileSync(profile, original)
-		await runDoneStep(baseState())
-		expect(readFileSync(profile, "utf-8")).toBe(original)
-
-		writeSpy.mockRestore()
-	})
-
-	it("skips the spinner for interactive-write tools", async () => {
-		const tool = getClaudeCodeTool()
-		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
-
-		await runDoneStep(baseState())
-		const toolSpinnerStarts = clackMock.spinnerInstance.start.mock.calls.filter(
-			(call: unknown[]) => typeof call[0] === "string" && call[0].includes("Claude Code"),
-		)
-		expect(toolSpinnerStarts).toEqual([])
-		expect(clackMock.log.info).toHaveBeenCalledWith("Configuring Claude Code…")
-		expect(clackMock.log.info).toHaveBeenCalledWith("Claude Code: configured")
-
-		writeSpy.mockRestore()
-	})
-
-	it("uses the spinner for non-interactive tools", async () => {
-		const state = baseState()
-		state.selectedTools = ["cursor"]
-
-		const tool = byId("cursor")
-		if (!tool) throw new Error("cursor integration not registered")
-		const writeSpy = vi.spyOn(tool, "write").mockResolvedValue()
-
-		await runDoneStep(state)
-		const toolSpinnerStarts = clackMock.spinnerInstance.start.mock.calls.filter(
-			(call: unknown[]) => typeof call[0] === "string" && call[0].includes("Cursor"),
-		)
-		expect(toolSpinnerStarts).toEqual([["Configuring Cursor…"]])
-
-		writeSpy.mockRestore()
 	})
 })

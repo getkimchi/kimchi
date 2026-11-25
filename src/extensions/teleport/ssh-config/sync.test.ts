@@ -141,30 +141,3 @@ describe("ensureIncludeDirective", () => {
 		expect(cfg).toContain("    User alice")
 	})
 })
-
-describe("applyIncludeBlock", () => {
-	const block = "# >>> kimchi managed include >>>\nInclude /m\n# <<< kimchi managed include <<<"
-
-	it("creates a block-only file from empty input", () => {
-		expect(applyIncludeBlock("", block)).toBe(`${block}\n`)
-	})
-
-	it("returns the input unchanged when the block already matches", () => {
-		const existing = `${block}\n\nHost x\n`
-		expect(applyIncludeBlock(existing, block)).toBe(existing)
-	})
-
-	it("replaces a mismatched block in place", () => {
-		const stale = "# >>> kimchi managed include >>>\nInclude /old\n# <<< kimchi managed include <<<\n\nHost x\n"
-		const result = applyIncludeBlock(stale, block)
-		expect(result).toContain("Include /m")
-		expect(result).not.toContain("Include /old")
-		expect(result).toContain("Host x")
-	})
-
-	it("prepends the block when no block exists", () => {
-		const result = applyIncludeBlock("Host x\n    User u\n", block)
-		expect(result.startsWith(block)).toBe(true)
-		expect(result).toContain("Host x")
-	})
-})

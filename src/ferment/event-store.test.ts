@@ -590,7 +590,11 @@ describe("FermentEventStore", () => {
 			parentStorage.activatePhase(legacy.id, "p1")
 			parentStorage.refinePhase(legacy.id, "p1", [{ id: "s1", index: 1, description: "init", status: "pending" }])
 			parentStorage.startStep(legacy.id, "p1", "s1")
-			parentStorage.completeStep(legacy.id, "p1", "s1")
+			parentStorage.verifyStep(legacy.id, "p1", "s1", {
+				success: true,
+				exitCode: 0,
+				completedAt: new Date().toISOString(),
+			})
 			parentStorage.completePhase(legacy.id, "p1", "Setup done")
 			parentStorage.addDecision(legacy.id, "Use OAuth", "Better than sessions")
 			parentStorage.addMemory(legacy.id, "gotcha", "Watch for clock drift")
@@ -606,7 +610,7 @@ describe("FermentEventStore", () => {
 			expect(types).toContain("phase_activated")
 			expect(types).toContain("phase_refined")
 			expect(types).toContain("step_started")
-			expect(types).toContain("step_completed")
+			expect(types).toContain("step_verified")
 			expect(types).toContain("phase_completed")
 			expect(types).toContain("decision_added")
 			expect(types).toContain("memory_added")
@@ -651,7 +655,11 @@ describe("FermentEventStore", () => {
 			parentStorage.activatePhase(legacy.id, "p1")
 			parentStorage.refinePhase(legacy.id, "p1", [{ id: "s1", index: 1, description: "do", status: "pending" }])
 			parentStorage.startStep(legacy.id, "p1", "s1")
-			parentStorage.completeStep(legacy.id, "p1", "s1")
+			parentStorage.verifyStep(legacy.id, "p1", "s1", {
+				success: true,
+				exitCode: 0,
+				completedAt: new Date().toISOString(),
+			})
 			parentStorage.completePhase(legacy.id, "p1", "ok")
 			parentStorage.addDecision(legacy.id, "title", "desc")
 			parentStorage.addMemory(legacy.id, "gotcha", "thing")
@@ -769,20 +777,6 @@ describe("FermentEventStore", () => {
 				value: "g2",
 			})
 			expect(eventStore.get(f.id)?.scoping.goal?.answer).toBe("g2")
-		})
-
-		it("does not deadlock on nested mutations from the same process", () => {
-			// `lockSync` would deadlock if called recursively for the same path.
-			// withLock should not nest; create + writeWithEvents are independent calls.
-			const f = eventStore.create("Nested test", undefined, process.cwd())
-			exec(eventStore, f.id, {
-				type: "scope",
-				goal: "g",
-				successCriteria: ["c"],
-				constraints: [],
-				phases: [{ name: "P1", goal: "G1" }],
-			})
-			expect(eventStore.get(f.id)).toBeDefined()
 		})
 
 		it("derives each command from the latest state inside the lock", () => {

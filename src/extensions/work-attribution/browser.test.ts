@@ -335,31 +335,6 @@ describe("work browser rows", () => {
 		expect(spend).toBe("$0.875")
 	})
 
-	it("shows each work's own spend while the saved reports repeat their connected works", async () => {
-		const [first, second] = [1, 2].map(workId)
-		// The cost pass saves the whole connected group in each member's costs.json.
-		const group = [
-			{ requestId: "planning", usd: "0.500000000", workIds: [first] },
-			{ requestId: "linked", usd: "0.250000000", workIds: [first], linkedWorkIds: [second] },
-			{ requestId: "implementation", usd: "0.125000000", workIds: [second] },
-		]
-		const { rows, spend } = await browse([
-			{
-				workId: first,
-				summary: summary(first, { requests: [request("planning"), request("linked")] }),
-				costs: costs(first, group),
-			},
-			{
-				workId: second,
-				summary: summary(second, { requests: [request("implementation")] }),
-				costs: costs(second, group),
-			},
-		])
-
-		expect(rows.map((row) => row.value.split(" · ")[0])).toEqual(["$0.75", "$0.375"])
-		expect(spend).toBe("$0.875")
-	})
-
 	it("counts a listed work's whole connected report in the header, unlisted works included", async () => {
 		const [listed, older] = [1, 2].map(workId)
 		const { rows, spend } = await browse([

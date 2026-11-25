@@ -35,16 +35,6 @@ describe("ChordParser", () => {
 		p.process(CTRL_B)
 		expect(p.process("p")).toEqual({ kind: "prev-tab" })
 	})
-
-	it("swallows the removed c/w/x operands silently (no leak to the PTY)", () => {
-		for (const operand of ["c", "w", "x"]) {
-			const p = new ChordParser()
-			p.process(CTRL_B)
-			expect(p.process(operand)).toBe("consumed")
-			expect(p.isWaiting).toBe(false)
-		}
-	})
-
 	it("maps prefix + 1..9 to switch with the corresponding 0-based index", () => {
 		for (let n = 1; n <= 9; n++) {
 			const p = new ChordParser()

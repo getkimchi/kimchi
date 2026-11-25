@@ -201,10 +201,7 @@ describe("help — slash command list", () => {
 		}
 	})
 
-	it("no longer lists the deprecated /multi-model and describes /resources as the resources manager", () => {
-		// Multi-model is deprecated since the Auto default (#1357); the command
-		// still exists for role configuration but is not advertised.
-		expect(SLASH_COMMANDS).not.toHaveProperty("multi-model")
+	it("describes /resources as the resources manager", () => {
 		expect(SLASH_COMMANDS.resources.hint).toMatch(/hooks, tools, extensions/)
 		expect(SLASH_COMMANDS.resources.hint).not.toMatch(/files, URLs, images/)
 	})

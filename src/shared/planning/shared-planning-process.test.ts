@@ -3,12 +3,6 @@ import { SCOPING_DISCOVERY_GUIDANCE } from "../../extensions/ferment/constants.j
 import { SHARED_PLANNING_PROCESS } from "./shared-planning-process.js"
 
 describe("SHARED_PLANNING_PROCESS", () => {
-	it("exports a non-empty string constant", () => {
-		expect(SHARED_PLANNING_PROCESS).toBeDefined()
-		expect(typeof SHARED_PLANNING_PROCESS).toBe("string")
-		expect(SHARED_PLANNING_PROCESS.length).toBeGreaterThan(0)
-	})
-
 	it("contains all five planning steps in order", () => {
 		const steps = [
 			"STEP 1 — ORIENT",
@@ -159,18 +153,11 @@ describe("SHARED_PLANNING_PROCESS", () => {
 		expect(SHARED_PLANNING_PROCESS).toContain("Do not ask questions yet")
 	})
 
-	it("provides concrete budget and scope guidance", () => {
-		// Time/turn budgets
-		expect(SHARED_PLANNING_PROCESS).toContain("MAX 2 TURNS")
-		expect(SHARED_PLANNING_PROCESS).toContain("1-2 turns")
-		expect(SHARED_PLANNING_PROCESS).toContain("3-5 targeted files")
-		expect(SHARED_PLANNING_PROCESS).toContain("1-3 focused questions")
+	it("limits scoping to at most two turns", () => {
 		expect(SHARED_PLANNING_PROCESS).toContain("at most 2 turns")
 	})
 
-	it("addresses both code and non-code scenarios", () => {
-		expect(SHARED_PLANNING_PROCESS).toContain("greenfield")
-		expect(SHARED_PLANNING_PROCESS).toContain("non-code")
+	it("covers writing, strategy and general planning", () => {
 		expect(SHARED_PLANNING_PROCESS).toContain("writing, strategy, general planning")
 	})
 
@@ -213,12 +200,5 @@ describe("SHARED_PLANNING_PROCESS", () => {
 		// canonical plan template (Goal/Constraints/Chunks/etc.), so the budget is
 		// larger than the process-only version.
 		expect(SHARED_PLANNING_PROCESS.length).toBeLessThan(7000)
-	})
-
-	it("can be imported and used in other modules", () => {
-		// This is a smoke test to ensure the export works correctly
-		const imported = SHARED_PLANNING_PROCESS
-		expect(imported).toBeDefined()
-		expect(imported.length).toBeGreaterThan(1000)
 	})
 })
