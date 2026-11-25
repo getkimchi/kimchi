@@ -1,11 +1,8 @@
+import { homedir } from "node:os"
 import { join } from "node:path"
-import {
-	type ExtensionAPI,
-	type ExtensionContext,
-	getAgentDir,
-	type MessageRenderer,
-} from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
+import { resolveHarnessSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
 import { getEffectiveModel } from "../auto-model/state.js"
 import { isSubagent } from "../prompt-construction/prompt-enrichment.js"
@@ -52,7 +49,7 @@ export function computeIdleSeconds(state: CuratorState, now: Date): number {
 export default function curatorExtension(pi: ExtensionAPI, options?: CuratorExtensionOptions): void {
 	if (isSubagent()) return
 	pi.registerMessageRenderer(CURATOR_NOTIFICATION_TYPE, curatorNotificationRenderer)
-	const skillsDir = options?.skillsDir ?? join(getAgentDir(), "skills")
+	const skillsDir = options?.skillsDir ?? resolveHarnessSkillsDir(homedir())
 	const statePath = getStateFilePath(skillsDir)
 	const manager = new SkillManager(skillsDir)
 	const tracker = new UsageTracker(skillsDir)

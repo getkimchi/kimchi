@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
+import { defaultAgentDir } from "./agent-dir.js"
 import { writeJson } from "./config/json.js"
 import { isProjectScopeAllowed } from "./project-scope-trust.js"
 import {
@@ -1066,7 +1067,7 @@ export function getApiKeyMismatchWarning(savedKey = getSavedApiKey()): string | 
 }
 
 export function getAgentConfigDir(): string {
-	return process.env.KIMCHI_CODING_AGENT_DIR || resolve(homedir(), ".config", "kimchi", "harness")
+	return process.env.KIMCHI_CODING_AGENT_DIR || defaultAgentDir()
 }
 
 function updateConfigFile(

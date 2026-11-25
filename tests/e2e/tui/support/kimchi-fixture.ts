@@ -403,7 +403,6 @@ export function launchKimchi(
 		"KIMCHI_PARENT_SESSION_ID=",
 		// Drop the harness's agent dir so the child derives its own from HOME.
 		"KIMCHI_CODING_AGENT_DIR=",
-		"KIMCHI_CODING_AGENT_DIR_DERIVED=",
 		"KIMCHI_PERMISSIONS=yolo",
 		// Disable startup network hooks (self-update probe) so the
 		// session boots without background HTTP or synchronous tar/exec

@@ -629,8 +629,8 @@ async function cliMain(): Promise<void> {
 			// SSO login keeps its credential in auth.json (type: "oauth"), not in
 			// config.json. Catalog discovery resolves that credential through the
 			// provider's OAuth config so an expiring token is persisted before use.
-			// The login is read from the home harness when an explicit agent dir
-			// has no auth.json; the API-key fan-out below still writes agentDir's.
+			// The login is read from the home harness when agentDir's auth.json
+			// holds no Kimchi credential; the API-key fan-out below still writes agentDir's.
 			const authJsonPath = resolve(agentDir, "auth.json")
 			const loginAuthJsonPath = loginAuthPath(agentDir)
 			const gatewayCredentials = resolveGatewayCredentials(
@@ -931,9 +931,7 @@ async function cliMain(): Promise<void> {
 				// Registers `codemode` with kimchi's selection rule. The settings
 				// bootstrap disables pi's replaceable built-in so TUI/print do not
 				// emit a conflict warning; ACP loads no pi built-ins at all.
-				...enabledExtensionFactories([
-					{ id: "extensions.codemode", factory: createGuidedCodemodeExtension() },
-				] satisfies ManagedExtensionFactory[]),
+				...enabledExtensionFactories([{ id: "extensions.codemode", factory: createGuidedCodemodeExtension() }]),
 				autoUpdateSettingsExtension,
 				startupUpdateExtension,
 				backgroundUpdateExtension,
@@ -951,7 +949,7 @@ async function cliMain(): Promise<void> {
 						id: "extensions.skills-manager",
 						factory: (pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
 					},
-				] satisfies ManagedExtensionFactory[]),
+				]),
 				artifactRecorderExtension,
 				statsExtension,
 				statusExtension,
@@ -988,9 +986,7 @@ async function cliMain(): Promise<void> {
 				// session_shutdown intentionally kills nothing here.
 				// EXPERIMENTAL: gated behind --enable-experimental-features.
 				...(experimentalFeatures
-					? enabledExtensionFactories([
-							{ id: "extensions.daemon", factory: daemonExtension },
-						] satisfies ManagedExtensionFactory[])
+					? enabledExtensionFactories([{ id: "extensions.daemon", factory: daemonExtension }])
 					: []),
 				// Re-wires user bash hooks (`applyEnabledBashHooks`) for `tool_call`
 				// and `user_bash` events. Must run before bashToolGuardExtension so
@@ -999,7 +995,7 @@ async function cliMain(): Promise<void> {
 				bashToolGuardExtension,
 				...enabledExtensionFactories([
 					{ id: "extensions.bash-timeout-guidance", factory: bashTimeoutGuidanceExtension },
-				] satisfies ManagedExtensionFactory[]),
+				]),
 				// steer:aborted — emits when the user Esc-aborts the turn immediately
 				// following a harness steer (the "user vetoed the nudge" signal).
 				steerAbortTrackerExtension,
@@ -1013,14 +1009,10 @@ async function cliMain(): Promise<void> {
 				...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 				...enabledExtensionFactories([
 					{ id: "extensions.ide-adapter", factory: ideAdapterExtension },
-				] satisfies ManagedExtensionFactory[]),
-				// Ferment must see raw input before prompt enrichment rewrites print-mode text.
-				...enabledExtensionFactories([
+					// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 					{ id: "extensions.ferment", factory: fermentExtension },
-				] satisfies ManagedExtensionFactory[]),
-				...enabledExtensionFactories([
 					{ id: "extensions.questionnaire", factory: questionnaireExtension },
-				] satisfies ManagedExtensionFactory[]),
+				]),
 				// Backend-routed virtual models (`auto`, `auto-beta`, …) learn + display
 				// the concrete pick, re-sync capabilities, and (main session) install the
 				// catalog-driven Auto default.
@@ -1041,9 +1033,7 @@ async function cliMain(): Promise<void> {
 				permissionsExtension,
 				resourcesExtension,
 				resourceToolBlockerExtension,
-				...enabledExtensionFactories([
-					{ id: "extensions.behaviours", factory: behavioursExtension },
-				] satisfies ManagedExtensionFactory[]),
+				...enabledExtensionFactories([{ id: "extensions.behaviours", factory: behavioursExtension }]),
 				promptSummaryExtension,
 				// Named so startup diagnostics read `<inline:feedback>` rather than a
 				// positional `<inline:N>` that shifts whenever the list above changes.
@@ -1078,7 +1068,7 @@ async function cliMain(): Promise<void> {
 				...enabledExtensionFactories([
 					{ id: "extensions.remote-run", factory: remoteRunExtension },
 					{ id: "extensions.pr-watch", factory: prWatchExtension },
-				] satisfies ManagedExtensionFactory[]),
+				]),
 				telemetryExtension(telemetryConfig),
 				sessionMetadataExtension(),
 				surveysExtension(),

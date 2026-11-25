@@ -2,8 +2,8 @@ import { homedir } from "node:os"
 import { resolve } from "node:path"
 
 /** Kimchi's default agent dir for a home: `~/.config/kimchi/harness`. */
-export function defaultAgentDir(home = homedir()): string {
-	return resolve(home, ".config", "kimchi", "harness")
+export function defaultAgentDir(): string {
+	return resolve(homedir(), ".config", "kimchi", "harness")
 }
 
 /**
@@ -30,7 +30,7 @@ export function applyAgentDirEnv(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /** The agent dir when it was set explicitly rather than derived from HOME. */
-export function explicitAgentDir(env: NodeJS.ProcessEnv = process.env): string | undefined {
-	const agentDir = env.KIMCHI_CODING_AGENT_DIR
-	return agentDir && agentDir !== env.KIMCHI_CODING_AGENT_DIR_DERIVED ? agentDir : undefined
+export function explicitAgentDir(): string | undefined {
+	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	return agentDir && agentDir !== process.env.KIMCHI_CODING_AGENT_DIR_DERIVED ? agentDir : undefined
 }

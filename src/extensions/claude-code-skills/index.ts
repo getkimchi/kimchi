@@ -33,8 +33,8 @@ type SkillToolArgs = Static<typeof SkillToolSchema>
  * discovery sees the current config rather than a startup-time snapshot.
  */
 export default function claudeCodeSkillsExtension(pi: ExtensionAPI, getSkillPaths: () => string[] = () => []): void {
+	if (getParsedCliArgs().options["no-skills"]) return
 	pi.on("resources_discover", (event) => {
-		if (getParsedCliArgs().options["no-skills"]) return undefined
 		const skillPaths = getClaudeCodeSkillResourcePaths(event.cwd, {
 			excludeSkillNames: [
 				...getConfiguredNativeSkillNames(event.cwd, getSkillPaths()),
@@ -59,7 +59,7 @@ export default function claudeCodeSkillsExtension(pi: ExtensionAPI, getSkillPath
 	// in practice sessions are one-per-process, and a vote-based hide would add
 	// state tracking for a rare path.
 	pi.on("session_start", (_event, ctx) => {
-		if (getParsedCliArgs().options["no-skills"] || discoverClaudeCodeSkillDirs(ctx.cwd).length === 0) return undefined
+		if (discoverClaudeCodeSkillDirs(ctx.cwd).length === 0) return undefined
 		registerSkillTool(pi)
 		return undefined
 	})
