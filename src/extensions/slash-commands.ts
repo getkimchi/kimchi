@@ -35,6 +35,7 @@ export const SLASH_COMMANDS = {
 	"remote-sessions": { hint: "Browse workspaces and their kimchi sessions" },
 	"pr-reporting": { hint: "PR cost reporting: on, off, or status" },
 	"pr-watch": { hint: "Watch this PR locally, inspect its monitor, and fix CI or review feedback" },
+	"session-messages": { hint: "Let Kimchi sessions on this machine message each other: enable or disable" },
 	tags: { hint: "Manage usage tracking tags" },
 	stats: { hint: "View coding analytics and metrics" },
 	"session-costs": { hint: "Billed cost of this session and your recent sessions" },

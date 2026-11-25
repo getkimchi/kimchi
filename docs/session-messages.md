@@ -1,9 +1,30 @@
 # Message subagents and other Kimchi sessions
 
 An interactive Kimchi session (the TUI) can list and message its own subagents and the
-other interactive sessions running on the same machine. Nothing to set up: a session can
-be reached while it runs. Print, RPC and ACP runs take no part, so a program driving Kimchi
-never sees a turn it did not start.
+other interactive sessions running on the same machine. Print, RPC and ACP runs take no
+part, so a program driving Kimchi never sees a turn it did not start.
+
+## Turn it on
+
+Messages between sessions are off until you allow them. The first time a session finds
+another live session working in the same repository (worktrees of one repository count),
+it asks once, when Kimchi is idle and the prompt is empty:
+
+```text
+Let Kimchi sessions message each other?
+```
+
+Your answer is saved in your profile's `session-messages.json` and applies to every
+session; a no is remembered too, so Kimchi does not ask again. Change it any time:
+
+```text
+/session-messages enable
+/session-messages disable
+/session-messages        # show the current choice
+```
+
+Sessions that are already running pick up the change after their current turn. Messages
+to your own subagents work either way.
 
 ## Use it
 
@@ -16,7 +37,9 @@ List the other Kimchi sessions, then ask the web-app session to run its tests an
 The agent uses two tools:
 
 - `list_agents` shows this session's subagents first (ID, type, status, task, start time),
-  then each other session as `name [ref]`, idle or busy, with its folder and start time.
+  then each other session as `name [ref]`, idle or busy, with its folder, start time and
+  whether it works in the same repository. Work that such a session already owns goes to it
+  as a message; other work can still go to a new subagent.
   A session's name is its session name (set with `/name` or picked after the first turn)
   or, before that, the folder name. The ref is the last six characters of the session id.
 - `send_message` takes `to` and the text. `to` is a subagent ID, a session name, or

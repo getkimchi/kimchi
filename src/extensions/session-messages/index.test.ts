@@ -1,14 +1,15 @@
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { listSubagents, messageSubagent } from "../agents/index.js"
 import type { AgentRecord } from "../agents/personas/types.js"
 import { clearPermissionModeEnv, setPermissionMode } from "../permissions/mode-controller.js"
-import { CROSS_SESSION_MESSAGE_TYPE, createSessionMessagesExtension } from "./index.js"
+import { unregisterSessionPermissionFlagController } from "../permissions/mode-controller-registry.js"
+import { CROSS_SESSION_MESSAGE_TYPE, createSessionMessagesExtension, DISABLED_NOTICE, ENABLED_NOTICE } from "./index.js"
 
 vi.mock("../agents/index.js", () => ({ listSubagents: vi.fn(), messageSubagent: vi.fn() }))
 
@@ -33,15 +34,38 @@ function tempDir(): string {
 	return join(dir, "live")
 }
 
-async function startSession(dir: string, options: { id: string; name: string; idle?: boolean; mode?: "tui" | "rpc" }) {
+/** The saved choice beside the sockets' temp folder. */
+const preferenceFile = (dir: string) => join(dirname(dir), "session-messages.json")
+const savedPreference = (dir: string) => JSON.parse(readFileSync(preferenceFile(dir), "utf8")).enabled
+
+async function startSession(
+	dir: string,
+	options: {
+		id: string
+		name: string
+		idle?: boolean
+		mode?: "tui" | "rpc"
+		/** Folders that do not exist count as their own repository. */
+		cwd?: string
+		/** "unset" leaves the choice unasked; most cases run with messages allowed. */
+		preference?: "on" | "unset"
+		/** The user's answer if this session asks. */
+		answer?: boolean
+	},
+) {
+	if ((options.preference ?? "on") === "on") {
+		mkdirSync(dirname(dir), { recursive: true })
+		writeFileSync(preferenceFile(dir), JSON.stringify({ enabled: true }))
+	}
 	const harness = createExtensionApi()
 	harness.api.getSessionName = () => options.name
-	createSessionMessagesExtension(dir)(harness.api)
+	createSessionMessagesExtension({ dir, preferenceFile: preferenceFile(dir) })(harness.api)
 	const ctx = createContext({
 		mode: options.mode ?? "tui",
-		cwd: `/work/${options.name}`,
+		cwd: options.cwd ?? `/work/${options.name}`,
 		isIdle: vi.fn(() => options.idle ?? true),
 		sessionManager: { getSessionId: () => options.id },
+		ui: { confirm: vi.fn(async () => options.answer ?? false) },
 	})
 	await harness.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
 	const stop = () => harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx)
@@ -157,6 +181,7 @@ describe("session-messages", () => {
 			)
 			await vi.waitFor(() => expect(loose.harness.sendMessage).toHaveBeenCalledTimes(1))
 		} finally {
+			unregisterSessionPermissionFlagController(looseId)
 			clearPermissionModeEnv(looseId)
 		}
 	})
@@ -169,6 +194,78 @@ describe("session-messages", () => {
 		expect(driven.harness.registerTool).not.toHaveBeenCalled()
 		expect(existsSync(join(dir, "bbbbb2.sock"))).toBe(false)
 		expect(await alpha.run("list_agents", {})).toContain("No other Kimchi session is running on this machine.")
+	})
+
+	it("asks once when another session works in the same repository, and yes lets them message each other", async () => {
+		const dir = tempDir()
+		const other = await startSession(dir, {
+			id: "0190aaaa-0000-7000-8000-00000cccccc3",
+			name: "other",
+			cwd: "/work/elsewhere",
+			preference: "unset",
+		})
+		const beta = await startSession(dir, {
+			id: "0190aaaa-0000-7000-8000-00000bbbbbb2",
+			name: "beta",
+			cwd: "/work/shop",
+			preference: "unset",
+		})
+		const alpha = await startSession(dir, {
+			id: "0190aaaa-0000-7000-8000-00000aaaaaa1",
+			name: "alpha",
+			cwd: "/work/shop",
+			preference: "unset",
+			answer: true,
+		})
+
+		await vi.waitFor(() => expect(alpha.ctx.ui.notify).toHaveBeenCalledWith(ENABLED_NOTICE, "info"))
+		expect(alpha.ctx.ui.confirm).toHaveBeenCalledWith(
+			"Let Kimchi sessions message each other?",
+			expect.stringContaining("beta [bbbbb2] is working in this repository too (/work/shop)"),
+		)
+		// Neither earlier session had a session in its repository to ask about.
+		expect(other.ctx.ui.confirm).not.toHaveBeenCalled()
+		expect(beta.ctx.ui.confirm).not.toHaveBeenCalled()
+		expect(savedPreference(dir)).toBe(true)
+		expect(await alpha.run("list_agents", {})).toContain("beta [bbbbb2]  ·  idle  ·  /work/shop  ·  same repository")
+		expect(await alpha.run("send_message", { to: "beta", message: "Take the checkout bug." })).toContain(
+			"Delivered to beta [bbbbb2]",
+		)
+		// The running session gets the tools once its turn settles.
+		expect(beta.harness.registerTool).not.toHaveBeenCalled()
+		await beta.harness.emit("agent_settled", {}, beta.ctx)
+		expect(await beta.run("send_message", { to: "alpha", message: "On it." })).toContain("Delivered to alpha")
+	})
+
+	it("saves a no without asking again, and /session-messages enable turns messages on later", async () => {
+		const dir = tempDir()
+		await startSession(dir, {
+			id: "0190aaaa-0000-7000-8000-00000bbbbbb2",
+			name: "beta",
+			cwd: "/work/shop",
+			preference: "unset",
+		})
+		const alpha = await startSession(dir, {
+			id: "0190aaaa-0000-7000-8000-00000aaaaaa1",
+			name: "alpha",
+			cwd: "/work/shop",
+			preference: "unset",
+			answer: false,
+		})
+
+		await vi.waitFor(() => expect(alpha.ctx.ui.notify).toHaveBeenCalledWith(DISABLED_NOTICE, "info"))
+		expect(savedPreference(dir)).toBe(false)
+		expect(alpha.harness.registerTool).not.toHaveBeenCalled()
+		await alpha.harness.emit("agent_settled", {}, alpha.ctx)
+		expect(alpha.ctx.ui.confirm).toHaveBeenCalledTimes(1)
+
+		await alpha.harness.getRegisteredCommand("session-messages").handler("enable", alpha.ctx as never)
+		expect(savedPreference(dir)).toBe(true)
+		expect(alpha.ctx.ui.notify).toHaveBeenLastCalledWith(ENABLED_NOTICE, "info")
+		expect(await alpha.run("send_message", { to: "beta", message: "hi" })).toContain("Delivered to beta [bbbbb2]")
+
+		await alpha.harness.getRegisteredCommand("session-messages").handler("disable", alpha.ctx as never)
+		expect(await alpha.run("send_message", { to: "beta", message: "hi" })).toBe(DISABLED_NOTICE)
 	})
 
 	it("drops closed sessions and removes sockets left by crashed ones", async () => {

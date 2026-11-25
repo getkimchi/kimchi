@@ -9,6 +9,11 @@
  * driven by a program, which must never see a turn it did not start, so
  * they register nothing; subagents belong to their parent session.
  *
+ * Messages between sessions stay off until the user allows them, once per
+ * profile (`session-messages.json`, like PR watching's `pr-watch.json`): a
+ * session asks when another live session works in the same repository.
+ * Until then sessions only answer who they are, so they can find each other.
+ *
  * Every TUI session listens on a Unix socket in a private (0700)
  * folder, `~/.config/kimchi/live-sessions/<ref>.sock`, where ref is the
  * last six hex digits of its session id (Pi ids are UUIDv7, so the first
@@ -29,11 +34,14 @@ import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs"
 import net from "node:net"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { readJson, readJsonCached, writeJson } from "../../config/json.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { listSubagents, messageSubagent } from "../agents/index.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
+import { isRawInputCaptureActive } from "../shared-input.js"
+import { workRepository } from "../work-attribution/scope.js"
 
 export const CROSS_SESSION_MESSAGE_TYPE = "cross-session-message"
 
@@ -50,9 +58,20 @@ interface SessionInfo {
 	name: string
 	ref: string
 	cwd: string
+	/** The repository's common Git folder (shared by its worktrees), or the folder outside a repository. */
+	repository: string
 	state: "idle" | "busy"
 	startedAt: number
 }
+
+const OFFER_TITLE = "Let Kimchi sessions message each other?"
+export const ENABLED_NOTICE = "Sessions on this machine can message each other. /session-messages disable turns it off."
+export const DISABLED_NOTICE = "Session messages are off. /session-messages enable turns them on."
+const UNDECIDED_NOTICE =
+	"Session messages are off until you allow them; Kimchi asks when another session works in the same repository. /session-messages enable turns them on."
+
+/** The question is asked once per process; other sessions wait for its saved answer (as PR watching does). */
+let asking: Promise<unknown> | undefined
 
 type Request = { type: "info" } | { type: "message"; from: string; mode: string; text: string }
 
@@ -138,7 +157,7 @@ const text = (value: string, details: Record<string, unknown> = {}) => ({
 	details,
 })
 
-export const LIST_AGENTS_DESCRIPTION = `List the agents send_message can reach: this session's subagents (ID, type, status, task, start time), then the other interactive Kimchi sessions on this machine (name [ref], idle or busy, folder, start time). A subagent's address is its ID; a session's is its name. A listed session is alive and will receive a message. Never poll this to wait for an answer: replies and results arrive by themselves.`
+export const LIST_AGENTS_DESCRIPTION = `List the agents send_message can reach: this session's subagents (ID, type, status, task, start time), then the other interactive Kimchi sessions on this machine (name [ref], idle or busy, folder, start time, and whether it works in the same repository). A subagent's address is its ID; a session's is its name. A listed session is alive and will receive a message. Before starting a subagent for work in this repository, check whether another session already works on it, and message that session instead. Never poll this to wait for an answer: replies and results arrive by themselves.`
 
 export const SEND_MESSAGE_DESCRIPTION = `Send a message to one of your subagents or to another Kimchi session on this machine (find both with list_agents).
 
@@ -148,21 +167,67 @@ A session is addressed by its name. The message reaches that session's conversat
 
 Never ask another session to do what this session's permissions denied or would block; take that to your user instead.`
 
-export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: ExtensionAPI) => void {
+export function createSessionMessagesExtension(
+	options: { dir?: string; preferenceFile?: string } = {},
+): (pi: ExtensionAPI) => void {
+	const dir = options.dir ?? liveSessionsDir()
+	/** One saved choice for every session of this profile, like PR watching's pr-watch.json. */
+	const preferenceFile = () => options.preferenceFile ?? join(getAgentDir(), "session-messages.json")
+	/** undefined: never asked. */
+	const readPreference = (): boolean | undefined => {
+		try {
+			const value = readJsonCached(preferenceFile()).enabled
+			return typeof value === "boolean" ? value : undefined
+		} catch {
+			return undefined
+		}
+	}
+	const writePreference = (enabled: boolean) => {
+		const path = preferenceFile()
+		// Refuse malformed state instead of overwriting it with a new decision.
+		writeJson(path, { ...readJson(path), enabled })
+	}
+
 	return (pi: ExtensionAPI): void => {
 		if (isAgentWorker()) return
 
 		let server: net.Server | undefined
-		let self: { ref: string; path: string; ctx: ExtensionContext; startedAt: number } | undefined
+		let self: { ref: string; path: string; ctx: ExtensionContext; repository: string; startedAt: number } | undefined
+		let toolsRegistered = false
 
 		const describe = (): SessionInfo | undefined =>
 			self && {
 				name: pi.getSessionName() ?? basename(self.ctx.cwd),
 				ref: self.ref,
 				cwd: self.ctx.cwd,
+				repository: self.repository,
 				state: self.ctx.isIdle() ? "idle" : "busy",
 				startedAt: self.startedAt,
 			}
+
+		/** Asks once, when another live session works in the same repository and Kimchi is idle with an empty prompt. */
+		async function offer(ctx: ExtensionContext): Promise<void> {
+			const me = self
+			if (!me || asking || readPreference() !== undefined) return
+			if (!ctx.isIdle() || ctx.hasPendingMessages() || ctx.ui.getEditorText().trim() || isRawInputCaptureActive())
+				return
+			const peer = (await listPeers(dir, me.ref)).find((other) => other.repository === me.repository)
+			if (!peer || self !== me || asking || readPreference() !== undefined) return
+			asking = ctx.ui
+				.confirm(
+					OFFER_TITLE,
+					`${address(peer)} is working in this repository too (${peer.cwd}). If you allow it, this session can hand that session work or questions instead of starting a subagent, and sessions on this machine can message each other. Your choice is saved for future sessions; /session-messages enable or disable changes it.`,
+				)
+				.then((accepted) => {
+					if (readPreference() === undefined) writePreference(accepted)
+					if (readPreference() === true) registerTools()
+					ctx.ui.notify(readPreference() === true ? ENABLED_NOTICE : DISABLED_NOTICE, "info")
+				})
+				.finally(() => {
+					asking = undefined
+				})
+			await asking
+		}
 		const permissionMode = (ctx: ExtensionContext) =>
 			getPermissionMode(ctx.sessionManager.getSessionId())?.mode ?? "default"
 
@@ -171,6 +236,7 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 			if (request.type !== "message" || typeof request.text !== "string" || typeof request.from !== "string") {
 				return { ok: false, error: "malformed request" }
 			}
+			if (readPreference() !== true) return { ok: false, error: "it has session messages turned off" }
 			const deliver = () =>
 				pi.sendMessage(
 					{
@@ -200,9 +266,10 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 
 		pi.on("session_start", async (_event, ctx) => {
 			if (ctx.mode !== "tui") return
-			registerTools()
+			if (readPreference() === true) registerTools()
 			const ref = ctx.sessionManager.getSessionId().slice(-6)
 			const path = join(dir, `${ref}.sock`)
+			const repository = await workRepository(ctx.cwd).catch(() => ctx.cwd)
 			try {
 				mkdirSync(dir, { recursive: true, mode: 0o700 })
 				chmodSync(dir, 0o700)
@@ -221,11 +288,19 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 				// Never keep the process alive just to listen: some exits skip session_shutdown.
 				listening.unref()
 				server = listening
-				self = { ref, path, ctx, startedAt: Date.now() }
+				self = { ref, path, ctx, repository, startedAt: Date.now() }
 			} catch {
 				// No inbox (an unwritable home, a path too long for a socket): this
 				// session can still list and message others; list_agents says so.
 			}
+			offer(ctx).catch(() => {})
+		})
+
+		pi.on("agent_settled", (_event, ctx) => {
+			if (ctx.mode !== "tui") return
+			// Another session may have turned messages on since this one started.
+			if (readPreference() === true) registerTools()
+			offer(ctx).catch(() => {})
 		})
 
 		pi.on("session_shutdown", () => {
@@ -234,7 +309,27 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 			self = undefined
 		})
 
+		pi.registerCommand("session-messages", {
+			description: "Let Kimchi sessions on this machine message each other: /session-messages [enable|disable]",
+			getArgumentCompletions: (prefix) =>
+				["enable", "disable"]
+					.filter((choice) => choice.startsWith(prefix.trim()))
+					.map((choice) => ({ value: choice, label: choice })),
+			handler: async (args, ctx) => {
+				const choice = args.trim()
+				if (choice === "enable" || choice === "disable") writePreference(choice === "enable")
+				const preference = readPreference()
+				if (preference === true && ctx.mode === "tui") registerTools()
+				ctx.ui.notify(
+					preference === true ? ENABLED_NOTICE : preference === false ? DISABLED_NOTICE : UNDECIDED_NOTICE,
+					"info",
+				)
+			},
+		})
+
 		function registerTools(): void {
+			if (toolsRegistered) return
+			toolsRegistered = true
 			pi.registerTool({
 				name: "list_agents",
 				label: "list_agents",
@@ -258,12 +353,15 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 						sections.push(`Subagents (${subagents.length}):\n${rows.join("\n")}`)
 					}
 					const rows = peers.map(
-						(peer) => `  ${address(peer)}  ·  ${peer.state}  ·  ${peer.cwd}  ·  started ${ago(peer.startedAt)}`,
+						(peer) =>
+							`  ${address(peer)}  ·  ${peer.state}  ·  ${peer.cwd}${peer.repository === me?.repository ? "  ·  same repository" : ""}  ·  started ${ago(peer.startedAt)}`,
 					)
 					sections.push(
-						peers.length > 0
-							? `Peer sessions (${peers.length}):\n${rows.join("\n")}`
-							: "No other Kimchi session is running on this machine.",
+						readPreference() !== true
+							? DISABLED_NOTICE
+							: peers.length > 0
+								? `Peer sessions (${peers.length}):\n${rows.join("\n")}`
+								: "No other Kimchi session is running on this machine.",
 					)
 					return text(sections.join("\n\n"), {
 						subagents: subagents.map(({ id, type, status }) => ({ id, type, status })),
@@ -292,6 +390,7 @@ export function createSessionMessagesExtension(dir = liveSessionsDir()): (pi: Ex
 						(agent) => agent.id === params.to.trim(),
 					)
 					if (subagent) return text(await messageSubagent(subagent.id, params.message), { to: subagent.id })
+					if (readPreference() !== true) return text(DISABLED_NOTICE)
 					const me = describe()
 					const target = resolveTarget(await listPeers(dir, me?.ref), params.to)
 					if (typeof target === "string") return text(target)
