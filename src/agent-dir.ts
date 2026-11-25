@@ -14,9 +14,11 @@ export function defaultAgentDir(home = homedir()): string {
  * another HOME) recomputes it instead of taking the parent's.
  */
 export function applyAgentDirEnv(env: NodeJS.ProcessEnv = process.env): string {
-	if (env.KIMCHI_CODING_AGENT_DIR && env.KIMCHI_CODING_AGENT_DIR_DERIVED !== "1") {
-		env.KIMCHI_CODING_AGENT_DIR = resolve(env.KIMCHI_CODING_AGENT_DIR)
-		delete env.KIMCHI_CODING_AGENT_DIR_DERIVED
+	const inherited = env.KIMCHI_CODING_AGENT_DIR
+	if (inherited && env.KIMCHI_CODING_AGENT_DIR_DERIVED !== "1") {
+		// Expand a leading `~` the way Pi's getAgentDir does.
+		const expanded = inherited === "~" || inherited.startsWith("~/") ? homedir() + inherited.slice(1) : inherited
+		env.KIMCHI_CODING_AGENT_DIR = resolve(expanded)
 	} else {
 		env.KIMCHI_CODING_AGENT_DIR = defaultAgentDir()
 		env.KIMCHI_CODING_AGENT_DIR_DERIVED = "1"

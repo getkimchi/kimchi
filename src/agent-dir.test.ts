@@ -44,4 +44,11 @@ describe("applyAgentDirEnv", () => {
 		expect(env.KIMCHI_CODING_AGENT_DIR_DERIVED).toBeUndefined()
 		expect(child.KIMCHI_CODING_AGENT_DIR_DERIVED).toBeUndefined()
 	})
+
+	it("expands a leading ~ in an explicit dir", () => {
+		stubHome(resolve("/home/user"))
+
+		expect(applyAgentDirEnv({ KIMCHI_CODING_AGENT_DIR: "~/stage" })).toBe(join(resolve("/home/user"), "stage"))
+		expect(applyAgentDirEnv({ KIMCHI_CODING_AGENT_DIR: "~" })).toBe(resolve("/home/user"))
+	})
 })
