@@ -1,28 +1,28 @@
 # One-time switch to fullscreen TUI
 
-Kimchi includes a hidden, enabled-by-default migration that switches the regular TUI to fullscreen **once**. This is a one-time onboarding migration, not a scheduled or timer-based action, and there is no public config setting or command to enable it.
+Kimchi includes a hidden, enabled-by-default migration that switches a regular-TUI user to fullscreen **once**. This is a one-time onboarding migration, not a scheduled or timer-based action, and there is no public config setting or command to enable it.
 
 ## When the switch runs
 
 All of these conditions must hold in one launch:
 
-1. The session is an interactive terminal TUI. ACP, print, protocol, and non-TTY sessions return before reading settings, checking versions, or writing state for this feature.
-2. The effective startup mode after settings and `--tui-mode` resolution is `regular`. Sessions already starting in fullscreen are left alone.
-3. The running harness is confirmed current through the existing update checker and its shared cache. Stable releases must match the latest release version. Canary builds must be on the latest build of the same commit.
+1. The session is an interactive chat TUI. ACP, print, protocol, non-TTY, help, version, export, and model-listing sessions return before changing settings or claiming completion.
+2. The saved startup mode is `regular`. Sessions already starting fullscreen are left alone, and an explicit `--tui-mode regular` or `--tui-mode fullscreen` is respected as an opt-out from automatic migration.
+3. The existing update cache contains a fresh confirmation that the current harness version is the latest version. Missing, stale, outdated, newer-than-release, or disabled confirmation leaves startup unchanged. The migration never adds a startup network request; a later launch can use fresher cache evidence.
 4. The internal one-time completion marker has not already been claimed.
 
-The switch adds a one-shot `--tui-mode fullscreen` startup override. It does **not** rewrite `settings.json` or the user's saved `tuiMode` preference. A later deliberate choice of regular or fullscreen mode therefore remains the user's choice; in particular, choosing regular after the one-time switch never triggers another forced switch.
+On an eligible launch, Kimchi uses Pi's `SettingsManager` to persist `tuiMode: "fullscreen"` in the **global settings**. This is not a session-only CLI override. Any later deliberate mode choice is honored: in particular, choosing regular after the one-time switch never triggers another forced switch.
 
 ## Completion and failures
 
-On an eligible launch, Kimchi atomically creates this internal marker:
+Before changing the global setting, Kimchi atomically creates this internal marker:
 
 ```text
 ~/.config/kimchi/harness/one-time-fullscreen.json
 ```
 
-(or `one-time-fullscreen.json` under the configured agent directory) before Pi starts. Exclusive creation ensures that concurrent launches cannot both claim the automatic switch. Once this marker exists, subsequent launches do not run an update check or switch modes for this feature. This at-most-once guarantee also applies if startup is interrupted after the marker is claimed.
+(or `one-time-fullscreen.json` under the configured agent directory). Exclusive creation ensures concurrent launches cannot both claim the migration. Once the marker exists, subsequent launches leave the user's mode preference alone and do not consult the version cache. This at-most-once guarantee also applies if startup is interrupted after the marker is claimed.
 
-If the version is outdated, newer than the available release, cannot be checked, has update checks disabled, or otherwise cannot be confirmed as latest, startup stays in its requested mode and does not claim completion. A later eligible launch may try again. If the completion marker cannot be persisted, or another launch claims it first, the automatic switch is skipped.
+If saving the global setting fails, the claim is removed when possible and startup continues without crashing. Unexpected settings or argument errors are also non-fatal and leave startup behavior unchanged.
 
 This behavior is intentionally TUI-only. ACP and other non-TUI surfaces have no fullscreen layout to migrate and are unchanged.

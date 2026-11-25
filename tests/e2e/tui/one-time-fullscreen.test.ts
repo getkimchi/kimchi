@@ -75,7 +75,7 @@ test("the latest regular TUI automatically switches to fullscreen once", async (
 			string,
 			unknown
 		>
-		expect(settings.tuiMode).toBe("regular")
+		expect(settings.tuiMode).toBe("fullscreen")
 		expect(existsSync(join(fixture.agentDir, "one-time-fullscreen.json"))).toBe(true)
 
 		// Close the side editor before quitting so /quit reaches main rather than
@@ -84,6 +84,10 @@ test("the latest regular TUI automatically switches to fullscreen once", async (
 		await poll(() => !viewText(terminal).includes("Side chat · Which cache?"), 100, 5_000).then((closed) => {
 			expect(closed).toBe(true)
 		})
+		// The migrated setting is now fullscreen. Simulate the user deliberately
+		// choosing regular again before starting the next session.
+		settings.tuiMode = "regular"
+		writeFileSync(join(fixture.agentDir, "settings.json"), JSON.stringify(settings))
 		await session.restart()
 		terminal.submit("/btw Are we regular again?")
 		await waitForText(terminal, "Side chat needs the fullscreen TUI mode", { full: false })

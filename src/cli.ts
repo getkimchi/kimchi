@@ -812,9 +812,9 @@ async function cliMain(): Promise<void> {
 				console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
 				process.exit(1)
 			}
-			// Hidden one-time migration: latest-version regular TUI sessions start
-			// fullscreen without rewriting the user's persisted tuiMode choice.
-			// Non-TUI modes return before reading settings, checking, or persisting.
+			// Hidden one-time migration: a cached-latest regular TUI user is moved
+			// to fullscreen in global settings. Non-TUI modes return before this
+			// feature reads settings, checks cached versions, or persists state.
 			const rawArgs = await applyOneTimeFullscreenSwitch({
 				args: atFileArgs.args,
 				isTerminalUi: isTerminalUiMode(atFileArgs.args, terminalIo),

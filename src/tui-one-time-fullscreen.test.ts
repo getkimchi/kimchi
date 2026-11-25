@@ -1,161 +1,117 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { applyOneTimeFullscreenSwitch, type OneTimeFullscreenSwitchOptions } from "./tui-one-time-fullscreen.js"
 
 let tempDir: string
 let agentDir: string
 let cwd: string
+let cacheDir: string
 
 beforeEach(() => {
 	tempDir = mkdtempSync(join(tmpdir(), "kimchi-one-time-fullscreen-"))
 	agentDir = join(tempDir, "agent")
 	cwd = join(tempDir, "work")
+	cacheDir = join(tempDir, "cache")
 	mkdirSync(agentDir, { recursive: true })
 	mkdirSync(cwd, { recursive: true })
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ tuiMode: "regular" }))
+	vi.stubEnv("XDG_CACHE_HOME", cacheDir)
+	writeLatestCache()
 })
 
 afterEach(() => {
+	vi.unstubAllEnvs()
 	rmSync(tempDir, { recursive: true, force: true })
 })
 
-function latestStable() {
-	return { hasUpdate: false, latestVersion: "v1.2.3", tag: "v1.2.3" }
+function writeLatestCache(version = "v1.2.3"): void {
+	mkdirSync(join(cacheDir, "kimchi"), { recursive: true })
+	writeFileSync(
+		join(cacheDir, "kimchi", "state.json"),
+		JSON.stringify({
+			repos: { "getkimchi/kimchi": { checked_at: new Date().toISOString(), latest_version: version } },
+		}),
+	)
 }
 
-function runSwitch(overrides: Partial<OneTimeFullscreenSwitchOptions> = {}) {
+function readSettings(): Record<string, unknown> {
+	return JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")) as Record<string, unknown>
+}
+
+function runMigration(overrides: Partial<OneTimeFullscreenSwitchOptions> = {}) {
 	return applyOneTimeFullscreenSwitch({
 		args: [],
 		isTerminalUi: true,
 		agentDir,
 		cwd,
 		currentVersion: "1.2.3",
-		checkForUpdate: vi.fn().mockResolvedValue(latestStable()),
 		...overrides,
 	})
 }
 
 describe("applyOneTimeFullscreenSwitch", () => {
-	it("automatically switches a confirmed-latest regular TUI without rewriting the saved mode", async () => {
-		const checkForUpdate = vi.fn().mockResolvedValue(latestStable())
+	it("persists fullscreen globally once and honors a later return to regular", async () => {
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ tuiMode: "regular", theme: "dark" }))
+		const args = ["--", "hello"]
 
-		const args = await applyOneTimeFullscreenSwitch({
-			args: ["--", "hello"],
-			isTerminalUi: true,
-			agentDir,
-			cwd,
-			currentVersion: "1.2.3",
-			checkForUpdate,
-		})
-
-		expect(parsePiArgs(args).tuiMode).toBe("fullscreen")
-		expect(parsePiArgs(args).messages).toEqual(["hello"])
-		expect(checkForUpdate).toHaveBeenCalledWith({ currentVersion: "1.2.3", skipCache: false, canary: false })
-		expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"))).toEqual({ tuiMode: "regular" })
+		expect(await runMigration({ args })).toBe(args)
+		expect(readSettings()).toEqual({ tuiMode: "fullscreen", theme: "dark" })
 		expect(existsSync(join(agentDir, "one-time-fullscreen.json"))).toBe(true)
-	})
 
-	it("does not switch or check again after completion, including after the user returns to regular mode", async () => {
-		const firstCheck = vi.fn().mockResolvedValue(latestStable())
-		expect(parsePiArgs(await runSwitch({ checkForUpdate: firstCheck })).tuiMode).toBe("fullscreen")
-
-		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ tuiMode: "regular" }))
-		const laterCheck = vi.fn().mockResolvedValue(latestStable())
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ tuiMode: "regular", theme: "dark" }))
+		vi.stubEnv("XDG_CACHE_HOME", join(tempDir, "no-cache"))
 		const laterArgs = ["--tui-mode", "regular"]
-
-		expect(await runSwitch({ args: laterArgs, checkForUpdate: laterCheck })).toBe(laterArgs)
-		expect(laterCheck).not.toHaveBeenCalled()
+		expect(await runMigration({ args: laterArgs })).toBe(laterArgs)
+		expect(readSettings()).toEqual({ tuiMode: "regular", theme: "dark" })
 	})
 
-	it("does nothing when the session already starts fullscreen", async () => {
+	it("does not claim completion when already starting fullscreen", async () => {
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ tuiMode: "fullscreen" }))
 		const args: string[] = []
-		const checkForUpdate = vi.fn().mockResolvedValue(latestStable())
-		expect(await runSwitch({ args, checkForUpdate })).toBe(args)
-		expect(checkForUpdate).not.toHaveBeenCalled()
+		expect(await runMigration({ args })).toBe(args)
 		expect(existsSync(join(agentDir, "one-time-fullscreen.json"))).toBe(false)
 	})
 
-	it("preserves an explicit fullscreen CLI override without checking or claiming completion", async () => {
-		const args = ["--tui-mode", "fullscreen"]
-		const checkForUpdate = vi.fn().mockResolvedValue(latestStable())
-		expect(await runSwitch({ args, checkForUpdate })).toBe(args)
-		expect(checkForUpdate).not.toHaveBeenCalled()
+	it("honors an explicit regular CLI override and later leads to the saved mode only", async () => {
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ tuiMode: "regular" }))
+		const args = ["--tui-mode", "regular"]
+		expect(await runMigration({ args })).toBe(args)
+		expect(readSettings()).toEqual({ tuiMode: "regular" })
 		expect(existsSync(join(agentDir, "one-time-fullscreen.json"))).toBe(false)
 	})
 
-	it("does nothing for ACP, print, protocol, and other non-TUI launches", async () => {
-		const args = ["--mode", "acp"]
-		const checkForUpdate = vi.fn().mockResolvedValue(latestStable())
-		expect(await runSwitch({ args, isTerminalUi: false, checkForUpdate })).toBe(args)
-		expect(checkForUpdate).not.toHaveBeenCalled()
+	it.each([
+		{ name: "non-TUI", args: ["--mode", "acp"], isTerminalUi: false },
+		{ name: "version", args: ["--version"], isTerminalUi: true },
+		{ name: "export", args: ["--export", "out.html"], isTerminalUi: true },
+	])("skips $name launches without changing settings or claiming completion", async ({ args, isTerminalUi }) => {
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ tuiMode: "regular" }))
+		expect(await runMigration({ args, isTerminalUi })).toBe(args)
+		expect(readSettings()).toEqual({ tuiMode: "regular" })
 		expect(existsSync(join(agentDir, "one-time-fullscreen.json"))).toBe(false)
 	})
 
-	it("does not switch when an update is available", async () => {
+	it.each([
+		{ name: "newer release available", latestVersion: "v1.2.4", emptyCache: false, noUpdateCheck: false },
+		{ name: "cached release older than current", latestVersion: "v1.2.2", emptyCache: false, noUpdateCheck: false },
+		{ name: "missing cache", latestVersion: "v1.2.3", emptyCache: true, noUpdateCheck: false },
+		{ name: "update checks disabled", latestVersion: "v1.2.3", emptyCache: false, noUpdateCheck: true },
+	])("skips migration with $name", async ({ latestVersion, emptyCache, noUpdateCheck }) => {
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ tuiMode: "regular" }))
+		if (latestVersion !== "v1.2.3") writeLatestCache(latestVersion)
+		if (emptyCache) vi.stubEnv("XDG_CACHE_HOME", join(tempDir, "no-cache"))
+		vi.stubEnv("KIMCHI_NO_UPDATE_CHECK", noUpdateCheck ? "1" : "")
 		const args: string[] = []
-		const checkForUpdate = vi.fn().mockResolvedValue({ hasUpdate: true, latestVersion: "v1.2.4", tag: "v1.2.4" })
-		expect(await runSwitch({ args, checkForUpdate })).toBe(args)
+
+		expect(await runMigration({ args })).toBe(args)
+		expect(readSettings()).toEqual({ tuiMode: "regular" })
 		expect(existsSync(join(agentDir, "one-time-fullscreen.json"))).toBe(false)
 	})
 
-	it("does not switch when the current version is newer than the latest release", async () => {
-		const args: string[] = []
-		const checkForUpdate = vi.fn().mockResolvedValue({ hasUpdate: false, latestVersion: "v1.2.2", tag: "v1.2.2" })
-		expect(await runSwitch({ args, checkForUpdate })).toBe(args)
+	it("does not crash or claim completion for unreadable settings", async () => {
+		writeFileSync(join(agentDir, "settings.json"), "not json")
+		await expect(runMigration()).resolves.toEqual([])
 		expect(existsSync(join(agentDir, "one-time-fullscreen.json"))).toBe(false)
-	})
-
-	it("does not switch when the update check fails", async () => {
-		const args: string[] = []
-		const checkForUpdate = vi.fn().mockRejectedValue(new Error("offline"))
-		expect(await runSwitch({ args, checkForUpdate })).toBe(args)
-		expect(existsSync(join(agentDir, "one-time-fullscreen.json"))).toBe(false)
-	})
-
-	it("does not treat a disabled update check as latest-version confirmation", async () => {
-		const args: string[] = []
-		const checkForUpdate = vi.fn().mockResolvedValue({ hasUpdate: false, latestVersion: "1.2.3", tag: "" })
-		expect(await runSwitch({ args, checkForUpdate })).toBe(args)
-		expect(existsSync(join(agentDir, "one-time-fullscreen.json"))).toBe(false)
-	})
-
-	it("does not switch when completion cannot be persisted", async () => {
-		const args: string[] = []
-		const checkForUpdate = vi.fn().mockImplementation(async () => {
-			rmSync(agentDir, { recursive: true, force: true })
-			writeFileSync(agentDir, "not a directory")
-			return latestStable()
-		})
-		expect(await runSwitch({ args, checkForUpdate })).toBe(args)
-		expect(existsSync(join(agentDir, "one-time-fullscreen.json"))).toBe(false)
-	})
-
-	it("does not switch when another launch claims completion during the update check", async () => {
-		const args: string[] = []
-		const statePath = join(agentDir, "one-time-fullscreen.json")
-		const checkForUpdate = vi.fn().mockImplementation(async () => {
-			writeFileSync(statePath, "{}")
-			return latestStable()
-		})
-		expect(await runSwitch({ args, checkForUpdate })).toBe(args)
-		expect(readFileSync(statePath, "utf-8")).toBe("{}")
-	})
-
-	it("checks the canary track and accepts the latest build of the current commit", async () => {
-		const currentVersion = "0.0.0-canary.20261125.abc1234"
-		const checkForUpdate = vi.fn().mockResolvedValue({
-			hasUpdate: false,
-			latestVersion: "0.0.0-canary.20261126.abc1234",
-			tag: "canary",
-		})
-
-		const args = await runSwitch({ currentVersion, checkForUpdate })
-
-		expect(parsePiArgs(args).tuiMode).toBe("fullscreen")
-		expect(checkForUpdate).toHaveBeenCalledWith({ currentVersion, skipCache: false, canary: true })
 	})
 })
