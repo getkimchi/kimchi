@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
-import { basename, dirname, isAbsolute, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { inflateSync } from "node:zlib"
 import { SKIPPED_TUI_TESTS } from "../tests/e2e/tui/skip-list.js"
@@ -45,7 +45,7 @@ if (dryRun) {
 	}
 	process.exit(0)
 }
-const status = hasTestFilter ? runTui(args) : runEach(stems)
+const status = hasTestFilter ? runTui(args, testStemFromArgs(args)) : runEach(stems)
 
 if (traceEnabled) {
 	process.stderr.write(`[tui-e2e] traces written to ${traceFolder}\n`)
@@ -61,17 +61,22 @@ process.exit(status)
 
 function runTui(runArgs, stem) {
 	const start = Date.now()
+	// Artifact names are unique per attempt, so a before/after snapshot avoids
+	// both stale logs and same-millisecond mtime boundary errors.
+	const failLogsBefore = new Set(stem ? findFailLogs(stem) : [])
 	const result = spawnSync(tuiTest, runArgs, { cwd: tuiCwd, stdio: "inherit", env })
 	const stop = Date.now()
 	const status = result.status ?? 1
 	if (stem && process.env.ALLURE_RESULTS) {
 		try {
+			const failLogPaths = findFailLogs(stem).filter((path) => !failLogsBefore.has(path))
 			writeTuiAllureResult({
 				resultsDir: process.env.ALLURE_RESULTS,
 				stem,
 				exitCode: status,
 				start,
 				stop,
+				failLogPaths,
 				failureMessage: result.error ? `spawn failed: ${result.error.message}` : undefined,
 			})
 		} catch (error) {
@@ -84,6 +89,18 @@ function runTui(runArgs, stem) {
 		process.exit(1)
 	}
 	return status
+}
+
+function testStemFromArgs(runArgs) {
+	const filter = runArgs.find((arg) => !arg.startsWith("-"))
+	return filter ? basename(filter).replace(/\.test\.ts$/, "") : undefined
+}
+
+function findFailLogs(stem) {
+	return readdirSync(repoRoot)
+		.filter((name) => name.startsWith(stem) && name.includes(".fail.") && name.endsWith(".tui-e2e.log"))
+		.map((name) => join(repoRoot, name))
+		.sort()
 }
 
 function runEach(stems) {

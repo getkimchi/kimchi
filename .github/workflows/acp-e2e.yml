@@ -91,7 +91,7 @@ jobs:
       - name: Upload Vitest results to Allure TestOps
         if: always() && steps.allurectl.outcome == 'success'
         continue-on-error: true
-        run: allurectl upload --launch-name "ACP E2E $ALLURE_RUN_KIND" --launch-tags "commit=$GITHUB_SHA,event=$ALLURE_RUN_KIND,iteration=1" "$ALLURE_RESULTS"
+        run: allurectl upload --launch-name "ACP E2E $ALLURE_RUN_KIND" --launch-tags "commit=$GITHUB_SHA,event=$ALLURE_RUN_KIND,iteration=1,run_id=$GITHUB_RUN_ID,run_attempt=$GITHUB_RUN_ATTEMPT" "$ALLURE_RESULTS"
 
       - name: Upload ACP E2E artifacts
         if: failure()

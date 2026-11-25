@@ -32,6 +32,7 @@ export const REPO_ROOT = process.env.KIMCHI_REPO_ROOT
 	? resolve(process.env.KIMCHI_REPO_ROOT)
 	: fileURLToPath(new URL("../../../../", import.meta.url))
 const TUI_ARTIFACT_RUN_ID = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`
+let tuiArtifactCounter = 0
 /** `--debug` (run-tui-e2e.js) writes a readable artifact for every run, not just failures. */
 const DEBUG_ARTIFACTS = process.env.KIMCHI_TUI_E2E_DEBUG === "1"
 
@@ -685,7 +686,8 @@ interface WriteTuiArtifactOptions {
 export async function writeTuiArtifact(options: WriteTuiArtifactOptions): Promise<void> {
 	const { name, outcome } = options
 	const baseName = name.replace(/\.(log|txt)$/i, "")
-	const path = join(REPO_ROOT, `${baseName}.${outcome}.${TUI_ARTIFACT_RUN_ID}.tui-e2e.log`)
+	tuiArtifactCounter += 1
+	const path = join(REPO_ROOT, `${baseName}.${outcome}.${TUI_ARTIFACT_RUN_ID}-${tuiArtifactCounter}.tui-e2e.log`)
 	writeFileSync(path, formatTuiArtifact(options), "utf-8")
 	process.stderr.write(`[tui-e2e] wrote ${outcome} artifact: ${path}\n`)
 }

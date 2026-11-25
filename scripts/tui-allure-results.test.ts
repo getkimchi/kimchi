@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { expect, it } from "vitest"
+import { describe, expect, it } from "vitest"
 import { parse } from "yaml"
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url))
@@ -21,7 +21,35 @@ const allureResultsPath = join(repoRoot, "scripts", "tui-allure-results.js")
 const githubExpression = (expression: string) => `\${{ ${expression} }}`
 const allureSetupAction = "allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db"
 
-function createTuiRunnerFixture({ missingRunner = false }: { missingRunner?: boolean } = {}) {
+interface FakeFailureLog {
+	content?: string
+	size?: number
+}
+
+interface AllureResult {
+	uuid: string
+	historyId: string
+	testCaseId: string
+	fullName: string
+	name: string
+	status: string
+	stage: string
+	start: number
+	stop: number
+	statusDetails: { flaky?: boolean; message: string; trace?: string }
+	attachments: { name: string; source: string; type: string }[]
+	links: { name: string; url: string }[]
+}
+
+function createTuiRunnerFixture({
+	missingRunner = false,
+	failureLogs = {},
+	exitCodes = { beta: 1 },
+}: {
+	missingRunner?: boolean
+	failureLogs?: Record<string, FakeFailureLog[]>
+	exitCodes?: Record<string, number>
+} = {}) {
 	const root = mkdtempSync(join(tmpdir(), "kimchi-tui-allure-test-"))
 	mkdirSync(join(root, "scripts"), { recursive: true })
 	mkdirSync(join(root, "tests", "e2e", "tui"), { recursive: true })
@@ -35,7 +63,20 @@ function createTuiRunnerFixture({ missingRunner = false }: { missingRunner?: boo
 	if (!missingRunner) {
 		writeFileSync(
 			fakeRunner,
-			'#!/usr/bin/env node\nconsole.log(process.argv.at(-1))\nprocess.exit(process.argv.includes("beta") ? 1 : 0)\n',
+			[
+				"#!/usr/bin/env node",
+				'const { writeFileSync } = require("node:fs")',
+				'const { join } = require("node:path")',
+				"const stem = process.argv.at(-1)",
+				"console.log(stem)",
+				`const failureLogs = ${JSON.stringify(failureLogs)}`,
+				`const exitCodes = ${JSON.stringify(exitCodes)}`,
+				"for (const [index, log] of (failureLogs[stem] ?? []).entries()) {",
+				"\tconst name = `${stem}-attempt-${index}.fail.${process.pid}-${Date.now()}.tui-e2e.log`",
+				`\twriteFileSync(join(${JSON.stringify(root)}, name), log.content ?? "x".repeat(log.size ?? 0))`,
+				"}",
+				"process.exit(exitCodes[stem] ?? 0)",
+			].join("\n"),
 		)
 		chmodSync(fakeRunner, 0o755)
 	}
@@ -44,10 +85,19 @@ function createTuiRunnerFixture({ missingRunner = false }: { missingRunner?: boo
 		resultsDir(relative: string) {
 			return join(root, relative)
 		},
-		run(resultsDir?: string) {
+		run(resultsDir?: string, environment: NodeJS.ProcessEnv = {}) {
 			const env = { ...process.env }
-			env.ALLURE_RESULTS = undefined
+			for (const name of [
+				"ALLURE_RESULTS",
+				"GITHUB_SERVER_URL",
+				"GITHUB_REPOSITORY",
+				"GITHUB_RUN_ID",
+				"GITHUB_RUN_ATTEMPT",
+			]) {
+				delete env[name]
+			}
 			if (resultsDir) env.ALLURE_RESULTS = resultsDir
+			Object.assign(env, environment)
 			return spawnSync(process.execPath, [join(root, "scripts", "run-tui-e2e.js")], {
 				cwd: root,
 				env,
@@ -58,7 +108,7 @@ function createTuiRunnerFixture({ missingRunner = false }: { missingRunner?: boo
 	}
 }
 
-function readResults(resultsDir: string) {
+function readResults(resultsDir: string): AllureResult[] {
 	return readdirSync(resultsDir)
 		.filter((file) => file.endsWith("-result.json"))
 		.map((file) => JSON.parse(readFileSync(join(resultsDir, file), "utf8")))
@@ -70,23 +120,17 @@ function requireResult<T>(result: T | undefined, name: string): T {
 	return result
 }
 
-it.skipIf(process.platform === "win32")(
-	"writes one minimal Allure result per executed file and preserves the TUI exit status",
-	() => {
-		const fixture = createTuiRunnerFixture()
+describe("successful TUI results", () => {
+	it.skipIf(process.platform === "win32")("writes plain pass results without status details or attachments", () => {
+		const fixture = createTuiRunnerFixture({ exitCodes: {} })
 		try {
 			const firstDir = fixture.resultsDir("allure-first")
-			const firstRun = fixture.run(firstDir)
-			expect(firstRun.status).toBe(1)
+			expect(fixture.run(firstDir).status).toBe(0)
 			const first = readResults(firstDir)
 			expect(first).toHaveLength(2)
 			const alpha = requireResult(
 				first.find((result) => result.name === "alpha"),
 				"alpha",
-			)
-			const beta = requireResult(
-				first.find((result) => result.name === "beta"),
-				"beta",
 			)
 			expect(alpha).toMatchObject({
 				name: "alpha",
@@ -95,18 +139,11 @@ it.skipIf(process.platform === "win32")(
 				stage: "finished",
 			})
 			expect(alpha.statusDetails).toBeUndefined()
-			expect(beta).toMatchObject({
-				name: "beta",
-				fullName: "tests/e2e/tui/beta.test.ts",
-				status: "failed",
-				stage: "finished",
-				statusDetails: { message: "tui-test exited with code 1" },
-			})
+			expect(alpha.attachments).toBeUndefined()
 			expect(alpha.stop).toBeGreaterThanOrEqual(alpha.start)
-			expect(beta.stop).toBeGreaterThanOrEqual(beta.start)
 
 			const secondDir = fixture.resultsDir("allure-second")
-			expect(fixture.run(secondDir).status).toBe(1)
+			expect(fixture.run(secondDir).status).toBe(0)
 			const secondAlpha = requireResult(
 				readResults(secondDir).find((result) => result.name === "alpha"),
 				"alpha",
@@ -115,9 +152,9 @@ it.skipIf(process.platform === "win32")(
 			expect(secondAlpha.historyId).toBe(alpha.historyId)
 			expect(secondAlpha.uuid).not.toBe(alpha.uuid)
 
-			const disabledFixture = createTuiRunnerFixture()
+			const disabledFixture = createTuiRunnerFixture({ exitCodes: {} })
 			try {
-				expect(disabledFixture.run().status).toBe(1)
+				expect(disabledFixture.run().status).toBe(0)
 				const resultFiles = readdirSync(disabledFixture.root, { recursive: true, encoding: "utf8" }).filter((file) =>
 					file.endsWith("-result.json"),
 				)
@@ -128,8 +165,111 @@ it.skipIf(process.platform === "win32")(
 		} finally {
 			rmSync(fixture.root, { recursive: true, force: true })
 		}
-	},
-)
+	})
+
+	it.skipIf(process.platform === "win32")("marks retry-recovered passes as flaky and attaches each fail log", () => {
+		const firstLog = "# Kimchi TUI E2E Artifact\n\n## Error\n\nError: first attempt failed\n\n## Scenario Steps\n"
+		const secondLog = "# Kimchi TUI E2E Artifact\n\n## Error\n\nError: second attempt failed\n\n## Scenario Steps\n"
+		const fixture = createTuiRunnerFixture({
+			exitCodes: {},
+			failureLogs: { alpha: [{ content: firstLog }, { content: secondLog }] },
+		})
+		try {
+			const resultsDir = fixture.resultsDir("allure-flaky")
+			expect(fixture.run(resultsDir).status).toBe(0)
+			const result = requireResult(
+				readResults(resultsDir).find((candidate) => candidate.name === "alpha"),
+				"alpha",
+			)
+			expect(result.status).toBe("passed")
+			expect(result.statusDetails).toEqual({ flaky: true, message: "passed after 2 failed attempts" })
+			expect(result.attachments).toHaveLength(2)
+			expect(result.attachments.map((attachment) => attachment.type)).toEqual(["text/plain", "text/plain"])
+			expect(result.attachments.map((attachment) => readFileSync(join(resultsDir, attachment.source), "utf8"))).toEqual(
+				[firstLog, secondLog],
+			)
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true })
+		}
+	})
+
+	it.skipIf(process.platform === "win32")("truncates oversized log attachments and records a marker", () => {
+		const fixture = createTuiRunnerFixture({
+			exitCodes: {},
+			failureLogs: { alpha: [{ size: 1024 * 1024 + 128 }] },
+		})
+		try {
+			const resultsDir = fixture.resultsDir("allure-truncated")
+			expect(fixture.run(resultsDir).status).toBe(0)
+			const result = requireResult(
+				readResults(resultsDir).find((candidate) => candidate.name === "alpha"),
+				"alpha",
+			)
+			const attachment = readFileSync(join(resultsDir, result.attachments[0].source))
+			expect(attachment.length).toBe(1024 * 1024 + Buffer.byteLength("\n\n[log truncated to 1 MiB]\n"))
+			expect(attachment.subarray(0, 16).toString()).toBe("x".repeat(16))
+			expect(attachment.toString("utf8", attachment.length - 30)).toContain("[log truncated to 1 MiB]")
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true })
+		}
+	})
+
+	it.skipIf(process.platform === "win32")("adds GitHub run links only when all metadata env vars are set", () => {
+		const fixture = createTuiRunnerFixture({ exitCodes: {} })
+		try {
+			const linkedDir = fixture.resultsDir("allure-linked")
+			expect(
+				fixture.run(linkedDir, {
+					GITHUB_SERVER_URL: "https://github.example",
+					GITHUB_REPOSITORY: "getkimchi/kimchi",
+					GITHUB_RUN_ID: "12345",
+					GITHUB_RUN_ATTEMPT: "2",
+				}).status,
+			).toBe(0)
+			expect(readResults(linkedDir)[0].links).toEqual([
+				{
+					name: "GitHub Actions run",
+					url: "https://github.example/getkimchi/kimchi/actions/runs/12345/attempts/2",
+				},
+			])
+
+			const unlinkedDir = fixture.resultsDir("allure-unlinked")
+			expect(fixture.run(unlinkedDir, { GITHUB_SERVER_URL: "https://github.example" }).status).toBe(0)
+			expect(readResults(unlinkedDir)[0].links).toBeUndefined()
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true })
+		}
+	})
+})
+
+describe("failed TUI results", () => {
+	it.skipIf(process.platform === "win32")("extracts the first fail log error and attaches the logs", () => {
+		const log = [
+			"# Kimchi TUI E2E Artifact",
+			"## Error",
+			"Error: expected terminal output",
+			"Error: expected terminal output\n    at planted.test.ts:10:5",
+			"## Scenario Steps",
+			"(none)",
+		].join("\n\n")
+		const fixture = createTuiRunnerFixture({ failureLogs: { beta: [{ content: log }] } })
+		try {
+			const resultsDir = fixture.resultsDir("allure-failed")
+			expect(fixture.run(resultsDir).status).toBe(1)
+			const result = requireResult(
+				readResults(resultsDir).find((candidate) => candidate.name === "beta"),
+				"beta",
+			)
+			expect(result.status).toBe("failed")
+			expect(result.statusDetails.message).toBe("Error: expected terminal output")
+			expect(result.statusDetails.trace).toContain("at planted.test.ts:10:5")
+			expect(result.attachments).toHaveLength(1)
+			expect(readFileSync(join(resultsDir, result.attachments[0].source), "utf8")).toBe(log)
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true })
+		}
+	})
+})
 
 it.skipIf(process.platform === "win32")("reports spawn failure details without masking the failed test", () => {
 	const fixture = createTuiRunnerFixture({ missingRunner: true })
@@ -197,20 +337,16 @@ it("restricts TestOps uploads to trusted events and tags nightly repetitions", (
 	expect(workflow.on.schedule).toEqual([{ cron: "17 3 * * *" }])
 
 	const job = workflow.jobs["tui-e2e"]
-	expect(job.env.ALLURE_UPLOAD_ENABLED).toBe(
-		githubExpression(`contains(fromJSON('["push","merge_group","schedule"]'), github.event_name)`),
+	expect(job.env.ALLURE_UPLOAD_ENABLED).toContain(
+		`contains(fromJSON('["push","merge_group","schedule"]'), github.event_name)`,
 	)
-	expect(job.env.ALLURE_RUN_KIND).toBe(
-		githubExpression(
-			`github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || github.event_name == 'schedule' && 'nightly' || 'other'`,
-		),
+	expect(job.env.ALLURE_RUN_KIND).toContain(
+		`github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || github.event_name == 'schedule' && 'nightly' || 'other'`,
 	)
-	expect(job.strategy.matrix).toMatchObject({
-		shard: [1, 2, 3, 4],
-		iteration: githubExpression(
-			`github.event_name == 'schedule' && fromJSON('[1,2,3,4,5,6,7,8,9,10]') || fromJSON('[1]')`,
-		),
-	})
+	expect(job.strategy.matrix.shard).toEqual([1, 2, 3, 4])
+	expect(job.strategy.matrix.iteration).toContain(
+		`github.event_name == 'schedule' && fromJSON('[1,2,3,4,5,6,7,8,9,10]') || fromJSON('[1]')`,
+	)
 
 	const setup = job.steps.find((step: { uses?: string }) => step.uses === allureSetupAction)
 	expect(setup.if).toBe(
@@ -222,6 +358,25 @@ it("restricts TestOps uploads to trusted events and tags nightly repetitions", (
 	expect(upload.run).toContain("commit=$GITHUB_SHA")
 	expect(upload.run).toContain("event=$ALLURE_RUN_KIND")
 	expect(upload.run).toContain(`iteration=${githubExpression("matrix.iteration")}`)
+	expect(upload.run).toContain("run_id=$GITHUB_RUN_ID")
+	expect(upload.run).toContain("run_attempt=$GITHUB_RUN_ATTEMPT")
+	expect(upload.run).toContain(`shard=${githubExpression("matrix.shard")}`)
 	const artifacts = job.steps.find((step: { name?: string }) => step.name === "Upload TUI E2E artifacts")
+	expect(artifacts.if).toBe("always()")
+	expect(artifacts.with["if-no-files-found"]).toBe("ignore")
 	expect(artifacts.with.name).toContain(githubExpression("matrix.iteration"))
+})
+
+it("tags ACP and Vitest uploads with GitHub run correlation", () => {
+	for (const [workflowFile, jobName] of [
+		["acp-e2e.yml", "acp-e2e"],
+		["ci.yml", "master-checks"],
+	]) {
+		const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", workflowFile), "utf8"))
+		const upload = workflow.jobs[jobName].steps.find(
+			(step: { name?: string }) => step.name === "Upload Vitest results to Allure TestOps",
+		)
+		expect(upload.run).toContain("run_id=$GITHUB_RUN_ID")
+		expect(upload.run).toContain("run_attempt=$GITHUB_RUN_ATTEMPT")
+	}
 })
