@@ -38,6 +38,14 @@ jobs:
   acp-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      ALLURE_ENDPOINT: https://castai.testops.cloud
+      ALLURE_PROJECT_ID: ${{ vars.ALLURE_PROJECT_ID }}
+      ALLURE_RESULTS: allure-results/acp
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      ALLURE_CONTINUE_ON_ERROR: "true"
+      ALLURE_UPLOAD_ENABLED: ${{ contains(fromJSON('["push","merge_group"]'), github.event_name) }}
+      ALLURE_RUN_KIND: ${{ github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || 'other' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,6 +77,21 @@ jobs:
 
       - name: Run ACP E2E tests
         run: KIMCHI_PROXY_HELPER=$(pwd)/bin/proxy-helper pnpm run test:e2e:acp
+
+      - name: Install and configure allurectl
+        id: allurectl
+        if: always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''
+        continue-on-error: true
+        uses: allure-framework/setup-allurectl@v1
+        with:
+          allure-endpoint: ${{ env.ALLURE_ENDPOINT }}
+          allure-project-id: ${{ env.ALLURE_PROJECT_ID }}
+          allure-token: ${{ secrets.ALLURE_TOKEN }}
+
+      - name: Upload Vitest results to Allure TestOps
+        if: always() && steps.allurectl.outcome == 'success'
+        continue-on-error: true
+        run: allurectl upload --launch-name "ACP E2E $ALLURE_RUN_KIND" --launch-tags "commit=$GITHUB_SHA,event=$ALLURE_RUN_KIND,iteration=1" "$ALLURE_RESULTS"
 
       - name: Upload ACP E2E artifacts
         if: failure()
