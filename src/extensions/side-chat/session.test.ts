@@ -3,11 +3,11 @@ import { describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createModel } from "../__mocks__/model-registry.js"
 import {
+	createSideSession,
 	PENDING_TOOL_RESULT,
 	SIDE_CHAT_BOUNDARY,
 	SIDE_CHAT_BOUNDARY_TYPE,
 	SIDE_CHAT_TOOLS,
-	createSideSession,
 	seedSideContext,
 	sideChatPrompt,
 	sideThreadMessages,
