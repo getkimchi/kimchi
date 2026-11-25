@@ -333,7 +333,7 @@ const text = (value: string, details: Record<string, unknown> = {}) => ({
 	details,
 })
 
-export const LIST_AGENTS_DESCRIPTION = `List the agents send_message can reach: this session's subagents (ID, type, status, task, start time), then the other interactive Kimchi sessions on this machine (name [ref], branch, idle or busy, folder, start time, and whether it works in the same repository). A subagent's address is its ID; a session's is its name. A listed session is alive and will receive a message. Before starting a subagent for work in this repository, check whether another session already works on it, and message that session instead. Never poll this to wait for an answer: replies and results arrive by themselves.`
+export const LIST_AGENTS_DESCRIPTION = `List the agents send_message can reach: this session's subagents (ID, type, status, task, start time), then the other interactive Kimchi sessions on this machine (name [ref], branch, idle or busy, folder, start time, and whether it works in the same repository). A subagent's address is its ID; a session's is its name. A listed session is alive and will receive a message. Before starting a subagent for work in this repository, check whether another session already works on it, and message that session instead. To check or build on another session's work, ask it what it changed, or read its folder. Never poll this to wait for an answer: replies and results arrive by themselves.`
 
 export const SEND_MESSAGE_DESCRIPTION = `Send a message to one of your subagents or to another Kimchi session on this machine (find both with list_agents).
 
@@ -341,7 +341,7 @@ A subagent is addressed by its ID. A running one reads the message when its curr
 
 A session is addressed by its name. The message reaches that session's conversation when its current step ends, or starts a turn when it is idle, wrapped as <cross-session-message from="name [ref]">. A successful send means it arrived, not that it was read or acted on. To reply to a <cross-session-message>, use its from attribute as to. Send the text itself: the other session cannot see your files' contents unless you name a path it can read. A session running in another permission mode holds your message for its user's approval for up to 5 minutes; a notice tells you if it is declined or expires.
 
-Your user can tag sessions in a prompt as @name or @"name with spaces": send each tagged session its part of the request, with the tag as to. Sessions can work as a team: when several share one piece of work, name the others in each message so they can message each other directly.
+Your user can tag sessions in a prompt as @name or @"name with spaces": send each tagged session its part of the request, with the tag as to. A tag shows whom the user had in mind, not everyone: when the request speaks of the other sessions or agents in general, call list_agents and include the untagged sessions it covers, in any repository; their names say what each one works on. Sessions can work as a team: when several share one piece of work, name the others in each message so they can message each other directly.
 
 Send no thanks, acknowledgements or "no action needed" notes: every message wakes the other session. After ${MAX_HOPS} messages between sessions with no user writing in between, sending waits until a user writes again.
 

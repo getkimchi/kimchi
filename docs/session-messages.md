@@ -69,6 +69,8 @@ src/
   shape`. It sends each session its part and tells them about each other, so they can work
   it out as a team.
 
+A tag names whom you mean, not everyone: ask for checks on "what the other sessions
+built" with one tag, and the agent still finds the untagged ones, in any repository.
 A name with spaces is quoted; two sessions with one name get their ref, as in
 `@"shop [e50820]"`. Every session stays yours: typing in it works as before.
 
