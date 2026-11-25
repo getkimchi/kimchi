@@ -1,14 +1,34 @@
-import { type AgentSession, SessionManager } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it } from "vitest"
+import { type AgentSession, convertToLlm, SessionManager } from "@earendil-works/pi-coding-agent"
+import { describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
+import { createModel } from "../__mocks__/model-registry.js"
 import {
 	PENDING_TOOL_RESULT,
 	SIDE_CHAT_BOUNDARY,
 	SIDE_CHAT_BOUNDARY_TYPE,
 	SIDE_CHAT_TOOLS,
+	createSideSession,
 	seedSideContext,
 	sideChatPrompt,
 	sideThreadMessages,
 } from "./session.js"
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@earendil-works/pi-coding-agent")>()
+	return {
+		...actual,
+		DefaultResourceLoader: class {
+			async reload() {}
+		},
+		createAgentSession: async (options: { sessionManager: SessionManager }) => ({
+			session: {
+				sessionManager: options.sessionManager,
+				bindExtensions: async () => {},
+				setActiveToolsByName: () => {},
+			} as unknown as AgentSession,
+		}),
+	}
+})
 
 const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 0 })
 
@@ -85,6 +105,67 @@ describe("seedSideContext", () => {
 		expect(PENDING_TOOL_RESULT).toMatch(/main session/)
 		expect(SIDE_CHAT_BOUNDARY).toMatch(/do not continue/i)
 		expect(SIDE_CHAT_BOUNDARY).toMatch(/only to the user's messages below/i)
+	})
+
+	it("does not claim the main agent will resume an unanswered call after an abort", () => {
+		expect(PENDING_TOOL_RESULT).toContain("Owned by the main session")
+		expect(PENDING_TOOL_RESULT).not.toMatch(/still running|will handle/i)
+	})
+
+	it("keeps the boundary in the model-facing context as a user message", () => {
+		const [converted] = convertToLlm([boundary])
+
+		expect(converted).toEqual({
+			role: "user",
+			content: [{ type: "text", text: SIDE_CHAT_BOUNDARY }],
+			timestamp: 0,
+		})
+	})
+})
+
+function contextWith(messages: Parameters<SessionManager["appendMessage"]>[0][]) {
+	const sessionManager = SessionManager.inMemory("/project")
+	for (const message of messages) sessionManager.appendMessage(message)
+	const ctx = createContext({ cwd: "/project", model: createModel("test-model") })
+	Object.assign(ctx, { sessionManager })
+	Object.assign(ctx.modelRegistry, { runtime: {} })
+	return ctx
+}
+
+describe("createSideSession", () => {
+	it("tracks raw branch and seeded lengths while keeping the side thread after the seed", async () => {
+		const ctx = contextWith([user("main"), assistantCalling("running")])
+
+		const side = await createSideSession(ctx, {
+			branchLeafId: ctx.sessionManager.getLeafId(),
+			fresh: false,
+			thinkingLevel: "off",
+			thread: [user("side")],
+		})
+
+		expect(side.branchedMessages).toBe(2)
+		expect(side.contextLength).toBe(4)
+		const journal = side.session.sessionManager
+			.getBranch()
+			.flatMap((entry) => (entry.type === "message" ? [entry.message] : []))
+		expect(journal.map((message) => message.role)).toEqual(["user", "assistant", "toolResult", "custom", "user"])
+		expect(journal[3]).toMatchObject({ customType: SIDE_CHAT_BOUNDARY_TYPE, content: SIDE_CHAT_BOUNDARY })
+		expect(sideThreadMessages(side)).toEqual([user("side")])
+	})
+
+	it("skips main-session seeding for a fresh side chat", async () => {
+		const ctx = contextWith([user("main")])
+
+		const side = await createSideSession(ctx, {
+			branchLeafId: ctx.sessionManager.getLeafId(),
+			fresh: true,
+			thinkingLevel: "off",
+			thread: [user("fresh side")],
+		})
+
+		expect(side.branchedMessages).toBe(0)
+		expect(side.contextLength).toBe(0)
+		expect(sideThreadMessages(side)).toEqual([user("fresh side")])
 	})
 })
 

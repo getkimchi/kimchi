@@ -69,7 +69,7 @@ type AppendableMessage = Parameters<SessionManager["appendMessage"]>[0]
 export const SIDE_CHAT_BOUNDARY_TYPE = "side-chat-boundary"
 
 export const PENDING_TOOL_RESULT =
-	"Still running in the main session when this side chat started. Its result is not visible here, and the main agent, not you, will handle it."
+	"Owned by the main session; its result is not available here. Do not continue or re-run this call in the side chat."
 
 export const SIDE_CHAT_BOUNDARY = [
 	"<side_chat_start>",
@@ -87,7 +87,8 @@ export const SIDE_CHAT_BOUNDARY = [
  */
 export function seedSideContext(inherited: AppendableMessage[], now = Date.now()): AppendableMessage[] {
 	const seeded = [...inherited]
-	// Only the branch point can be mid-turn; earlier unanswered calls were aborted, not running.
+	// Steering is delivered only after the current assistant turn's tool calls finish,
+	// so results at the branch head are contiguous. Earlier unanswered calls were aborted.
 	let lastTurn = seeded.length - 1
 	while (lastTurn >= 0 && seeded[lastTurn].role === "toolResult") lastTurn--
 	const last = seeded[lastTurn]
