@@ -261,7 +261,7 @@ describe("session-messages", () => {
 
 		// Yes stops that subagent and tells the agent where the work can go instead.
 		expect(await startSubagent(alpha, "Fix checkout rounding")).toEqual([
-			{ block: true, reason: expect.stringContaining("beta [bbbbb2] works in this repository") },
+			{ block: true, reason: expect.stringContaining('send_message to "beta [bbbbb2]"') },
 		])
 		expect(alpha.ctx.ui.confirm).toHaveBeenCalledWith(
 			OFFER_TITLE,
@@ -273,7 +273,7 @@ describe("session-messages", () => {
 		expect(savedPreference(dir)).toBe(true)
 		// The rest of that turn's subagents wait too, so the agent picks where each one goes.
 		expect(await startSubagent(alpha)).toEqual([
-			{ block: true, reason: expect.stringContaining("beta [bbbbb2] works in this repository") },
+			{ block: true, reason: expect.stringContaining('send_message to "beta [bbbbb2]"') },
 		])
 		await alpha.harness.emit("turn_end", { type: "turn_end" }, alpha.ctx)
 		expect(await startSubagent(alpha)).toEqual([undefined])

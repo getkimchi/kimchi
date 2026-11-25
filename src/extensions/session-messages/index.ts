@@ -258,10 +258,12 @@ export function createSessionMessagesExtension(
 			}
 			if (readPreference() !== true) return undefined
 			registerTools()
-			const sessions = peers.map(address).join(", ")
+			// Worded as the user's choice: read as a refusal, models did the work themselves instead.
+			const names = peers.map((peer) => `“${peer.name}”`).join(" or ")
+			const addresses = peers.map((peer) => `"${address(peer)}"`).join(" or ")
 			handOver = {
 				block: true,
-				reason: `Not started: session messages are on now, and ${sessions} ${peers.length === 1 ? "works" : "work"} in this repository. If this is that session's work, send it there with send_message; otherwise start the subagent again.`,
+				reason: `Held, not failed: your user just agreed to ask ${names} (open in this repository) instead of starting subagents for work ${peers.length === 1 ? "it already knows" : "they already know"}. Send that work with send_message to ${addresses}; start the subagent again for anything else.`,
 			}
 			return handOver
 		}
