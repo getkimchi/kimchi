@@ -123,12 +123,15 @@ jobs:
     uses: ./.github/workflows/_test-suite.yml
     with:
       name: tui-e2e
-      shards: "[1, 2, 3, 4]"
-      # The slowest round-robin shard takes 13 to 16 minutes.
-      timeout-minutes: 20
+      # Shards are balanced by tests/e2e/tui/timings.json to about 7 minutes each.
+      shards: "[1, 2, 3, 4, 5, 6]"
+      timeout-minutes: 15
       use-build: true
       search-tools: true
-      command: KIMCHI_PROXY_HELPER="$PWD/bin/proxy-helper" node scripts/run-tui-e2e.js --shard "$SHARD_INDEX/$SHARD_TOTAL"
+      command: |
+        KIMCHI_PROXY_HELPER="$PWD/bin/proxy-helper" KIMCHI_TUI_TIMINGS_OUT="$PWD/tui-e2e-timings.json" \
+          node scripts/run-tui-e2e.js --shard "$SHARD_INDEX/$SHARD_TOTAL"
+      report-artifacts: tui-e2e-timings.json
       failure-artifacts: |
         *.tui-e2e.log
         **/tui-traces/**

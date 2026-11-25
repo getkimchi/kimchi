@@ -39,6 +39,10 @@ on:
         description: "Paths to upload when the suite fails"
         type: string
         default: ""
+      report-artifacts:
+        description: "Paths to upload after every run, for example timings"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -79,6 +83,15 @@ jobs:
           SHARD_INDEX: ${{ matrix.shard }}
           SHARD_TOTAL: ${{ strategy.job-total }}
         run: ${{ inputs.command }}
+
+      - name: Upload report
+        if: always() && inputs.report-artifacts != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.name }}-report-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ inputs.report-artifacts }}
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload logs
         if: failure() && inputs.failure-artifacts != ''
