@@ -4,9 +4,9 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { HARNESS_SKILLS_REL } from "../../agent-dir.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import {
-	HARNESS_SKILLS_REL,
 	resolveBundledSkillsDir,
 	resolveHarnessSkillsDir,
 	resolveSkillPathsForDiscovery,

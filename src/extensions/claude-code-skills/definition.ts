@@ -5,9 +5,9 @@ import { homedir, tmpdir } from "node:os"
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
-import { explicitAgentDir } from "../../agent-dir.js"
+import { explicitAgentDir, HARNESS_SKILLS_REL } from "../../agent-dir.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
-import { HARNESS_SKILLS_REL, resolveHarnessSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
+import { resolveHarnessSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 
 export const CLAUDE_CODE_SKILLS_RESOURCE_ID = "extensions.claude-code-skills"
 

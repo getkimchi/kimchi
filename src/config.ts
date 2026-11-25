@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
-import { defaultAgentDir } from "./agent-dir.js"
+import { defaultAgentDir, HARNESS_SKILLS_REL } from "./agent-dir.js"
 import { writeJson } from "./config/json.js"
 import { isProjectScopeAllowed } from "./project-scope-trust.js"
 import {
@@ -49,7 +49,7 @@ export function getApiKeySource(): ApiKeySource {
 	return getEnvironmentApiKey() ? "environment" : "config"
 }
 
-export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "skills")]
+export const ALWAYS_SHOWN_SKILL_PATHS = [HARNESS_SKILLS_REL]
 
 export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
 

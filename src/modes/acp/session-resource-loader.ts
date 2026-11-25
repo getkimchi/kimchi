@@ -14,6 +14,12 @@ import {
 	setCachedSkillListBlock,
 } from "./skill-commands.js"
 
+/** The skill options of a DefaultResourceLoader (Pi does not export its options type). */
+type SkillLoaderOptions = Pick<
+	ConstructorParameters<typeof DefaultResourceLoader>[0],
+	"noSkills" | "additionalSkillPaths"
+>
+
 /** Upstream reload options — derived from the interface so it cannot drift. */
 type LoaderReloadOptions = Parameters<ResourceLoader["reload"]>[0]
 
@@ -46,7 +52,7 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 	private readonly discoveryCwd: string
 	private readonly discoveryAgentDir: string
 	private readonly discoverySettingsManager: SettingsManager
-	private readonly discoverySkillOptions: { noSkills?: boolean; additionalSkillPaths?: string[] }
+	private readonly discoverySkillOptions: SkillLoaderOptions
 	private readonly baseAppend: () => string[]
 	/**
 	 * Committed skills snapshot — served by `getSkills()` once set. Undefined
@@ -72,7 +78,7 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 		agentDir: string
 		settingsManager: SettingsManager
 		/** The main loader's `--no-skills` / `--skill` options, so a refresh finds the same skills. */
-		skillOptions?: { noSkills?: boolean; additionalSkillPaths?: string[] }
+		skillOptions?: SkillLoaderOptions
 		/** ACP append base (CLI flag + `_meta["kimchi.dev"].appendSystemPrompt`). */
 		baseAppend: () => string[]
 	}) {

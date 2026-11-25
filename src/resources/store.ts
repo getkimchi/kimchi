@@ -1,5 +1,5 @@
-import { homedir } from "node:os"
 import { join, resolve } from "node:path"
+import { defaultAgentDir } from "../agent-dir.js"
 import type { ResourcePolicy } from "../api/org-settings.js"
 import { readJson, readJsonCached, writeJson } from "../config/json.js"
 import { getOrgPolicy } from "../org-policy.js"
@@ -11,7 +11,7 @@ const SETTINGS_KEY = "resources"
 export function getResourceSettingsPath(): string {
 	return process.env.KIMCHI_CODING_AGENT_DIR
 		? resolve(process.env.KIMCHI_CODING_AGENT_DIR, "settings.json")
-		: join(homedir(), ".config", "kimchi", "harness", "settings.json")
+		: join(defaultAgentDir(), "settings.json")
 }
 
 export const settingsPath = getResourceSettingsPath
@@ -94,7 +94,7 @@ export function isResourceEnabled(id: string, path = getResourceSettingsPath(), 
 	if (orgPolicy === "FORCE_OFF") return false
 
 	const settings = readResourceSettings(path)
-	const override = settings.resources[id as ResourceId]
+	const override = settings.resources[id]
 	if (override !== undefined) return override
 	if (envEnabledResources().has(id)) return true
 	if (settings.resourcesDefault === false) return false

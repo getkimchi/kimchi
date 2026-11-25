@@ -1,7 +1,10 @@
 import { homedir } from "node:os"
-import { resolve } from "node:path"
+import { join, resolve } from "node:path"
 
-/** Kimchi's default agent dir for a home: `~/.config/kimchi/harness`. */
+/** The harness skills dir relative to HOME, as configured skill paths spell it. */
+export const HARNESS_SKILLS_REL = join(".config", "kimchi", "harness", "skills")
+
+/** Kimchi's default agent dir: `~/.config/kimchi/harness`. */
 export function defaultAgentDir(): string {
 	return resolve(homedir(), ".config", "kimchi", "harness")
 }

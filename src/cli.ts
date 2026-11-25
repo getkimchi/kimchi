@@ -40,6 +40,7 @@ import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import { applyPiTelemetryPatch } from "./pi-telemetry-patch.js"
 import "./session-selector-adapter.js"
+import { defaultAgentDir } from "./agent-dir.js"
 import { loginAuthPath, resolveGatewayCredentials } from "./auth/gateway-credentials.js"
 import {
 	captureApiKeyFromEnvironment,
@@ -498,7 +499,7 @@ async function cliMain(): Promise<void> {
 		const cliTrustOptions = getParsedCliArgs().options
 		const cliTrustOverride =
 			cliTrustOptions["no-approve"] === true ? false : cliTrustOptions.approve === true ? true : undefined
-		const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
+		const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? defaultAgentDir()
 		setProjectScopeTrusted(
 			process.cwd(),
 			resolvePreMainProjectTrustWithOverrides(process.cwd(), preMainAgentDir, cliTrustOverride),
@@ -934,7 +935,9 @@ async function cliMain(): Promise<void> {
 				// Registers `codemode` with kimchi's selection rule. The settings
 				// bootstrap disables pi's replaceable built-in so TUI/print do not
 				// emit a conflict warning; ACP loads no pi built-ins at all.
-				...enabledExtensionFactories([{ id: "extensions.codemode", factory: createGuidedCodemodeExtension() }]),
+				...enabledExtensionFactories([
+					{ id: "extensions.codemode", factory: createGuidedCodemodeExtension() },
+				] satisfies ManagedExtensionFactory[]),
 				autoUpdateSettingsExtension,
 				startupUpdateExtension,
 				backgroundUpdateExtension,
@@ -942,17 +945,16 @@ async function cliMain(): Promise<void> {
 				sessionNameExtension(),
 				shutdownMarkerExtension,
 				buildInfoExtension,
-				// skill_view must always be present: the skills catalog in the system
-				// prompt directs the model to load skills through it. skill_manage
-				// (the write side) stays disabled — #235 turned it off because its
-				// autonomous skill-authoring guidance proved noisy in practice;
-				// re-enable only deliberately via registerSkillManageTool.
+				// skill_manage (the write side) stays disabled: its autonomous
+				// skill-authoring guidance proved noisy (#235); re-enable only
+				// deliberately via registerSkillManageTool. Without skill_view (resource
+				// off or --no-skills) the skills catalog tells the model to read SKILL.md.
 				...enabledExtensionFactories([
 					{
 						id: "extensions.skills-manager",
 						factory: (pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
 					},
-				]),
+				] satisfies ManagedExtensionFactory[]),
 				artifactRecorderExtension,
 				statsExtension,
 				statusExtension,
@@ -989,7 +991,9 @@ async function cliMain(): Promise<void> {
 				// session_shutdown intentionally kills nothing here.
 				// EXPERIMENTAL: gated behind --enable-experimental-features.
 				...(experimentalFeatures
-					? enabledExtensionFactories([{ id: "extensions.daemon", factory: daemonExtension }])
+					? enabledExtensionFactories([
+							{ id: "extensions.daemon", factory: daemonExtension },
+						] satisfies ManagedExtensionFactory[])
 					: []),
 				// Re-wires user bash hooks (`applyEnabledBashHooks`) for `tool_call`
 				// and `user_bash` events. Must run before bashToolGuardExtension so
@@ -998,7 +1002,7 @@ async function cliMain(): Promise<void> {
 				bashToolGuardExtension,
 				...enabledExtensionFactories([
 					{ id: "extensions.bash-timeout-guidance", factory: bashTimeoutGuidanceExtension },
-				]),
+				] satisfies ManagedExtensionFactory[]),
 				// steer:aborted — emits when the user Esc-aborts the turn immediately
 				// following a harness steer (the "user vetoed the nudge" signal).
 				steerAbortTrackerExtension,
@@ -1015,7 +1019,7 @@ async function cliMain(): Promise<void> {
 					// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 					{ id: "extensions.ferment", factory: fermentExtension },
 					{ id: "extensions.questionnaire", factory: questionnaireExtension },
-				]),
+				] satisfies ManagedExtensionFactory[]),
 				// Backend-routed virtual models (`auto`, `auto-beta`, …) learn + display
 				// the concrete pick, re-sync capabilities, and (main session) install the
 				// catalog-driven Auto default.
@@ -1036,7 +1040,9 @@ async function cliMain(): Promise<void> {
 				permissionsExtension,
 				resourcesExtension,
 				resourceToolBlockerExtension,
-				...enabledExtensionFactories([{ id: "extensions.behaviours", factory: behavioursExtension }]),
+				...enabledExtensionFactories([
+					{ id: "extensions.behaviours", factory: behavioursExtension },
+				] satisfies ManagedExtensionFactory[]),
 				promptSummaryExtension,
 				// Named so startup diagnostics read `<inline:feedback>` rather than a
 				// positional `<inline:N>` that shifts whenever the list above changes.
@@ -1071,7 +1077,7 @@ async function cliMain(): Promise<void> {
 				...enabledExtensionFactories([
 					{ id: "extensions.remote-run", factory: remoteRunExtension },
 					{ id: "extensions.pr-watch", factory: prWatchExtension },
-				]),
+				] satisfies ManagedExtensionFactory[]),
 				telemetryExtension(telemetryConfig),
 				sessionMetadataExtension(),
 				surveysExtension(),

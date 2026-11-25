@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, statSync } from "node:fs"
-import { homedir } from "node:os"
 import { basename, extname, join, resolve } from "node:path"
+import { defaultAgentDir } from "../agent-dir.js"
 import { isProjectScopeAllowed } from "../project-scope-trust.js"
 import type { ResourceDefinition } from "./types.js"
 
@@ -16,7 +16,7 @@ export interface BashHookResource extends ResourceDefinition {
 export function getGlobalBashHookDir(): string {
 	return process.env.KIMCHI_CODING_AGENT_DIR
 		? resolve(process.env.KIMCHI_CODING_AGENT_DIR, "hooks", "bash")
-		: join(homedir(), ".config", "kimchi", "harness", "hooks", "bash")
+		: join(defaultAgentDir(), "hooks", "bash")
 }
 
 export function getProjectBashHookDir(cwd = process.cwd()): string {
