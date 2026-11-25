@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { stripVTControlCharacters } from "node:util"
+import type { AutocompleteSuggestions } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -14,17 +15,33 @@ import { unregisterSessionPermissionFlagController } from "../permissions/mode-c
 import {
 	CROSS_SESSION_MESSAGE_TYPE,
 	CROSS_SESSION_NOTICE_TYPE,
+	CROSS_SESSION_SENT_TYPE,
 	createSessionMessagesExtension,
 	DISABLED_NOTICE,
 	ENABLED_NOTICE,
+	liveSessions,
 	OFFER_TITLE,
 	replyHint,
+	TAG_TITLE,
+	userHint,
 } from "./index.js"
+import { setSessionMessagesPermitted } from "./session-policy.js"
 
 vi.mock("../agents/index.js", () => ({ listSubagents: vi.fn(), messageSubagent: vi.fn() }))
+/** Whether this process runs as Kimchi's ACP server; most cases run in the TUI. */
+const acp = vi.hoisted(() => ({ server: false }))
+vi.mock("../../modes/acp/state.js", async (importOriginal) => ({
+	...(await importOriginal<Record<string, unknown>>()),
+	get IS_ACP_MODE() {
+		return acp.server
+	},
+}))
 
-/** Delivery options: a TUI-only wake, since session_start skips other modes, so no ACP client has to opt in. */
+/** Delivery options: a wake only TUI sessions and ACP clients with the session-messages opt-in get; nothing else opens an inbox. */
 const STEER_AND_WAKE = { deliverAs: "steer", triggerTurn: true }
+const ALPHA = "0190aaaa-0000-7000-8000-00000aaaaaa1"
+const BETA = "0190aaaa-0000-7000-8000-00000bbbbbb2"
+const GAMMA = "0190aaaa-0000-7000-8000-00000cccccc3"
 
 const dirs: string[] = []
 const running: Array<() => Promise<unknown>> = []
@@ -92,7 +109,24 @@ async function startSession(
 			)
 		return (result.content[0] as { text: string }).text
 	}
-	return { harness, ctx, run, stop }
+	/** The user presses Enter on this prompt: the input handlers' results. */
+	const type = (text: string) => harness.emit("input", { type: "input", text, source: "interactive" }, ctx)
+	return { harness, ctx, run, stop, type }
+}
+
+/** A folder Git reports on that branch, without running Git. */
+function repository(dir: string, branch: string): string {
+	const folder = join(dirname(dir), branch.replaceAll("/", "-"))
+	mkdirSync(join(folder, ".git"), { recursive: true })
+	writeFileSync(join(folder, ".git", "HEAD"), `ref: refs/heads/${branch}\n`)
+	return folder
+}
+
+/** This session's @ list over a file list that offers `files`. */
+function atList(session: Awaited<ReturnType<typeof startSession>>, files: AutocompleteSuggestions | null = null) {
+	const wrap = vi.mocked(session.ctx.ui.addAutocompleteProvider).mock.calls[0][0]
+	const provider = wrap({ getSuggestions: async () => files, applyCompletion: vi.fn() })
+	return (line: string) => provider.getSuggestions([line], 0, line.length, { signal: new AbortController().signal })
 }
 
 /** The agent is about to start a subagent: the tool_call results, one per handler. */
@@ -286,26 +320,208 @@ describe("session-messages", () => {
 		}
 	})
 
-	it("stops a reply loop: past five messages to one session, the next waits until the user types", async () => {
+	it("stops a chain after 8 messages without a user; the user's own words start it again", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000aaaaaa1", name: "alpha" })
-		await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "beta" })
-		for (let i = 1; i <= 5; i++) {
-			expect(await alpha.run("send_message", { to: "beta", message: `Note ${i}.` })).toContain("Delivered to beta")
+		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
+		const beta = await startSession(dir, { id: BETA, name: "beta" })
+		for (let hop = 1; hop <= 8; hop++) {
+			const [from, to] = hop % 2 === 1 ? [beta, "alpha"] : [alpha, "beta"]
+			expect(await from.run("send_message", { to, message: `Hop ${hop}.` })).toContain("Delivered to")
 		}
 		const refused =
-			"Not sent: beta [bbbbb2] already has 5 messages from you since your user last typed. Ask your user before sending more."
-		expect(await alpha.run("send_message", { to: "beta", message: "Thanks!" })).toBe(refused)
-		// Input another extension injects is not the user.
-		await alpha.harness.emit("input", { type: "input", text: "nudge", source: "extension" }, alpha.ctx)
-		expect(await alpha.run("send_message", { to: "beta", message: "Thanks!" })).toBe(refused)
-		await alpha.harness.emit("input", { type: "input", text: "Ask beta again.", source: "interactive" }, alpha.ctx)
-		expect(await alpha.run("send_message", { to: "beta", message: "One more question." })).toContain(
-			"Delivered to beta",
-		)
+			"Not sent: 8 messages have passed between sessions since a user last wrote. Ask your user before sending more."
+		expect(await beta.run("send_message", { to: "alpha", message: "Thanks!" })).toBe(refused)
+		// Input another extension injects is not a user.
+		await beta.harness.emit("input", { type: "input", text: "nudge", source: "extension" }, beta.ctx)
+		expect(await beta.run("send_message", { to: "alpha", message: "Thanks!" })).toBe(refused)
+		// Words the user writes to beta from another session count like typing in beta, so a team keeps working.
+		expect(await alpha.type("@beta keep going")).toEqual([{ action: "handled" }])
+		expect(await beta.run("send_message", { to: "alpha", message: "Done." })).toContain("Delivered to alpha")
 	})
 
-	it("leaves sessions driven by a program out (ACP reports mode rpc)", async () => {
+	it("puts live sessions at the top of the @ list with their branch, state and folder", async () => {
+		const dir = tempDir()
+		const shop = repository(dir, "fix/rounding")
+		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
+		await startSession(dir, { id: BETA, name: "beta", cwd: shop, idle: false })
+		await startSession(dir, { id: GAMMA, name: "Checkout rounding" })
+		const beta = { value: "@beta", label: "@beta", description: `fix/rounding · busy · ${shop}` }
+		const checkout = {
+			value: '@"Checkout rounding"',
+			label: '@"Checkout rounding"',
+			description: "idle · /work/Checkout rounding",
+		}
+		const file = { value: "@src/", label: "src/" }
+
+		const all = await atList(alpha, { prefix: "@", items: [file] })("@")
+		expect(all?.prefix).toBe("@")
+		expect(all?.items).toHaveLength(3)
+		expect(all?.items).toEqual(expect.arrayContaining([beta, checkout]))
+		expect(all?.items.at(-1)).toEqual(file)
+		// Typing narrows by name or branch, with or without matching files.
+		expect(await atList(alpha)("@fix/r")).toEqual({ prefix: "@fix/r", items: [beta] })
+		// A session already tagged is not offered again.
+		expect(await atList(alpha)("@beta and @")).toEqual({ prefix: "@", items: [checkout] })
+		// The session itself is never listed.
+		expect((await atList(alpha)("@alpha"))?.items ?? []).toEqual([])
+	})
+
+	it("writes leading tags straight to those sessions as the user's words; other tags go to the agent", async () => {
+		const dir = tempDir()
+		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
+		const beta = await startSession(dir, { id: BETA, name: "beta", idle: false })
+		const checkout = await startSession(dir, { id: GAMMA, name: "Checkout rounding" })
+		// The user's own words need no approval in another permission mode: they could type them there.
+		setPermissionMode(BETA, { mode: "yolo", initiatedBy: "user", source: "runtime" })
+		try {
+			expect(await alpha.type('@beta @"Checkout rounding": use v2 instead')).toEqual([{ action: "handled" }])
+			expect(beta.ctx.ui.confirm).not.toHaveBeenCalled()
+			expect(beta.harness.sendMessage).toHaveBeenCalledWith(
+				{
+					customType: CROSS_SESSION_MESSAGE_TYPE,
+					content: `<cross-session-message from="alpha [aaaaa1]" by="user">\nuse v2 instead\n</cross-session-message>\n${userHint("alpha [aaaaa1]")}`,
+					display: true,
+					details: { from: "alpha [aaaaa1]", text: "use v2 instead", title: "From you in alpha [aaaaa1]" },
+				},
+				STEER_AND_WAKE,
+			)
+			expect(checkout.harness.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ details: expect.objectContaining({ text: "use v2 instead" }) }),
+				STEER_AND_WAKE,
+			)
+			// This session starts no turn; it keeps a record its agent reads when answers come back.
+			expect(alpha.harness.sendMessage).toHaveBeenCalledWith(
+				{
+					customType: CROSS_SESSION_SENT_TYPE,
+					content: expect.stringContaining(
+						"Your user wrote this straight to beta [bbbbb2], Checkout rounding [ccccc3]:\nuse v2 instead",
+					),
+					display: true,
+					details: {
+						title: "To beta [bbbbb2], Checkout rounding [ccccc3]",
+						text: "use v2 instead\n\nbeta [bbbbb2] reads it when its current step ends.\nCheckout rounding [ccccc3] starts on it now.",
+					},
+				},
+				{ triggerTurn: false },
+			)
+
+			// Tags inside the sentence leave it to the agent, which has the tools by now.
+			expect(await alpha.type('ask @beta and @"Checkout rounding" to agree on the endpoint')).toEqual([undefined])
+			expect(alpha.harness.registerTool).toHaveBeenCalled()
+			expect(beta.harness.sendMessage).toHaveBeenCalledTimes(1)
+			// A word that tags no live session is plain text.
+			expect(await alpha.type("@gamma use v2")).toEqual([undefined])
+			expect(await alpha.run("send_message", { to: '@"Checkout rounding"', message: "Agree with beta." })).toContain(
+				"Delivered to Checkout rounding [ccccc3]",
+			)
+		} finally {
+			unregisterSessionPermissionFlagController(BETA)
+			clearPermissionModeEnv(BETA)
+		}
+	})
+
+	it("asks once when a prompt tags a session before messages were allowed", async () => {
+		const dir = tempDir()
+		const beta = await startSession(dir, { id: BETA, name: "beta", preference: "unset" })
+		const alpha = await startSession(dir, { id: ALPHA, name: "alpha", preference: "unset", answer: true })
+
+		// The @ list shows sessions before the choice, so the user can find them.
+		expect((await atList(alpha)("@"))?.items.map(({ value }) => value)).toEqual(["@beta"])
+		expect(await alpha.type("@beta use v2 instead")).toEqual([{ action: "handled" }])
+		expect(alpha.ctx.ui.confirm).toHaveBeenCalledWith(
+			TAG_TITLE,
+			"You tagged “beta”, another session on this machine. Turn on session messages so I can reach it? Your choice is saved for future sessions; /session-messages changes it.",
+		)
+		expect(savedPreference(dir)).toBe(true)
+		expect(beta.harness.sendMessage).toHaveBeenCalledTimes(1)
+	})
+
+	it("after a no, tags stay plain text and the @ list shows only files", async () => {
+		const dir = tempDir()
+		const beta = await startSession(dir, { id: BETA, name: "beta", preference: "unset" })
+		const alpha = await startSession(dir, { id: ALPHA, name: "alpha", preference: "unset", answer: false })
+
+		expect(await alpha.type("@beta use v2 instead")).toEqual([undefined])
+		expect(savedPreference(dir)).toBe(false)
+		expect(beta.harness.sendMessage).not.toHaveBeenCalled()
+		expect(alpha.harness.registerTool).not.toHaveBeenCalled()
+		const files = { prefix: "@", items: [{ value: "@src/", label: "src/" }] }
+		expect(await atList(alpha, files)("@")).toBe(files)
+		expect(await alpha.type("@beta again")).toEqual([undefined])
+		expect(alpha.ctx.ui.confirm).toHaveBeenCalledTimes(1)
+	})
+
+	it("over ACP, takes part only when the client opted in, and refuses what it would have to ask about", async () => {
+		acp.server = true
+		try {
+			const dir = tempDir()
+			const tui = await startSession(dir, { id: ALPHA, name: "tui" })
+			setSessionMessagesPermitted(false)
+			const plain = await startSession(dir, { id: BETA, name: "plain", mode: "rpc" })
+			expect(plain.harness.registerTool).not.toHaveBeenCalled()
+			expect(existsSync(join(dir, "bbbbb2.sock"))).toBe(false)
+			expect(await plain.type("@tui use v2")).toEqual([undefined])
+
+			setSessionMessagesPermitted(true)
+			const studio = await startSession(dir, { id: GAMMA, name: "studio", mode: "rpc" })
+			expect(studio.harness.registerTool).toHaveBeenCalled()
+			// The client draws its own @ list, from _kimchi.dev/live_sessions.
+			expect(studio.ctx.ui.addAutocompleteProvider).not.toHaveBeenCalled()
+			expect(await tui.run("send_message", { to: "studio", message: "Run the tests." })).toContain(
+				"Delivered to studio [ccccc3]",
+			)
+			// A leading tag goes through the agent, whose reply the client shows; a prompt handled here would end blank.
+			expect(await studio.type("@tui use v2")).toEqual([undefined])
+			expect(tui.harness.sendMessage).toHaveBeenCalledTimes(0)
+
+			// Kimchi may not ask an ACP client's user between turns, so another mode's message is refused at once.
+			setPermissionMode(GAMMA, { mode: "yolo", initiatedBy: "user", source: "runtime" })
+			expect(await tui.run("send_message", { to: "studio", message: "Delete the cache." })).toBe(
+				"Not delivered to studio [ccccc3]: it runs in yolo mode in an app where Kimchi cannot ask its user, and your session runs in default mode.",
+			)
+			expect(studio.ctx.ui.confirm).not.toHaveBeenCalled()
+		} finally {
+			acp.server = false
+			setSessionMessagesPermitted(false)
+			unregisterSessionPermissionFlagController(GAMMA)
+			clearPermissionModeEnv(GAMMA)
+		}
+	})
+
+	it("gives an ACP client the list its @ list needs", async () => {
+		const dir = tempDir()
+		const shop = repository(dir, "fix/rounding")
+		await startSession(dir, { id: BETA, name: "beta", cwd: shop })
+		await startSession(dir, { id: GAMMA, name: "beta" })
+		const sessions = await liveSessions(ALPHA, shop, { dir, preferenceFile: preferenceFile(dir) })
+		expect(sessions).toHaveLength(2)
+		expect(sessions).toEqual(
+			expect.arrayContaining([
+				{
+					tag: '@"beta [bbbbb2]"',
+					name: "beta",
+					ref: "bbbbb2",
+					branch: "fix/rounding",
+					state: "idle",
+					cwd: shop,
+					sameRepository: true,
+				},
+				{
+					tag: '@"beta [ccccc3]"',
+					name: "beta",
+					ref: "ccccc3",
+					branch: null,
+					state: "idle",
+					cwd: "/work/beta",
+					sameRepository: false,
+				},
+			]),
+		)
+		writeFileSync(preferenceFile(dir), JSON.stringify({ enabled: false }))
+		expect(await liveSessions(ALPHA, shop, { dir, preferenceFile: preferenceFile(dir) })).toEqual([])
+	})
+
+	it("leaves sessions driven by a program out (Pi's own RPC mode)", async () => {
 		const dir = tempDir()
 		const alpha = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000aaaaaa1", name: "alpha" })
 		const driven = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "driven", mode: "rpc" })

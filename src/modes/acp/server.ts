@@ -159,6 +159,7 @@ import { getPRWatcher } from "../../extensions/pr-watch/index.js"
 import { formatPRWatchStatus } from "../../extensions/pr-watch/presentation.js"
 import { setPRMonitoringPermitted } from "../../extensions/pr-watch/session-policy.js"
 import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
+import { setSessionMessagesPermitted } from "../../extensions/session-messages/session-policy.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
@@ -199,10 +200,12 @@ import {
 	getClientOptedIntoBackgroundRuns,
 	getClientOptedIntoMcpOAuthTurn,
 	getClientOptedIntoPRMonitoring,
+	getClientOptedIntoSessionMessages,
 	getClientSupportsMethod,
 	kimchiDevMetaOf,
 	MCP_OAUTH_TURN_CAPABILITY,
 	PR_MONITORING_CAPABILITY,
+	SESSION_MESSAGES_CAPABILITY,
 } from "./capabilities.js"
 import { registerAcpChildInteraction, registerAcpRootUIContext } from "./child-interaction-registry.js"
 import {
@@ -219,6 +222,7 @@ import { handleCompactAbort } from "./ext-methods/compact-abort.js"
 import { handleFeedback } from "./ext-methods/feedback.js"
 import { handleImportApply } from "./ext-methods/import-apply.js"
 import { importDiscover } from "./ext-methods/import-discover.js"
+import { handleLiveSessions } from "./ext-methods/live-sessions.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import {
 	handleMemoryDelete,
@@ -765,6 +769,7 @@ export class KimchiAcpAgent {
 		// server creates.
 		setBackgroundRunsPermitted(getClientOptedIntoBackgroundRuns(request.clientCapabilities))
 		setPRMonitoringPermitted(getClientOptedIntoPRMonitoring(request.clientCapabilities))
+		setSessionMessagesPermitted(getClientOptedIntoSessionMessages(request.clientCapabilities))
 
 		const modelRuntime = await createSsoAwareModelRuntime(this.agentDir)
 		const modelRegistry = new ModelRegistry(modelRuntime)
@@ -846,6 +851,7 @@ export class KimchiAcpAgent {
 					[BACKGROUND_RUNS_CAPABILITY]: true,
 					[MCP_OAUTH_TURN_CAPABILITY]: true,
 					[PR_MONITORING_CAPABILITY]: true,
+					[SESSION_MESSAGES_CAPABILITY]: true,
 					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
 					// methods. Clients gate their SSO UI on this flag.
 					sso: true,
@@ -2045,6 +2051,13 @@ export class KimchiAcpAgent {
 				// Session-scoped: flip the session's runtime memory toggle — the
 				// memory extension reads it at its next agent start.
 				return handleSetMemoryEnabled((sessionId) => this.sessions.get(sessionId)?.session, params)
+			case AVAILABLE_EXT_METHODS.live_sessions:
+				// Session-scoped, for the client's @ list. Only clients that opted into session messages: the
+				// others' sessions take no part, so a list would invite tags nothing reads.
+				if (!getClientOptedIntoSessionMessages(this.clientCapabilities)) {
+					throw RequestError.methodNotFound(AVAILABLE_EXT_METHODS.live_sessions)
+				}
+				return handleLiveSessions((sessionId) => this.sessions.get(sessionId)?.session, params)
 			case AVAILABLE_EXT_METHODS.memory_get:
 				return handleMemoryGet({}, params)
 			case AVAILABLE_EXT_METHODS.memory_update:

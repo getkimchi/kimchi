@@ -1,14 +1,15 @@
 # Message subagents and other Kimchi sessions
 
 An interactive Kimchi session (the TUI) can list and message its own subagents and the
-other interactive sessions running on the same machine. Print, RPC and ACP runs take no
-part, so a program driving Kimchi never sees a turn it did not start.
+other sessions running on the same machine. ACP sessions take part when their client opts
+in (see [Studio and other ACP clients](#studio-and-other-acp-clients)). Print and RPC runs
+take no part, so a program driving Kimchi never sees a turn it did not start.
 
 ## Turn it on
 
-Messages between sessions are off until you allow them. The first time the agent is about
-to start a subagent while another live session works in the same repository (worktrees of
-one repository count), Kimchi asks once:
+Messages between sessions are off until you allow them. Kimchi asks once: the first time
+you tag a session with `@`, or the agent is about to start a subagent while another live
+session works in the same repository (worktrees of one repository count):
 
 ```text
 Ask your other session instead of a subagent?
@@ -16,8 +17,8 @@ I see you have a session open in this repository, “Checkout rounding”, that 
 know this work. I can ask it instead of starting a subagent. Turn on session messages?
 ```
 
-Yes stops that subagent: the agent sends the work to the other session when it is that
-session's work, and otherwise starts the subagent again. No lets the subagent start.
+For a subagent, yes stops it: the agent sends the work to the other session when it is
+that session's work, and otherwise starts the subagent again. No lets the subagent start.
 Your answer is saved in your profile's `session-messages.json` and applies to every
 session; a no is remembered too, so Kimchi does not ask again. Change it any time:
 
@@ -41,13 +42,35 @@ List the other Kimchi sessions, then ask the web-app session to run its tests an
 The agent uses two tools:
 
 - `list_agents` shows this session's subagents first (ID, type, status, task, start time),
-  then each other session as `name [ref]`, idle or busy, with its folder, start time and
+  then each other session as `name [ref]`, idle or busy, with its branch, folder, start time and
   whether it works in the same repository. Work that such a session already owns goes to it
   as a message; other work can still go to a new subagent.
   A session's name is its session name (set with `/name` or picked after the first turn)
   or, before that, the folder name. The ref is the last six characters of the session id.
-- `send_message` takes `to` and the text. `to` is a subagent ID, a session name, or
+- `send_message` takes `to` and the text. `to` is a subagent ID, a session name or tag, or
   `name [ref]` when two sessions share a name. A subagent ID wins over a session name.
+
+### Tag sessions with @
+
+Type `@` in the prompt. Live sessions come first, each with its branch, state and folder,
+then files; typing narrows the list by name or branch.
+
+```text
+@api                    feat/v2-endpoint · busy · ~/code/shop-api
+@"Checkout rounding"    fix/rounding · idle · ~/code/shop
+src/
+```
+
+- **Tags at the start** send the rest of the prompt straight to those sessions, as your own
+  words: `@api use the v2 endpoint instead`. A busy session reads it when its current step
+  ends, so you can steer a run in progress; an idle one starts. This session starts no
+  turn, and the answers come back to it.
+- **Tags anywhere else** leave it to the agent: `ask @api and @web to agree on the endpoint
+  shape`. It sends each session its part and tells them about each other, so they can work
+  it out as a team.
+
+A name with spaces is quoted; two sessions with one name get their ref, as in
+`@"shop [e50820]"`. Every session stays yours: typing in it works as before.
 
 ### Subagents
 
@@ -67,8 +90,9 @@ acknowledgements, since every message wakes the other session. Its user sees
 it when its current step ends; an idle one starts a turn. A reply finds the sender by its
 ref, so it arrives even after the sender's name has changed.
 
-After 5 messages to one session, the next is refused until your user types again, so two
-agents cannot keep each other busy.
+Each message counts its hops from the last thing a user wrote. After 8 hops, sending waits
+until a user writes again, in that session or straight to it with a tag, so two agents
+cannot keep each other busy while a team can still talk things through.
 
 ## Permission modes
 
@@ -82,10 +106,41 @@ That session runs in plan mode and this one in auto. Let the message in?
 
 The question counts down for 5 minutes. When its user says no or does not answer, nothing
 gets in, and the sender's conversation gets a notice that the message was declined or
-expired. This keeps a Plan-mode session from getting
-an Auto-mode one to do what it may not. Both tools are therefore available in Plan mode,
-and sending needs no approval on the sending side. Subagents follow their own session's
-mode, so messages to them need no approval.
+expired. This keeps a Plan-mode session from getting an Auto-mode one to do what it may
+not. Both tools are therefore available in Plan mode, and sending needs no approval on the
+sending side. Your own words, sent with a leading tag, are not asked about: you could have
+typed them there. Subagents follow their own session's mode, so messages to them need no
+approval.
+
+## Studio and other ACP clients
+
+An ACP session takes part only when its client opts in at `initialize`. The harness
+advertises the same flag under `agentCapabilities._meta["kimchi.dev"]`:
+
+```json
+{
+  "clientCapabilities": {
+    "_meta": {
+      "kimchi.dev": {
+        "sessionMessages": true,
+        "backgroundRuns": true
+      }
+    }
+  }
+}
+```
+
+Without both flags nothing changes: no inbox, tools, tags or question. With them:
+
+- A received message starts a run no prompt owns, between the
+  `_kimchi.dev/background_run_start` and `background_run_end` notifications.
+- `_kimchi.dev/live_sessions` with `{ "sessionId": "…" }` returns
+  `{ "sessions": [{ "tag", "name", "ref", "branch", "state", "cwd", "sameRepository" }] }`
+  for the client's `@` list; put `tag` into the prompt. It returns no sessions after a no.
+- Tags work as in the TUI, except that the agent also passes on leading tags, so its reply
+  shows in the client.
+- A message from another permission mode is refused at once, since Kimchi does not ask the
+  client's user between turns.
 
 ## How it works
 
@@ -95,6 +150,7 @@ is, so a session is listed only while it answers. A socket left behind by a sess
 crashed is removed the next time anyone lists. Quitting removes the session's socket.
 
 Each connection carries one JSON request (`info`, `message` or `notice`) and one JSON
-reply, each at most 65,536 characters. A longer message is refused; send a file path
+reply, each at most 65,536 characters. A message carries its hop count; 0 marks your own
+words. A longer message is refused; send a file path
 instead. A notice names only the outcome (declined or expired); the sender's side writes
 its text.
