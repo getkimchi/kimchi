@@ -3,13 +3,14 @@ import { suitesToRun } from "./ci-changes.js"
 
 describe("suitesToRun", () => {
 	it("skips every suite when nothing changed", () => {
-		expect(suitesToRun([])).toEqual({ tui: false, acp: false })
+		expect(suitesToRun([])).toEqual({ tui: false, acp: false, mcp: false })
 	})
 
 	it("skips every suite for a docs-only change", () => {
 		expect(suitesToRun(["docs/ferment.md", "README.md", ".github/pull_request_template.md", "LICENSE"])).toEqual({
 			tui: false,
 			acp: false,
+			mcp: false,
 		})
 	})
 
@@ -37,15 +38,23 @@ describe("suitesToRun", () => {
 	})
 
 	it("runs ACP but not TUI for an ACP test change", () => {
-		expect(suitesToRun(["tests/e2e/acp/run-boundary.test.ts"])).toEqual({ tui: false, acp: true })
+		expect(suitesToRun(["tests/e2e/acp/run-boundary.test.ts"])).toEqual({ tui: false, acp: true, mcp: false })
 	})
 
 	it("runs TUI but not ACP for a TUI test change", () => {
-		expect(suitesToRun(["tests/e2e/tui/side-chat.test.ts"])).toEqual({ tui: true, acp: false })
+		expect(suitesToRun(["tests/e2e/tui/side-chat.test.ts"])).toEqual({ tui: true, acp: false, mcp: false })
 	})
 
 	it("runs ACP for TUI support files, which ACP fixtures import", () => {
 		expect(suitesToRun(["tests/e2e/tui/support/fixture.ts"]).acp).toBe(true)
+	})
+
+	it("runs only MCP conformance for a conformance client change", () => {
+		expect(suitesToRun(["tests/e2e/mcp/conformance-client.ts"])).toEqual({ tui: false, acp: false, mcp: true })
+	})
+
+	it("runs MCP conformance for ACP support files, which the client imports", () => {
+		expect(suitesToRun(["tests/e2e/acp/support/acp-fixture.ts"]).mcp).toBe(true)
 	})
 
 	it("runs TUI when one file of a mixed change matters", () => {

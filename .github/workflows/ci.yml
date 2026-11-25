@@ -28,6 +28,7 @@ jobs:
     outputs:
       tui: ${{ steps.decide.outputs.tui }}
       acp: ${{ steps.decide.outputs.acp }}
+      mcp: ${{ steps.decide.outputs.mcp }}
     steps:
       # Depth 2 gives the PR merge commit and its first parent, the base.
       - uses: actions/checkout@v4
@@ -152,6 +153,18 @@ jobs:
       failure-artifacts: |
         *.acp-e2e.log
         **/acp-traces/**
+
+  # MCP protocol conformance. The MCP TUI and ACP files run in tui-e2e and
+  # acp-e2e. Advisory. PR and manual runs only.
+  mcp-conformance:
+    needs: [changes, build]
+    if: github.event_name != 'merge_group' && needs.changes.outputs.mcp == 'true'
+    uses: ./.github/workflows/_test-suite.yml
+    with:
+      name: mcp-conformance
+      use-build: true
+      command: KIMCHI_PROXY_HELPER="$PWD/bin/proxy-helper" pnpm run test:e2e:mcp:conformance
+      failure-artifacts: .kimchi/mcp-conformance-results/**
 
   # Tripwire for ACP wire-compat regressions (docs/acp-compat.md). It diffs
   # against the PR base, so it runs on pull requests only. It is advisory: the

@@ -37,6 +37,15 @@ export const SUITE_IGNORES = {
 		"tests/e2e/tui/*.test.ts",
 		"tests/e2e/mcp/**",
 	],
+	// The conformance client imports TUI and ACP support code, so only their test files are ignored.
+	mcp: [
+		...NOT_CODE,
+		"src/**/*.test.ts",
+		"tests/unit/**",
+		"tests/smoke/**",
+		"tests/e2e/tui/*.test.ts",
+		"tests/e2e/acp/*.test.ts",
+	],
 }
 
 export function suitesToRun(changedFiles) {
