@@ -5,6 +5,7 @@ import {
 	keyToSessionModePickerEvent,
 	reduceSessionModePicker,
 	renderSessionModePickerLines,
+	SESSION_MODE_PICKER_OPTIONS,
 	SessionModePickerComponent,
 } from "./session-mode-picker.js"
 
@@ -86,14 +87,16 @@ describe("session mode picker rendering", () => {
 		expect(lines).toEqual([
 			"",
 			"  > Try a /ferment workflow",
-			"    The agent breaks the task into milestones, self-evaluates its output and delivers with minimal interruptions.",
+			"    Give the agent one objective. It plans its own steps, works until a verifier confirms the result, and asks you only when it is",
+			"    blocked.",
 			"",
 			"    Skip",
 			"",
 		])
 		expect(text).toContain("Try a /ferment workflow")
-		expect(text).toContain(
-			"The agent breaks the task into milestones, self-evaluates its output and delivers with minimal interruptions.",
+		expect(text).toContain("Give the agent one objective.")
+		expect(SESSION_MODE_PICKER_OPTIONS[0].description).toBe(
+			"Give the agent one objective. It plans its own steps, works until a verifier confirms the result, and asks you only when it is blocked.",
 		)
 		expect(text).toContain("Skip")
 		expect(text).not.toContain("Tip:")
