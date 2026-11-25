@@ -24,6 +24,7 @@ on:
   schedule:
     - cron: "17 3 * * *"
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     # Only root/.github markdown: *.md under src/ and resources/ ships in the binary.
     paths-ignore:
       - 'docs/**'
@@ -100,7 +101,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-        iteration: ${{ github.event_name == 'schedule' && fromJSON('[1,2,3,4,5,6,7,8,9,10]') || fromJSON('[1]') }}
+        iteration: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment') && fromJSON('[1,2,3]') || github.event_name == 'schedule' && fromJSON('[1,2,3,4,5,6,7,8,9,10]') || fromJSON('[1]') }}
     # Per-shard slice of the suite: shards 1/3/4 run ~8 minutes, but the
     # slowest shard (2) has measured 13–16 minutes on the same tree (heavy
     # files: ferment, mcp-*, pii-redaction, work-attribution) — 20 minutes
@@ -112,8 +113,8 @@ jobs:
       ALLURE_RESULTS: allure-results/tui
       ALLURE_TOKEN_AVAILABLE: ${{ secrets.ALLURE_TOKEN != '' }}
       ALLURE_CONTINUE_ON_ERROR: "true"
-      ALLURE_UPLOAD_ENABLED: ${{ contains(fromJSON('["push","merge_group","schedule"]'), github.event_name) }}
-      ALLURE_RUN_KIND: ${{ github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || github.event_name == 'schedule' && 'nightly' || 'other' }}
+      ALLURE_UPLOAD_ENABLED: ${{ contains(fromJSON('["push","merge_group","schedule"]'), github.event_name) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment')) }}
+      ALLURE_RUN_KIND: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment') && 'experiment' || github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || github.event_name == 'schedule' && 'nightly' || 'other' }}
     steps:
       - uses: actions/checkout@v4
         with:
