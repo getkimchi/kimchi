@@ -123,10 +123,11 @@ export function loadKimchiMcpConfig(
 		// project files, project host imports, and project package declarations
 		// cannot enter the effective config. The resulting config must be passed to
 		// createMcpAdapter() programmatically; otherwise it would rediscover the real
-		// session cwd during initialization.
+		// session cwd during initialization. Use the same user-layer file as the
+		// project path below, so both layers match when the project adds nothing.
 		const userConfigCwd = join(getAgentDir(), ".kimchi-mcp-user-config")
 		return {
-			config: loadUpstreamMcpConfig(undefined, userConfigCwd),
+			config: loadUpstreamMcpConfig(getSharedMcpConfigPath(), userConfigCwd),
 			useProgrammaticConfig: true,
 			warnings: [],
 		}

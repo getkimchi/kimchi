@@ -47,7 +47,7 @@ describe("loadKimchiMcpConfig", () => {
 		const result = loadKimchiMcpConfig({ cwd, includeProjectSources: false })
 
 		expect(result).toEqual({ config, useProgrammaticConfig: true, warnings: [] })
-		expect(upstream.load).toHaveBeenCalledWith(undefined, join(getAgentDir(), ".kimchi-mcp-user-config"))
+		expect(upstream.load).toHaveBeenCalledWith(getSharedMcpConfigPath(), join(getAgentDir(), ".kimchi-mcp-user-config"))
 	})
 
 	it("leaves the legacy project layer in upstream file-backed discovery", () => {

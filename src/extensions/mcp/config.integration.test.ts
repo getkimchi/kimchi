@@ -32,6 +32,19 @@ describe("MCP configuration with the real upstream loader", { timeout: 30_000 },
 		rmSync(join(homeDir, ".config", "mcp", "mcp.json"), { force: true })
 	})
 
+	it("loads the same user layer for the user-only and project configs when the project has no MCP config", async () => {
+		const { loadKimchiMcpConfig } = await import("./config.js")
+		writeFileSync(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: { shared: { command: "shared" } } }))
+		// The adapter is handed mcp.json, so mcp-adapter.json must not enter either layer.
+		writeFileSync(join(agentDir, "mcp-adapter.json"), JSON.stringify({ mcpServers: { other: { command: "other" } } }))
+
+		const project = loadKimchiMcpConfig({ cwd })
+		const user = loadKimchiMcpConfig({ cwd, includeProjectSources: false })
+
+		expect(user.config).toEqual(project.config)
+		expect(Object.keys(user.config.mcpServers)).toEqual(["shared"])
+	})
+
 	it("preserves global servers and settings when the legacy project file is selected", async () => {
 		const { loadKimchiMcpConfig, LEGACY_PROJECT_MCP_CONFIG } = await import("./config.js")
 		const sharedGlobalPath = join(homeDir, ".config", "mcp", "mcp.json")
