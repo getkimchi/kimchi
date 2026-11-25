@@ -237,6 +237,8 @@ export function createSessionMessagesExtension(
 				return { ok: false, error: "malformed request" }
 			}
 			if (readPreference() !== true) return { ok: false, error: "it has session messages turned off" }
+			// A session started before messages were allowed needs the tools before this turn, to reply.
+			registerTools()
 			const deliver = () =>
 				pi.sendMessage(
 					{
@@ -296,9 +298,13 @@ export function createSessionMessagesExtension(
 			offer(ctx).catch(() => {})
 		})
 
+		// Another session may have turned messages on since this one started.
+		pi.on("before_agent_start", (_event, ctx) => {
+			if (ctx.mode === "tui" && readPreference() === true) registerTools()
+		})
+
 		pi.on("agent_settled", (_event, ctx) => {
 			if (ctx.mode !== "tui") return
-			// Another session may have turned messages on since this one started.
 			if (readPreference() === true) registerTools()
 			offer(ctx).catch(() => {})
 		})

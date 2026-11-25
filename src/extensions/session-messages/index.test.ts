@@ -231,9 +231,9 @@ describe("session-messages", () => {
 		expect(await alpha.run("send_message", { to: "beta", message: "Take the checkout bug." })).toContain(
 			"Delivered to beta [bbbbb2]",
 		)
-		// The running session gets the tools once its turn settles.
-		expect(beta.harness.registerTool).not.toHaveBeenCalled()
-		await beta.harness.emit("agent_settled", {}, beta.ctx)
+		// The message itself gives the session that started before the answer its tools, so it can reply
+		// in the turn the message starts.
+		expect(beta.harness.registerTool).toHaveBeenCalled()
 		expect(await beta.run("send_message", { to: "alpha", message: "On it." })).toContain("Delivered to alpha")
 	})
 
