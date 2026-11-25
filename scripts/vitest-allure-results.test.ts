@@ -8,6 +8,7 @@ import { withAllureReporter } from "../tests/setup/allure-vitest.js"
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url))
 const githubExpression = (expression: string) => `\${{ ${expression} }}`
+const allureSetupAction = "allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db"
 
 it("leaves Vitest config unchanged when Allure reporting is not requested", () => {
 	const config = defineConfig({ test: { setupFiles: ["./tests/setup/existing.ts"] } })
@@ -45,7 +46,7 @@ it.each([
 			`github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || 'other'`,
 		),
 	})
-	const setup = target.steps.find((step: { uses?: string }) => step.uses === "allure-framework/setup-allurectl@v1")
+	const setup = target.steps.find((step: { uses?: string }) => step.uses === allureSetupAction)
 	expect(setup).toMatchObject({
 		id: "allurectl",
 		if: "always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''",

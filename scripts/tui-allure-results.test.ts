@@ -20,6 +20,7 @@ const repoRoot = fileURLToPath(new URL("../", import.meta.url))
 const runnerPath = join(repoRoot, "scripts", "run-tui-e2e.js")
 const allureResultsPath = join(repoRoot, "scripts", "tui-allure-results.js")
 const githubExpression = (expression: string) => `\${{ ${expression} }}`
+const allureSetupAction = "allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db"
 
 function createTuiRunnerFixture() {
 	const root = mkdtempSync(join(tmpdir(), "kimchi-tui-allure-test-"))
@@ -114,7 +115,7 @@ it("configures optional non-blocking Allure uploads in the TUI workflow", () => 
 		ALLURE_CONTINUE_ON_ERROR: "true",
 	})
 
-	const setup = job.steps.find((step: { uses?: string }) => step.uses === "allure-framework/setup-allurectl@v1")
+	const setup = job.steps.find((step: { uses?: string }) => step.uses === allureSetupAction)
 	expect(setup).toMatchObject({
 		id: "allurectl",
 		if: "always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''",
@@ -155,7 +156,7 @@ it("restricts TestOps uploads to trusted events and tags nightly repetitions", (
 		),
 	})
 
-	const setup = job.steps.find((step: { uses?: string }) => step.uses === "allure-framework/setup-allurectl@v1")
+	const setup = job.steps.find((step: { uses?: string }) => step.uses === allureSetupAction)
 	expect(setup.if).toBe(
 		"always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''",
 	)

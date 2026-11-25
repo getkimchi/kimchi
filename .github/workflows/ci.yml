@@ -207,7 +207,7 @@ jobs:
         id: allurectl
         if: always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''
         continue-on-error: true
-        uses: allure-framework/setup-allurectl@v1
+        uses: allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db # v1.0.3
         with:
           allure-endpoint: ${{ env.ALLURE_ENDPOINT }}
           allure-project-id: ${{ env.ALLURE_PROJECT_ID }}
