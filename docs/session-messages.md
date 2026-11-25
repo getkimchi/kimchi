@@ -70,7 +70,8 @@ src/
   it out as a team.
 
 A tag names whom you mean, not everyone: ask for checks on "what the other sessions
-built" with one tag, and the agent still finds the untagged ones, in any repository.
+built" with one tag, and the agent still finds the untagged ones, in any repository. It
+reads their folders but leaves their files alone, and sends each one what it found.
 A name with spaces is quoted; two sessions with one name get their ref, as in
 `@"shop [e50820]"`. Every session stays yours: typing in it works as before.
 
