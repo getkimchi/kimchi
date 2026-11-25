@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../../project-scope-trust.js"
 import { listAvailableSkillNames, preloadSkills } from "./skill-loader.js"
 
@@ -63,6 +63,25 @@ describe("listAvailableSkillNames", () => {
 			description: "listed",
 			filePath: skillPath,
 		})
+	})
+
+	it("lists an explicit agent dir's skills, not the home harness skills", () => {
+		const home = join(tmpdir(), `kimchi-explicit-skills-${Date.now()}`)
+		const write = (dir: string, name: string) => {
+			mkdirSync(join(dir, name), { recursive: true })
+			writeFileSync(join(dir, name, "SKILL.md"), `---\nname: ${name}\ndescription: d\n---\nbody`)
+		}
+		write(join(home, ".config", "kimchi", "harness", "skills"), "home-skill")
+		write(join(home, "stage", "skills"), "stage-skill")
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", join(home, "stage"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR_DERIVED", "")
+		try {
+			const names = listAvailableSkillNames("/tmp/anywhere", { homeDir: home }).map((s) => s.name)
+			expect(names).toContain("stage-skill")
+			expect(names).not.toContain("home-skill")
+		} finally {
+			vi.unstubAllEnvs()
+		}
 	})
 
 	it("resolves .config/ paths against the provided homeDir override", () => {

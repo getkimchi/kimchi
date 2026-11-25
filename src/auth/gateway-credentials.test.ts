@@ -83,6 +83,7 @@ describe("resolveGatewayCredentials", () => {
 		try {
 			vi.stubEnv("HOME", home)
 			vi.stubEnv("USERPROFILE", home)
+			vi.stubEnv("KIMCHI_CODING_AGENT_DIR_DERIVED", "")
 			const homeAuth = join(home, ".config", "kimchi", "harness", "auth.json")
 			mkdirSync(dirname(homeAuth), { recursive: true })
 			writeFileSync(homeAuth, JSON.stringify({ "kimchi-dev": { type: "oauth", access: "home-access", refresh: "r" } }))

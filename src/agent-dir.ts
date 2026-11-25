@@ -25,3 +25,8 @@ export function applyAgentDirEnv(env: NodeJS.ProcessEnv = process.env): string {
 	}
 	return env.KIMCHI_CODING_AGENT_DIR
 }
+
+/** The agent dir when it was set explicitly rather than derived from HOME. */
+export function explicitAgentDir(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	return env.KIMCHI_CODING_AGENT_DIR_DERIVED === "1" ? undefined : env.KIMCHI_CODING_AGENT_DIR || undefined
+}

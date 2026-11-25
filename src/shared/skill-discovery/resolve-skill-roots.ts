@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } fr
 import { homedir, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { explicitAgentDir } from "../../agent-dir.js"
 import { resolveAuxiliaryFilesDir } from "../../auxiliary-files/resolver.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
@@ -60,17 +61,19 @@ export interface ResolveSkillRootsOptions {
 
 const DEFAULT_CONFIG_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
 
-const HARNESS_SKILLS_REL = join(".config", "kimchi", "harness", "skills")
+export const HARNESS_SKILLS_REL = join(".config", "kimchi", "harness", "skills")
 
 /** The default pi-native agent dir (harness home). Callers with a custom
  * KIMCHI_CODING_AGENT_DIR resolution (cli.ts) pass it explicitly. */
 function resolveDefaultAgentDir(home: string): string {
-	return join(home, dirname(HARNESS_SKILLS_REL))
+	return dirname(resolveHarnessSkillsDir(home))
 }
 
 /** The harness skills dir — the writable root that skills-manager manages. */
 export function resolveHarnessSkillsDir(home: string): string {
-	return join(home, HARNESS_SKILLS_REL)
+	// An explicit agent dir (KIMCHI_CODING_AGENT_DIR) owns the harness skills.
+	const agentDir = explicitAgentDir()
+	return agentDir ? join(agentDir, "skills") : join(home, HARNESS_SKILLS_REL)
 }
 
 /**
@@ -102,6 +105,7 @@ interface MappedConfigPath {
  */
 function mapConfigPath(path: string, cwd: string, home: string): MappedConfigPath {
 	if (isAbsolute(path)) return { dir: path, cwdResolved: false }
+	if (path === HARNESS_SKILLS_REL) return { dir: resolveHarnessSkillsDir(home), cwdResolved: false }
 	if (path.startsWith(".config/") || path.startsWith(".config\\")) return { dir: join(home, path), cwdResolved: false }
 	return { dir: join(cwd, path), cwdResolved: true }
 }

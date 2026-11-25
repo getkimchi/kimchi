@@ -3,9 +3,10 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import {
+	HARNESS_SKILLS_REL,
 	resolveBundledSkillsDir,
 	resolveHarnessSkillsDir,
 	resolveSkillPathsForDiscovery,
@@ -15,6 +16,16 @@ import {
 describe("resolveHarnessSkillsDir", () => {
 	it("points at ~/.config/kimchi/harness/skills", () => {
 		expect(resolveHarnessSkillsDir("/home/alice")).toBe(join("/home/alice", ".config", "kimchi", "harness", "skills"))
+	})
+
+	it("points at <agentDir>/skills for an explicit KIMCHI_CODING_AGENT_DIR", () => {
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/stage/agent")
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR_DERIVED", "")
+		try {
+			expect(resolveHarnessSkillsDir("/home/alice")).toBe(join("/stage/agent", "skills"))
+		} finally {
+			vi.unstubAllEnvs()
+		}
 	})
 })
 
@@ -125,6 +136,20 @@ describe("resolveSkillRoots", () => {
 		// stays).
 		const disabled = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null, agentDir: null })
 		expect(disabled.some((r) => r.kind === "agent")).toBe(false)
+	})
+
+	it("uses only an explicit agent dir's skills as the harness root", () => {
+		const stage = join(home, "stage-agent")
+		mkdirSync(join(home, ".config", "kimchi", "harness", "skills"), { recursive: true })
+		mkdirSync(join(stage, "skills"), { recursive: true })
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", stage)
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR_DERIVED", "")
+		try {
+			const roots = resolveSkillRoots({ cwd, homeDir: home, bundledDir: null, configPaths: [HARNESS_SKILLS_REL] })
+			expect(roots).toEqual([{ dir: join(stage, "skills"), kind: "harness" }])
+		} finally {
+			vi.unstubAllEnvs()
+		}
 	})
 
 	it("maps extraPaths like config paths (cwd-relative roots need trust)", () => {
