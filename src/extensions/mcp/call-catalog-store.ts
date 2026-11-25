@@ -6,6 +6,7 @@ import type { McpCallCatalog } from "./call-facts.js"
 export interface McpCallCatalogStoreDeps {
 	statCacheFile(): CacheFileStamp | null
 	now(): number
+	envKey(): string
 	snapshot: typeof snapshotMcpCallCatalog
 }
 
@@ -13,12 +14,20 @@ interface CachedCatalog {
 	catalog: McpCallCatalog
 	version: number
 	stamp: CacheFileStamp
+	envKey: string
+}
+
+/** Server hashes interpolate env vars, so an env change can turn a cache entry stale. */
+function processEnvKey(): string {
+	let key = ""
+	for (const name in process.env) key += `${name}\0${process.env[name]}\0`
+	return key
 }
 
 /**
  * Reuses the last MCP call catalog until its freshness key changes: the config,
- * the private catalogs (one `version` counter), the cache file stat, or a TTL
- * expiry. When freshness cannot be proven (unknown stamp, failed build) it
+ * the private catalogs (one `version` counter), the cache file stat, the
+ * process environment, or a TTL expiry. When freshness cannot be proven (unknown stamp, failed build) it
  * rebuilds; nothing is keyed on an unknown stamp or on a build that threw.
  */
 export class McpCallCatalogStore {
@@ -39,6 +48,7 @@ export class McpCallCatalogStore {
 		this.deps = {
 			statCacheFile: statMetadataCacheFile,
 			now: Date.now,
+			envKey: processEnvKey,
 			snapshot: snapshotMcpCallCatalog,
 			...deps,
 		}
@@ -67,12 +77,14 @@ export class McpCallCatalogStore {
 	catalog(): McpCallCatalog {
 		// Stat before building: a rewrite during the build leaves a newer stamp, so the next call rebuilds.
 		const stamp = this.deps.statCacheFile()
+		const envKey = this.deps.envKey()
 		const cached = this.cached
 		if (
 			stamp !== null &&
 			cached !== undefined &&
 			cached.version === this.version &&
 			sameCacheFileStamp(cached.stamp, stamp) &&
+			cached.envKey === envKey &&
 			this.deps.now() < cached.catalog.expiresAt
 		) {
 			return cached.catalog
@@ -80,7 +92,7 @@ export class McpCallCatalogStore {
 		this.cached = undefined
 		const version = this.version
 		const catalog = this.deps.snapshot(this.config, this.privateCatalogs, this.registeredToolNames)
-		if (stamp !== null) this.cached = { catalog, version, stamp }
+		if (stamp !== null) this.cached = { catalog, version, stamp, envKey }
 		return catalog
 	}
 }

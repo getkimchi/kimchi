@@ -384,7 +384,8 @@ This trust is limited in the following ways:
 
 The permission hook, the gateway check, and the plan-mode wire names share one
 cached catalog. The catalog is rebuilt when the config, the private catalogs,
-the `stat` of the cache file, or a TTL expiry changes. If the cache file cannot
+the `stat` of the cache file, the process environment, or a TTL expiry changes.
+The environment counts because server hashes interpolate env vars. If the cache file cannot
 be `stat`ed, nothing is reused and every lookup rebuilds. Kimchi refreshes the
 config on each `session_start` in file-backed mode and keeps it in programmatic
 mode. In file-backed mode, if the config source or the session `cwd` changes, MCP
@@ -393,7 +394,6 @@ resolve as `unknown` and also go to the classifier.
 
 Known limits:
 
-- Changes to environment variables inside a running process are not tracked.
 - A config edit in the short window between Kimchi's read and the adapter's
   read is not detected.
 
