@@ -25,10 +25,9 @@
  * every surface — TUI, ACP, the capture worker — resolves identically.
  */
 
-import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 import { readStoredCredential } from "@earendil-works/pi-coding-agent"
-import { defaultAgentDir, explicitAgentDir } from "../agent-dir.js"
+import { defaultAgentDir } from "../agent-dir.js"
 import { KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
 
 /** Header the gateway routes SSO requests by (mirrors models.ts). */
@@ -55,13 +54,12 @@ function defaultAuthPath(): string | undefined {
 
 /**
  * The auth.json that holds the Kimchi login for `agentDir`. Login stays
- * global: an explicit agent dir without its own auth.json reads the one in
- * the default home harness dir.
+ * global: an agent dir whose auth.json holds no Kimchi credential (Pi creates
+ * it as `{}`) reads the one in the default home harness dir.
  */
 export function loginAuthPath(agentDir: string): string {
 	const local = resolve(agentDir, "auth.json")
-	if (!explicitAgentDir() || existsSync(local)) return local
-	return resolve(defaultAgentDir(), "auth.json")
+	return readStoredCredential(KIMCHI_PROVIDER_ID, local) ? local : resolve(defaultAgentDir(), "auth.json")
 }
 
 /**

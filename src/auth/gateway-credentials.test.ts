@@ -78,12 +78,11 @@ describe("resolveGatewayCredentials", () => {
 		}
 	})
 
-	it("reads the home harness login when an explicit agent dir has no auth.json", () => {
+	it("reads the home harness login when the agent dir's auth.json holds no Kimchi credential", () => {
 		const home = mkdtempSync(join(tmpdir(), "gateway-credentials-home-"))
 		try {
 			vi.stubEnv("HOME", home)
 			vi.stubEnv("USERPROFILE", home)
-			vi.stubEnv("KIMCHI_CODING_AGENT_DIR_DERIVED", "")
 			const homeAuth = join(home, ".config", "kimchi", "harness", "auth.json")
 			mkdirSync(dirname(homeAuth), { recursive: true })
 			writeFileSync(homeAuth, JSON.stringify({ "kimchi-dev": { type: "oauth", access: "home-access", refresh: "r" } }))
@@ -91,9 +90,9 @@ describe("resolveGatewayCredentials", () => {
 			expect(resolveGatewayCredentials({ apiKey: "" }).token).toBe("home-access")
 			seedAuth({ "kimchi-dev": { type: "api_key", key: "stage-key" } })
 			expect(resolveGatewayCredentials({ apiKey: "" }).token).toBe("stage-key")
-			rmSync(authPath)
-			vi.stubEnv("KIMCHI_CODING_AGENT_DIR_DERIVED", dir)
-			expect(resolveGatewayCredentials({ apiKey: "" }).source).toBe("none")
+			// Pi creates an empty auth.json in every agent dir it runs in.
+			seedAuth({})
+			expect(resolveGatewayCredentials({ apiKey: "" }).token).toBe("home-access")
 		} finally {
 			rmSync(home, { recursive: true, force: true })
 		}
