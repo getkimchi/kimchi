@@ -1,5 +1,7 @@
 // ACP (Agent Client Protocol) mode: JSON-RPC 2.0 over stdio using
 // @agentclientprotocol/sdk. Lets IDE extensions, Zed, openclaw drive kimchi in-process.
+// Size limit: biome.json's style/noExcessiveLinesPerFile override for this file.
+// Keep this adapter focused on orchestration; extract cohesive logic into tested modules.
 
 import { randomUUID } from "node:crypto"
 import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs"
@@ -101,7 +103,6 @@ import {
 	snapshotArtifactFiles,
 } from "../../extensions/artifacts/detect.js"
 import { resolveToolPath } from "../../extensions/artifacts/paths.js"
-import { ARTIFACTS_ENTRY_TYPE, type ArtifactsEntry } from "../../extensions/artifacts/recorder.js"
 import { setSnapshotArtifactsOptIn, snapshotArtifactsOptedIn } from "../../extensions/artifacts/snapshot-policy.js"
 import {
 	AUTO_MODEL_DESCRIPTION,
@@ -174,12 +175,10 @@ import {
 	ACP_LIFETIME_USAGE_META_KEY,
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
-	parseToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
 import {
 	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
 	type BashBackgroundSettleData,
-	isBashBackgroundSettleData,
 } from "../../shared/bash-background-settle.js"
 import { availableModelRefs, findModelByRef, refFromModel, splitModelRef } from "../../shared/model-ref.js"
 import { subscribePlanReviewClosed } from "../../shared/planning/plan-review-bus.js"
@@ -210,7 +209,6 @@ import {
 	composeAvailableCommands,
 	createCommandsRefresher,
 	discoverSkillCommandsMap,
-	isCompactCommandEntryData,
 	tryParseCompactCommand,
 } from "./commands.js"
 import { handleAuthStatus } from "./ext-methods/auth-status.js"
@@ -241,16 +239,22 @@ import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompte
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
 import { emitRunEnd, emitRunStart, runStopReasonFromFlags } from "./run-boundary.js"
+import {
+	cancelPendingPrompts,
+	createPendingPrompt,
+	createProjectionSessionRecord,
+	type PendingPrompt,
+	type SessionRecord,
+} from "./session-record.js"
 import { AcpSessionResourceLoader } from "./session-resource-loader.js"
 import { emitSkillAutoloadUpdate } from "./skill-autoload-updates.js"
-import { type AcpSkillInfo, buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
+import { buildSkillCommandPrompt, tryParseSkillCommand } from "./skill-commands.js"
 import { createSkillWatcher, type SkillWatcher } from "./skill-watcher.js"
 import { resetAcpClientInfo, setAcpClientInfo } from "./state.js"
-import { notifyDroppedQueue, reconcileQueue, type SteerEchoRewrite, takeSteerEchoOriginal } from "./steering.js"
+import { notifyDroppedQueue, reconcileQueue, takeSteerEchoOriginal } from "./steering.js"
 import { SubagentConfigReporter } from "./subagent-config.js"
 import { hasConfirmedModelSelection, type RecoveredSubagent } from "./subagent-recovery.js"
 import { SubagentRegistry, type SubagentRoute } from "./subagent-registry.js"
-import { SUBAGENT_TOOL_ID_ENTRY_TYPE, SubagentToolIdHistory } from "./subagent-tool-ids.js"
 import {
 	absoluteSubagentCwd,
 	clientSupportsSubagents,
@@ -261,17 +265,9 @@ import {
 	withSubagentSessionLink,
 } from "./subagents.js"
 import { resolveAcpAppendSystemPrompt } from "./system-prompt.js"
+import { holdAndWatchBackgroundToolCall, liveBackgroundHandoffHandle } from "./tool-calls/background.js"
 import {
-	backgroundHandoffHandle,
-	type HeldBackgroundToolCall,
-	holdAndWatchBackgroundToolCall,
-	liveBackgroundHandoffHandle,
-	normalizeUnheldHandoffResult,
-} from "./tool-calls/background.js"
-import {
-	BASH_CONTROL_WAIT_META_KEY,
 	BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE,
-	type BashControlBackgroundCommand,
 	type BashControlWaitTargetsData,
 	bashControlWaitMeta,
 	buildToolCall,
@@ -280,6 +276,12 @@ import {
 	isHiddenToolCall,
 	resolveBashControlWaitInfo,
 } from "./tool-calls/utils.js"
+import {
+	replayTranscript as replayAcpTranscript,
+	seedBlockCounterFromBranch as seedAcpBlockCounterFromBranch,
+	stripAnsi,
+	type TranscriptReplayHost,
+} from "./transcript-replay.js"
 import {
 	buildPathTrustInfo,
 	buildProjectTrustUpdate,
@@ -437,228 +439,6 @@ function createTurnContext(
 	}
 }
 
-/** Cancellation token for a prompt that has no TurnContext yet. */
-type PendingPrompt = {
-	cancelled: boolean
-	/** Resolves when the prompt is cancelled, so a parked wait never outlives cancel/close/shutdown. */
-	released: Promise<void>
-	release: () => void
-}
-
-function createPendingPrompt(): PendingPrompt {
-	let release!: () => void
-	const released = new Promise<void>((resolve) => {
-		release = resolve
-	})
-	return { cancelled: false, released, release }
-}
-
-/**
- * Cancel every prompt accepted but not yet started: mark it and release its
- * wait, so it resolves "cancelled" instead of starting — or hanging when the
- * run it waits on is never settled (session close, server shutdown).
- */
-function cancelPendingPrompts(entry: SessionRecord): void {
-	for (const pending of entry.pendingPrompts ?? []) {
-		pending.cancelled = true
-		pending.release()
-	}
-}
-
-type SessionRecord = {
-	session: AgentSession
-	unsubscribe: () => void
-	/**
-	 * The prompter THIS record registered — threaded so every teardown of
-	 * the registry slot identity-checks it: a close/abort await window lets
-	 * a same-id respawn register first, and a by-key delete would then evict
-	 * the RESPAWN's live prompter.
-	 */
-	ownPrompter?: ReturnType<typeof createAcpPermissionPrompter>
-	/** Same identity discipline as ownPrompter, for the mode-controller registry slot. */
-	ownFlagController?: SessionPermissionFlagController
-	// Session cwd, captured at newSession/loadSession time. AgentSession keeps
-	// its cwd private, but the ACP server needs it to resolve relative tool
-	// paths (pre-write reads for per-turn diffs).
-	cwd: string
-	turn?: TurnContext
-	/**
-	 * Bookkeeping for an UNSOLICITED run — an agent run no prompt owns (a
-	 * background-bash completion notification waking an idle agent, or any
-	 * other extension-triggered run). Allocated at agent_start while no
-	 * prompt turn exists, cleared at agent_settled: while set, the session
-	 * counts as run-active (steering injects into it; a new prompt waits it
-	 * out) and the event forwarding uses it exactly like a prompt turn's
-	 * context, so the run's streamed text, tool calls, and usage reach the
-	 * client. Its resolve/reject are no-ops — nothing awaits its outcome.
-	 */
-	unsolicitedTurn?: TurnContext
-	/**
-	 * A session/cancel that arrived while a wake was still ramping: the
-	 * steer that wakes the agent is submitted but pi's agent_start has not
-	 * arrived, so there is no unsolicitedTurn to mark yet. The next
-	 * agent_start consumes the latch: if it starts an unsolicited run, the
-	 * run is cancelled immediately (mirroring the prompt path's
-	 * turn.cancelled re-abort); if it starts a prompt-owned turn the latch
-	 * is dropped — a cancel on an idle session must not poison the user's
-	 * next prompt. Cleared at every agent_start.
-	 */
-	unsolicitedCancelRequested?: boolean
-	/**
-	 * Prompts accepted but not yet started (no TurnContext of their own):
-	 * e.g. waiting out an unsolicited run. `cancel` marks every entry so a
-	 * cancelled prompt resolves "cancelled" instead of starting its turn.
-	 */
-	pendingPrompts?: Set<PendingPrompt>
-	/**
-	 * Session-wide monotonic counter for ACP messageIds. Every distinct
-	 * content block (text or thinking) across every assistant message in
-	 * the session gets a fresh value — so two turns whose first text block
-	 * both sit at contentIndex=0 still get distinct ids, satisfying the
-	 * ACP contract "a change in messageId indicates a new message has
-	 * started" without depending on contentIndex (which resets per turn).
-	 * Seeded from the branch on loadSession so replay emits matching ids.
-	 */
-	nextBlockId: number
-	/**
-	 * Name last published for the model config option. Lets us push a
-	 * `config_option_update` only when the Auto router's resolved pick actually
-	 * changes the label, instead of on every assistant message.
-	 */
-	lastModelOptionName?: string
-	/**
-	 * Per-assistant-message map from pi-mono's contentIndex → assigned
-	 * messageId. Cleared on each agent_start/message_start so a new assistant message
-	 * starts a fresh contentIndex namespace without colliding with the
-	 * previous message's assignments. Insertion order follows first-emission
-	 * order of the message's blocks, so at message_end the last value is the
-	 * message's last emitted block id.
-	 */
-	contentIndexToBlockId: Map<number, string>
-	/**
-	 * Per-assistant-message map from contentIndex → the token-stream
-	 * desanitizer for reversible redaction (pii-redaction token mode).
-	 * Deltas and the message_end remainder flow through one buffer per text
-	 * block so a token split across chunk boundaries substitutes
-	 * atomically. Created lazily ONLY when the session has an active token
-	 * vault; markers mode never allocates one. Cleared everywhere
-	 * contentIndexToBlockId is cleared — same per-message lifetime.
-	 */
-	streamDesanitizers: Map<number, StreamDesanitizer>
-	/**
-	 * Per-assistant-message map from pi-mono's contentIndex → text already
-	 * streamed to the client
-	 * via text_delta. message_end reads this to send only the un-streamed
-	 * tail of each text block — covering extensions that suppress deltas
-	 * while streaming and restore the text in message_end's returned
-	 * message, and providers that skip incremental deltas entirely. Cleared
-	 * everywhere contentIndexToBlockId is cleared, so it shares the same
-	 * per-message lifetime.
-	 */
-	streamedText: Map<number, string>
-	/**
-	 * Per-messageId model attribution already carried on the wire, for the
-	 * first-chunk dedup (docs/acp-model-attribution.md): a messageId's
-	 * `_meta` re-attaches only when the value changed (a served-model
-	 * correction after `responseModel` arrives mid-stream). Cleared everywhere
-	 * contentIndexToBlockId is cleared, so it shares the same per-message
-	 * lifetime — messageIds never repeat, so the clear is memory hygiene only.
-	 */
-	emittedModelMeta: Map<string, ModelAttribution>
-	/**
-	 * Session-wide monotonic counter for ACP toolCallIds.
-	 *
-	 * toolCall.id comes straight from the model provider and carries no
-	 * uniqueness guarantee beyond a single request — nothing in pi renumbers it,
-	 * and providers do recycle ids. The ACP surface therefore rewrites every call
-	 * to a fresh id so it satisfies the ACP contract "Unique identifier for a
-	 * tool call within a session."
-	 *
-	 * This counter is the only source of `kt.*` ids and it never decrements, so
-	 * every id it hands out is distinct regardless of where it starts — it does
-	 * not need seeding from the persisted branch on loadSession.
-	 */
-	nextToolCallId: number
-	/**
-	 * Maps the upstream pi-mono toolCallId to the ACP toolCallId for the call
-	 * currently in flight. A new `tool_execution_start` always allocates a fresh
-	 * ACP id, so collisions across compaction boundaries are disambiguated.
-	 */
-	toolCallIdMap: Map<string, string>
-	/** Child-local mappings required to replay ACP tool identity deterministically. */
-	childToolIdHistory?: SubagentToolIdHistory
-	/**
-	 * Background bash processes still running for this session, keyed by their
-	 * process-registry handle — each mapped to the ACP toolCallId whose
-	 * `tool_call` stays `in_progress` until the process exits (the ACP v2
-	 * Background Work RFD's entity model: work that outlives the turn stays on
-	 * the tool call that started it).
-	 *
-	 * SessionRecord scope — NOT TurnContext: a background process outlives the
-	 * turn that launched it. The upstream-id mapping in `toolCallIdMap` IS
-	 * retired at the handoff (the pi id can be recycled by the model without
-	 * colliding with the held ACP id), so no id-collision window opens. Settled
-	 * (deleted + final tool_call_update) by the exit watcher; see
-	 * {@link ./tool-calls/background.js#watchBackgroundProcessExit}. Replays reuse the held
-	 * ACP id so a client reload in the same harness process sees the call still
-	 * running under the one identifier it already knows.
-	 */
-	heldBackgroundToolCalls: Map<string, HeldBackgroundToolCall>
-	previousQueue?: {
-		steering: string[]
-		followUp: string[]
-	}
-	/**
-	 * FIFO of steer texts the steering handler rewrote (e.g. `/skill:<name>`
-	 * expansion) — see takeSteerEchoOriginal. The queue echo and
-	 * cancel-drain hand queued text back to the client, which acknowledges
-	 * pending steers by the exact text it submitted, so rewritten texts must
-	 * be translated back to their originals on those surfaces.
-	 */
-	steerEchoRewrites: SteerEchoRewrite[]
-	/**
-	 * Per-session skill commands advertised to the ACP client. Populated from
-	 * the session cwd during newSession/loadSession so command names can be
-	 * resolved and skill content injected when the user invokes one.
-	 */
-	skillCommands: Map<string, AcpSkillInfo>
-	/** Mirrors this session's Todo store writes to ACP `plan` updates. */
-	planTracker?: AcpPlanTracker
-	/** Present only for announced child routes; keeps root run boundaries out of child streams. */
-	subagentParentSessionId?: string
-}
-
-function createProjectionSessionRecord(
-	session: AgentSession,
-	cwd: string,
-	parentSessionId: string,
-	mode: "live" | "replay" = "live",
-): SessionRecord {
-	const childToolIdHistory =
-		mode === "live"
-			? new SubagentToolIdHistory((data) => session.sessionManager.appendCustomEntry(SUBAGENT_TOOL_ID_ENTRY_TYPE, data))
-			: SubagentToolIdHistory.fromEntries(session.sessionManager.getBranch())
-	const record: SessionRecord = {
-		session,
-		unsubscribe: () => {},
-		cwd,
-		childToolIdHistory,
-		nextBlockId: 0,
-		contentIndexToBlockId: new Map(),
-		streamDesanitizers: new Map(),
-		streamedText: new Map(),
-		emittedModelMeta: new Map(),
-		nextToolCallId: 0,
-		toolCallIdMap: new Map(),
-		heldBackgroundToolCalls: new Map(),
-		skillCommands: new Map(),
-		steerEchoRewrites: [],
-		subagentParentSessionId: parentSessionId,
-	}
-	record.nextToolCallId = childToolIdHistory.nextSequenceFloor()
-	return record
-}
-
 /** Options for {@link KimchiAcpAgent.disposeSessionRecord}. */
 interface DisposeSessionRecordOpts {
 	alreadyUnsubscribed?: boolean
@@ -697,6 +477,21 @@ interface ParentSessionLoadResult {
 }
 
 export class KimchiAcpAgent {
+	private readonly transcriptReplayHost: TranscriptReplayHost = {
+		rootRecord: (sessionId) => this.sessions.get(sessionId),
+		send: (params) => this.send(params),
+		allocateAcpToolCallId: (record, piToolCallId, toolName) =>
+			this.getOrAllocateAcpToolCallId(record, piToolCallId, toolName),
+		displayText: (sessionId, text) => this.displayText(sessionId, text),
+		displayArgs: (sessionId, toolName, args) => this.displayArgs(sessionId, toolName, args),
+		displayContent: (sessionId, content) => this.displayContent(sessionId, content),
+		displayOptionalRecord: (sessionId, value) => this.displayOptionalRecord(sessionId, value),
+		userMessageText,
+		toolResultContent,
+		wireSafeToolResult,
+		clientOptedIntoMcpOAuthTurn: () => getClientOptedIntoMcpOAuthTurn(this.clientCapabilities),
+		stripAnsi,
+	}
 	private sessions = new Map<string, SessionRecord>()
 	private pendingSubagentEvents = new Map<string, SubagentSessionCreatedEvent[]>()
 	private readonly subagentRegistry: SubagentRegistry<SessionRecord>
@@ -3418,116 +3213,11 @@ export class KimchiAcpAgent {
 		}
 	}
 
-	// Replay: walk the persisted transcript on the leaf path and emit
-	// session/update notifications per content block — text, thinking, tool
-	// calls. Tool results are paired with their originating toolCall by id so
-	// the historical tool render shape (tool_call + terminal tool_call_update)
-	// matches what live turns produce. Compaction / branch_summary /
-	// model_change entries emit nothing — using getBranch() (raw entries)
-	// instead of buildSessionContext() avoids surfacing compaction summaries
-	// as synthetic user messages. Custom entries: the artifact-recorder
-	// extension's rows are adopted as the turn's exact artifacts (recorded
-	// live, stat-gated), replacing replay-side re-derivation; compact-command
-	// rows re-emit their persisted text as a user message (the locally-handled
-	// command never became a session message); other custom entries still emit
-	// nothing.
-	//
-	// Notifications go straight from this method to conn.sessionUpdate; we do
-	// NOT replay through the AgentSession event emitter, so extensions like
-	// telemetryExtension don't double-count historical turns.
 	private replayTranscript(
 		session: AgentSession,
 		record: SessionRecord | undefined = this.sessions.get(session.sessionId),
 	): void {
-		const sessionId = session.sessionId
-		const entries = session.sessionManager.getBranch()
-		const toolResults = collectToolResults(entries)
-		const replayWaitTargets = collectBashControlWaitTargets(entries)
-		const settles = collectBashBackgroundSettles(entries)
-		// Turn-scoped, matching the live path: artifacts accumulate across
-		// the turn's assistant messages and flush once per turn, attached to
-		// the turn's last text block id — right before the next user message,
-		// or at branch end. Only block ids replay already emitted are used,
-		// preserving messageId parity with live (seedBlockCounterFromBranch).
-		const artifactBuffer = new TurnArtifactBuffer()
-		const flushTurnArtifacts = () => {
-			// verifyExists:false: replayed artifacts keep pointing at files that may
-			// legitimately be gone (detection already skipped the on-disk check).
-			for (const update of artifactBuffer.flush(
-				record?.emittedModelMeta ?? this.sessions.get(sessionId)?.emittedModelMeta,
-				{
-					verifyExists: false,
-				},
-			)) {
-				this.send({ sessionId, update })
-			}
-		}
-
-		for (const entry of entries) {
-			if (entry && entry.type === "custom") {
-				const custom = entry as { customType?: unknown; data?: unknown }
-				if (custom.customType === COMPACT_COMMAND_ENTRY_TYPE && isCompactCommandEntryData(custom.data)) {
-					// A locally-handled /compact command never became a session
-					// message, so re-surface it here as the user message the client
-					// rendered when it sent the prompt (no live echo — see
-					// runCompactCommand). Positioned like any user turn boundary:
-					// the previous turn's artifacts flush before it.
-					flushTurnArtifacts()
-					this.send({
-						sessionId,
-						update: {
-							sessionUpdate: "user_message_chunk",
-							content: { type: "text", text: this.displayText(sessionId, custom.data.text) },
-						},
-					})
-					continue
-				}
-				// Recorded artifact row (extension): adopt it for this turn — the
-				// row is written once per prompt (at agent_settled), after the
-				// prompt's last assistant message (live parity), and replaces what re-derivation sniffed
-				// (exact: live detection was stat-gated).
-				const data =
-					custom.customType === ARTIFACTS_ENTRY_TYPE ? (custom.data as ArtifactsEntry | undefined) : undefined
-				if (data?.v === 1 && Array.isArray(data.artifacts)) {
-					artifactBuffer.adoptRecorded(data.artifacts, {
-						includeSnapshotArtifacts: snapshotArtifactsOptedIn(session.sessionManager),
-					})
-				}
-				continue
-			}
-			if (!entry || typeof entry !== "object" || entry.type !== "message") continue
-			const msg = entry.message
-			if (msg.role === "user") {
-				// Turn boundary: the previous turn's artifacts flush before the
-				// next user message renders.
-				flushTurnArtifacts()
-				const text = userMessageText(msg.content)
-				if (!text) continue
-				this.send({
-					sessionId,
-					update: {
-						sessionUpdate: "user_message_chunk",
-						content: { type: "text", text: this.displayText(sessionId, text) },
-					},
-				})
-			} else if (msg.role === "assistant") {
-				const lastTextBlockId = this.replayAssistantBlocks(
-					sessionId,
-					msg.content,
-					toolResults,
-					replayWaitTargets,
-					settles,
-					record,
-					modelAttributionFrom(msg),
-				)
-				if (lastTextBlockId !== undefined) {
-					artifactBuffer.noteTextBlock(lastTextBlockId, modelAttributionFrom(msg))
-				}
-			}
-			// toolResult: handled inline alongside its originating toolCall above.
-		}
-		// Final turn in the branch: flush whatever it left behind.
-		flushTurnArtifacts()
+		replayAcpTranscript(session, record, this.transcriptReplayHost)
 	}
 
 	private replaySubagentTranscript(session: AgentSession, record: SessionRecord): void {
@@ -3540,258 +3230,8 @@ export class KimchiAcpAgent {
 		}
 	}
 
-	/**
-	 * Walk the persisted branch and count how many ACP content chunks the
-	 * replay would emit (text segments + dimmed text parts + non-redacted
-	 * thinking blocks). Sets `record.nextBlockId` so that:
-	 *   - replayTranscript emits the same messageIds a live turn would have
-	 *     for the historical blocks, and
-	 *   - any new block the user creates after the load gets a fresh, non-
-	 *     colliding id.
-	 *
-	 * Mirrors replayAssistantBlocks' emission logic exactly — coalescing
-	 * contiguous text blocks into one chunk, and gating thinking emission on
-	 * the hideThinkingBlock setting. If these drift, messageIds replayed
-	 * after a load won't line up with what the client saw during the live
-	 * turn.
-	 */
 	private seedBlockCounterFromBranch(session: AgentSession, record: SessionRecord): void {
-		const entries = session.sessionManager.getBranch()
-
-		let count = 0
-		for (const entry of entries) {
-			if (entry?.type !== "message" || entry.message.role !== "assistant") continue
-
-			let inTextSegment = false
-			const countTextSegment = () => {
-				if (!inTextSegment) {
-					count++
-					inTextSegment = true
-				}
-			}
-
-			const content = entry.message.content
-			for (const block of content) {
-				if (block.type === "text") {
-					if (!block.text) continue
-					countTextSegment()
-					for (const part of replayTextParts(block.text)) {
-						if (part.kind === "thinking") count++
-					}
-				} else if (block.type === "thinking") {
-					inTextSegment = false
-					if (block.redacted || !block.thinking) continue
-					count++
-				} else {
-					// toolCall / unknown: replay flushes the text buffer before
-					// emitting the structural block, which terminates any open
-					// text segment.
-					inTextSegment = false
-				}
-			}
-		}
-		record.nextBlockId = count + 1
-	}
-
-	private replayAssistantBlocks(
-		sessionId: string,
-		content: AssistantMessage["content"],
-		toolResults: Map<string, ReplayToolResult[]>,
-		replayWaitTargets: Map<string, BashControlBackgroundCommand[][]>,
-		settles: Map<string, ReplayToolResult[]>,
-		record: SessionRecord | undefined,
-		attribution: ModelAttribution,
-	): string | undefined {
-		if (!Array.isArray(content)) return
-		// Allocates a fresh session-unique messageId for every emitted chunk
-		// and leaves it off the wire if the SessionRecord isn't loaded (e.g.
-		// the unit-test harness wiring a partial replay path).
-		const nextMessageId = () => {
-			if (!record) return undefined
-			return `km.${record.nextBlockId++}`
-		}
-		// Last agent_message block id emitted for this message, returned so
-		// the caller can register it as the turn's artifact attachment point
-		// (thinking chunks are excluded).
-		let lastTextMessageId: string | undefined
-		// Artifacts are replayed strictly from recorded rows by the caller
-		// (replayTranscript) — replay never re-runs live detection.
-		// Buffer contiguous text blocks so a single assistant message renders as
-		// one agent_message_chunk per natural text segment — emit the full
-		// message as a single chunk, no per-token chunking. When a thinking or
-		// toolCall block interrupts the run, flush the buffered text first so
-		// ordering relative to those structural blocks is preserved.
-		let textBuffer = ""
-		const flushText = () => {
-			if (textBuffer.length === 0) return
-			const messageId = nextMessageId()
-			lastTextMessageId = messageId ?? lastTextMessageId
-			const modelMeta = modelMetaFor(record?.emittedModelMeta, messageId, attribution)
-			this.send({
-				sessionId,
-				update: {
-					sessionUpdate: "agent_message_chunk",
-					content: { type: "text", text: this.displayText(sessionId, textBuffer) },
-					...(messageId !== undefined ? { messageId } : {}),
-					...spreadModelMeta(modelMeta),
-				},
-			})
-			textBuffer = ""
-		}
-		for (const block of content) {
-			if (!block || typeof block !== "object") continue
-			const b = block
-			if (b.type === "text") {
-				const text = (b as { text?: unknown }).text
-				if (typeof text !== "string" || text.length === 0) continue
-				for (const part of replayTextParts(text)) {
-					if (part.kind === "text") {
-						textBuffer += part.text
-					} else if (part.kind === "thinking") {
-						flushText()
-						const messageId = nextMessageId()
-						const modelMeta = modelMetaFor(record?.emittedModelMeta, messageId, attribution)
-						this.send({
-							sessionId,
-							update: {
-								sessionUpdate: "agent_thought_chunk",
-								content: { type: "text", text: this.displayText(sessionId, part.text) },
-								...(messageId !== undefined ? { messageId } : {}),
-								...spreadModelMeta(modelMeta),
-							},
-						})
-					}
-				}
-			} else if (b.type === "thinking") {
-				flushText()
-				const thinking = (b as { thinking?: unknown; redacted?: unknown }).thinking
-				const redacted = (b as { redacted?: unknown }).redacted === true
-				// Redacted thinking has no plaintext to surface — the encrypted
-				// payload only matters for multi-turn provider continuity.
-				if (redacted || typeof thinking !== "string" || thinking.length === 0) continue
-				const messageId = nextMessageId()
-				const modelMeta = modelMetaFor(record?.emittedModelMeta, messageId, attribution)
-				this.send({
-					sessionId,
-					update: {
-						sessionUpdate: "agent_thought_chunk",
-						content: { type: "text", text: this.displayText(sessionId, stripAnsi(thinking)) },
-						...(messageId !== undefined ? { messageId } : {}),
-						...spreadModelMeta(modelMeta),
-					},
-				})
-			} else if (b.type === "toolCall") {
-				flushText()
-				const tc = b
-				const upstreamId = typeof tc.id === "string" ? tc.id : undefined
-				const name = typeof tc.name === "string" ? tc.name : undefined
-				if (!upstreamId || !name) continue
-				const args = (tc.arguments ?? {}) as Record<string, unknown>
-				if (isHiddenToolCall(name, args)) continue
-				const result = takeReplayToolResult(toolResults, upstreamId)
-				// The recorded wait targets (custom entry, FIFO per id like the
-				// results) restore the historical cohort as _meta — the recorded
-				// args alone cannot name what a handle-less wait blocked on.
-				const waitTargets = takeReplayWaitTargets(replayWaitTargets, upstreamId)
-				// Background reload overlay: the recorded result of a backgrounded
-				// bash call is its pre-exit HANDOFF. When the process is still running
-				// in this harness process (registry and held map are in-process), replay
-				// presents the call as STILL RUNNING under the same ACP id the live flow
-				// handed out — the exit watcher flips it to its final status when the
-				// process exits, and the client never sees a running process flip back
-				// and forth across its reload. An UN-held handoff result (cross-process
-				// reload, fresh record) falls back to the recorded terminal status, so
-				// its replayed details are normalized to not contradict that status.
-				const handoffHandle = result ? backgroundHandoffHandle(result) : undefined
-				const heldAcpId = handoffHandle !== undefined ? record?.heldBackgroundToolCalls.get(handoffHandle) : undefined
-				const replayResult =
-					result && handoffHandle !== undefined && heldAcpId === undefined
-						? normalizeUnheldHandoffResult(result)
-						: result
-				// A persisted settle overrides the pre-exit handoff for a call replayed
-				// terminal: without it a FAILED process replays as completed with no
-				// exit outcome, because the handoff records isError false and no exit
-				// code. A persisted settle belongs to a HANDOFF result only — a recycled
-				// upstream id can pair a same-id plain result with a later handoff,
-				// and consuming the settle on the plain block would slam the
-				// background outcome (and the rebound live id) onto the wrong call.
-				// Consumed FIFO like the results: the handoff's settle follows its
-				// block in the branch, so pairing holds per occurrence — a recycled
-				// id's settle belongs to the block whose handoff it settled.
-				const settleResult =
-					heldAcpId === undefined && handoffHandle !== undefined ? takeReplayToolResult(settles, upstreamId) : undefined
-				const finalResult = settleResult ?? replayResult
-				// A call settled before this replay carries its live ACP id in the
-				// persisted settle: re-bind that id so the re-announcement updates
-				// the row the client already holds instead of opening a zombie
-				// duplicate under a fresh id. The numeric suffix must also stay
-				// ahead of record.nextToolCallId — a replay allocating counters
-				// from 0 could otherwise mint the same id for a LATER call.
-				if (record && heldAcpId === undefined && settleResult?.acpToolCallId !== undefined) {
-					record.toolCallIdMap.set(upstreamId, settleResult.acpToolCallId)
-					const seqN = parseToolCallId(settleResult.acpToolCallId)?.seq
-					if (seqN !== undefined && Number.isSafeInteger(seqN))
-						record.nextToolCallId = Math.max(record.nextToolCallId, seqN + 1)
-				}
-				const preservedToolId = record?.childToolIdHistory?.takeForReplay(upstreamId)
-				if (record && preservedToolId !== undefined) record.toolCallIdMap.set(upstreamId, preservedToolId)
-				const acpToolCallId = heldAcpId
-					? heldAcpId.acpToolCallId
-					: record
-						? this.getOrAllocateAcpToolCallId(record, upstreamId, name)
-						: upstreamId
-				// No persisted result → the call never finished (interrupted mid
-				// turn). "failed" is the closest terminal status; leaving the call
-				// in_progress would hang the client's spinner forever on replay —
-				// except a held background process, whose exit watcher owns finality.
-				const status: "in_progress" | "completed" | "failed" =
-					heldAcpId !== undefined
-						? "in_progress"
-						: finalResult
-							? finalResult.isError
-								? "failed"
-								: "completed"
-							: "failed"
-				this.send({
-					sessionId,
-					update: buildToolCall({
-						toolName: name,
-						toolCallId: acpToolCallId,
-						piToolCallId: tc.id,
-						status,
-						// Historical args stay as recorded: live-registry info
-						// here would name today's cohort as this old wait's targets.
-						// The recorded cohort (if any) comes back via _meta below.
-						rawInput: this.displayArgs(sessionId, name, args),
-						_meta: waitTargets.length > 0 ? { [BASH_CONTROL_WAIT_META_KEY]: { commands: waitTargets } } : undefined,
-						cwd: record?.cwd,
-					}),
-				})
-				this.send({
-					sessionId,
-					update: buildToolCallUpdate({
-						toolCallId: acpToolCallId,
-						piToolCallId: tc.id,
-						status,
-						content: this.displayContent(sessionId, finalResult ? toolResultContent(finalResult) : []),
-						rawOutput: this.displayOptionalRecord(
-							sessionId,
-							finalResult
-								? wireSafeToolResult(name, finalResult, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities))
-								: undefined,
-						),
-					}),
-				})
-				// The branch may contain multiple toolCalls with the same upstream id
-				// (e.g., across a compaction boundary). Drop the mapping after replaying
-				// each call so the next one with the same upstream id gets a fresh id.
-				record?.toolCallIdMap.delete(upstreamId)
-			}
-		}
-		// Trailing text after the last structural block (or a text-only message)
-		// still needs to land — flushText is a no-op when the buffer is empty.
-		flushText()
-		return lastTextMessageId
+		seedAcpBlockCounterFromBranch(session, record)
 	}
 
 	/**
@@ -5085,42 +4525,7 @@ export function defaultSessionFactory(
 	}
 }
 
-// Persisted assistant text from hide-thinking-aware models (DeepSeek, QwQ, ...)
-// can contain ANSI styling around inner <think> content. Live TUI styling means
-// "this is reasoning"; ACP plaintext has no such styling, so replay splits the
-// known thinking wrappers into agent_thought_chunk and strips remaining CSI
-// escapes from ordinary text.
-// Built from String.fromCharCode to keep the literal ESC byte out of source;
-// biome's noControlCharactersInRegex flags it inside a regex literal.
-const ANSI_ESC = String.fromCharCode(0x1b)
-const ANSI_PATTERN = new RegExp(`${ANSI_ESC}\\[[0-9;]*[A-Za-z]`, "g")
-const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-const ANSI_THINKING_OPEN_CODES = ["2", "38;2;102;102;102", "38;5;242"]
-const ANSI_THINKING_PATTERN = new RegExp(
-	`${ANSI_ESC}\\[(?:${ANSI_THINKING_OPEN_CODES.map(escapeRegExp).join("|")})m([\\s\\S]*?)(?:${ANSI_ESC}\\[(?:0|22)m|$)`,
-	"g",
-)
-export function stripAnsi(text: string): string {
-	return text.replace(ANSI_PATTERN, "")
-}
-
-type ReplayTextPart = { kind: "text" | "thinking"; text: string }
-
-function replayTextParts(text: string): ReplayTextPart[] {
-	const parts: ReplayTextPart[] = []
-	let lastIndex = 0
-	for (const match of text.matchAll(ANSI_THINKING_PATTERN)) {
-		const index = match.index ?? 0
-		const before = stripAnsi(text.slice(lastIndex, index))
-		if (before.length > 0) parts.push({ kind: "text", text: before })
-		const thinking = stripAnsi(match[1] ?? "")
-		if (thinking.length > 0) parts.push({ kind: "thinking", text: thinking })
-		lastIndex = index + match[0].length
-	}
-	const after = stripAnsi(text.slice(lastIndex))
-	if (after.length > 0) parts.push({ kind: "text", text: after })
-	return parts
-}
+export { stripAnsi } from "./transcript-replay.js"
 
 /**
  * Extracts the main content string being streamed for common tool calls
@@ -5238,133 +4643,6 @@ export function userMessageText(content: unknown): string {
 		}
 	}
 	return parts.join("")
-}
-
-type ReplayToolResult = {
-	content?: unknown
-	isError: boolean
-	// Pass-through `details` so the replay's tool_call_update rawOutput carries
-	// the same shape as the live path's event.result (AgentToolResult includes
-	// details). Clients keying UI off rawOutput.details would otherwise see a
-	// thinner payload on replay.
-	details?: unknown
-	toolName?: string
-	/**
-	 * Settle facts only: the ACP id the settled call was announced under in
-	 * the live session. Replay re-binds it so a client that kept its live
-	 * rows across the replay sees ONE id for the call, terminal — not a
-	 * duplicate row under a fresh id (wake-replay zombie).
-	 */
-	acpToolCallId?: string
-}
-
-// First pass over the branch: index tool results by their toolCallId so the
-// replay walker can stitch each historical toolCall block to its terminal
-// outcome (status + content) in O(1). Tool results land as separate message
-// entries in the JSONL — without this map we'd have to scan forward inside
-// the walker on every toolCall, turning replay into O(N²).
-/**
- * Wait-target records persisted for completed bash_control calls (metadata
- * CustomEntry rows under BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE), queued per
- * pi toolCallId like tool results: a recycled id's targets belong to the
- * wait block whose completion recorded them.
- */
-function isBashControlWaitTargetsData(data: unknown): data is BashControlWaitTargetsData {
-	if (!data || typeof data !== "object") return false
-	const d = data as { toolCallId?: unknown; commands?: unknown }
-	return typeof d.toolCallId === "string" && Array.isArray(d.commands)
-}
-
-// SessionManagerEntry isn't re-exported by the pi package root, but the
-// branch entry type is exactly what getBranch returns — derived, zero cast.
-type BranchEntry = ReturnType<SessionManager["getBranch"]>[number]
-
-function collectBashControlWaitTargets(entries: BranchEntry[]): Map<string, BashControlBackgroundCommand[][]> {
-	const out = new Map<string, BashControlBackgroundCommand[][]>()
-	for (const entry of entries) {
-		if (entry.type !== "custom" || entry.customType !== BASH_CONTROL_WAIT_TARGETS_ENTRY_TYPE) continue
-		if (!isBashControlWaitTargetsData(entry.data)) continue
-		const queued = out.get(entry.data.toolCallId) ?? []
-		queued.push(entry.data.commands)
-		out.set(entry.data.toolCallId, queued)
-	}
-	return out
-}
-
-/** FIFO-consume one queued wait-target record for a pi toolCallId. */
-function takeReplayWaitTargets(
-	map: Map<string, BashControlBackgroundCommand[][]>,
-	toolCallId: string,
-): BashControlBackgroundCommand[] {
-	const queued = map.get(toolCallId)
-	if (!queued || queued.length === 0) return []
-	const out = queued.shift() ?? []
-	if (queued.length === 0) map.delete(toolCallId)
-	return out
-}
-
-// The queue is first-match-consumed per id: the model may recycle a pi id
-// (a handed-off bash call, then a NEW call reusing the same id), and a
-// last-wins map would pair the handed-off call's block with the recycled
-// call's result — replaying a still-running call as completed, showing
-// another call's content.
-function collectToolResults(entries: unknown[]): Map<string, ReplayToolResult[]> {
-	const out = new Map<string, ReplayToolResult[]>()
-	for (const entry of entries) {
-		if (!entry || typeof entry !== "object") continue
-		const e = entry as { type?: unknown; message?: unknown }
-		if (e.type !== "message") continue
-		const m = e.message as
-			| {
-					role?: unknown
-					toolCallId?: unknown
-					toolName?: unknown
-					content?: unknown
-					details?: unknown
-					isError?: unknown
-			  }
-			| undefined
-		if (m?.role !== "toolResult" || typeof m.toolCallId !== "string") continue
-		const queued = out.get(m.toolCallId) ?? []
-		queued.push({
-			content: m.content,
-			isError: m.isError === true,
-			details: m.details,
-			toolName: typeof m.toolName === "string" ? m.toolName : undefined,
-		})
-		out.set(m.toolCallId, queued)
-	}
-	return out
-}
-
-/** Consumed first-match from collectToolResults' per-id queue. */
-function takeReplayToolResult(toolResults: Map<string, ReplayToolResult[]>, id: string): ReplayToolResult | undefined {
-	const queued = toolResults.get(id)
-	return queued && queued.length > 0 ? queued.shift() : undefined
-}
-
-/**
- * Settle outcomes persisted for held background calls (metadata-only
- * CustomEntry records — `type: "custom"` — under
- * BASH_BACKGROUND_SETTLE_MESSAGE_TYPE), queued per id exactly like results:
- * a recycled id's settle belongs to the block whose handoff it settled, so
- * replay consumes them FIFO off the block walk too.
- */
-function collectBashBackgroundSettles(entries: BranchEntry[]): Map<string, ReplayToolResult[]> {
-	const out = new Map<string, ReplayToolResult[]>()
-	for (const entry of entries) {
-		if (entry.type !== "custom" || entry.customType !== BASH_BACKGROUND_SETTLE_MESSAGE_TYPE) continue
-		if (!isBashBackgroundSettleData(entry.data)) continue
-		const queued = out.get(entry.data.toolCallId) ?? []
-		queued.push({
-			content: entry.data.text.length > 0 ? [{ type: "text", text: entry.data.text }] : [],
-			isError: entry.data.isError,
-			details: entry.data.details,
-			acpToolCallId: entry.data.acpToolCallId,
-		})
-		out.set(entry.data.toolCallId, queued)
-	}
-	return out
 }
 
 function toolResultContent(result: unknown): ToolCallContent[] {
