@@ -144,7 +144,7 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("registers the commands, completions, tools, and empty-state behavior", async () => {
-		expect([...harness.commands.keys()]).toEqual(["ferment-v2"])
+		expect([...harness.commands.keys()]).toEqual(["ferment"])
 		expect([...harness.tools.keys()]).toEqual([...FERMENT_V2_TOOL_NAMES])
 		expect(harness.tools.get(UPDATE_FERMENT_V2_TOOL_NAME)?.promptGuidelines).toContain(
 			"Claim complete only after current evidence proves every requirement is met. Report blocked only when the objective cannot be completed without user or external action after trying viable alternatives; one unavailable preferred tool or check is not a blockage.",
@@ -155,11 +155,11 @@ describe("Ferment V2 extension", () => {
 		).not.toMatch(/\bevaluator\b|independent completion|separate check|after the final todo mutation|only tool call/i)
 		expect(
 			harness.commands
-				.get("ferment-v2")
+				.get("ferment")
 				?.getArgumentCompletions?.("re")
 				?.map((entry) => entry.value),
 		).toEqual(["resume"])
-		expect(harness.commands.get("ferment-v2")?.getArgumentCompletions?.("ed")?.[0]).toMatchObject({
+		expect(harness.commands.get("ferment")?.getArgumentCompletions?.("ed")?.[0]).toMatchObject({
 			value: "edit ",
 			label: "edit",
 		})
@@ -577,7 +577,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).not.toHaveProperty("presentation")
 		expect(harness.ui.setStatus).toHaveBeenLastCalledWith(
 			"ferment-v2",
-			"◈ Ferment V2: paused · Only verify the new requirement. · /ferment-v2 resume",
+			"◈ Ferment V2: paused · Only verify the new requirement. · /ferment resume",
 		)
 		const before = harness.sendMessage.mock.calls.length
 		await harness.fire("session_tree", { type: "session_tree" })
@@ -2358,7 +2358,7 @@ describe("Ferment V2 extension", () => {
 
 		expect(harness.currentFermentV2()).toMatchObject({ objective: "concurrent", revision: 2 })
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"The Ferment V2 changed while the editor was open. Reopen /ferment-v2 edit to edit the current revision.",
+			"The Ferment V2 changed while the editor was open. Reopen /ferment edit to edit the current revision.",
 			"warning",
 		)
 	})
@@ -4469,7 +4469,7 @@ describe("Ferment V2 extension", () => {
 		expect(resumed.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 3 consecutive agent errors.", "warning")
 	})
 
-	it("still resets the stall-guard counters on an explicit /ferment-v2 resume", async () => {
+	it("still resets the stall-guard counters on an explicit /ferment resume", async () => {
 		await harness.command("keep going")
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
@@ -5169,7 +5169,7 @@ function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
 			return result
 		},
 		async command(args: string): Promise<void> {
-			await this.runCommand("ferment-v2", args)
+			await this.runCommand("ferment", args)
 		},
 		async runCommand(name: string, args: string): Promise<void> {
 			const command = commands.get(name)

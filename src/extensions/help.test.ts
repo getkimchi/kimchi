@@ -143,7 +143,7 @@ describe("help — slash command list", () => {
 		"plugins",
 		"ssh-config",
 		"remote-run",
-		"ferment-v2",
+		"ferment-legacy",
 		// feature-gated: the command only exists when extensions.memory is enabled
 		"memory",
 		// matched by the constant scan but not slash commands

@@ -161,7 +161,7 @@ async function maybeRunManualBoundaryDropdown(
 			return true
 		}
 		setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
-		ctx.ui.notify?.(`Paused "${outcome.ferment.name}". Type /ferment resume to resume.`)
+		ctx.ui.notify?.(`Paused "${outcome.ferment.name}". Type /ferment-legacy resume to resume.`)
 		return true
 	}
 	return true
@@ -358,7 +358,7 @@ export function registerFermentEvents(
 				if (recovered.length > 0 && ctx?.hasUI) {
 					const names = recovered.map((n) => `"${n}"`).join(", ")
 					ctx.ui?.notify?.(
-						`Recovered ${recovered.length === 1 ? "1 ferment" : `${recovered.length} ferments`} interrupted in a previous session: ${names}. Run /ferment resume to continue.`,
+						`Recovered ${recovered.length === 1 ? "1 ferment" : `${recovered.length} ferments`} interrupted in a previous session: ${names}. Run /ferment-legacy resume to continue.`,
 					)
 				}
 			} catch {
@@ -547,10 +547,10 @@ export function registerFermentEvents(
 				const outcome = applyAndPersist(abortedFerment.id, { type: "pause" })
 				if (outcome.ok) {
 					setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
-					ctx.ui.notify?.(`Paused "${outcome.ferment.name}". Run /ferment resume to continue.`)
+					ctx.ui.notify?.(`Paused "${outcome.ferment.name}". Run /ferment-legacy resume to continue.`)
 				} else {
 					ctx.ui.notify?.(
-						`Failed to pause "${abortedFerment.name}": ${outcome.error.message}. Run /ferment pause manually if needed.`,
+						`Failed to pause "${abortedFerment.name}": ${outcome.error.message}. Run /ferment-legacy pause manually if needed.`,
 					)
 				}
 			}
@@ -593,7 +593,7 @@ export function registerFermentEvents(
 						ctx.ui.notify?.(`Interrupted: "${outcome.ferment.name}" was paused due to an error. ${detail}`)
 					} else {
 						ctx.ui.notify?.(
-							`Connection error during "${errorFerment.name}" but pause failed: ${outcome.error.message}. Run /ferment pause manually.`,
+							`Connection error during "${errorFerment.name}" but pause failed: ${outcome.error.message}. Run /ferment-legacy pause manually.`,
 						)
 					}
 				}

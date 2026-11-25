@@ -7,3 +7,6 @@ export const FERMENT_LEGACY_RESOURCE_ID = "extensions.ferment-legacy"
 export function isFermentLegacyEnabled(): boolean {
 	return isResourceEnabled(FERMENT_LEGACY_RESOURCE_ID)
 }
+
+/** V1 slash command. `/ferment` belongs to V2, so V1 lives under this name. */
+export const FERMENT_LEGACY_COMMAND_NAME = "ferment-legacy"

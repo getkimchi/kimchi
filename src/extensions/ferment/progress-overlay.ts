@@ -308,7 +308,7 @@ export async function handlePhaseAction(
 			const out = applyAndPersist(f.id, {
 				type: "complete_phase",
 				phaseId: p.id,
-				summary: "Completed via /ferment progress",
+				summary: "Completed via /ferment-legacy progress",
 			})
 			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" complete.` : `Could not complete: ${out.error.message}`)
@@ -319,7 +319,7 @@ export async function handlePhaseAction(
 			const out = applyAndPersist(f.id, {
 				type: "fail_phase",
 				phaseId: p.id,
-				reason: reason || "Failed via /ferment progress",
+				reason: reason || "Failed via /ferment-legacy progress",
 			})
 			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" marked failed.` : `Could not fail: ${out.error.message}`)
@@ -329,7 +329,7 @@ export async function handlePhaseAction(
 			const out = applyAndPersist(f.id, {
 				type: "skip_phase",
 				phaseId: p.id,
-				reason: "Skipped via /ferment progress",
+				reason: "Skipped via /ferment-legacy progress",
 			})
 			if (out.ok) runtime.setActive(out.ferment)
 			ctx.ui.notify(out.ok ? `Phase "${p.name}" skipped.` : `Could not skip: ${out.error.message}`)

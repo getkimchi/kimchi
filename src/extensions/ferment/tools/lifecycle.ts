@@ -1059,7 +1059,7 @@ export async function completeFerment(
 		: fresh.charter && resolvedGrade
 			? "**Charter audit:** not emitted by the grader after retries — completion recorded without per-clause verdicts."
 			: ""
-	const terminalNotice = `This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent. If the user wants a new ferment, tell them to run \`/ferment new "..."\` or \`/ferment one-shot "..."\` — do not search MCP tools or invent a tool.`
+	const terminalNotice = `This ferment is complete and terminal. Do not call bash/read/list_ferments or any ferment tools for this ferment again without clear user consent. If the user wants a new ferment, tell them to run \`/ferment-legacy new "..."\` or \`/ferment-legacy one-shot "..."\` — do not search MCP tools or invent a tool.`
 
 	return toolOk(
 		`**Ferment "${fresh.name}"** complete${failedNote}.\n\n---\n\n**Final gates:**\n${gateLines}\n\n**Final grade:** ${gradeLabel} — ${gradeRationale}${gradedBy ? ` · judge: ${gradedBy}` : ""}\n\n${params.final_summary ?? ""}${charterAudit ? `\n\n${charterAudit}` : ""}\n\n---\n\n${terminalNotice}`,

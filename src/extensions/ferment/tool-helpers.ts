@@ -121,7 +121,7 @@ export function formatNextActionHint(ferment: Ferment): string | undefined {
 			return `Next action: ${label} failed \u2014 diagnose the failure, then call \`activate_ferment_phase\` to retry, \`skip_ferment_phase\` to bypass, or ask the user whether to abandon \u2014 ferment_id "${ferment.id}", phase_id "${action.phaseId}".`
 		}
 		case "pause":
-			return "Next action: wait for the user to run /ferment resume \u2014 do not call ferment lifecycle tools while paused."
+			return "Next action: wait for the user to run /ferment-legacy resume \u2014 do not call ferment lifecycle tools while paused."
 	}
 }
 
@@ -209,7 +209,7 @@ export function createApplyAndPersist(runtime: FermentRuntime) {
 							ok: false,
 							error: {
 								code: "FERMENT_PAUSED",
-								message: `Ferment "${current.name}" is paused. The user must resume with /ferment resume before any further ferment tool calls. Acknowledge the pause and wait — do NOT call ferment tools.`,
+								message: `Ferment "${current.name}" is paused. The user must resume with /ferment-legacy resume before any further ferment tool calls. Acknowledge the pause and wait — do NOT call ferment tools.`,
 							},
 						},
 					}

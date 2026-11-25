@@ -19,7 +19,8 @@ export function formatFermentV2Status(fermentV2: SessionFermentV2 | undefined, e
 	const label = fermentV2.presentation?.kind === "approved-plan" ? "Plan execution" : "Ferment V2"
 	const state =
 		fermentV2.status === "active" ? (evaluating ? "checking" : "running") : fermentV2.status.replace("_", " ")
-	const hint = fermentV2.status === "paused" || fermentV2.status === "blocked" ? " · /ferment-v2 resume" : ""
+	const hint =
+		fermentV2.status === "paused" || fermentV2.status === "blocked" ? ` · /${FERMENT_V2_COMMAND_NAME} resume` : ""
 	return `◈ ${label}: ${state} · ${title}${hint}`
 }
 

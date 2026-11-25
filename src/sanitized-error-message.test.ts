@@ -53,9 +53,9 @@ describe("formatSanitizedErrorMessage", () => {
 	describe("context-specific tails (b)", () => {
 		const opts = { exhausted: true, attempt: 3 }
 
-		it("ferment points the user at /ferment resume", () => {
+		it("ferment points the user at /ferment-legacy resume", () => {
 			expect(formatSanitizedErrorMessage(HOSTED_VLLM_RAW, "ferment", opts)).toBe(
-				"The model provider is temporarily unavailable (provider unavailable) after 3 retries. Run /ferment resume to continue.",
+				"The model provider is temporarily unavailable (provider unavailable) after 3 retries. Run /ferment-legacy resume to continue.",
 			)
 		})
 

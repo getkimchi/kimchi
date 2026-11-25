@@ -101,12 +101,12 @@ function blockedReason(ferment: Ferment): { reason: string; recoveryHint?: strin
 		case "paused":
 			return {
 				reason: "Ferment is paused.",
-				recoveryHint: "Resume with /ferment resume or activate_ferment_phase after the issue is addressed.",
+				recoveryHint: "Resume with /ferment-legacy resume or activate_ferment_phase after the issue is addressed.",
 			}
 		case "abandoned":
 			return {
 				reason: "Ferment was abandoned and cannot proceed.",
-				recoveryHint: "Create a new ferment with /ferment new or /ferment one-shot.",
+				recoveryHint: "Create a new ferment with /ferment-legacy new or /ferment-legacy one-shot.",
 			}
 		case "complete":
 			return {

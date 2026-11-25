@@ -131,7 +131,7 @@ function resolveReasonInfo(
 }
 
 const CONTEXT_TAIL: Record<ErrorSurfaceContext, string> = {
-	ferment: ". Run /ferment resume to continue.",
+	ferment: ". Run /ferment-legacy resume to continue.",
 	interactive: ". Please retry your request.",
 	oneshot: ".",
 	subagent: ".",

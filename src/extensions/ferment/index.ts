@@ -584,7 +584,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	EntryTriggerRegistry.register("/ferment-new", (event) => {
 		if (event.kind !== "slash-command") return { kind: "noop" }
 		if (event.command !== "new") return { kind: "noop" }
-		return { kind: "enter-mode", mode: "ferment", reason: "/ferment new <intent>" }
+		return { kind: "enter-mode", mode: "ferment", reason: "/ferment-legacy new <intent>" }
 	})
 	EntryTriggerRegistry.register("KIMCHI_ACTIVE_FERMENT", (event) => {
 		if (event.kind !== "env-var") return { kind: "noop" }

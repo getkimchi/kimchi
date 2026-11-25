@@ -218,7 +218,7 @@ export async function resumeFerment(
 				content: [
 					{
 						type: "text",
-						text: `Ferment "${existing.name}" is currently ${existing.status}. Ask the user to run /ferment resume to continue.`,
+						text: `Ferment "${existing.name}" is currently ${existing.status}. Ask the user to run /ferment-legacy resume to continue.`,
 					},
 				],
 				display: true,

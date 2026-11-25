@@ -1304,7 +1304,7 @@ describe("completeFerment", () => {
 		)
 		expect(okText(first)).toContain('**Ferment "Lifecycle Test"** complete')
 		expect(okText(first)).toContain("Do not call bash/read/list_ferments or any ferment tools")
-		expect(okText(first)).toContain('/ferment new "..."')
+		expect(okText(first)).toContain('/ferment-legacy new "..."')
 		expect(okText(first)).toContain("do not search MCP tools or invent a tool")
 		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
 

@@ -65,7 +65,7 @@ describe("Ferment tips", () => {
 		for (const tip of Object.values(FERMENT_TIPS)) {
 			expect(tip.message, tip.id).toMatch(/`[^`]+`/)
 		}
-		expect(FERMENT_TIPS.continuationPolicy.message).toContain("/ferment manual")
+		expect(FERMENT_TIPS.continuationPolicy.message).toContain("/ferment-legacy manual")
 	})
 
 	it("fits every built-in Ferment tip in an 80-column row without truncation", () => {
