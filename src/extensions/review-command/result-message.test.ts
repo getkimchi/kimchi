@@ -277,3 +277,24 @@ describe("expanded and collapsed result presentation", () => {
 		expect(fallback).toContain(source.summaryPath)
 	})
 })
+
+describe("collapsed result width", () => {
+	it.each([60, 80, 100])("keeps full title and footer rows within %i columns including indentation", (width) => {
+		const description =
+			"The additional exported flag creates a critical authorization bypass because every caller now enables the privileged path without checking the current principal or preserving the previous deny-by-default behavior."
+		const rows = renderReviewResultLines(
+			details({
+				findings: [finding("value.ts", 82, "P0", description)],
+				summaryPath: `/private/var/folders/review/${"long-output-segment/".repeat(6)}summary/final.json`,
+			}),
+			testTheme,
+			width,
+			false,
+			1,
+		)
+		expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true)
+		expect(rows.some((row) => row.includes("…"))).toBe(true)
+		expect(rows.at(-1)).toContain("ctrl+o to expand details")
+		expect(rows.at(-1)).toContain("final.json")
+	})
+})

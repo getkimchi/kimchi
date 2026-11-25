@@ -151,6 +151,11 @@ function prose(value: string): string {
 	return sanitizeReviewDisplayText(value)
 }
 
+function fitVisibleLine(value: string, width: number): string {
+	const availableWidth = Math.max(1, width)
+	return visibleWidth(value) <= availableWidth ? value : truncateToWidth(value, availableWidth, "…")
+}
+
 function findingPrefix(finding: ReviewFindingRecord): string {
 	const icon = finding.priority === "P0" ? "✖" : priorityRank(finding.priority) <= 2 ? "▲" : "●"
 	return `${icon} ${finding.priority} `
@@ -186,7 +191,7 @@ export function renderReviewResultLines(
 	for (const [index, finding] of sortedFindings(details.findings).entries()) {
 		lines.push(line(findingHeader(finding, theme, safeWidth)))
 		if (!expanded) {
-			lines.push(line(`  ${truncateToWidth(firstSentence(finding.description), Math.max(1, safeWidth - 2), "…")}`))
+			lines.push(line(fitVisibleLine(`  ${firstSentence(finding.description)}`, safeWidth)))
 		} else {
 			const bodyWidth = Math.max(1, Math.min(safeWidth, 100))
 			const paragraphs = finding.description.split(/\r?\n\s*\r?\n/).filter((paragraph) => paragraph.trim())
@@ -212,7 +217,8 @@ export function renderReviewResultLines(
 	}
 	const toggle = expanded ? "ctrl+o to collapse details" : "ctrl+o to expand details"
 	const path = displayPath(details.summaryPath, Math.max(1, safeWidth - visibleWidth(`${toggle} · report: `)))
-	lines.push("", line(theme ? theme.fg("dim", `${toggle} · report: ${path}`) : `${toggle} · report: ${path}`))
+	const footer = fitVisibleLine(`${toggle} · report: ${path}`, safeWidth)
+	lines.push("", line(theme ? theme.fg("dim", footer) : footer))
 	return lines
 }
 
