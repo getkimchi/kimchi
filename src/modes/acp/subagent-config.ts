@@ -93,6 +93,7 @@ function fingerprint(configOptions: SessionConfigOption[]): string {
  * own controller without requiring a synthetic session event. */
 export class SubagentConfigReporter {
 	private lastFingerprint: string | undefined
+	private disposed = false
 	private subscribedController: SessionPermissionFlagController | undefined
 	private subscribedSend: SendSubagentConfigUpdate | undefined
 	private unsubscribePermission: (() => void) | undefined
@@ -104,7 +105,8 @@ export class SubagentConfigReporter {
 
 	/** Always emits exactly once, including an empty list when all values are
 	 * unconfirmed. Invoke directly after the child's announcement. */
-	publishInitial(send: SendSubagentConfigUpdate): SessionNotification {
+	publishInitial(send: SendSubagentConfigUpdate): SessionNotification | undefined {
+		if (this.disposed) return undefined
 		const configOptions = buildSubagentConfigOptions(this.session, this.dependencies)
 		const notification = subagentConfigNotification(this.session.sessionId, configOptions)
 		this.lastFingerprint = fingerprint(configOptions)
@@ -117,6 +119,7 @@ export class SubagentConfigReporter {
 	 * model events, route resolutions with identical options, and duplicate
 	 * mode notifications therefore stay silent. */
 	publishChanged(send: SendSubagentConfigUpdate): SessionNotification | undefined {
+		if (this.disposed) return undefined
 		this.syncPermissionSubscription(send)
 		const configOptions = buildSubagentConfigOptions(this.session, this.dependencies)
 		const nextFingerprint = fingerprint(configOptions)
@@ -128,17 +131,23 @@ export class SubagentConfigReporter {
 	}
 
 	private syncPermissionSubscription(send: SendSubagentConfigUpdate): void {
+		if (this.disposed) return
 		const controller = permissionController(this.session.sessionId, this.dependencies)
-		if (controller === this.subscribedController && send === this.subscribedSend) return
+		if (controller === this.subscribedController) {
+			this.subscribedSend = send
+			return
+		}
 		this.unsubscribePermission?.()
 		this.subscribedController = controller
 		this.subscribedSend = send
 		this.unsubscribePermission = controller?.subscribe(() => {
-			this.publishChanged(send)
+			const currentSend = this.subscribedSend
+			if (currentSend) this.publishChanged(currentSend)
 		})
 	}
 
 	dispose(): void {
+		this.disposed = true
 		this.unsubscribePermission?.()
 		this.unsubscribePermission = undefined
 		this.subscribedController = undefined

@@ -255,7 +255,7 @@ describe("SubagentConfigReporter", () => {
 		const initial = reporter.publishInitial((notification) => sent.push(notification))
 
 		expect(sent).toEqual([announcement, initial])
-		expect(initial.sessionId).toBe("announced-child")
+		expect(initial?.sessionId).toBe("announced-child")
 		expect(reporter.publishChanged((notification) => sent.push(notification))).toBeUndefined()
 		expect(sent).toHaveLength(2)
 	})
@@ -281,6 +281,53 @@ describe("SubagentConfigReporter", () => {
 		expect(sent).toHaveLength(4)
 	})
 
+	it("keeps one permission subscription and uses the latest sender", () => {
+		const controller = makeController("default")
+		const originalSubscribe = controller.subscribe
+		const unsubscribes: Array<() => void> = []
+		const subscribe = vi.spyOn(controller, "subscribe").mockImplementation((listener) => {
+			const unsubscribe = vi.fn(originalSubscribe(listener))
+			unsubscribes.push(unsubscribe)
+			return unsubscribe
+		})
+		const reporter = new SubagentConfigReporter(
+			makeSession("subscription-child"),
+			makeDependencies(new Map([["subscription-child", controller]])),
+		)
+		const firstSend = vi.fn<(notification: SessionNotification) => void>()
+		const latestSend = vi.fn<(notification: SessionNotification) => void>()
+		reporter.publishInitial(firstSend)
+
+		reporter.publishChanged(latestSend)
+		reporter.publishChanged((notification) => latestSend(notification))
+		reporter.publishChanged((notification) => latestSend(notification))
+
+		expect(subscribe).toHaveBeenCalledTimes(1)
+		expect(unsubscribes[0]).not.toHaveBeenCalled()
+		controller.setMode(modeState("auto"))
+		expect(firstSend).toHaveBeenCalledTimes(1)
+		expect(latestSend).toHaveBeenCalledTimes(1)
+		reporter.dispose()
+		expect(unsubscribes[0]).toHaveBeenCalledTimes(1)
+	})
+
+	it("is inert after disposal, including initial publication", () => {
+		const controller = makeController("default")
+		const session = makeSession("disposed-child")
+		const send = vi.fn<(notification: SessionNotification) => void>()
+		const reporter = new SubagentConfigReporter(session, makeDependencies(new Map([["disposed-child", controller]])))
+		reporter.publishInitial(send)
+		const subscribe = vi.spyOn(controller, "subscribe")
+		reporter.dispose()
+		session.model = model("late-model")
+
+		expect(reporter.publishInitial(send)).toBeUndefined()
+		expect(reporter.publishChanged(send)).toBeUndefined()
+		controller.setMode(modeState("auto"))
+		expect(send).toHaveBeenCalledTimes(1)
+		expect(subscribe).not.toHaveBeenCalled()
+	})
+
 	it("publishes a single permission refresh and suppresses duplicate mode notifications", () => {
 		const controller = makeController("default")
 		const dependencies = makeDependencies(new Map([["mode-child", controller]]))
@@ -304,7 +351,7 @@ describe("SubagentConfigReporter", () => {
 		const sent: SessionNotification[] = []
 		const send = (notification: SessionNotification) => sent.push(notification)
 		const reporter = new SubagentConfigReporter(makeSession("late-mode"), makeDependencies(controllers))
-		expect(reporter.publishInitial(send).update).toMatchObject({ configOptions: expect.any(Array) })
+		expect(reporter.publishInitial(send)?.update).toMatchObject({ configOptions: expect.any(Array) })
 		expect(sent).toHaveLength(1)
 
 		const controller = makeController("plan")
