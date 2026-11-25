@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { describe, expect, it } from "vitest"
+import { CLASSIFIER_NOT_CONFIGURED_BLOCK_REASON } from "../../src/extensions/permissions/classifier-health.js"
 import { KIMCHI_INFRA_ERROR_EXIT_CODE } from "../../src/infrastructure-error.js"
 import { KIMCHI_NO_PROMPT_EXIT_CODE, KIMCHI_NO_RESULT_EXIT_CODE } from "../../src/run-outcome.js"
 import {
@@ -168,7 +169,7 @@ describe("non-interactive run outcome guard (compiled binary)", () => {
 		expect(result.stdout, result.failure).toBe("")
 		expect(result.stderr, result.failure).toContain(NO_RESULT_MARKER)
 		expect(result.stderr, result.failure).toContain("write")
-		expect(result.stderr, result.failure).toContain("Classifier: no model available for classifier")
+		expect(result.stderr, result.failure).toContain(CLASSIFIER_NOT_CONFIGURED_BLOCK_REASON)
 		expect(result.stderr, result.failure).toContain("Rerun with --mode json")
 		expect(result.stderr, result.failure).toContain(`Session: ${sessionPath}`)
 		expectTextOutcomeEquivalence(result)
