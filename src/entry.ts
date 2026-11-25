@@ -9,6 +9,7 @@
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { resolve } from "node:path"
+import { applyAgentDirEnv } from "./agent-dir.js"
 import { pickPackageDirForBinary, resolveValidatedAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import { installProxyAgent } from "./http/proxy.js"
 import { installPasteInterceptor } from "./paste-interceptor.js"
@@ -51,10 +52,7 @@ if (existsSync(oauthTemplateDir)) {
 }
 
 const inheritedPiAgentDir = process.env.PI_CODING_AGENT_DIR
-const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
-	? resolve(process.env.KIMCHI_CODING_AGENT_DIR)
-	: resolve(homedir(), ".config", "kimchi", "harness")
-process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+const agentDir = applyAgentDirEnv()
 if (inheritedPiAgentDir && !process.env.KIMCHI_ORIGINAL_PI_CODING_AGENT_DIR) {
 	process.env.KIMCHI_ORIGINAL_PI_CODING_AGENT_DIR = inheritedPiAgentDir
 }
