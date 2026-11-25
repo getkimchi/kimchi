@@ -82,23 +82,26 @@ export function orgLockMessage(id: string): string {
  * 3. KIMCHI_ENABLE_RESOURCES env — a transient local choice
  * 4. settings.json `"resourcesDefault": false` — off unless 2 or 3 turned it on
  * 5. org ON / OFF — soft defaults a local choice (2 or 3) may override
- * 6. the definition's defaultEnabled
+ * 6. `defaultEnabled`, else the definition's defaultEnabled
+ *
+ * `defaultEnabled` is for callers that know a resource's default better than
+ * the cached definitions do, e.g. bash hooks discovered for another cwd.
  */
-export function isResourceEnabled(id: string, path = getResourceSettingsPath()): boolean {
+export function isResourceEnabled(id: string, path = getResourceSettingsPath(), defaultEnabled?: boolean): boolean {
 	assertResourceId(id)
 	const orgPolicy = getResourcePolicy(id)
 	if (orgPolicy === "FORCE_ON") return true
 	if (orgPolicy === "FORCE_OFF") return false
 
-	const override = getResourceOverride(id, path)
+	const settings = readResourceSettings(path)
+	const override = settings.resources[id as ResourceId]
 	if (override !== undefined) return override
 	if (envEnabledResources().has(id)) return true
-	if (readResourceSettings(path).resourcesDefault === false) return false
+	if (settings.resourcesDefault === false) return false
 
 	if (orgPolicy === "ON") return true
 	if (orgPolicy === "OFF") return false
-	const definition = getResourceDefinition(id)
-	return definition?.defaultEnabled ?? true
+	return defaultEnabled ?? getResourceDefinition(id)?.defaultEnabled ?? true
 }
 
 /**

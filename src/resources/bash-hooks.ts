@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
-import { isResourceEnabled, readResourceSettings } from "./store.js"
-import type { ResourceId } from "./types.js"
+import { getResourceSettingsPath, isResourceEnabled } from "./store.js"
 
 export interface BashHookResult {
 	command: string
@@ -20,10 +19,10 @@ interface HookJsonOutput {
 export function applyEnabledBashHooks(command: string, cwd = process.cwd()): BashHookResult {
 	if (!isResourceEnabled("hooks.bash")) return { command }
 	let current = command
-	const settings = readResourceSettings()
+	const settingsPath = getResourceSettingsPath()
 	for (const hook of discoverBashHookResources(cwd)) {
-		if ((settings.resources[hook.id as ResourceId] ?? settings.resourcesDefault ?? hook.defaultEnabled) !== true)
-			continue
+		// The hook's own default keeps project hooks off until enabled.
+		if (!isResourceEnabled(hook.id, settingsPath, hook.defaultEnabled)) continue
 		const result = runBashHook(hook.path, current, cwd)
 		if (result.block) return result
 		current = result.command
