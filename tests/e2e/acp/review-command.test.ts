@@ -23,14 +23,16 @@ describe("ACP review command", () => {
 
 	for (const scenario of [
 		{
-			name: "complete zero-finding",
+			name: "complete finding",
 			partial: false,
-			finalText: "Review complete: 0 final findings.",
+			finding: true,
+			finalText: "Review complete: 1 final finding.",
 			coverage: "Complete review coverage.",
 		},
 		{
 			name: "partial with unfinished lens",
 			partial: true,
+			finding: false,
 			finalText: "Review partial: 0 final findings.",
 			coverage: "unfinished lenses: spec",
 		},
@@ -40,8 +42,11 @@ describe("ACP review command", () => {
 			async () => {
 				fixture = await startAcpFixture({
 					artifactName: `acp-review-command-${scenario.partial ? "partial" : "complete"}`,
-					responses: reviewResponseScripts({ partial: scenario.partial }),
-					seedHome: (_homeDir, workDir) => seedReviewRepository(workDir),
+					responses: reviewResponseScripts({ partial: scenario.partial, finding: scenario.finding }),
+					seedHome: (_homeDir, workDir) => {
+						seedReviewRepository(workDir)
+						writeFileSync(join(workDir, REVIEW_VALUE_FILE), "export const value = 1\nexport const changed = false\n")
+					},
 					extraArgs: ["--yolo", "--no-approve"],
 				})
 				const sessionId = await newSession(fixture, fixture.workDir)
@@ -60,6 +65,14 @@ describe("ACP review command", () => {
 				expect(messages).toContain("Review scope pinned:")
 				expect(messages).toContain("spec (Selected with --lens.)")
 				expect(messages).toContain("Effective concurrency: 1")
+				if (scenario.finding) {
+					expect(messages).toContain("WARNING value.ts:2")
+					expect(messages).toContain(
+						"The new export changes behavior without a guard; revision head inspection confirmed it.",
+					)
+				} else {
+					expect(messages).toContain("No findings.")
+				}
 			},
 			STARTUP_TIMEOUT_MS + 60_000,
 		)

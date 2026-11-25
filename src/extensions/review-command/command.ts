@@ -1,5 +1,6 @@
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionCommandContext, SessionManager } from "@earendil-works/pi-coding-agent"
+import { truncateToWidth } from "@earendil-works/pi-tui"
 import { parse as parseShell } from "shell-quote"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { isPrintModeEnabled } from "../print-mode.js"
@@ -116,7 +117,7 @@ interface Reporter {
 	scope: (target: ResolvedReviewTarget, runDirectory?: string) => void
 	selection: (selection: ResolvedReviewPanel) => void
 	progress: (progress: ReviewPanelProgress) => void
-	result: (result: ReviewPanelResult) => void
+	result: (result: Pick<ReviewPanelResult, "progress" | "findings" | "summaryPath">) => void
 	error: (error: unknown) => void
 }
 
@@ -124,43 +125,70 @@ function notify(ctx: ExtensionCommandContext, message: string, severity: "info" 
 	if (ctx.hasUI) ctx.ui.notify(message, severity)
 }
 
-function reporter(ctx: ExtensionCommandContext, visible: boolean): Reporter {
+// The widget API exposes no terminal width. Fifty-two columns plus Text's
+// padding stays on one row at the minimum sixty-column width we support here.
+function widgetLine(value: string): string {
+	return truncateToWidth(value, 52, "…")
+}
+
+function showDetails(ctx: ExtensionCommandContext, pi: ExtensionAPI, message: string): void {
+	if (ctx.mode === "tui") {
+		pi.sendMessage({ customType: "review-details", content: message, display: true })
+		return
+	}
+	notify(ctx, message)
+}
+
+export function reporter(ctx: ExtensionCommandContext, visible: boolean, pi: ExtensionAPI): Reporter {
 	let scopeLines: string[] = []
 	let selectionLines: string[] = []
 	let progressLines: string[] = []
 	const paint = (resultLines: string[] = []) => {
 		if (visible) {
-			ctx.ui.setWidget("review-panel", [...scopeLines, ...selectionLines, ...progressLines, ...resultLines], {
-				placement: "aboveEditor",
-			})
+			ctx.ui.setWidget(
+				"review-panel",
+				[...scopeLines, ...selectionLines, ...progressLines, ...resultLines].map(widgetLine),
+				{ placement: "aboveEditor" },
+			)
 		}
 	}
 	return {
 		scope(target, runDirectory) {
 			if (!visible) return
 			const scope = target.scope
-			scopeLines = [
-				`Review scope pinned: ${scope.pinned.baseSha}..${scope.pinned.headSha}`,
-				`${scope.kind}; ${scope.files.changed} changed files; checkout ${scope.checkoutPath}`,
-				...(runDirectory ? [`Run directory: ${runDirectory}`] : []),
-			]
+			scopeLines = [`Review ${scope.kind}; ${scope.files.changed} changed files`]
+			showDetails(
+				ctx,
+				pi,
+				[
+					"Review scope pinned:",
+					`${scope.pinned.baseSha}..${scope.pinned.headSha}`,
+					`Checkout: ${scope.checkoutPath}`,
+					...(runDirectory ? [`Run directory: ${runDirectory}`] : []),
+				].join("\n"),
+			)
 			paint()
 		},
 		selection(selection) {
 			if (!visible) return
-			selectionLines = [
-				"Review lenses:",
-				...selection.lenses.map((lens) => `${lens.id} (${lens.reasons.join("; ")})`),
-				`Effective concurrency: ${selection.slotCount}`,
-			]
+			selectionLines = [`Lenses: ${selection.lenses.length}; concurrency ${selection.slotCount}`]
+			showDetails(
+				ctx,
+				pi,
+				[
+					"Review lenses:",
+					...selection.lenses.map((lens) => `${lens.id} (${lens.reasons.join("; ")})`),
+					`Effective concurrency: ${selection.slotCount}`,
+				].join("\n"),
+			)
 			paint()
 		},
 		progress(progress) {
 			progressLines = [
-				`Review: ${progress.phase}; candidates ${progress.counts.candidates}; reconciliation ${progress.reconciliation.status}`,
+				`Review ${progress.phase}; ${progress.counts.candidates} candidates; recon ${progress.reconciliation.status}`,
 				...progress.lenses.map(
 					(lens) =>
-						`${lens.status === "running" ? "▶" : lens.status === "submitted" ? "✓" : lens.status === "queued" ? "○" : "×"} ${lens.id}: ${lens.status} (${lens.candidateCount} candidates)`,
+						`${lens.status === "running" ? "▶" : lens.status === "submitted" ? "✓" : lens.status === "queued" ? "○" : "×"} ${lens.id}: ${lens.status} (${lens.candidateCount})`,
 				),
 			]
 			paint()
@@ -176,11 +204,16 @@ function reporter(ctx: ExtensionCommandContext, visible: boolean): Reporter {
 			const partial = coverage.unfinished_lenses.length
 				? `Partial coverage; unfinished lenses: ${coverage.unfinished_lenses.join(", ")}.`
 				: "Complete review coverage."
-			paint([`Review ${coverage.status}: ${result.findings.length} final findings.`, partial, ...findings])
-			notify(
-				ctx,
-				`Review ${coverage.status}: ${result.findings.length} final findings. ${partial} Report: ${result.summaryPath}`,
-			)
+			const summary = [
+				`Review ${coverage.status}: ${result.findings.length} final finding${result.findings.length === 1 ? "" : "s"}.`,
+				partial,
+			]
+			// Keep complete findings in scrollback; the live widget shrinks to a summary.
+			scopeLines = []
+			selectionLines = []
+			progressLines = []
+			paint(summary)
+			notify(ctx, [...summary, ...findings, `Report: ${result.summaryPath}`].join("\n"))
 		},
 		error(error) {
 			if (!visible) return
@@ -332,7 +365,7 @@ async function runHeadless(
 	const manifestPath = parsedManifest?.path ?? join(dirs.contextDir, REVIEW_MANIFEST_FILENAME)
 	const manifest = await deps.readManifest(manifestPath)
 	const termination = startReviewPrintTermination({ deadlineMs: Date.parse(manifest.deadline), abort: () => {} })
-	const report = reporter(ctx, false)
+	const report = reporter(ctx, false, pi)
 	try {
 		const prepared = await deps.prepareManifest(manifest, termination.signal)
 		matchDirectories(prepared, dirs)
@@ -431,7 +464,7 @@ async function runLocal(
 		contextDir: directories.contextDir,
 		excludedDirectories: reviewOwnedDirectories(directories),
 	})
-	const report = reporter(ctx, true)
+	const report = reporter(ctx, true, pi)
 	let operation: ReviewOperation | undefined
 	try {
 		const run = await createLocalReviewRunDirectory(directories.outputDir)
@@ -484,7 +517,7 @@ export async function runReviewCommand(
 			}
 			process.exitCode = 1
 		} else {
-			reporter(ctx, true).error(error)
+			reporter(ctx, true, pi).error(error)
 		}
 	}
 }

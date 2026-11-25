@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, Key, test } from "@microsoft/tui-test"
 import { poll } from "@microsoft/tui-test/lib/utils/poll.js"
@@ -7,6 +7,7 @@ import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import {
 	createReviewInterruptionFixture,
 	git,
+	REVIEW_VALUE_FILE,
 	type ReviewInterruptionFixture,
 	reviewInterruptionResponseScript,
 	reviewResponseScripts,
@@ -21,14 +22,12 @@ for (const scenario of [
 		partial: false,
 		finalText: "Review complete: 0 final findings.",
 		coverage: "Complete review coverage.",
-		lensStatus: "submitted",
 	},
 	{
 		name: "partial with unfinished lens",
 		partial: true,
 		finalText: "Review partial: 0 final findings.",
 		coverage: "unfinished lenses: spec",
-		lensStatus: "failed",
 	},
 ] as const) {
 	test(`review command reports a ${scenario.name} run`, async ({ terminal }) => {
@@ -48,11 +47,38 @@ for (const scenario of [
 				await waitForText(terminal, "Effective concurrency: 1", { full: true })
 				await waitForText(terminal, scenario.finalText, { full: true })
 				await waitForText(terminal, scenario.coverage, { full: true })
-				expect(viewText(terminal)).toContain(`spec: ${scenario.lensStatus}`)
+				await waitForText(terminal, "No findings.", { full: true })
 			},
 		)
 	})
 }
+
+test("review command publishes final findings to the transcript", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "review-command-finding-transcript",
+			gitInit: true,
+			extraArgs: ["--yolo", "--no-approve", "--plan=false"],
+			seedHome: (_homeDir, workDir) => {
+				seedReviewRepository(workDir)
+				writeFileSync(join(workDir, REVIEW_VALUE_FILE), "export const value = 1\nexport const changed = false\n")
+			},
+			responses: reviewResponseScripts({ finding: true }),
+		},
+		async () => {
+			terminal.submit("/review working-tree --lens spec --concurrency 1")
+			await waitForText(terminal, "Review complete: 1 final finding.", { full: true })
+			await waitForText(terminal, "WARNING value.ts:2", { full: true })
+			await waitForText(
+				terminal,
+				"The new export changes behavior without a guard; revision head inspection confirmed it.",
+				{ full: true },
+			)
+			expect(viewText(terminal)).not.toContain("(widget truncated)")
+		},
+	)
+})
 
 test("review command interruption terminates commands, finalizes partial coverage, and cleans resources", async ({
 	terminal,
