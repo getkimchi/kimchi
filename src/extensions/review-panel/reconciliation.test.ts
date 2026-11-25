@@ -14,7 +14,7 @@ import { checkpointReviewPanelFallback, finalizeReviewPanel } from "./finalize.j
 import { type ReviewLensId, resolveReviewPanel } from "./lenses.js"
 import { readFinalFindings, readFindingWriter, reviewPanelPaths, serializeFinalFindings } from "./output.js"
 import { validateSemanticReconciliation } from "./reconciliation.js"
-import { coverageFor, createInitialPanelState, ReviewPanelStateStore } from "./state.js"
+import { assertReviewPanelIdentity, coverageFor, createInitialPanelState, ReviewPanelStateStore } from "./state.js"
 import { REVIEW_RECONCILIATION_VERSION, type ReviewPanelCandidate, type SemanticReconciliation } from "./types.js"
 
 const SHA_A = "a".repeat(40)
@@ -298,6 +298,51 @@ describe("review panel reconciliation and fallback", () => {
 		})
 		expect(result.summary.coverage).toMatchObject({ status: "complete", final_finding_count: 0 })
 		expect(result.findingsPath).toBe(reviewPanelPaths(outputDir).findingsPath)
+	})
+
+	it("accepts trailing separators in wrap-up identity paths", async () => {
+		const state = (await makeStore([])).state
+		state.scope.checkoutPath = sandbox
+		await expect(
+			assertReviewPanelIdentity(state, {
+				baseSha: state.scope.pinned.baseSha,
+				headSha: state.scope.pinned.headSha,
+				checkoutPath: `${state.scope.checkoutPath}/`,
+				contextDir: `${state.contextDir}/`,
+				outputDir: `${state.outputDir}/`,
+			}),
+		).resolves.toBeUndefined()
+	})
+
+	it("rejects identical nonexistent wrap-up identity paths", async () => {
+		const state = (await makeStore([])).state
+		const deletedCheckoutPath = join(sandbox, "deleted-checkout")
+		state.scope.checkoutPath = deletedCheckoutPath
+		await expect(
+			assertReviewPanelIdentity(state, {
+				baseSha: state.scope.pinned.baseSha,
+				headSha: state.scope.pinned.headSha,
+				checkoutPath: deletedCheckoutPath,
+				contextDir: state.contextDir,
+				outputDir: state.outputDir,
+			}),
+		).rejects.toThrow("Review wrap-up identity mismatch for checkoutPath")
+	})
+
+	it("rejects a genuinely different wrap-up identity directory", async () => {
+		const state = (await makeStore([])).state
+		state.scope.checkoutPath = sandbox
+		const differentOutputDir = join(sandbox, "genuinely-different-output")
+		mkdirSync(differentOutputDir, { recursive: true })
+		await expect(
+			assertReviewPanelIdentity(state, {
+				baseSha: state.scope.pinned.baseSha,
+				headSha: state.scope.pinned.headSha,
+				checkoutPath: state.scope.checkoutPath,
+				contextDir: state.contextDir,
+				outputDir: differentOutputDir,
+			}),
+		).rejects.toThrow("Review wrap-up identity mismatch for outputDir")
 	})
 
 	it("rejects finalization paths that disagree with saved panel state", async () => {

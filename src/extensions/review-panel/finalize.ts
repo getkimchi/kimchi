@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
-import { lstat, readFile, realpath, stat } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import { lstat, readFile, stat } from "node:fs/promises"
+import { join } from "node:path"
 import {
 	type EnvironmentGap,
 	MAX_OUTPUT_FILE_BYTES,
@@ -23,6 +23,7 @@ import {
 	writeFinalFindings,
 	writeReviewJson,
 } from "./output.js"
+import { sameFilesystemPath } from "./paths.js"
 import {
 	parseSemanticReconciliation,
 	type ValidatedReconciliation,
@@ -42,19 +43,6 @@ async function fileExists(path: string): Promise<boolean> {
 	try {
 		await stat(path)
 		return true
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
-		throw error
-	}
-}
-
-async function sameFilesystemPath(left: string, right: string): Promise<boolean> {
-	const resolvedLeft = resolve(left)
-	const resolvedRight = resolve(right)
-	if (resolvedLeft === resolvedRight) return true
-	try {
-		const [realLeft, realRight] = await Promise.all([realpath(resolvedLeft), realpath(resolvedRight)])
-		return realLeft === realRight
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
 		throw error

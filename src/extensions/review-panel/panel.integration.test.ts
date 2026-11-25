@@ -509,23 +509,37 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(usageWriters).toEqual(new Set(["spec", "standards", "operational", "adversarial", "reconciliation"]))
 	})
 
-	it("wraps up through a symlink alias of the output directory", async () => {
+	it("wraps up with expected identity through symlink aliases", async () => {
 		const { ctx } = await scriptedContext(defaultScript)
 		const initial = await runReviewPanel(runOptions(ctx, await target(), { lenses: ["spec"] }))
 		const findingsBefore = readFileSync(reviewPanelPaths(outputDir).findingsPath, "utf8")
 		const outputAlias = join(sandbox, "review-output-alias")
+		const contextAlias = join(sandbox, "review-context-alias")
+		const checkoutAlias = join(sandbox, "review-checkout-alias")
 		symlinkSync(outputDir, outputAlias, "dir")
+		symlinkSync(initial.state.contextDir, contextAlias, "dir")
+		symlinkSync(initial.state.scope.checkoutPath, checkoutAlias, "dir")
 
 		const wrapped = await wrapUpReviewPanel({
 			ctx,
 			pi: createExtensionApi().api,
 			outputDir: outputAlias,
+			expected: {
+				baseSha: initial.state.scope.pinned.baseSha,
+				headSha: initial.state.scope.pinned.headSha,
+				checkoutPath: checkoutAlias,
+				contextDir: contextAlias,
+				outputDir: outputAlias,
+			},
 			rootDir: join(sandbox, "alias-wrap-worktrees"),
 			checkDefinitions: [],
 			executionPolicy: { mode: "headless" },
 		})
 
 		expect(wrapped.findings).toEqual(initial.findings)
+		expect(wrapped.state.outputDir).toBe(initial.state.outputDir)
+		expect(wrapped.state.contextDir).toBe(initial.state.contextDir)
+		expect(wrapped.state.scope.checkoutPath).toBe(initial.state.scope.checkoutPath)
 		expect(readFileSync(reviewPanelPaths(outputDir).findingsPath, "utf8")).toBe(findingsBefore)
 	})
 

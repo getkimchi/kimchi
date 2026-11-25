@@ -570,7 +570,7 @@ export async function wrapUpReviewPanel(options: WrapUpReviewPanelOptions): Prom
 	await cancelAndWaitForReviewChildren(outputDir, cancellationBound)
 	let phase: ReviewPanelPhase = "reserve"
 	const store = await ReviewPanelStateStore.load(outputDir, (state) => options.onProgress?.(progressFor(state, phase)))
-	assertReviewPanelIdentity(store.state, options.expected)
+	await assertReviewPanelIdentity(store.state, options.expected)
 	for (const lens of store.state.lenses) {
 		try {
 			await ingestLensCandidateFile(store, outputDir, lens.id)

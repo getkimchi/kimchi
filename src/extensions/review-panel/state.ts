@@ -10,6 +10,7 @@ import {
 	type ReviewPanelArguments,
 } from "./lenses.js"
 import { reviewPanelPaths, writeReviewJson } from "./output.js"
+import { sameFilesystemPath } from "./paths.js"
 import {
 	REVIEW_PANEL_STATE_VERSION,
 	type ReviewPanelIdentity,
@@ -205,7 +206,10 @@ export async function loadReviewPanelState(outputDir: string): Promise<ReviewPan
 	return value
 }
 
-export function assertReviewPanelIdentity(state: ReviewPanelRunState, expected: ReviewPanelIdentity | undefined): void {
+export async function assertReviewPanelIdentity(
+	state: ReviewPanelRunState,
+	expected: ReviewPanelIdentity | undefined,
+): Promise<void> {
 	if (!expected) return
 	const actual: ReviewPanelIdentity = {
 		baseSha: state.scope.pinned.baseSha,
@@ -218,7 +222,7 @@ export function assertReviewPanelIdentity(state: ReviewPanelRunState, expected: 
 		const matches =
 			field === "baseSha" || field === "headSha"
 				? actual[field] === expectedValue
-				: resolve(actual[field]) === resolve(expectedValue)
+				: await sameFilesystemPath(actual[field], expectedValue)
 		if (!matches) {
 			throw new Error(
 				`Review wrap-up identity mismatch for ${field}: expected ${expectedValue}, found ${actual[field]}.`,
