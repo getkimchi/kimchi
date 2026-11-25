@@ -479,6 +479,7 @@ export function dropRetiredMultiModelArg(args: string[]): string[] {
 // Rewriting the bare token to `--name=true` keeps the prompt positional.
 // pi also turns any value of a boolean extension flag into `true`, so `--name=false`
 // would read as on. Dropping it makes the flag off on both sides.
+// A token in another option's value slot is left alone so it stays that option's value.
 // Remove when pi keeps positional arguments after boolean extension flags.
 let rewritableBooleanFlags: ReadonlySet<string> | undefined
 
@@ -491,6 +492,12 @@ function getRewritableBooleanFlags(): ReadonlySet<string> {
 	return rewritableBooleanFlags
 }
 
+// Probe with pi's own parser so value-taking options stay in sync with pi.
+const PI_SLOT_PROBE = "__kimchi_slot_probe__"
+function isPiOptionValueSlot(precedingArgs: readonly string[]): boolean {
+	return !parsePiArgs([...precedingArgs, `--${PI_SLOT_PROBE}`]).unknownFlags.has(PI_SLOT_PROBE)
+}
+
 export function normalizeBooleanFlagArgs(args: string[]): string[] {
 	const rewritable = getRewritableBooleanFlags()
 	const result: string[] = []
@@ -500,7 +507,7 @@ export function normalizeBooleanFlagArgs(args: string[]): string[] {
 			result.push(...args.slice(i))
 			break
 		}
-		if (!arg.startsWith("--")) {
+		if (!arg.startsWith("--") || isPiOptionValueSlot(result)) {
 			result.push(arg)
 			continue
 		}

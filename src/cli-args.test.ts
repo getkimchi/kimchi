@@ -540,6 +540,36 @@ describe("normalizeBooleanFlagArgs", () => {
 		"init-git",
 	]
 
+	it.each([
+		[["--print", "--system-prompt", "--auto=false", "do work"]],
+		[["--print", "--system-prompt", "--auto", "do work"]],
+		[["--append-system-prompt", "--yolo=false", "do work"]],
+		[["--name", "--plan", "do work"]],
+		[["-t", "--auto=false", "do work"]],
+		[["--session-id", "--auto=false", "do work"]],
+	])("leaves a boolean that is another option's value unchanged: %j", (args) => {
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	it("keeps the system prompt and message when a boolean is the system prompt value", () => {
+		const parsed = parsePiArgs(normalizeBooleanFlagArgs(["--print", "--system-prompt", "--auto=false", "do work"]))
+		expect(parsed.systemPrompt).toBe("--auto=false")
+		expect(parsed.messages).toEqual(["do work"])
+	})
+
+	it("rewrites the flag occurrence and keeps the value occurrence of the same boolean", () => {
+		expect(normalizeBooleanFlagArgs(["--auto", "--system-prompt", "--auto", "x"])).toEqual([
+			"--auto=true",
+			"--system-prompt",
+			"--auto",
+			"x",
+		])
+	})
+
+	it("still rewrites a boolean after a --mode that has no value", () => {
+		expect(normalizeBooleanFlagArgs(["--mode", "--auto", "x"])).toEqual(["--mode", "--auto=true", "x"])
+	})
+
 	it("rewrites --auto before a positional prompt", () => {
 		expect(normalizeBooleanFlagArgs(["--print", "--auto", "do work"])).toEqual(["--print", "--auto=true", "do work"])
 	})
@@ -609,11 +639,11 @@ describe("normalizeBooleanFlagArgs", () => {
 		])
 	})
 
-	it("rewrites --auto after --model without copying pi value-flag rules", () => {
+	it("keeps --auto unchanged when it is the --model value", () => {
 		expect(normalizeBooleanFlagArgs(["--print", "--model", "--auto", "do work"])).toEqual([
 			"--print",
 			"--model",
-			"--auto=true",
+			"--auto",
 			"do work",
 		])
 	})
