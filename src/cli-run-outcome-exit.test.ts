@@ -1,11 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { applyPostMainRunOutcomeExitPolicy } from "./cli-run-outcome-exit.js"
 import { KIMCHI_INFRA_ERROR_EXIT_CODE } from "./infrastructure-error.js"
-import {
-	KIMCHI_NO_PROMPT_EXIT_CODE,
-	KIMCHI_NO_RESULT_EXIT_CODE,
-	type RunOutcomeClassification,
-} from "./run-outcome.js"
+import { KIMCHI_NO_PROMPT_EXIT_CODE, KIMCHI_NO_RESULT_EXIT_CODE, type RunOutcomeClassification } from "./run-outcome.js"
 
 const NO_PROMPT: RunOutcomeClassification = { kind: "no-prompt" }
 const NO_RESULT: RunOutcomeClassification = { kind: "no-result", lastEvent: { kind: "none" } }
