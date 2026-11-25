@@ -117,7 +117,7 @@ it("configures optional non-blocking Allure uploads in the TUI workflow", () => 
 	const setup = job.steps.find((step: { uses?: string }) => step.uses === "allure-framework/setup-allurectl@v1")
 	expect(setup).toMatchObject({
 		id: "allurectl",
-		if: "always() && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''",
+		if: "always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''",
 		"continue-on-error": true,
 		with: {
 			"allure-endpoint": githubExpression("env.ALLURE_ENDPOINT"),
@@ -131,4 +131,39 @@ it("configures optional non-blocking Allure uploads in the TUI workflow", () => 
 	})
 	expect(upload.run).toContain("allurectl upload")
 	expect(upload.run).toContain('"$ALLURE_RESULTS"')
+})
+
+it("restricts TestOps uploads to trusted events and tags nightly repetitions", () => {
+	const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", "tui-e2e.yml"), "utf8"))
+	expect(workflow.on.push).toEqual({ branches: ["master"] })
+	expect(workflow.on.merge_group).toBeNull()
+	expect(workflow.on.schedule).toEqual([{ cron: "17 3 * * *" }])
+
+	const job = workflow.jobs["tui-e2e"]
+	expect(job.env.ALLURE_UPLOAD_ENABLED).toBe(
+		githubExpression(`contains(fromJSON('["push","merge_group","schedule"]'), github.event_name)`),
+	)
+	expect(job.env.ALLURE_RUN_KIND).toBe(
+		githubExpression(
+			`github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || github.event_name == 'schedule' && 'nightly' || 'other'`,
+		),
+	)
+	expect(job.strategy.matrix).toMatchObject({
+		shard: [1, 2, 3, 4],
+		iteration: githubExpression(
+			`github.event_name == 'schedule' && fromJSON('[1,2,3,4,5,6,7,8,9,10]') || fromJSON('[1]')`,
+		),
+	})
+
+	const setup = job.steps.find((step: { uses?: string }) => step.uses === "allure-framework/setup-allurectl@v1")
+	expect(setup.if).toBe(
+		"always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN != '' && env.ALLURE_PROJECT_ID != ''",
+	)
+	const upload = job.steps.find((step: { name?: string }) => step.name === "Upload TUI results to Allure TestOps")
+	expect(upload.run).toContain("$ALLURE_RUN_KIND")
+	expect(upload.run).toContain("commit=$GITHUB_SHA")
+	expect(upload.run).toContain("event=$ALLURE_RUN_KIND")
+	expect(upload.run).toContain(`iteration=${githubExpression("matrix.iteration")}`)
+	const artifacts = job.steps.find((step: { name?: string }) => step.name === "Upload TUI E2E artifacts")
+	expect(artifacts.with.name).toContain(githubExpression("matrix.iteration"))
 })
