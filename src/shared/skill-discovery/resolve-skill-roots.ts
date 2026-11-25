@@ -3,6 +3,7 @@ import { homedir, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { resolveAuxiliaryFilesDir } from "../../auxiliary-files/resolver.js"
+import { envAgentDir, envRootOrLegacy } from "../../env-root.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { findNearestAncestorPath } from "../../utils/find-nearest-ancestor.js"
@@ -62,15 +63,18 @@ const DEFAULT_CONFIG_PATHS = [join(".pi", "agent", "skills"), join(".claude", "s
 
 const HARNESS_SKILLS_REL = join(".config", "kimchi", "harness", "skills")
 
-/** The default pi-native agent dir (harness home). Callers with a custom
- * KIMCHI_CODING_AGENT_DIR resolution (cli.ts) pass it explicitly. */
-function resolveDefaultAgentDir(home: string): string {
-	return join(home, dirname(HARNESS_SKILLS_REL))
+/** The default pi-native agent dir (harness home). Env-scoped when no home
+ *  is passed (the active environment's agent dir); an explicit home keeps
+ *  the legacy home-relative layout (tests, custom setups). */
+function resolveDefaultAgentDir(home?: string): string {
+	return home !== undefined ? join(home, dirname(HARNESS_SKILLS_REL)) : envAgentDir()
 }
 
-/** The harness skills dir — the writable root that skills-manager manages. */
-export function resolveHarnessSkillsDir(home: string): string {
-	return join(home, HARNESS_SKILLS_REL)
+/** The harness skills dir — the writable root that skills-manager manages.
+ *  Env-scoped when no home is passed; an explicit home keeps the legacy
+ *  home-relative layout. */
+export function resolveHarnessSkillsDir(home?: string): string {
+	return home !== undefined ? join(home, HARNESS_SKILLS_REL) : join(envAgentDir(), "skills")
 }
 
 /**
@@ -100,9 +104,23 @@ interface MappedConfigPath {
  * cwd. The cwdResolved classification is the single source of truth for the
  * trust gate (a project-resolved config path is project scope).
  */
-function mapConfigPath(path: string, cwd: string, home: string): MappedConfigPath {
+function mapConfigPath(path: string, cwd: string, home: string, envRoot?: string): MappedConfigPath {
 	if (isAbsolute(path)) return { dir: path, cwdResolved: false }
-	if (path.startsWith(".config/") || path.startsWith(".config\\")) return { dir: join(home, path), cwdResolved: false }
+	if (path.startsWith(".config/") || path.startsWith(".config\\")) {
+		// `.config/kimchi/...` is env-owned state — anchor at the active env.
+		// Harness-shaped paths go through envAgentDir() so they always
+		// coincide with the harness skills root (discovery excludes that root
+		// because pi loads it itself); root-level state anchors at the env
+		// root. An unset envRoot keeps the passed home — tests pin the legacy
+		// layout. Other `.config/` paths (other tools) stay home-anchored.
+		if (envRoot && (path.startsWith(".config/kimchi/harness/") || path.startsWith(".config\\kimchi\\harness\\"))) {
+			return { dir: join(envAgentDir(), path.slice(".config/kimchi/harness/".length)), cwdResolved: false }
+		}
+		if (envRoot && (path.startsWith(".config/kimchi/") || path.startsWith(".config\\kimchi\\"))) {
+			return { dir: join(envRoot, path.slice(".config/kimchi/".length)), cwdResolved: false }
+		}
+		return { dir: join(home, path), cwdResolved: false }
+	}
 	return { dir: join(cwd, path), cwdResolved: true }
 }
 
@@ -142,13 +160,18 @@ export function resolveSkillRoots(options: ResolveSkillRootsOptions): SkillRoot[
 		if (visible) pushRoot(visible, "bundled")
 	}
 
-	pushRoot(resolveHarnessSkillsDir(home), "harness")
+	pushRoot(resolveHarnessSkillsDir(options.homeDir), "harness")
 
-	const agentDir = options.agentDir === undefined ? resolveDefaultAgentDir(home) : options.agentDir
+	const agentDir = options.agentDir === undefined ? resolveDefaultAgentDir(options.homeDir) : options.agentDir
 	if (agentDir) pushRoot(join(resolve(agentDir), "skills"), "agent")
 
 	for (const p of [...(options.configPaths ?? DEFAULT_CONFIG_PATHS), ...(options.extraPaths ?? [])]) {
-		const { dir, cwdResolved } = mapConfigPath(p, options.cwd, home)
+		const { dir, cwdResolved } = mapConfigPath(
+			p,
+			options.cwd,
+			home,
+			options.homeDir === undefined ? envRootOrLegacy() : undefined,
+		)
 		if (!existsSync(dir)) continue
 		if (cwdResolved && !projectScopeAllowed) continue
 		pushRoot(dir, "config")
@@ -190,15 +213,26 @@ export function resolveSkillPathsForDiscovery(
 	},
 ): string[] {
 	const home = options?.homeDir ?? homedir()
-	const originalBundledDir = options?.bundledDir === undefined ? resolveBundledSkillsDir(home) : options.bundledDir
+	const originalBundledDir = options?.bundledDir === undefined ? resolveBundledSkillsDir(home) : options?.bundledDir
 	const roots = resolveSkillRoots({
 		cwd,
-		homeDir: home,
+		// homeDir: undefined (the production path) keeps the harness and
+		// `.config/kimchi/...` config roots env-scoped; an injected homeDir
+		// pins the legacy layout (tests).
+		homeDir: options?.homeDir,
 		bundledDir: options?.bundledDir,
 		configPaths: options?.configPaths ?? [],
 	})
 
-	const harnessDir = resolveHarnessSkillsDir(home)
+	// The exclusion must compare against where a configured
+	// `.config/kimchi/harness/skills` path anchors — the ENV-ROOT harness
+	// dir, not resolveHarnessSkillsDir() (which honors an overridden
+	// KIMCHI_CODING_AGENT_DIR; in production the two always coincide because
+	// env-root-init publishes the agent dir from the env root).
+	const harnessDir =
+		options?.homeDir !== undefined
+			? join(options.homeDir, HARNESS_SKILLS_REL)
+			: join(envRootOrLegacy(), "harness", "skills")
 	const normalizedHarnessDir = resolve(harnessDir)
 
 	// First pass: collect skill names from all non-bundled roots + extraPaths

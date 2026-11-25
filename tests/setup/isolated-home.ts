@@ -26,6 +26,16 @@ process.env.XDG_CACHE_HOME = join(testHome, ".cache")
 // credential source (keyless code paths silently become authenticated).
 // Per-test vi.stubEnv still wins over this default.
 process.env.KIMCHI_CODING_AGENT_DIR = join(testHome, "agent")
+// Harness-environment plumbing: an enclosing kimchi session exports
+// KIMCHI_ENV_ROOT et al. (set by its entry.ts), and src/config.ts and friends
+// derive their paths from it BEFORE falling back to homedir() — without
+// this scrub, tests run from inside kimchi read/write the session's real env
+// root. Deleting (not pinning) keeps the homedir() fallback in charge, so
+// per-test HOME stubs and node:os homedir mocks keep their pre-environment
+// meaning. Per-test vi.stubEnv still wins.
+delete process.env.KIMCHI_ENV_ROOT
+delete process.env.KIMCHI_ENV
+delete process.env.KIMCHI_ENV_LEGACY_DEFAULT
 // Same hazard for the legacy PI_CODING_AGENT_DIR name some shells export;
 // otherwise hydrate() imports the developer's real work-history journals
 // into unit tests and background imports can stall past the hook timeout.

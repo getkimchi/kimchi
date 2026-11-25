@@ -1,171 +1,139 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { isHomebrewInstall, resetHomebrewKegCacheForTests, stableExecutablePath } from "./paths.js"
+import { dirname, join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { envBinaryPath, installTargetPath, packagedBinaryName, reExecTarget, resolveExecutablePath } from "./paths.js"
 
-vi.mock("node:fs", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:fs")>()
-	return {
-		...actual,
-		existsSync: vi.fn(actual.existsSync),
-		realpathSync: Object.assign(vi.fn(actual.realpathSync), { native: actual.realpathSync.native }),
+/**
+ * Per-env version management: the env binary path derivation, the install
+ * target selection, and the (pure) re-exec decision. The KIMCHI_ENV* vars
+ * are scrubbed per test — the enclosing kimchi session exports them.
+ */
+const envKeys = ["KIMCHI_ENV", "KIMCHI_ENV_ROOT", "KIMCHI_ENV_LEGACY_DEFAULT"] as const
+const saved: Partial<Record<(typeof envKeys)[number], string | undefined>> = {}
+
+beforeEach(() => {
+	for (const key of envKeys) saved[key] = process.env[key]
+})
+
+afterEach(() => {
+	for (const key of envKeys) {
+		const value = saved[key]
+		if (value === undefined) delete process.env[key]
+		else process.env[key] = value
 	}
 })
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+describe("envBinaryPath", () => {
+	it("returns <root>/bin/<binary> for a named env", () => {
+		process.env.KIMCHI_ENV = "test"
+		process.env.KIMCHI_ENV_ROOT = "/envs/test-root"
+		process.env.KIMCHI_ENV_LEGACY_DEFAULT = "0"
+		expect(envBinaryPath()).toBe(join("/envs/test-root", "bin", packagedBinaryName()))
+	})
 
-/** Write an empty file, creating parent dirs as needed. */
-function touch(p: string): void {
-	mkdirSync(join(p, ".."), { recursive: true })
-	writeFileSync(p, "")
-}
+	it("returns undefined for the legacy default env", () => {
+		process.env.KIMCHI_ENV = "default"
+		process.env.KIMCHI_ENV_ROOT = "/legacy/root"
+		process.env.KIMCHI_ENV_LEGACY_DEFAULT = "1"
+		expect(envBinaryPath()).toBeUndefined()
+	})
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+	it("returns undefined when no env was resolved (standalone use)", () => {
+		for (const key of envKeys) delete process.env[key]
+		expect(envBinaryPath()).toBeUndefined()
+	})
+})
 
-describe("isHomebrewInstall", () => {
+describe("installTargetPath", () => {
+	it("prefers an explicit override over the env binary", () => {
+		process.env.KIMCHI_ENV = "test"
+		process.env.KIMCHI_ENV_ROOT = "/envs/test-root"
+		process.env.KIMCHI_ENV_LEGACY_DEFAULT = "0"
+		expect(installTargetPath("/explicit/kimchi")).toBe("/explicit/kimchi")
+	})
+
+	it("installs into the env's own binary for a named env", () => {
+		process.env.KIMCHI_ENV = "test"
+		process.env.KIMCHI_ENV_ROOT = "/envs/test-root"
+		process.env.KIMCHI_ENV_LEGACY_DEFAULT = "0"
+		expect(installTargetPath()).toBe(join("/envs/test-root", "bin", packagedBinaryName()))
+	})
+
+	it("keeps the running executable in place for the legacy default and standalone use", () => {
+		// Legacy default:
+		process.env.KIMCHI_ENV = "default"
+		process.env.KIMCHI_ENV_ROOT = "/legacy/root"
+		process.env.KIMCHI_ENV_LEGACY_DEFAULT = "1"
+		expect(installTargetPath()).toBe(resolveExecutablePath())
+		// Standalone (no env resolved):
+		for (const key of envKeys) delete process.env[key]
+		expect(installTargetPath()).toBe(resolveExecutablePath())
+	})
+})
+
+describe("reExecTarget", () => {
 	let tmp: string
-	let origExecPath: PropertyDescriptor | undefined
-	let origPlatform: PropertyDescriptor | undefined
-	let origEnv: string | undefined
 
 	beforeEach(() => {
-		resetHomebrewKegCacheForTests()
-		vi.mocked(realpathSync).mockClear()
-		tmp = mkdtempSync(join(tmpdir(), "kimchi-paths-test-"))
-		origExecPath = Object.getOwnPropertyDescriptor(process, "execPath")
-		origPlatform = Object.getOwnPropertyDescriptor(process, "platform")
-		origEnv = process.env.HOMEBREW_PREFIX
+		tmp = mkdtempSync(join(tmpdir(), "kimchi-reexec-test-"))
 	})
 
 	afterEach(() => {
-		if (origExecPath) Object.defineProperty(process, "execPath", origExecPath)
-		if (origPlatform) Object.defineProperty(process, "platform", origPlatform)
-		if (origEnv === undefined) process.env.HOMEBREW_PREFIX = undefined
-		else process.env.HOMEBREW_PREFIX = origEnv
 		rmSync(tmp, { recursive: true, force: true })
-		resetHomebrewKegCacheForTests()
 	})
 
-	function setExecPath(p: string) {
-		Object.defineProperty(process, "execPath", { value: p, writable: true, configurable: true })
+	function touch(path: string): string {
+		mkdirSync(dirname(path), { recursive: true })
+		writeFileSync(path, "x")
+		return path
 	}
 
-	function setPlatform(p: string) {
-		Object.defineProperty(process, "platform", { value: p, writable: true, configurable: true })
-	}
-
-	it("returns false on win32 regardless of path", () => {
-		setPlatform("win32")
-		setExecPath("C:\\Program Files\\kimchi\\kimchi.exe")
-		expect(isHomebrewInstall()).toBe(false)
+	it("returns undefined without an env binary", () => {
+		expect(reExecTarget(touch(join(tmp, "exec")), undefined)).toBeUndefined()
 	})
 
-	it("returns true via symlink detection (bin → Cellar)", () => {
-		// Fake layout:
-		//   <tmp>/Cellar/kimchi/1.2.3/bin/kimchi   ← real binary
-		//   <tmp>/bin/kimchi                        ← symlink → Cellar path
-		const cellarBin = join(tmp, "Cellar", "kimchi", "1.2.3", "bin")
-		const realBinary = join(cellarBin, "kimchi")
-		touch(realBinary)
-
-		const prefixBin = join(tmp, "bin")
-		mkdirSync(prefixBin, { recursive: true })
-		const symlink = join(prefixBin, "kimchi")
-		symlinkSync(realBinary, symlink)
-
-		process.env.HOMEBREW_PREFIX = tmp
-		setExecPath(symlink)
-		expect(isHomebrewInstall()).toBe(true)
+	it("returns undefined when the env binary does not exist", () => {
+		const exec = touch(join(tmp, "exec"))
+		expect(reExecTarget(exec, join(tmp, "bin", "kimchi-missing"))).toBeUndefined()
 	})
 
-	it("returns false when a real (non-symlink) binary sits in <prefix>/bin/", () => {
-		// Reproduces the install.sh layout on a host that also has Homebrew:
-		//   <tmp>/Cellar/…           ← exists (some other brew package)
-		//   <tmp>/bin/kimchi         ← real file dropped by install.sh, NOT a symlink
-		// The binary's resolved path is not under Cellar, so detection must
-		// return false even though a Cellar dir exists under the same prefix.
-		mkdirSync(join(tmp, "Cellar"), { recursive: true })
-		const binPath = join(tmp, "bin", "kimchi")
-		touch(binPath)
-
-		process.env.HOMEBREW_PREFIX = tmp
-		setExecPath(binPath)
-		expect(isHomebrewInstall()).toBe(false)
+	it("returns the env binary when a different executable is running", () => {
+		const exec = touch(join(tmp, "global", "kimchi"))
+		const envBinary = touch(join(tmp, "envs", "test", "bin", packagedBinaryName()))
+		// The resolved path is returned — spawn exactly what was stat'ed.
+		expect(reExecTarget(exec, envBinary)).toBe(realpathSync(envBinary))
 	})
 
-	it("names Homebrew's opt link for the binary, which an upgrade keeps", () => {
-		const keg = join(tmp, "Cellar", "kimchi", "1.2.3")
-		touch(join(keg, "bin", "kimchi"))
-		mkdirSync(join(tmp, "opt"), { recursive: true })
-		symlinkSync(keg, join(tmp, "opt", "kimchi"))
-		process.env.HOMEBREW_PREFIX = tmp
-		setExecPath(join(keg, "bin", "kimchi"))
-		expect(stableExecutablePath()).toBe(join(tmp, "opt", "kimchi", "bin", "kimchi"))
+	it("is loop-safe when the running process IS the env binary", () => {
+		const envBinary = touch(join(tmp, "envs", "test", "bin", packagedBinaryName()))
+		expect(reExecTarget(envBinary, envBinary)).toBeUndefined()
 	})
 
-	it("keeps the executable path outside Homebrew", () => {
-		mkdirSync(join(tmp, "Cellar"), { recursive: true })
-		const binPath = join(tmp, "bin", "kimchi")
-		touch(binPath)
-		process.env.HOMEBREW_PREFIX = tmp
-		setExecPath(binPath)
-		expect(stableExecutablePath()).toBe(binPath)
+	it("resolves symlinks: a symlinked env binary pointing at the running exec is not a target", () => {
+		const exec = touch(join(tmp, "global", "kimchi"))
+		const envBinary = join(tmp, "envs", "test", "bin", packagedBinaryName())
+		mkdirSync(join(envBinary, ".."), { recursive: true })
+		symlinkSync(exec, envBinary)
+		expect(reExecTarget(exec, envBinary)).toBeUndefined()
 	})
 
-	it("reuses the first realpath result across install and stable-path queries", () => {
-		const keg = join(tmp, "Cellar", "kimchi", "1.2.3")
-		const binary = join(keg, "bin", "kimchi")
-		touch(binary)
-		mkdirSync(join(tmp, "opt"), { recursive: true })
-		symlinkSync(keg, join(tmp, "opt", "kimchi"))
-		process.env.HOMEBREW_PREFIX = tmp
-		setExecPath(binary)
-
-		expect(isHomebrewInstall()).toBe(true)
-		expect(realpathSync).toHaveBeenCalledTimes(2)
-
-		expect(isHomebrewInstall()).toBe(true)
-		expect(stableExecutablePath()).toBe(join(tmp, "opt", "kimchi", "bin", "kimchi"))
-		expect(realpathSync).toHaveBeenCalledTimes(2)
+	it("returns undefined when the exec path cannot be resolved", () => {
+		const envBinary = touch(join(tmp, "envs", "test", "bin", packagedBinaryName()))
+		expect(reExecTarget(join(tmp, "does-not-exist"), envBinary)).toBeUndefined()
 	})
 
-	it("caches a failed realpath probe as a non-Homebrew install", () => {
-		process.env.HOMEBREW_PREFIX = tmp
-		setExecPath(join(tmp, "missing", "kimchi"))
-
-		expect(isHomebrewInstall()).toBe(false)
-		expect(realpathSync).toHaveBeenCalledOnce()
-		expect(isHomebrewInstall()).toBe(false)
-		expect(stableExecutablePath()).toBe(process.execPath)
-		expect(realpathSync).toHaveBeenCalledOnce()
+	it("refuses to delegate to a group/world-writable env binary (implant guardrail)", () => {
+		const exec = touch(join(tmp, "global", "kimchi"))
+		const envBinary = touch(join(tmp, "envs", "test", "bin", packagedBinaryName()))
+		chmodSync(envBinary, 0o666)
+		expect(reExecTarget(exec, envBinary)).toBeUndefined()
 	})
 
-	it("retries after an unexpected probe error leaves the cache cold", () => {
-		const binPath = join(tmp, "bin", "kimchi")
-		touch(binPath)
-		setExecPath(binPath)
-		process.env.HOMEBREW_PREFIX = tmp
-		vi.mocked(existsSync).mockImplementationOnce(() => {
-			throw new Error("unexpected probe failure")
-		})
-
-		expect(isHomebrewInstall).toThrow("unexpected probe failure")
-		const callsAfterFailure = vi.mocked(realpathSync).mock.calls.length
-		expect(isHomebrewInstall()).toBe(false)
-		expect(vi.mocked(realpathSync).mock.calls.length).toBeGreaterThan(callsAfterFailure)
-	})
-
-	it("returns false when Cellar directory does not exist under prefix", () => {
-		// prefix exists but has no Cellar/ → not treated as a Homebrew install.
-		const fakePrefix = join(tmp, "fake-prefix")
-		mkdirSync(fakePrefix, { recursive: true })
-		process.env.HOMEBREW_PREFIX = fakePrefix
-		setExecPath(join(fakePrefix, "bin", "kimchi"))
-		expect(isHomebrewInstall()).toBe(false)
+	it("delegates to a user-owned, non-writable env binary", () => {
+		const exec = touch(join(tmp, "global", "kimchi"))
+		const envBinary = touch(join(tmp, "envs", "test", "bin", packagedBinaryName()))
+		chmodSync(envBinary, 0o755)
+		expect(reExecTarget(exec, envBinary)).toBe(realpathSync(envBinary))
 	})
 })

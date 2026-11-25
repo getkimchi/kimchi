@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { backupDir, lastInstalledPath, statePath, updateResultPath } from "./paths.js"
 import {
 	isStale,
 	isUpdateCheckDisabled,
@@ -294,5 +295,56 @@ describe("isUpdateCheckDisabled", () => {
 		expect(isUpdateCheckDisabled()).toBe(true)
 		process.env.KIMCHI_NO_UPDATE_CHECK = "true"
 		expect(isUpdateCheckDisabled()).toBe(true)
+	})
+})
+
+describe("update state cache env scoping", () => {
+	let tmp: string
+	let prevXdg: string | undefined
+	const envKeys = ["KIMCHI_ENV", "KIMCHI_ENV_ROOT", "KIMCHI_ENV_LEGACY_DEFAULT"] as const
+	const saved: Partial<Record<(typeof envKeys)[number], string | undefined>> = {}
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "kimchi-update-env-test-"))
+		prevXdg = process.env.XDG_CACHE_HOME
+		// cacheBase() consults XDG_CACHE_HOME first; pin it at the temp dir so the
+		// test never touches the developer's real ~/.cache/kimchi.
+		process.env.XDG_CACHE_HOME = tmp
+		for (const key of envKeys) saved[key] = process.env[key]
+	})
+
+	afterEach(() => {
+		if (prevXdg === undefined) delete process.env.XDG_CACHE_HOME
+		else process.env.XDG_CACHE_HOME = prevXdg
+		for (const key of envKeys) {
+			const value = saved[key]
+			if (value === undefined) delete process.env[key]
+			else process.env[key] = value
+		}
+		rmSync(tmp, { recursive: true, force: true })
+	})
+
+	it("scopes state, results, last-installed, and backups under envs/<name>/ for a named env", () => {
+		process.env.KIMCHI_ENV = "test"
+		process.env.KIMCHI_ENV_ROOT = "/envs/test-root"
+		process.env.KIMCHI_ENV_LEGACY_DEFAULT = "0"
+		expect(statePath()).toBe(join(tmp, "kimchi", "envs", "test", "state.json"))
+		expect(updateResultPath()).toBe(join(tmp, "kimchi", "envs", "test", "update-result.json"))
+		expect(lastInstalledPath()).toBe(join(tmp, "kimchi", "envs", "test", "last-installed.json"))
+		expect(backupDir()).toBe(join(tmp, "kimchi", "envs", "test", "backups"))
+	})
+
+	it("keeps the legacy ~/.cache/kimchi location for the legacy default env", () => {
+		process.env.KIMCHI_ENV = "default"
+		process.env.KIMCHI_ENV_ROOT = "/legacy/root"
+		process.env.KIMCHI_ENV_LEGACY_DEFAULT = "1"
+		expect(statePath()).toBe(join(tmp, "kimchi", "state.json"))
+		expect(backupDir()).toBe(join(tmp, "kimchi", "backups"))
+	})
+
+	it("falls back to the legacy location when entry.ts has not resolved an env", () => {
+		for (const key of envKeys) delete process.env[key]
+		expect(statePath()).toBe(join(tmp, "kimchi", "state.json"))
+		expect(backupDir()).toBe(join(tmp, "kimchi", "backups"))
 	})
 })

@@ -20,8 +20,8 @@
 
 import { randomBytes } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { isAbsolute, join, normalize, resolve, sep } from "node:path"
+import { envRootOrLegacy } from "../../env-root.js"
 
 export interface DaemonRecord {
 	id: string
@@ -36,7 +36,7 @@ export interface DaemonRecord {
 
 /** Root of the daemon state directory. Overridable for tests. */
 export function daemonStateDir(): string {
-	return join(homedir(), ".config", "kimchi", "daemons")
+	return join(envRootOrLegacy(), "daemons")
 }
 
 export function ensureStateDir(dir: string): void {

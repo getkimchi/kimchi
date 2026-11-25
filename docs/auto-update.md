@@ -184,3 +184,7 @@ _Avoid_: progress indicator, toast
 The one-time, persistent announcement that auto-update is on by default and
 how to opt out. It must have been shown before any update may install.
 _Avoid_: consent gate, opt-in banner
+
+## See also
+
+- [Harness environments](environments.md) — non-default environments install their own binary under `<envRoot>/bin/kimchi`; the legacy default keeps the in-place update behavior.

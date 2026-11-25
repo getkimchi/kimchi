@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os"
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
+import { envRootOrLegacy } from "../../env-root.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 
 export const CLAUDE_CODE_SKILLS_RESOURCE_ID = "extensions.claude-code-skills"
@@ -149,6 +150,17 @@ function materializeClaudeCodeSkillDir(
 function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
 	const home = resolve(homedir())
 	const projectDir = resolve(cwd)
+	// `.config/kimchi/...` paths are env-owned: re-anchor under the active
+	// env root so a named env's configured skills resolve inside the env
+	// (the default env's legacy root is byte-identical to the home anchor).
+	// Paths already under envs/ (another environment's tree, or the fresh
+	// default) are explicit cross-references — left untouched.
+	const legacyKimchiRoot = join(home, ".config", "kimchi")
+	const reanchorEnvOwned = (p: string): string => {
+		const rel = relative(legacyKimchiRoot, p)
+		if (rel === "" || rel.startsWith("envs") || !isSameOrDescendant(p, legacyKimchiRoot)) return p
+		return join(envRootOrLegacy(), rel)
+	}
 	// The cwd expansion of a relative configured path is project-scoped:
 	// while the project is untrusted, a repo must not contribute skills
 	// through the user's configured (relative) skill paths — mirroring the
@@ -157,13 +169,13 @@ function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
 	const expanded: string[] = []
 	for (const path of paths) {
 		if (isAbsolute(path)) {
-			expanded.push(normalize(path))
+			expanded.push(reanchorEnvOwned(normalize(path)))
 		} else if (path.startsWith("~/")) {
-			expanded.push(resolve(home, path.slice(2)))
+			expanded.push(reanchorEnvOwned(resolve(home, path.slice(2))))
 		} else {
 			const fromHome = resolve(home, path)
 			const fromCwd = resolve(projectDir, path)
-			if (isSameOrDescendant(fromHome, home)) expanded.push(fromHome)
+			if (isSameOrDescendant(fromHome, home)) expanded.push(reanchorEnvOwned(fromHome))
 			if (projectScopeAllowed && isSameOrDescendant(fromCwd, projectDir)) expanded.push(fromCwd)
 		}
 	}

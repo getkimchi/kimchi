@@ -20,11 +20,13 @@ import {
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
 	populateCliArgs,
+	stripEnvArg,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
+import { envAgentDir } from "./env-root.js"
 import { createGuidedCodemodeExtension } from "./extensions/codemode/guidance.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
@@ -283,7 +285,9 @@ function getSubcommand(args: string[]): string {
 	return "harness"
 }
 
-const originalArgs = process.argv.slice(2)
+// `--env <name>` is consumed by src/entry.ts before any config import, so it
+// must not reach subcommand dispatch, the help/version path, or pi's main().
+const originalArgs = stripEnvArg(process.argv.slice(2))
 
 // No top-level await in the startup graph: `bun build --compile --bytecode`
 // (and --minify) reject TLA in bundled modules, so the remaining bootstrap
@@ -491,7 +495,7 @@ async function cliMain(): Promise<void> {
 		const cliTrustOptions = getParsedCliArgs().options
 		const cliTrustOverride =
 			cliTrustOptions["no-approve"] === true ? false : cliTrustOptions.approve === true ? true : undefined
-		const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
+		const preMainAgentDir = envAgentDir()
 		setProjectScopeTrusted(
 			process.cwd(),
 			resolvePreMainProjectTrustWithOverrides(process.cwd(), preMainAgentDir, cliTrustOverride),

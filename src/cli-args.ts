@@ -30,6 +30,7 @@ const PRE_DISPATCH_VALUE_FLAG_SHORTS: Record<string, string | undefined> = {
 	skill: undefined,
 	"prompt-template": undefined,
 	theme: undefined,
+	env: undefined,
 }
 
 const PRE_DISPATCH_VALUE_FLAGS = new Set(
@@ -194,6 +195,11 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	"no-auto-update": {
 		type: "boolean",
 		description: "Skip background updates for this session",
+	},
+	env: {
+		type: "string",
+		description: "Select the harness environment (its own config, logins, and sessions) for this run",
+		placeholder: "<name>",
 	},
 	help: {
 		type: "boolean",
@@ -445,6 +451,33 @@ export function dropRetiredMultiModelArg(args: string[]): string[] {
 		}
 		if (args[i] === "--model=multi-model") continue
 		kept.push(args[i])
+	}
+	return kept
+}
+
+/** `--env <name>` is consumed by src/entry.ts before any config import; no
+ *  downstream consumer (pi's main, subcommand dispatch) may see it. Drops
+ *  both forms: `--env <name>` and `--env=<name>`. Stops at the `--`
+ *  separator, mirroring extractEnvFlag, so prompt text after `--` is never
+ *  altered. The value is only dropped as a pair when it does not look like
+ *  another flag; a bare `--env` without a value already made entry.ts exit
+ *  with an error, so that path is unreachable in practice but stays
+ *  harmless here. */
+export function stripEnvArg(args: string[]): string[] {
+	const kept: string[] = []
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]
+		if (arg === "--") {
+			kept.push(...args.slice(i))
+			return kept
+		}
+		if (arg === "--env") {
+			const value = args[i + 1]
+			if (value !== undefined && !value.startsWith("-")) i += 1
+			continue
+		}
+		if (arg.startsWith("--env=")) continue
+		kept.push(arg)
 	}
 	return kept
 }

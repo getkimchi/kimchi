@@ -1,6 +1,7 @@
-import { existsSync, realpathSync } from "node:fs"
+import { existsSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join, normalize, win32 } from "node:path"
+import { envCacheDir, readResolvedKimchiEnv } from "../env-root.js"
 
 const APP_DIR = "kimchi"
 
@@ -28,26 +29,111 @@ export function cacheDir(): string {
 	return join(homedir(), ".cache")
 }
 
-/** State file path: ~/.cache/kimchi/state.json (or under $XDG_CACHE_HOME).
- *  Holds only the per-repo check cache; update diagnostics keep their own
- *  files below so the cache's unlock-and-save races can't clobber them. */
+/**
+ * The kimchi cache tree for the active harness environment: the legacy
+ * default keeps ~/.cache/kimchi, env trees under envs/ keep theirs under
+ * ~/.cache/kimchi/envs/<name>/ (see src/env-root.ts). Falls back to the
+ * legacy location when entry.ts hasn't resolved an env (standalone imports,
+ * tests) so path shapes are unchanged outside the harness startup flow.
+ */
+function kimchiCacheDir(): string {
+	try {
+		return envCacheDir(readResolvedKimchiEnv())
+	} catch {
+		return join(cacheDir(), APP_DIR)
+	}
+}
+
+/** State file path: <env cache>/state.json. Holds only the per-repo check
+ *  cache; update diagnostics keep their own files below so the cache's
+ *  unlock-and-save races can't clobber them. */
 export function statePath(): string {
-	return join(cacheDir(), APP_DIR, "state.json")
+	return join(kimchiCacheDir(), "state.json")
 }
 
-/** The update result file: ~/.cache/kimchi/update-result.json. */
+/** The update result file: <env cache>/update-result.json. */
 export function updateResultPath(): string {
-	return join(cacheDir(), APP_DIR, "update-result.json")
+	return join(kimchiCacheDir(), "update-result.json")
 }
 
-/** The last-installed tag file: ~/.cache/kimchi/last-installed.json. */
+/** The last-installed tag file: <env cache>/last-installed.json. */
 export function lastInstalledPath(): string {
-	return join(cacheDir(), APP_DIR, "last-installed.json")
+	return join(kimchiCacheDir(), "last-installed.json")
 }
 
 /** Backups dir: ~/.cache/kimchi/backups/. Created on demand by the installer. */
 export function backupDir(): string {
-	return join(cacheDir(), APP_DIR, "backups")
+	return join(kimchiCacheDir(), "backups")
+}
+
+/**
+ * The per-env binary path: `<envRoot>/bin/kimchi` for envs that own their
+ * state tree under envs/, where the binary's sibling share files
+ * (`<envRoot>/share/kimchi`) follow the standard layout. Undefined for the
+ * legacy default env (which keeps updating the global executable in place)
+ * and when no env has been resolved (standalone imports, tests).
+ */
+export function envBinaryPath(): string | undefined {
+	let resolved: ReturnType<typeof readResolvedKimchiEnv>
+	try {
+		resolved = readResolvedKimchiEnv()
+	} catch {
+		return undefined
+	}
+	if (resolved.legacyDefault) return undefined
+	return join(resolved.root, "bin", packagedBinaryName())
+}
+
+/**
+ * Where an update installs the binary: an explicit override, else the active
+ * env's own binary (non-legacy envs), else the running executable in place
+ * (today's behavior — the legacy default and standalone use).
+ */
+export function installTargetPath(executablePath?: string): string {
+	return executablePath ?? envBinaryPath() ?? resolveExecutablePath()
+}
+
+/**
+ * Re-exec decision, pure: the binary to delegate to when the active env owns
+ * a kimchi binary that is not the one already running. Undefined when there
+ * is no env binary, it does not exist, or the running process IS it (same
+ * file, symlinks resolved — this is the loop guard). A missing/broken execPath
+ * also yields undefined: never delegate from an unidentifiable process.
+ */
+export function reExecTarget(execPath: string, envBinary: string | undefined): string | undefined {
+	if (!envBinary) return undefined
+	let realEnvBinary: string
+	try {
+		realEnvBinary = realpathSync(envBinary)
+	} catch {
+		return undefined
+	}
+	// Trust model: the env tree is user-writable state (the bash tool, skills,
+	// and MCP filesystem tools all write into it), so a compromised session
+	// could plant a binary at <envRoot>/bin/kimchi that every later
+	// `kimchi --env <name>` would silently execute. Delegate only to a binary
+	// owned by this user and not group/world-writable — a plant by another
+	// local user fails closed to the running (globally installed) binary.
+	// Same-user writes are equivalent-privilege to replacing ~/.local/bin/kimchi
+	// itself, so no stronger integrity check is claimed. Documented in
+	// docs/environments.md.
+	try {
+		const st = statSync(realEnvBinary)
+		const uid = process.getuid?.()
+		if (uid !== undefined && st.uid !== uid) return undefined
+		if (st.mode & 0o022) return undefined
+	} catch {
+		return undefined
+	}
+	let realExec: string
+	try {
+		realExec = realpathSync(execPath)
+	} catch {
+		return undefined
+	}
+	// Return the RESOLVED path — spawn exactly what was stat'ed, so a
+	// symlink swap between the guard checks and the exec cannot redirect.
+	return realExec === realEnvBinary ? undefined : realEnvBinary
 }
 
 /**

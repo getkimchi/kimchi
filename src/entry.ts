@@ -6,14 +6,21 @@
 // cannot set PI_PACKAGE_DIR early enough. This module has zero pi-mono transitive deps,
 // guaranteeing the env var is in place before config.js reads it.
 
-import { existsSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import { existsSync, mkdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { resolve } from "node:path"
 import { pickPackageDirForBinary, resolveValidatedAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
+import type { ResolvedKimchiEnv } from "./env-root.js"
+// MUST be imported before ./ssh-proxy.js (which transitively imports
+// ./config.js, freezing config paths at evaluation time): this module
+// publishes KIMCHI_ENV_ROOT as a side effect so those constants evaluate with
+// the environment already resolved.
+import { startupEnvError, startupResolvedEnv } from "./env-root-init.js"
 import { installProxyAgent } from "./http/proxy.js"
 import { installPasteInterceptor } from "./paste-interceptor.js"
 import { isProxyMode, runProxy } from "./ssh-proxy.js"
-import { isPackagedBinaryExecPath } from "./update/paths.js"
+import { envBinaryPath, isPackagedBinaryExecPath, reExecTarget } from "./update/paths.js"
 
 // Must happen before installPasteInterceptor / installProxyAgent touch stdin/stdout.
 // SSH ProxyCommand wires stdin/stdout as a raw binary pipe — any bytes written
@@ -21,6 +28,27 @@ import { isPackagedBinaryExecPath } from "./update/paths.js"
 const rawArgv = process.argv.slice(2)
 if (isProxyMode(rawArgv)) {
 	runProxy(rawArgv[rawArgv.indexOf("--ssh-proxy") + 1])
+}
+
+// Per-env binary: when the active env owns its own kimchi binary and this
+// process is not already it, delegate to it (same argv, inherited stdio/env;
+// the child re-resolves the same env from the exported KIMCHI_ENV* vars).
+// Loop-safe: inside the env binary, execPath IS the env binary, so
+// reExecTarget returns undefined. Dev launches (bun interpreter execPath)
+// are excluded by the packaged-binary guard.
+if (isPackagedBinaryExecPath(process.execPath)) {
+	const delegate = reExecTarget(process.execPath, envBinaryPath())
+	if (delegate) {
+		const result = spawnSync(delegate, rawArgv, { stdio: "inherit", env: process.env })
+		// Surface spawn failures instead of a silent exit-1, and re-raise
+		// the child's signal so supervisors see the child's actual fate
+		// (e.g. SIGINT surfaces as a signal death, not exit(1)).
+		if (result.error) {
+			console.error(`kimchi: failed to launch env binary ${delegate}: ${result.error.message}`)
+		}
+		if (result.signal) process.kill(process.pid, result.signal)
+		else process.exit(result.status ?? 1)
+	}
 }
 
 // An inherited PI_PACKAGE_DIR (e.g. kimchi started from inside another
@@ -51,8 +79,27 @@ if (existsSync(oauthTemplateDir)) {
 }
 
 const inheritedPiAgentDir = process.env.PI_CODING_AGENT_DIR
-const agentDir = resolve(homedir(), ".config", "kimchi", "harness")
-process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+// Harness environment: resolved at import time by ./env-root-init.js (see
+// that module for why import order is load-bearing). This block surfaces a
+// resolution failure as a clean startup error and derives the agent dir —
+// and with it sessions, logins, and MCP state — from the env root.
+const kimchiEnv: ResolvedKimchiEnv | undefined = startupResolvedEnv()
+if (!kimchiEnv) {
+	console.error(`kimchi: ${startupEnvError() ?? "harness environment resolution failed"}`)
+	process.exit(1)
+}
+const agentDir = resolve(kimchiEnv.root, "harness")
+// KIMCHI_CODING_AGENT_DIR is already set (and the inherited value preserved in
+// KIMCHI_ORIGINAL_CODING_AGENT_DIR) by ./env-root-init.js — it must be
+// published at import time, before config.ts freezes AGENT_CONFIG_DIR.
+//
+// Fresh env trees own their state dir. The legacy layout is left exactly
+// as pi-mono expects to find it — it creates what it needs, when needed.
+// (--version et al. also create the dir via the pre-main trust lock — the
+// pre-environments behavior at the legacy path was identical.)
+if (!kimchiEnv.legacyDefault) {
+	mkdirSync(agentDir, { recursive: true })
+}
 if (inheritedPiAgentDir && !process.env.KIMCHI_ORIGINAL_PI_CODING_AGENT_DIR) {
 	process.env.KIMCHI_ORIGINAL_PI_CODING_AGENT_DIR = inheritedPiAgentDir
 }

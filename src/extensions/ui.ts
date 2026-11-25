@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process"
 import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -19,6 +18,7 @@ import {
 	StatusLineScript,
 } from "../components/status-line.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
+import { envAgentDir } from "../env-root.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { getActiveAnchor } from "../shared/active-anchor.js"
 import { refreshGitBranch } from "../utils.js"
@@ -98,7 +98,7 @@ export function findNextCompatibleModel(
 	return { model: undefined, skipped }
 }
 
-const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
+const HARNESS_SETTINGS_PATH = join(envAgentDir(), "settings.json")
 
 function getEnabledModelIds(): Set<string> | null {
 	try {

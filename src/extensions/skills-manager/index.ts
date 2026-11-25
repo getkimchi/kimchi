@@ -1,8 +1,8 @@
 import { realpathSync } from "node:fs"
-import { homedir } from "node:os"
 import { dirname, join, resolve, sep } from "node:path"
 import type { ExtensionAPI, Skill, SlashCommandInfo } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
+import { envAgentDir } from "../../env-root.js"
 import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { createSkillAutoLoader, SKILL_AUTOLOAD_LOADED_TYPE, type SkillAutoLoadData } from "./auto-load.js"
 import { SkillManager } from "./skill-manager.js"
@@ -20,7 +20,7 @@ export interface SkillsManagerOptions {
 }
 
 export default function skillsManagerExtension(pi: ExtensionAPI, options?: SkillsManagerOptions): void {
-	const skillsDir = options?.skillsDir ?? join(homedir(), ".config", "kimchi", "harness", "skills")
+	const skillsDir = options?.skillsDir ?? join(envAgentDir(), "skills")
 	// Bundled skills ship with the harness (resources/skills in dev, staged share
 	// dir in binaries) and are discoverable read-only — no home-dir deploy needed.
 	const bundled = resolveBundledSkillsDir()

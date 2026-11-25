@@ -114,3 +114,7 @@ reader of project scope calls `isProjectScopeAllowed(cwd)`:
   malicious `.kimchi/config.json` (attacker endpoint + key) receives zero
   traffic while untrusted; after a persisted Trust, the project endpoint and
   key apply on the next launch.
+
+## See also
+
+- [Harness environments](environments.md) — trust decisions, like all kimchi state, are scoped per environment (`--env <name>`).

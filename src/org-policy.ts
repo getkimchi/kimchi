@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 
 import { fetchOrgPolicy, type OrgPolicy, parseResourcePolicyMap, parseResourcePolicyName } from "./api/org-settings.js"
+import { envRootOrLegacy } from "./env-root.js"
 
 /**
  * Org-policy delivery (fetch-first; the cache is only the offline fallback):
@@ -19,7 +19,7 @@ import { fetchOrgPolicy, type OrgPolicy, parseResourcePolicyMap, parseResourcePo
  * - A key rejected on verify (401) clears the holder and wipes this key's
  *   cache (fail open, scoped to that key).
  */
-const ORG_POLICY_CACHE_PATH = resolve(homedir(), ".config", "kimchi", "org-policy.json")
+const ORG_POLICY_CACHE_PATH = resolve(envRootOrLegacy(), "org-policy.json")
 
 interface OrgPolicyCacheFile {
 	keyFingerprint: string

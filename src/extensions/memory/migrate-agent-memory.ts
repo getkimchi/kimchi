@@ -17,8 +17,8 @@
  * that memory must never break a session.
  */
 import { type Dirent, existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
+import { envAgentDir } from "../../env-root.js"
 import { createMemoryBackend, defaultMemoryDir, memoryDbPath } from "./backend.js"
 import { MEMORY_SCOPE_ID, MEMORY_USER_ID } from "./config.js"
 
@@ -55,8 +55,13 @@ export function agentMemoryMigrationMarkerPath(memoryDir = defaultMemoryDir()): 
  * at the legacy 200-line read. Pure — no backend construction; exported for
  * tests.
  */
-export function collectAgentMemoryFiles(homeDir = homedir()): Array<{ agentName: string; content: string }> {
-	const root = join(homeDir, ".config", "kimchi", "harness", "agent-memory")
+export function collectAgentMemoryFiles(homeDir?: string): Array<{ agentName: string; content: string }> {
+	// Env-scoped when no homeDir is injected (the active env's agent dir);
+	// an explicit homeDir keeps the legacy home-relative layout (tests).
+	const root =
+		homeDir !== undefined
+			? join(homeDir, ".config", "kimchi", "harness", "agent-memory")
+			: join(envAgentDir(), "agent-memory")
 	if (!existsSync(root) || isSymlink(root)) return []
 	let entries: Dirent[]
 	try {
@@ -86,11 +91,12 @@ export function collectAgentMemoryFiles(homeDir = homedir()): Array<{ agentName:
  * transient failure is retried on the next session start.
  */
 export async function migrateAgentMemory(options: { homeDir?: string; memoryDir?: string } = {}): Promise<number> {
-	const homeDir = options.homeDir ?? homedir()
 	const memoryDir = options.memoryDir ?? defaultMemoryDir()
 	if (existsSync(agentMemoryMigrationMarkerPath(memoryDir))) return 0
 	try {
-		const files = collectAgentMemoryFiles(homeDir)
+		// An explicit homeDir keeps the legacy home-relative layout; omitted,
+		// collectAgentMemoryFiles reads the active env's agent dir.
+		const files = collectAgentMemoryFiles(options.homeDir)
 		if (files.length === 0) {
 			writeMarker(memoryDir)
 			return 0

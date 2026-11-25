@@ -1,7 +1,7 @@
-import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import { resolve } from "node:path"
 import type { ResourcePolicy } from "../api/org-settings.js"
 import { readJson, readJsonCached, writeJson } from "../config/json.js"
+import { envAgentDir } from "../env-root.js"
 import { getOrgPolicy } from "../org-policy.js"
 import { getResourceDefinition } from "./definitions.js"
 import { type ListedResourceSetting, RESOURCE_KINDS, type ResourceId, type ResourceSettings } from "./types.js"
@@ -9,9 +9,7 @@ import { type ListedResourceSetting, RESOURCE_KINDS, type ResourceId, type Resou
 const SETTINGS_KEY = "resources"
 
 export function getResourceSettingsPath(): string {
-	return process.env.KIMCHI_CODING_AGENT_DIR
-		? resolve(process.env.KIMCHI_CODING_AGENT_DIR, "settings.json")
-		: join(homedir(), ".config", "kimchi", "harness", "settings.json")
+	return resolve(envAgentDir(), "settings.json")
 }
 
 export const settingsPath = getResourceSettingsPath
