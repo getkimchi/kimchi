@@ -103,7 +103,8 @@ describe("session-messages", () => {
 		expect(beta.harness.sendMessage).toHaveBeenCalledWith(
 			{
 				customType: CROSS_SESSION_MESSAGE_TYPE,
-				content: '<cross-session-message from="alpha [aaaaa1]">\nRun the tests, please.\n</cross-session-message>',
+				content:
+					'<cross-session-message from="alpha [aaaaa1]">\nRun the tests, please.\n</cross-session-message>\nThat session does not see your replies here. Answer it with send_message to "alpha [aaaaa1]".',
 				display: true,
 				details: { from: "alpha [aaaaa1]" },
 			},

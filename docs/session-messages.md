@@ -56,9 +56,10 @@ The agent uses two tools:
 ### Sessions
 
 The other session sees the text as
-`<cross-session-message from="name [ref]">…</cross-session-message>`. A busy session reads
-it when its current step ends; an idle one starts a turn. It answers with `send_message`
-to the `from` address. A reply finds the sender by its ref, so it arrives even after the
+`<cross-session-message from="name [ref]">…</cross-session-message>`, followed by a line
+telling it to answer with `send_message`, since its own transcript is not seen by the
+sender. A busy session reads it when its current step ends; an idle one starts a turn. It
+answers with `send_message` to the `from` address. A reply finds the sender by its ref, so it arrives even after the
 sender's name has changed.
 
 ## Permission modes

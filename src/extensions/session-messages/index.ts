@@ -79,6 +79,10 @@ type Reply = { ok: true; info?: SessionInfo; held?: boolean } | { ok: false; err
 
 const address = (session: Pick<SessionInfo, "name" | "ref">) => `${session.name} [${session.ref}]`
 
+/** Without it, models answer in their own transcript, where the sending session never sees it. */
+export const replyHint = (from: string) =>
+	`That session does not see your replies here. Answer it with send_message to "${from}".`
+
 function readLine(socket: net.Socket): Promise<string> {
 	return new Promise((resolve, reject) => {
 		let buffer = ""
@@ -243,7 +247,7 @@ export function createSessionMessagesExtension(
 				pi.sendMessage(
 					{
 						customType: CROSS_SESSION_MESSAGE_TYPE,
-						content: `<cross-session-message from="${request.from}">\n${request.text}\n</cross-session-message>`,
+						content: `<cross-session-message from="${request.from}">\n${request.text}\n</cross-session-message>\n${replyHint(request.from)}`,
 						display: true,
 						details: { from: request.from },
 					},
