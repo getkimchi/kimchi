@@ -11,8 +11,8 @@ import {
 	getAgentDir,
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent"
-import { fileMatchStrength, getNote, isWorkId, setNote } from "@getkimchi/kimchi-bridge/ledger"
-import { SHA } from "@getkimchi/kimchi-bridge/reconcile"
+import { getNote, isWorkId, setNote } from "@getkimchi/kimchi-bridge/ledger"
+import { reconcileRepositoryTransitions } from "@getkimchi/kimchi-bridge/reconcile"
 import {
 	appendWorkRecord,
 	getToolRequest,
@@ -22,12 +22,11 @@ import {
 	tryWorkAttributionAsync,
 	type WorkContext,
 } from "../work-attribution.js"
-import { MAX_HUNK_BYTES, matchesFileHunks } from "./file-hunks.js"
-import { readFileTransitionRepositories, readWorkRecordsOfType, SHA256_HEX, type WorkRecord } from "./summary.js"
+import { MAX_HUNK_BYTES } from "./file-hunks.js"
+import { readWorkRecordsOfType, SHA256_HEX, type WorkRecord } from "./summary.js"
 
 const GIT_TIMEOUT_MS = 2000
 const MAX_FILE_BYTES = 8 * 1024 * 1024
-const MAX_COMMITS = 512
 const RECONCILIATION_BUDGET_MS = 3000
 export interface FileState {
 	blob: string
@@ -437,10 +436,6 @@ function transitionJournal(repository: string, worktree: string): string {
 		`${digest(Buffer.from(JSON.stringify([repository, worktree])))}.jsonl`,
 	)
 }
-function records(path: string): Record<string, unknown>[] {
-	if (!existsSync(path)) return []
-	return parseRecords(readFileSync(path, "utf8"))
-}
 function parseRecords(text: string): Record<string, unknown>[] {
 	const result: Record<string, unknown>[] = []
 	for (const line of text.split("\n")) {
@@ -494,47 +489,14 @@ async function journalOwner(path: string): Promise<FileTransition | undefined> {
 		await file.close()
 	}
 }
-/** Whole-type ledger reads shared by one supervisor pass, so the table is parsed once, not once per repository. Rows written mid-pass wait for the next pass. */
-export interface SharedTypeReads {
-	fileTransitions?: WorkRecord[]
-	commits?: WorkRecord[]
-}
-
-export async function knownTransitionRepositories(checkBudget: () => void = () => {}): Promise<string[]> {
-	const repositories = new Set<string>()
-	// Hydrate, then let the backend return only distinct repositories: decoding
-	// every historical transition body here dominated discovery passes. Legacy
-	// JSONL files are still covered below for processes that predate the store.
-	try {
-		for (const repository of readFileTransitionRepositories(getAgentDir())) repositories.add(repository)
-	} catch {
-		// No store; the JSONL scan below still works.
-	}
-	for (const path of await journalPaths()) {
-		checkBudget()
-		const owner = await journalOwner(path)
-		if (owner) repositories.add(owner.repository)
-	}
-	return [...repositories].sort()
-}
-async function readJournals(
-	repository: string,
-	checkBudget: () => void,
-	shared?: SharedTypeReads,
-): Promise<TransitionJournal[]> {
+async function readJournals(repository: string, checkBudget: () => void): Promise<TransitionJournal[]> {
 	const journals: TransitionJournal[] = []
 	const boundaries = new Map<string, string[] | undefined>()
 	// Native captures write transitions only into the ledger (C2): they are the journal now. The
 	// store is authoritative, so never fall back to JSONL when it holds rows for this repository.
 	let ledgerTransitions: Transition[] = []
 	try {
-		// Cache on first read like knownTransitionRepositories does, so every entry point
-		// into a pass shares the single read.
-		let rows = shared?.fileTransitions
-		if (rows === undefined) {
-			rows = readWorkRecordsOfType(getAgentDir(), "file_transition")
-			if (shared !== undefined) shared.fileTransitions = rows
-		}
+		const rows = readWorkRecordsOfType(getAgentDir(), "file_transition")
 		ledgerTransitions = rows.filter(
 			(row): row is WorkRecord & Transition => isTransition(row) && row.repository === repository,
 		)
@@ -647,143 +609,6 @@ export async function readAttributedFileStates(
 		}
 	})
 }
-interface CommitCandidate {
-	sha: string
-	position: number
-	invalidatedBefore: number
-}
-
-function commitsFromReflog(log: Buffer, start: number): CommitCandidate[] {
-	const lines = log.subarray(start).toString("utf8").split("\n")
-	lines.pop() // Never accept an incomplete reflog transaction.
-	const candidates: CommitCandidate[] = []
-	let offset = start
-	let invalidatedBefore = -1
-	for (const line of lines) {
-		const position = offset
-		offset += Buffer.byteLength(line) + 1
-		const action = line.slice(line.indexOf("\t") + 1)
-		if (["commit:", "commit (initial):", "commit (amend):"].some((prefix) => action.startsWith(prefix))) {
-			candidates.push({ sha: line.split(" ")[1], position, invalidatedBefore })
-		} else invalidatedBefore = position
-	}
-	return candidates.slice(-MAX_COMMITS).reverse()
-}
-
-/** Match a complete, single-work edit chain to each file's parent and committed states. */
-async function matchCommitTransitions(
-	worktree: string,
-	commit: CommitCandidate,
-	transitions: Transition[],
-	checkBudget: () => void,
-	signal?: AbortSignal,
-): Promise<Transition[]> {
-	const parents = (await git(worktree, ["rev-list", "--parents", "-n", "1", commit.sha], { signal }))
-		.split(" ")
-		.slice(1)
-	if (parents.length > 1) return []
-	const parent = parents[0] ?? null
-	const transitionsByPath = new Map<string, Transition[]>()
-	for (const transition of transitions) {
-		if (transition.cursor.bytes > commit.position) continue
-		const group = transitionsByPath.get(transition.path) ?? []
-		group.push(transition)
-		transitionsByPath.set(transition.path, group)
-	}
-
-	const matched: Transition[] = []
-	for (const [path, fileTransitions] of transitionsByPath) {
-		checkBudget()
-		const parentFile = await treeState(worktree, parent, path, signal)
-		checkBudget()
-		// Discarded edits still count as competing ownership evidence.
-		const owners = new Set(fileTransitions.filter((row) => same(row.baselineFile, parentFile)).map((row) => row.workId))
-		if (owners.size !== 1) continue
-		const surviving = fileTransitions.filter((row) => row.cursor.bytes > commit.invalidatedBefore)
-		// Start at the commit parent's clean state, then require every later edit to connect.
-		const starts = surviving.filter((row) => same(row.before, parentFile) && same(row.baselineFile, row.before))
-		if (starts.length !== 1) continue
-		const first = starts[0]
-		const chain = surviving.slice(surviving.indexOf(first))
-		if (
-			!chain.every(
-				(row, index) => row.workId === first.workId && (index === 0 || same(row.before, chain[index - 1].after)),
-			)
-		)
-			continue
-		const after = chain[chain.length - 1].after
-		if (same(first.before, after) || !same(await treeState(worktree, commit.sha, path, signal), after)) continue
-		matched.push(...chain)
-	}
-	return matched
-}
-
-/** Keep one contribution per work/session, including every matching file transition. */
-function appendCommitContributions(
-	sha: string,
-	transitions: Transition[],
-	recordedCommits: Record<string, unknown>[],
-	method: "file-chain" | "path-blob" | "file-hunks" = "file-chain",
-	assertLease: () => void = () => {},
-): void {
-	const contributions = new Map<string, { owner: Transition; paths: string[]; transitionIds: string[] }>()
-	for (const transition of transitions) {
-		const recorded = recordedCommits.some(
-			(row) =>
-				row.sha === sha &&
-				row.workId === transition.workId &&
-				row.sessionId === transition.sessionId &&
-				row.repository === transition.repository &&
-				row.worktree === transition.worktree &&
-				Array.isArray(row.fileMatches) &&
-				row.fileMatches.some(
-					(match) =>
-						match.path === transition.path &&
-						match.worktree === transition.worktree &&
-						(fileMatchStrength(match.method) > fileMatchStrength(method) ||
-							(match.method === method &&
-								Array.isArray(match.transitionIds) &&
-								match.transitionIds.includes(transition.transitionId))),
-				),
-		)
-		if (recorded) continue
-		const key = JSON.stringify([transition.sessionId, transition.workId, transition.worktree])
-		const contribution = contributions.get(key) ?? { owner: transition, paths: [], transitionIds: [] }
-		if (!contribution.paths.includes(transition.path)) contribution.paths.push(transition.path)
-		contribution.transitionIds.push(transition.transitionId)
-		contributions.set(key, contribution)
-	}
-	for (const { owner, paths, transitionIds } of contributions.values()) {
-		const fileMatches = paths.sort().map((path) => ({
-			path,
-			method,
-			worktree: owner.worktree,
-			transitionIds: transitions
-				.filter(
-					(row) =>
-						row.sessionId === owner.sessionId &&
-						row.workId === owner.workId &&
-						row.worktree === owner.worktree &&
-						row.path === path,
-				)
-				.map((row) => row.transitionId),
-		}))
-		const fields = {
-			type: "commit",
-			source: "native-file-transition",
-			sha,
-			repository: owner.repository,
-			worktree: owner.worktree,
-			paths: paths.sort(),
-			transitionIds,
-			fileMatches,
-		}
-		assertLease()
-		appendWorkRecord({ cwd: owner.cwd, sessionManager: { getSessionId: () => owner.sessionId } }, fields, owner.workId)
-		recordedCommits.push({ ...fields, workId: owner.workId, sessionId: owner.sessionId })
-	}
-}
-
 /** Reconcile this repository, including contribution journals from its other or deleted worktrees. */
 export async function reconcileFileTransitions(ctx: WorkContext, signal?: AbortSignal): Promise<void> {
 	await tryWorkAttributionAsync(async () => {
@@ -801,318 +626,4 @@ export async function reconcileFileTransitions(ctx: WorkContext, signal?: AbortS
 			if (!signal?.aborted) throw error
 		}
 	})
-}
-interface JournalHistory {
-	journal: TransitionJournal
-	log?: Buffer
-	transitions: FileTransition[]
-}
-async function readJournalHistory(journal: TransitionJournal, signal?: AbortSignal): Promise<JournalHistory> {
-	const worktree = journal.transitions[0]?.worktree
-	if (!worktree || !existsSync(worktree)) return { journal, transitions: journal.transitions }
-	let repository: string
-	try {
-		repository = realpathSync(
-			await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"], { signal }),
-		)
-	} catch {
-		signal?.throwIfAborted()
-		return { journal, transitions: journal.transitions }
-	}
-	// The path can outlive its old checkout. Its saved ref boundary still belongs to the original repository.
-	if (repository !== journal.transitions[0].repository) return { journal, transitions: journal.transitions }
-	const log = await reflog(worktree, signal)
-	const prefixDigests = new Map<number, string>()
-	const transitions = journal.transitions.filter((row) => {
-		if (row.cursor.bytes > log.length) return false
-		if (!prefixDigests.has(row.cursor.bytes))
-			prefixDigests.set(row.cursor.bytes, digest(log.subarray(0, row.cursor.bytes)))
-		return prefixDigests.get(row.cursor.bytes) === row.cursor.digest
-	})
-	return { journal, log, transitions }
-}
-async function reconcileExactHistory(
-	history: JournalHistory,
-	recordedCommits: Record<string, unknown>[],
-	checkBudget: () => void,
-	assertLease: () => void,
-	signal?: AbortSignal,
-): Promise<void> {
-	const { journal, log, transitions } = history
-	if (!log || !transitions.length) return
-	const start = Math.min(...transitions.map((row) => row.cursor.bytes))
-	const candidates = commitsFromReflog(log, start)
-	// Resume only completed candidates from the same evidence snapshot, including unresolved ones.
-	const evidence = `${journal.digest}:${digest(log)}`
-	const progressPath = `${journal.path}.progress`
-	const progress = checkpointOf(progressPath, "progress")
-	const completed =
-		progress?.evidence === evidence ? candidates.findIndex((row) => row.position === progress.position) : -1
-	for (const candidate of candidates.slice(completed + 1)) {
-		checkBudget()
-		const matched = await matchCommitTransitions(transitions[0].worktree, candidate, transitions, checkBudget, signal)
-		appendCommitContributions(candidate.sha, matched, recordedCommits, "file-chain", assertLease)
-		// Checkpoint only after the whole candidate was evaluated and its contributions were saved.
-		assertLease()
-		setNote(getAgentDir(), progressPath, "progress", JSON.stringify({ evidence, position: candidate.position }))
-	}
-}
-
-/** Progress resumption markers are named ledger notes now; legacy installs keep their file copies. */
-function checkpointOf(progressPath: string, name: string): Record<string, unknown> | undefined {
-	const note = getNote(getAgentDir(), progressPath, name)
-	if (note !== undefined) {
-		try {
-			return JSON.parse(note) as Record<string, unknown>
-		} catch {
-			return undefined
-		}
-	}
-	return records(progressPath).at(-1)
-}
-
-/** HEAD actions that actually create a commit, unlike checkout/reset/pull of existing history. */
-function createdAfter(log: Buffer, cursor: number): Map<string, string> {
-	const commits = new Map<string, string>()
-	for (const line of log.subarray(cursor).toString("utf8").split("\n")) {
-		const action = line.slice(line.indexOf("\t") + 1)
-		if (
-			/^(?:commit(?: \(initial\)| \(amend\))?|rebase(?: -i)? \((?:pick|reword|edit|squash|fixup|continue)\)|cherry-pick):/.test(
-				action,
-			)
-		)
-			commits.set(line.split(" ")[1], action)
-	}
-	return commits
-}
-interface ContentEvidence {
-	transition: FileTransition
-	requireAncestry: boolean
-	canMatch: boolean
-}
-async function contentCandidates(
-	repository: string,
-	histories: JournalHistory[],
-	checkBudget: () => void,
-	signal?: AbortSignal,
-): Promise<Map<string, ContentEvidence[]>> {
-	const candidates = new Map<string, ContentEvidence[]>()
-	const boundaries = new Map<string, Set<string>>()
-	const uncertain: ContentEvidence[] = []
-	for (const history of histories) {
-		const validCursors = new Set(history.transitions)
-		for (const row of history.journal.transitions) {
-			checkBudget()
-			const cursorValid = validCursors.has(row)
-			const canMatch = cursorValid || Boolean(row.refTips)
-			const local = cursorValid && history.log ? createdAfter(history.log, row.cursor.bytes) : undefined
-			if (!row.refTips && !local?.size) {
-				uncertain.push({ transition: row, requireAncestry: false, canMatch: false })
-				continue
-			}
-			let fresh = local ? new Set(local.keys()) : new Set<string>()
-			if (row.refTips) {
-				const key = JSON.stringify([row.refTips, [...fresh]])
-				let boundary = boundaries.get(key)
-				if (!boundary) {
-					const revisions = await git(
-						repository,
-						["rev-list", `--max-count=${MAX_COMMITS}`, "--all", ...fresh, "--not", ...row.refTips],
-						{ signal },
-					)
-					boundary = new Set(revisions.split("\n").filter(Boolean))
-					boundaries.set(key, boundary)
-				}
-				fresh = boundary
-			}
-			for (const sha of fresh) {
-				checkBudget()
-				const rows = candidates.get(sha) ?? []
-				rows.push({
-					transition: row,
-					requireAncestry: Boolean(
-						cursorValid && history.log && row.baseline && !local?.get(sha)?.startsWith("rebase"),
-					),
-					canMatch,
-				})
-				candidates.set(sha, rows)
-			}
-		}
-	}
-	// Old rows without a usable time boundary can veto conflicting ownership, never create a match.
-	for (const rows of candidates.values()) rows.push(...uncertain)
-	return candidates
-}
-async function matchesCommittedHunks(
-	repository: string,
-	chain: FileTransition[],
-	parent: FileState | null,
-	committed: FileState | null,
-	checkBudget: () => void,
-	signal?: AbortSignal,
-): Promise<boolean> {
-	const before = chain[0].before
-	const after = chain[chain.length - 1].after
-	// A chain that created the file starts from empty text, which only a commit adding the file can share.
-	if (!committed || (before === null) !== (parent === null)) return false
-	const states = before && parent ? [before, after, parent, committed] : [after, committed]
-	if (states.some((state) => state.mode !== after.mode)) return false
-	const blobs = states.map((state) => state.blob)
-	if (!blobs.every((blob) => SHA.test(blob))) return false
-	// Snapshots come from Kimchi's store; the parent and committed blobs, and snapshots of older builds, from the repository.
-	const options = {
-		input: Buffer.from(blobs.map((blob) => `${blob}\n`).join("")),
-		signal,
-		env: { GIT_ALTERNATE_OBJECT_DIRECTORIES: snapshotObjects(repository) },
-	}
-	checkBudget()
-	const info = (await git(repository, ["cat-file", "--batch-check=%(objecttype) %(objectsize)"], options)).split("\n")
-	checkBudget()
-	for (const [index, blob] of blobs.entries()) {
-		// Git reports optional snapshots removed by GC separately from interrupted or failed reads.
-		if (info[index] === `${blob} missing`) return false
-		const size = /^blob (\d+)$/.exec(info[index] ?? "")
-		if (!size) throw new Error("Invalid Git snapshot response")
-		// Check the declared size before reading a commit that may contain a large human addition.
-		if (Number(size[1]) > MAX_HUNK_BYTES) return false
-	}
-	const data = await gitBytes(repository, ["cat-file", "--batch"], options)
-	checkBudget()
-	const texts: string[] = []
-	let offset = 0
-	for (const blob of blobs) {
-		// Each object is `<id> blob <size>\n<content>\n`.
-		const header = data.indexOf(10, offset)
-		const [id, type, size] = data.subarray(offset, header).toString("utf8").split(" ")
-		if (header < 0 || id !== blob || type !== "blob" || !/^\d+$/.test(size))
-			throw new Error("Invalid Git snapshot response")
-		const text = data.subarray(header + 1, header + 1 + Number(size))
-		offset = header + 2 + Number(size)
-		if (!isUtf8(text) || text.includes(0)) return false
-		texts.push(text.toString("utf8"))
-	}
-	const text = (state: FileState | null) => (state ? texts[states.indexOf(state)] : "")
-	return matchesFileHunks(text(before), text(after), text(parent), text(committed), checkBudget)
-}
-/** Content identity is weaker than a complete reflog chain; retain that distinction per file. */
-async function matchContentTransitions(
-	repository: string,
-	sha: string,
-	evidence: ContentEvidence[],
-	checkBudget: () => void,
-	signal?: AbortSignal,
-): Promise<{ blobs: FileTransition[]; hunks: FileTransition[] }> {
-	const matched: { blobs: FileTransition[]; hunks: FileTransition[] } = { blobs: [], hunks: [] }
-	const parents = (await git(repository, ["rev-list", "--parents", "-n", "1", sha], { signal })).split(" ").slice(1)
-	if (parents.length > 1) return matched
-	const parent = parents[0] ?? null
-	const changedPaths = new Set(
-		(
-			await git(repository, ["diff-tree", "--root", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", sha], {
-				signal,
-			})
-		)
-			.split("\0")
-			.filter(Boolean),
-	)
-	const ancestry = new Map<string, boolean>()
-	const byPath = new Map<string, FileTransition[]>()
-	const uncertain = new Set<FileTransition>()
-	for (const { transition: row, requireAncestry, canMatch } of evidence) {
-		if (!changedPaths.has(row.path)) continue
-		checkBudget()
-		if (!canMatch) uncertain.add(row)
-		// A reset to an older baseline does not prove that this work survived it.
-		if (requireAncestry && row.baseline) {
-			if (!ancestry.has(row.baseline)) {
-				try {
-					await git(repository, ["merge-base", "--is-ancestor", row.baseline, sha], { signal })
-					ancestry.set(row.baseline, true)
-				} catch (error) {
-					// Only exit 1 means "not an ancestor"; interrupted/failed reads must remain retryable.
-					if (!(error instanceof Error && "code" in error && error.code === 1)) throw error
-					ancestry.set(row.baseline, false)
-				}
-			}
-			if (!ancestry.get(row.baseline)) continue
-		}
-		const rows = byPath.get(row.path) ?? []
-		rows.push(row)
-		byPath.set(row.path, rows)
-	}
-	for (const [path, rows] of byPath) {
-		checkBudget()
-		if (new Set(rows.map((row) => row.workId)).size !== 1) continue
-		const before = await treeState(repository, parent, path, signal)
-		checkBudget()
-		const after = await treeState(repository, sha, path, signal)
-		if (same(before, after)) continue
-		for (const worktree of new Set(rows.map((row) => row.worktree))) {
-			let chain = rows.filter((row) => row.worktree === worktree)
-			// Earlier edits already present in the parent did not contribute to this commit.
-			const starts = chain.filter((row) => same(row.before, before) && same(row.before, row.baselineFile))
-			if (starts.length > 1) continue
-			if (starts.length === 1) chain = chain.slice(chain.indexOf(starts[0]))
-			if (chain.some((row) => uncertain.has(row))) continue
-			const last = chain[chain.length - 1]
-			if (same(chain[0].before, last.after)) continue
-			if (!chain.every((row, index) => index === 0 || same(row.before, chain[index - 1].after))) continue
-			if (same(chain[0].before, chain[0].baselineFile) && same(last.after, after)) matched.blobs.push(...chain)
-			else if (await matchesCommittedHunks(repository, chain, before, after, checkBudget, signal))
-				matched.hunks.push(...chain)
-		}
-	}
-	return matched
-}
-async function reconcileContentHistory(
-	repository: string,
-	histories: JournalHistory[],
-	recordedCommits: Record<string, unknown>[],
-	checkBudget: () => void,
-	assertLease: () => void,
-	signal?: AbortSignal,
-): Promise<void> {
-	// Missing ownership evidence must neither produce a partial match nor advance the weak-match checkpoint.
-	if (histories.some(({ journal }) => journal.transitions.some((row) => row.historyBoundaryId && !row.refTips))) return
-	const candidates = await contentCandidates(repository, histories, checkBudget, signal)
-	const evidence = `content-v3:${histories.map(({ journal, log }) => `${journal.digest}:${log ? digest(log) : "deleted"}`).join(":")}:${[...candidates.keys()].join(":")}`
-	const progressPath = `${histories[0].journal.path}.content-checkpoint`
-	const progress = checkpointOf(progressPath, "content-checkpoint")
-	const entries = [...candidates]
-	const completed = progress?.evidence === evidence ? entries.findIndex(([sha]) => sha === progress.sha) : -1
-	for (const [sha, transitions] of entries.slice(completed + 1)) {
-		checkBudget()
-		const matched = await matchContentTransitions(repository, sha, transitions, checkBudget, signal)
-		appendCommitContributions(sha, matched.blobs, recordedCommits, "path-blob", assertLease)
-		appendCommitContributions(sha, matched.hunks, recordedCommits, "file-hunks", assertLease)
-		assertLease()
-		setNote(getAgentDir(), progressPath, "content-checkpoint", JSON.stringify({ evidence, sha }))
-	}
-}
-/** The supervisor supplies its shared deadline and lease; direct callers get one bounded pass. */
-export async function reconcileRepositoryTransitions(
-	repository: string,
-	signal?: AbortSignal,
-	checkBudget = reconciliationBudget(signal),
-	assertLease: () => void = () => {},
-	shared?: SharedTypeReads,
-): Promise<void> {
-	if (!existsSync(repository)) return
-	const journals = await readJournals(repository, checkBudget, shared)
-	if (!journals.length) return
-	const histories: JournalHistory[] = []
-	// Commit contributions live in the ledger now; the old session journal files were imported (A2).
-	if (shared === undefined) shared = {}
-	let recordedCommits: WorkRecord[] | undefined = shared.commits
-	if (recordedCommits === undefined) {
-		recordedCommits = readWorkRecordsOfType(getAgentDir(), "commit")
-		shared.commits = recordedCommits
-	}
-	for (const journal of journals) {
-		checkBudget()
-		histories.push(await readJournalHistory(journal, signal))
-	}
-	for (const history of histories)
-		await reconcileExactHistory(history, recordedCommits, checkBudget, assertLease, signal)
-	await reconcileContentHistory(repository, histories, recordedCommits, checkBudget, assertLease, signal)
 }

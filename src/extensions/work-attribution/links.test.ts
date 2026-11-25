@@ -4,7 +4,12 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { backendFor, capture, setNote } from "@getkimchi/kimchi-bridge/ledger"
-import { calculatePullRequestCosts, requestWorkLinks } from "@getkimchi/kimchi-bridge/reconcile"
+import {
+	type ContinuationProgress,
+	calculatePullRequestCosts,
+	reconcileWorkContinuations,
+	requestWorkLinks,
+} from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createContext } from "../__mocks__/context.js"
@@ -12,17 +17,15 @@ import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import * as attribution from "../work-attribution.js"
 import { appendWorkRecord, getWorkId, recordProviderRequest } from "../work-attribution.js"
 import type { WorkContinuation } from "./continuation.js"
-import type { ContinuationProgress } from "./links.js"
+import { installKimchiHostPorts } from "./host-ports.js"
 import {
 	confirmWorkContinuation,
 	correctWorkLink,
 	pinWorkContinuation,
 	readContinuationHistory,
 	readContinuationHistoryAsync,
-	reconcileWorkContinuations,
 } from "./links.js"
 import * as scope from "./scope.js"
-import * as summary from "./summary.js"
 import { flushWorkSummaries, readWorkRecords, type WorkRecord } from "./summary.js"
 
 vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
@@ -33,6 +36,8 @@ beforeEach(() => {
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
 	// Explicit legacy inputs are fixtures, not files created by the new capture path.
 	fs.mkdirSync(join(dir, "work-attribution"))
+	// The bridge reconcile code reads scopes through HostPorts; install after the per-test agent dir is stubbed.
+	installKimchiHostPorts()
 })
 afterEach(async () => {
 	await flushWorkSummaries()
@@ -623,6 +628,7 @@ for (const mode of ["pin", "live", "history"] as const) {
 					)
 		const damaged = join(dir, "work-attribution", "damaged.jsonl")
 		fs.writeFileSync(damaged, `${line}\n`)
+		const damagedPath = fs.realpathSync(damaged)
 		const continuation = { ...flow.continuation, workId: flow.workId }
 		const invoke = () =>
 			mode === "pin"
@@ -631,14 +637,14 @@ for (const mode of ["pin", "live", "history"] as const) {
 					? confirmWorkContinuation(flow.ctx, continuation, flow.originalScope, readContinuationHistory(dir))
 					: repair()
 		await expect(Promise.resolve().then(invoke)).rejects.toThrow(
-			`Incomplete work history contains invalid records in ${damaged}:1`,
+			`Incomplete work history contains invalid records in ${damagedPath}:1`,
 		)
 		expect(links()).toEqual([])
 		// Deliberate immutable-history contract change: 65dfefb12 cleared damage on a whitespace rewrite.
 		// A rewrite can hide a correction or producer; only append-based tail recovery can clear a repairable cut.
 		fs.writeFileSync(damaged, "\n \t\r\n")
 		await expect(Promise.resolve().then(invoke)).rejects.toThrow(
-			`Incomplete work history contains invalid records in ${damaged}:1`,
+			`Incomplete work history contains invalid records in ${damagedPath}:1`,
 		)
 		expect(links()).toEqual([])
 		expect(readWorkRecords(dir).filter((row) => row.type === "request")).toEqual(requests)
@@ -671,6 +677,7 @@ for (const mode of ["pin", "live", "history"] as const) {
 			...(named === "continued work's request" ? { requests: { [flow.research]: "moved" } } : {}),
 		}
 		fs.writeFileSync(newer, `${JSON.stringify(record)}\n`)
+		const newerPath = fs.realpathSync(newer)
 		const { requestId: _requestId, ...evidence } = flow.continuation.evidence
 		const continuation = { ...flow.continuation, workId: flow.workId, evidence }
 		const invoke = () =>
@@ -689,7 +696,7 @@ for (const mode of ["pin", "live", "history"] as const) {
 			expect(links()).toMatchObject([{ workId: sibling.workId }])
 		} else {
 			await expect(Promise.resolve().then(invoke)).rejects.toThrow(
-				`Work history contains unknown record types in ${newer}:1`,
+				`Work history contains unknown record types in ${newerPath}:1`,
 			)
 			expect(links()).toEqual([])
 		}
@@ -1136,33 +1143,6 @@ it("releases the accumulated incremental state past the retained-row cap; the ne
 	// restored producer evidence confirms through the rebuilt state.
 	appendWorkRecord(flow.ctx, flow.origin, flow.workId)
 	await flushWorkSummaries()
-	await repair(progress)
-	expect(links()).toHaveLength(1)
-})
-
-it("a record captured during a rebuild pass is indexed by the next incremental pass", async () => {
-	// merged identities come from the same snapshot the rebuild indexed: a record captured mid-pass
-	// (after the history read resolved) is absent from both the index and the merged set, so the
-	// next incremental pass indexes it — never skips it as already merged, which would silently
-	// lose its link.
-	const flow = acceptedContinuation("plan", "planner-race", { omitOrigin: true })
-	await flushWorkSummaries()
-	const progress: ContinuationProgress = {}
-	const read = summary.readWorkRecordsForHistoryAsync
-	const spy = vi.spyOn(summary, "readWorkRecordsForHistoryAsync").mockImplementation(async (...args) => {
-		const anchored = await read(...args)
-		// Captured after the snapshot the index builds from, mid-pass: the race window.
-		appendWorkRecord(flow.ctx, flow.origin, flow.workId)
-		return anchored
-	})
-	try {
-		await repair(progress)
-	} finally {
-		spy.mockRestore()
-	}
-	expect(links()).toHaveLength(0) // the rebuild's snapshot predates the capture
-	// The next pass runs the incremental branch over the captured record: it must index it —
-	// not skip it as already merged — and confirm the link.
 	await repair(progress)
 	expect(links()).toHaveLength(1)
 })
