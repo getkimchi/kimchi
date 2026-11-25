@@ -2342,6 +2342,51 @@ describe("incremental translation", () => {
 		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(3)
 	})
 
+	it("backs off a group whose translation prelude exceeds its time limit", async () => {
+		await seedLinked()
+		const backend = backendFor(directory)
+		const build = vi.mocked(eventBuilder.buildEvents)
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		build.mockRejectedValueOnce(new Error("PR reporting translation time limit exceeded"))
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		try {
+			await run()
+			expect(Object.keys(JSON.parse(backend.getNote("agent", "translation-stalled") ?? "{}"))).toHaveLength(1)
+			expect(backend.getNote("agent", "translation-plan")).toBeUndefined()
+			expect(backend.getNote("agent", "translation-progress")).toBeUndefined()
+			expect(backend.markedRecords()).not.toEqual([])
+
+			// The identical group does not pay for another prelude until its retry window expires.
+			await run()
+			expect(build).toHaveBeenCalledTimes(1)
+			expect((await readReportingState(directory)).error).toBe(
+				"Some PR cost events are waiting for complete original evidence or a repository identity",
+			)
+
+			clock.mockReturnValue(start + 5 * 60_000 + 1_000)
+			await run()
+			expect(build).toHaveBeenCalledTimes(2)
+		} finally {
+			clock.mockRestore()
+		}
+	})
+
+	it("does not stall a group when its parent capture is cancelled", async () => {
+		await seedLinked()
+		const backend = backendFor(directory)
+		const controller = new AbortController()
+		vi.mocked(eventBuilder.buildEvents).mockImplementationOnce(() => {
+			controller.abort()
+			return Promise.reject(controller.signal.reason)
+		})
+		await reconcileReporting(directory, "/project", controller.signal, () => {})
+		expect(backend.getNote("agent", "translation-stalled")).toBeUndefined()
+		expect(backend.getNote("agent", "translation-plan")).toBeUndefined()
+		expect(backend.markedRecords()).not.toEqual([])
+		expect((await readReportingState(directory)).error).toBeUndefined()
+	})
+
 	it("a corrupt stalled note discards the windows rather than freezing every pass", async () => {
 		await seedLinked()
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))

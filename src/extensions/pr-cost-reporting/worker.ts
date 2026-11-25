@@ -1004,6 +1004,7 @@ export { preludeStretch } from "./prelude.js"
 const CHUNK_RESERVE_MS = 500
 /** Ceiling for building one group's translation plan; the prelude yields throughout and runs once per round. */
 const PRELUDE_MS = 60_000
+const PRELUDE_TIMEOUT_MESSAGE = "PR reporting translation time limit exceeded"
 /** The group translation in progress: units committed under the plan its group and plan digest name. Records
  * captured after that plan was built leave the count valid; they wait for the next round. */
 const PROGRESS_NOTE = "translation-progress"
@@ -1228,7 +1229,17 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 			continue
 		}
 		const changed = new Map(works.flatMap((workId) => [...(marked.get(workId) ?? [])]))
-		const translated = await translateGroup(agentDir, works, changed, producer, deadline, check, signal, assertLease)
+		let translated: boolean | undefined
+		try {
+			translated = await translateGroup(agentDir, works, changed, producer, deadline, check, signal, assertLease)
+		} catch (error) {
+			// An unfinished prelude saves no plan; bound how often identical inputs pay for another full build.
+			if (error instanceof Error && error.message === PRELUDE_TIMEOUT_MESSAGE) {
+				stalled[signature] = { at: Date.now() }
+				backend.tx(() => backend.putNote("agent", STALLED_NOTE, JSON.stringify(stalled)))
+			}
+			throw error
+		}
 		if (translated === undefined) return
 		waiting ||= translated
 		// Every retry that still leaves the group unresolved rests the window from now; a group that invoked every
@@ -1349,12 +1360,14 @@ async function translateGroup(
 		// The prelude runs under its own limit, not the pass deadline: a large group's read, report and event build
 		// take longer than one pass, and only a finished prelude saves a plan. It yields on its stretch cadence
 		// throughout and runs once per round; later passes commit the saved plan's chunks under the pass deadline.
-		const preludeSignal = AbortSignal.any([signal, AbortSignal.timeout(PRELUDE_MS)])
+		const preludeTimeout = AbortSignal.timeout(PRELUDE_MS)
+		const preludeSignal = AbortSignal.any([signal, preludeTimeout])
 		const preludeDeadline = Date.now() + PRELUDE_MS
 		const preludeCheck = () => {
 			assertLease()
+			signal.throwIfAborted()
+			if (preludeTimeout.aborted || Date.now() >= preludeDeadline) throw new Error(PRELUDE_TIMEOUT_MESSAGE)
 			preludeSignal.throwIfAborted()
-			if (Date.now() >= preludeDeadline) throw new Error("PR reporting translation time limit exceeded")
 		}
 		// Reads page through each work's records — at most 128 rows materialize between
 		// stretches, so a single work with a huge history cannot own the UI loop for its
