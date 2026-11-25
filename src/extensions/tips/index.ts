@@ -4,6 +4,7 @@ import { AUTO_UPDATE_TIP } from "../auto-update/tips.js"
 import { subscribeBillingStatus } from "../billing/status.js"
 import { createBillingTipProvider } from "../billing/tips.js"
 import { FERMENT_TIPS } from "../ferment/tips.js"
+import { isReviewWidgetMounted } from "../review-command/progress-widget.js"
 import { createGeneralTipProvider, GENERAL_TIPS } from "./general-tips.js"
 import { TipPresenter } from "./presenter.js"
 import { globalTipRegistry, type TipRegistry } from "./registry.js"
@@ -101,6 +102,7 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 		}
 
 		const getCurrentVisibleTip = (): TipCandidate | undefined => {
+			if (activeCtx && isReviewWidgetMounted(activeCtx)) return undefined
 			return tipWidgetLocation === "hidden" ? getHiddenAlertTip(registry) : presenter.getCurrentTip()
 		}
 

@@ -1,5 +1,5 @@
-import { Text } from "@earendil-works/pi-tui"
-import { describe, expect, it, vi } from "vitest"
+import { Text, type TUI } from "@earendil-works/pi-tui"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { createCommandContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { testTheme } from "../__mocks__/theme.js"
@@ -8,6 +8,7 @@ import type { ReviewPanelProgress, ReviewPanelResult } from "../review-panel/typ
 import { FINDING_SCHEMA_VERSION } from "../review-submit/store.js"
 import type { ResolvedReviewTarget } from "../review-targets/types.js"
 import { reporter } from "./command.js"
+import { isReviewWidgetMounted, stopReviewProgressAnimation } from "./progress-widget.js"
 import { REVIEW_RESULT_CUSTOM_TYPE } from "./result-message.js"
 
 const BASE_SHA = "a".repeat(40)
@@ -15,6 +16,19 @@ const HEAD_SHA = "b".repeat(40)
 const FINDING_TITLE = "The new export lacks a behavior guard"
 const FINDING_DESCRIPTION = "The new export changes behavior without a guard."
 const WIDTHS = [60, 80, 120] as const
+const contexts = new Set<ReturnType<typeof createCommandContext>>()
+
+function commandContext() {
+	const ctx = createCommandContext()
+	contexts.add(ctx)
+	return ctx
+}
+
+afterEach(() => {
+	for (const ctx of contexts) stopReviewProgressAnimation(ctx)
+	contexts.clear()
+	vi.useRealTimers()
+})
 
 function target(): ResolvedReviewTarget {
 	return {
@@ -113,8 +127,8 @@ function widgetRows(ctx: ReturnType<typeof createCommandContext>, width: number)
 	const content = vi.mocked(ctx.ui.setWidget).mock.calls.at(-1)?.[1]
 	expect(typeof content).toBe("function")
 	if (typeof content !== "function") return []
-	const factory = content as unknown as (tui: unknown, theme: typeof testTheme) => { render(width: number): string[] }
-	return factory(undefined, testTheme).render(width)
+	const factory = content as unknown as (tui: TUI, theme: typeof testTheme) => { render(width: number): string[] }
+	return factory({ requestRender: vi.fn() } as unknown as TUI, testTheme).render(width)
 }
 
 function expectWidgetBudget(ctx: ReturnType<typeof createCommandContext>, width: number, phase: string): string[] {
@@ -131,10 +145,68 @@ const cases = [
 ] satisfies Array<{ name: string; input: ReviewPanelSelectionInput; lensCount: number }>
 
 describe("review command reporter", () => {
+	it("animates running lens and stage rows with the shared Pi loader and stops on removal", () => {
+		vi.useFakeTimers()
+		const ctx = commandContext()
+		const { api } = createExtensionApi()
+		const selection = selected({ lenses: ["spec", "standards"], concurrency: 1 })
+		const report = reporter(ctx, true, api)
+		report.scope(target())
+		report.selection(selection)
+		report.progress(progress(selection))
+		const first = widgetRows(ctx, 120).join("\n")
+		expect(first).toContain("⠋")
+		expect(isReviewWidgetMounted(ctx)).toBe(true)
+		vi.advanceTimersByTime(80)
+		const next = progress(selection)
+		next.phase = "reconciling"
+		report.progress(next)
+		const second = widgetRows(ctx, 120).join("\n")
+		expect(second).toContain("⠙")
+		expect(second).toContain("2 Merge")
+		expect(second).toContain("2 issues")
+		next.phase = "finalizing"
+		report.progress(next)
+		expect(widgetRows(ctx, 120).find((row) => row.includes("3 Report"))).toContain("⠙")
+		expect(vi.getTimerCount()).toBeGreaterThan(0)
+		report.result(result(selection))
+		expect(vi.getTimerCount()).toBe(0)
+		expect(isReviewWidgetMounted(ctx)).toBe(false)
+	})
+
+	it("shows no issues dimmed on a completed empty lens and preserves issue counts", () => {
+		const ctx = commandContext()
+		const { api } = createExtensionApi()
+		const selection = selected({ lenses: ["spec"], concurrency: 1 })
+		const report = reporter(ctx, true, api)
+		report.scope(target())
+		report.selection(selection)
+		const current = progress(selection, true)
+		current.lenses[0].candidateCount = 0
+		report.progress(current)
+		const row = widgetRows(ctx, 120).find((value) => value.includes("no issues"))
+		expect(row).toContain(testTheme.fg("dim", "no issues"))
+		expect(row).not.toContain("0 issues")
+	})
+
+	it("uses the resolved display base while retaining the symbolic scope ref", () => {
+		const ctx = commandContext()
+		const { api } = createExtensionApi()
+		const report = reporter(ctx, true, api)
+		const view = target()
+		view.scope.refs.resolvedBase = "refs/remotes/origin/HEAD"
+		view.baseDisplayRef = "refs/remotes/origin/main"
+		report.scope(view)
+		const header = widgetRows(ctx, 120)[0]
+		expect(header).toContain("origin/main")
+		expect(header).not.toContain("origin/HEAD")
+		expect(view.scope.refs.resolvedBase).toBe("refs/remotes/origin/HEAD")
+	})
+
 	for (const testCase of cases) {
 		for (const width of WIDTHS) {
 			it(`keeps the ${testCase.name} within 12 rendered rows at width ${width}`, () => {
-				const ctx = createCommandContext()
+				const ctx = commandContext()
 				const { api, sendMessage } = createExtensionApi()
 				const selection = selected(testCase.input)
 				expect(selection.lenses).toHaveLength(testCase.lensCount)
@@ -170,7 +242,7 @@ describe("review command reporter", () => {
 	}
 
 	it("renders issue states, stage mapping, PR title, and theme colors", () => {
-		const ctx = createCommandContext()
+		const ctx = commandContext()
 		const { api } = createExtensionApi()
 		const report = reporter(ctx, true, api)
 		const prTarget = target()
@@ -208,7 +280,7 @@ describe("review command reporter", () => {
 		const yellow = testTheme.fg("warning", "marker").split("marker")[0]
 		const red = testTheme.fg("error", "marker").split("marker")[0]
 		expect(rows.find((row) => row.includes("● spec"))?.startsWith(green)).toBe(true)
-		expect(rows.find((row) => row.includes("◐ standards"))?.startsWith(yellow)).toBe(true)
+		expect(rows.find((row) => row.includes("standards"))?.startsWith(yellow)).toBe(true)
 		expect(rows.find((row) => row.includes("✖ operational"))?.startsWith(red)).toBe(true)
 		expect(rows.find((row) => row.includes("2 Merge"))?.startsWith(yellow)).toBe(true)
 		const dim = testTheme.fg("dim", "marker").split("marker")[0]
@@ -223,7 +295,7 @@ describe("review command reporter", () => {
 	})
 
 	it("uses singular file wording and does not fail Merge before it starts", () => {
-		const ctx = createCommandContext()
+		const ctx = commandContext()
 		const { api } = createExtensionApi()
 		const report = reporter(ctx, true, api)
 		const oneFile = target()
@@ -244,7 +316,7 @@ describe("review command reporter", () => {
 	})
 
 	it("suppresses the TUI-only finalizing phase on non-TUI surfaces", () => {
-		const ctx = createCommandContext()
+		const ctx = commandContext()
 		ctx.mode = "rpc"
 		const { api } = createExtensionApi()
 		const report = reporter(ctx, true, api)
@@ -262,7 +334,7 @@ describe("review command reporter", () => {
 	})
 
 	it("keeps the exact legacy notification sequence on non-TUI surfaces", () => {
-		const ctx = createCommandContext()
+		const ctx = commandContext()
 		ctx.mode = "rpc"
 		const { api, sendMessage } = createExtensionApi()
 		const report = reporter(ctx, true, api)
@@ -284,7 +356,7 @@ describe("review command reporter", () => {
 	})
 
 	it("uses the legacy string-array widget for a non-TUI error", () => {
-		const ctx = createCommandContext()
+		const ctx = commandContext()
 		ctx.mode = "rpc"
 		const { api } = createExtensionApi()
 		const report = reporter(ctx, true, api)

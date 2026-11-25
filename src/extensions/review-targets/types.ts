@@ -203,6 +203,8 @@ export interface ResolvedReviewScope {
 
 export interface ResolvedReviewTarget {
 	scope: ResolvedReviewScope
+	/** Resolved symbolic base for display only; scope retains the canonical ref. */
+	baseDisplayRef?: string
 	/** Delete only this resolution's private snapshot ref, if one was needed. */
 	cleanup: () => Promise<void>
 }

@@ -41,7 +41,11 @@ import {
 	REVIEW_MANIFEST_FILENAME,
 	readReviewManifest,
 } from "./manifest.js"
-import { createReviewProgressComponent, type ReviewProgressModel } from "./progress-widget.js"
+import {
+	mountReviewProgressComponent,
+	type ReviewProgressModel,
+	stopReviewProgressAnimation,
+} from "./progress-widget.js"
 import { REVIEW_RESULT_CUSTOM_TYPE, renderReviewResult, reviewResultDetails } from "./result-message.js"
 import { createLocalReviewRunDirectory, reviewOwnedDirectories } from "./run-directory.js"
 import { readTrustedReviewSettings } from "./settings.js"
@@ -138,6 +142,7 @@ function notify(ctx: ExtensionCommandContext, message: string, severity: "info" 
 const REVIEW_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
 
 function clearReviewWidget(ctx: ExtensionCommandContext): void {
+	stopReviewProgressAnimation(ctx)
 	if (ctx.hasUI && ctx.mode === "tui") ctx.ui.setWidget("review-panel", undefined, REVIEW_WIDGET_OPTIONS)
 }
 
@@ -245,7 +250,7 @@ function tuiReporter(ctx: ExtensionCommandContext, visible: boolean, pi: Extensi
 		if (!showWidget || !model) return
 		ctx.ui.setWidget(
 			"review-panel",
-			(_tui, theme) => createReviewProgressComponent(theme, () => model as ReviewProgressModel),
+			(tui, theme) => mountReviewProgressComponent(ctx, tui, theme, () => model as ReviewProgressModel),
 			REVIEW_WIDGET_OPTIONS,
 		)
 	}
@@ -270,7 +275,7 @@ function tuiReporter(ctx: ExtensionCommandContext, visible: boolean, pi: Extensi
 			if (!visible) return
 			if (showWidget) clearReviewWidget(ctx)
 			if (!target) return
-			const details = reviewResultDetails(target.scope, result)
+			const details = reviewResultDetails(target.scope, result, target.baseDisplayRef)
 			// The registered renderer adds theme colors; content remains a complete
 			// plain-text fallback for persistence and non-TUI consumers.
 			pi.sendMessage({

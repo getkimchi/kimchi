@@ -1,9 +1,17 @@
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it } from "vitest"
 import { testTheme } from "../__mocks__/theme.js"
 import { FINDING_SCHEMA_VERSION, type ReviewFindingRecord } from "../review-submit/store.js"
+import { sanitizeReviewDisplayText } from "../review-targets/provider-url.js"
 import type { ReviewResultDetails } from "./result-message.js"
-import { renderReviewResult, renderReviewResultLines } from "./result-message.js"
+import {
+	REVIEW_RESULT_CUSTOM_TYPE,
+	renderReviewResult,
+	renderReviewResultLines,
+	reviewResultRenderer,
+} from "./result-message.js"
 
 function finding(
 	path: string,
@@ -120,9 +128,7 @@ describe("review result message", () => {
 		)
 	})
 
-	it.each([
-		60, 80, 100, 120,
-	])("wraps full text with hanging indents and a lossless report path at width %i", (width) => {
+	it.each([60, 80, 100, 120])("wraps prose and suggestions with one shortened report-path row at width %i", (width) => {
 		const description =
 			"The reviewer found a behavior change whose complete explanation must remain visible after wrapping across several terminal rows."
 		const summaryPath = `/private/var/folders/review/${"long-output-segment/".repeat(6)}summary/final.json`
@@ -134,18 +140,11 @@ describe("review result message", () => {
 		expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true)
 		const normalized = rows.join(" ").replace(/\s+/g, " ")
 		expect(normalized).toContain(description)
-		expect(normalized).toContain(
-			"Suggestion: Apply the focused correction and retain the full suggestion while wrapping.",
-		)
-		const reportIndex = rows.indexOf(" Report:")
-		expect(reportIndex).toBeGreaterThan(0)
-		const reportRows = rows.slice(reportIndex + 1)
-		expect(reportRows.length).toBeGreaterThan(1)
-		expect(reportRows.every((row) => row.startsWith("  "))).toBe(true)
-		expect(reportRows.map((row) => row.trim()).join("")).toBe(summaryPath)
-		const suggestionIndex = rows.findIndex((row) => row.startsWith("   Suggestion:"))
-		expect(suggestionIndex).toBeGreaterThan(0)
-		expect(rows.slice(suggestionIndex + 1, reportIndex - 1).every((row) => row.startsWith("   "))).toBe(true)
+		expect(normalized).toContain("Fix: Apply the focused correction and retain the full suggestion while wrapping.")
+		const footer = rows.at(-1)
+		expect(footer).toContain("ctrl+o to collapse details")
+		expect(footer).toContain("final.json")
+		expect(visibleWidth(footer ?? "")).toBeLessThanOrEqual(width)
 	})
 
 	it("uses priority colors and bold paths from the active theme", () => {
@@ -157,5 +156,124 @@ describe("review result message", () => {
 		expect(output).toContain("● P4")
 		expect(output).toContain("\u001b[")
 		expect(output).toContain(testTheme.bold("critical.ts:1"))
+	})
+})
+
+const LONG_SHA = "a".repeat(40)
+const OTHER_SHA = "b".repeat(40)
+
+function presentationDetails(): ReviewResultDetails {
+	return details({
+		base: "origin/main",
+		findings: [
+			finding(
+				"src/features/checkout/actions/changes/permissions/reconfirmation/nested/attention/BulkActionsBar.tsx",
+				82,
+				"P2",
+				`At head ${LONG_SHA}, Staged confirmation can outlive the edit permission that opened it. Revision ${OTHER_SHA}. The boundary should be revalidated before approval.`,
+			),
+			finding(
+				"BulkActionsBar.tsx",
+				31,
+				"P4",
+				`Component docblock attached to the wrong declaration. See \`FileNavigator\` and ${OTHER_SHA}.\n\nThe owner should be the declaration, not a sibling wrapper.`,
+			),
+		],
+		summaryPath: join(
+			homedir(),
+			"Documents",
+			"deep",
+			"recent",
+			"output",
+			"nested",
+			"review-artifacts",
+			"summary",
+			"final.json",
+		),
+	})
+}
+
+describe("expanded and collapsed result presentation", () => {
+	it.each([80, 120])("renders two compact rows per finding at width %i", (width) => {
+		const rows = renderReviewResultLines(presentationDetails(), undefined, width, false)
+		expect(rows).toHaveLength(8)
+		expect(rows[0]).toContain("Review done · 2 findings (1 P2, 1 P4) · feature → origin/main")
+		expect(rows[1]).toBe("")
+		expect(rows[2]).toMatch(/^ ▲ P2 /)
+		expect(rows[2]).toContain(
+			width === 80
+				? "…"
+				: "src/features/checkout/actions/changes/permissions/reconfirmation/nested/attention/BulkActionsBar.tsx:82",
+		)
+		expect(rows[2]).toContain("BulkActionsBar.tsx:82")
+		expect(rows[3]).toBe("  Staged confirmation can outlive the edit permission that opened it.")
+		expect(rows[4]).toMatch(/^ ● P4/)
+		expect(rows[5]).toBe("  Component docblock attached to the wrong declaration.")
+		expect(rows[6]).toBe("")
+		expect(rows[7]).toContain("ctrl+o to expand details · report: ~")
+		expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true)
+	})
+
+	it.each([
+		`At head ${LONG_SHA},`,
+		`Revision ${LONG_SHA}.`,
+		`At pinned head ${LONG_SHA},`,
+	])("derives a title after stripping boilerplate: %s", (prefix) => {
+		const rows = renderReviewResultLines(
+			details({
+				findings: [finding("value.ts", 42, "P2", `${prefix} Staged confirmation can outlive the edit.`)],
+			}),
+			undefined,
+			80,
+			false,
+		)
+		expect(rows.some((row) => row === "  Staged confirmation can outlive the edit.")).toBe(true)
+		expect(rows.join("\n")).not.toContain(LONG_SHA)
+	})
+
+	it.each([80, 120])("expands full prose, inline code, SHAs, suggestions and report paths at width %i", (width) => {
+		const rows = renderReviewResultLines(presentationDetails(), testTheme, width, true)
+		const text = sanitizeReviewDisplayText(rows.join(" "))
+		expect(text).toContain("Staged confirmation can outlive the edit permission that opened it.")
+		expect(text).toContain("The owner should be the declaration, not a sibling wrapper.")
+		expect(text).toContain(LONG_SHA.slice(0, 7))
+		expect(text).toContain(OTHER_SHA.slice(0, 7))
+		expect(text).not.toContain(LONG_SHA)
+		expect(text).not.toContain(OTHER_SHA)
+		expect(text).not.toContain("`FileNavigator`")
+		expect(text).toContain("Fix:")
+		expect(text).toContain("ctrl+o to collapse details")
+		expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true)
+		const descriptionRows = rows.filter(
+			(row) => row.trim() && !row.trim().startsWith("✔") && !row.trim().startsWith("ctrl+o"),
+		)
+		expect(descriptionRows.some((row) => visibleWidth(row.trim()) >= 80)).toBe(true)
+	})
+
+	it("uses the standard renderer expanded option while keeping the legacy fallback intact", () => {
+		const source = presentationDetails()
+		const message = {
+			role: "custom" as const,
+			customType: REVIEW_RESULT_CUSTOM_TYPE,
+			content: "",
+			display: true,
+			details: source,
+			timestamp: 0,
+		}
+		const collapsed = reviewResultRenderer(message, { expanded: false, outputPad: 1 }, testTheme)
+		const expanded = reviewResultRenderer(message, { expanded: true, outputPad: 1 }, testTheme)
+		if (!collapsed || !expanded) throw new Error("Expected the review renderer")
+		const compactRows = collapsed.render(80)
+		const expandedRows = expanded.render(120)
+		expect(compactRows.some((row) => row.includes("ctrl+o to expand details"))).toBe(true)
+		expect(expandedRows.some((row) => row.includes("ctrl+o to collapse details"))).toBe(true)
+		expect(compactRows.every((row) => visibleWidth(row) <= 80)).toBe(true)
+		expect(expandedRows.every((row) => visibleWidth(row) <= 120)).toBe(true)
+		const fallback = renderReviewResult(source)
+		expect(fallback).toContain("Suggestion:")
+		expect(fallback).toContain(" Report:")
+		expect(fallback).not.toContain("ctrl+o")
+		expect(fallback).toContain(LONG_SHA)
+		expect(fallback).toContain(source.summaryPath)
 	})
 })

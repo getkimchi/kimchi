@@ -273,7 +273,13 @@ async function comparison(
 	root: string,
 	request: BranchReviewRequest,
 	options: ResolveReviewTargetOptions,
-): Promise<{ baseRef: string; baseSha: string; tipSha: string; source: ResolvedReviewScope["baseSource"] }> {
+): Promise<{
+	baseRef: string
+	baseDisplayRef?: string
+	baseSha: string
+	tipSha: string
+	source: ResolvedReviewScope["baseSource"]
+}> {
 	const remote = await selectedRemote(root, options, [request.branch, request.base])
 	if (request.fetch) await fetchRemote(root, remote.name, options.signal)
 	const tip = await resolveBranchTargetRevision(root, request.branch, {
@@ -327,6 +333,11 @@ async function comparison(
 	const baseRevision = await resolveTargetRevision(root, baseRef, "base", options.signal)
 	return {
 		baseRef: baseRevision.ref,
+		baseDisplayRef:
+			baseSuggestion?.resolvedRef ??
+			(baseRevision.ref.startsWith("refs/remotes/") && baseRevision.ref.endsWith("/HEAD")
+				? await symbolicRef(root, baseRevision.ref, options.signal)
+				: undefined),
 		baseSha: await mergeBase(root, baseRevision.commitSha, tipSha, options.signal),
 		tipSha,
 		source: request.base !== undefined ? "explicit" : (baseSuggestion?.source ?? "explicit"),
@@ -396,12 +407,14 @@ export async function resolveReviewTarget(
 	return withReviewTargetFetchAuthorization(request.fetch, async () => {
 		const root = await repositoryRoot(options.root, options.signal)
 		let baseRef = "HEAD"
+		let baseDisplayRef: string | undefined
 		let baseSha: string
 		let tipSha: string
 		let baseSource: ResolvedReviewScope["baseSource"] = "head"
 		if (request.kind === "branch") {
 			const selected = await comparison(root, request, options)
 			baseRef = selected.baseRef
+			baseDisplayRef = selected.baseDisplayRef
 			baseSha = selected.baseSha
 			tipSha = selected.tipSha
 			baseSource = selected.source
@@ -474,7 +487,7 @@ export async function resolveReviewTarget(
 				commentableLinesPath,
 				limitations: selection.limitations,
 			}
-			return { scope, cleanup }
+			return { scope, ...(baseDisplayRef ? { baseDisplayRef } : {}), cleanup }
 		} catch (error) {
 			await snapshot.cleanup().catch(() => {})
 			if (error instanceof ReviewTargetError) throw error

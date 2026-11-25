@@ -428,12 +428,20 @@ describe("review target resolution", () => {
 		expect(explicit.scope.pinned.baseSha).not.toBe(main)
 		await explicit.cleanup()
 
+		const explicitHead = await resolve(
+			parseReviewTargetArgs(["branch", "origin/feature", "--base", "origin/HEAD"]) as ExplicitReviewRequest,
+		)
+		expect(explicitHead.scope.refs.resolvedBase).toBe("refs/remotes/origin/HEAD")
+		expect(explicitHead.baseDisplayRef).toBe("refs/remotes/origin/main")
+		await explicitHead.cleanup()
+
 		const suggested = await resolve(parseReviewTargetArgs(["branch", "origin/feature"]) as ExplicitReviewRequest)
 		expect(suggested.scope).toMatchObject({
 			baseSource: "remote-default",
 			refs: { base: undefined, resolvedBase: "refs/remotes/origin/HEAD" },
 			pinned: { baseSha: base },
 		})
+		expect(suggested.baseDisplayRef).toBe("refs/remotes/origin/main")
 		await suggested.cleanup()
 
 		const provider = await resolve(parseReviewTargetArgs(["branch", "origin/feature"]) as ExplicitReviewRequest, {

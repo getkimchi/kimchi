@@ -1,5 +1,5 @@
-import type { Theme } from "@earendil-works/pi-coding-agent"
-import { truncateToWidth } from "@earendil-works/pi-tui"
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent"
+import { Loader, type TUI, truncateToWidth } from "@earendil-works/pi-tui"
 import type { ResolvedReviewPanel, ReviewPanelProgress } from "../review-panel/index.js"
 import type { ResolvedReviewTarget } from "../review-targets/index.js"
 import { sanitizeReviewDisplayText } from "../review-targets/provider-url.js"
@@ -13,12 +13,49 @@ export interface ReviewProgressModel {
 
 type StageState = "waiting" | "running" | "done" | "failed"
 
+class ReviewActivityLoader extends Loader {
+	frame(): string {
+		return this.getRenderedIndicator()
+	}
+}
+
+const activities = new WeakMap<ExtensionContext, ReviewActivityLoader>()
+
+export function isReviewWidgetMounted(ctx: ExtensionContext): boolean {
+	return activities.has(ctx)
+}
+
+export function stopReviewProgressAnimation(ctx: ExtensionContext): void {
+	const loader = activities.get(ctx)
+	activities.delete(ctx)
+	loader?.stop()
+}
+
+export function mountReviewProgressComponent(
+	ctx: ExtensionContext,
+	ui: TUI,
+	theme: Theme,
+	model: () => ReviewProgressModel,
+) {
+	let loader = activities.get(ctx)
+	if (!loader) {
+		loader = new ReviewActivityLoader(
+			ui,
+			(frame) => theme.fg("accent", frame),
+			(text) => text,
+			"",
+		)
+		activities.set(ctx, loader)
+	}
+	return createReviewProgressComponent(theme, model, () => loader?.frame() ?? "◐")
+}
+
 function friendlyRef(value: string): string {
 	return sanitizeReviewDisplayText(value.replace(/^refs\/(?:heads|remotes)\//, ""))
 }
 
 function issueCount(count: number, running: boolean): string {
-	if (count <= 0) return ""
+	if (count <= 0) return running ? "" : "no issues"
 	return `${count} issue${count === 1 ? "" : "s"}${running ? " so far" : ""}`
 }
 
@@ -29,8 +66,8 @@ function stateColor(theme: Theme, state: StageState, text: string): string {
 	return theme.fg("dim", text)
 }
 
-function stateIcon(state: StageState): string {
-	return state === "running" ? "◐" : state === "failed" ? "✖" : state === "done" ? "●" : "○"
+function stateIcon(state: StageState, indicator: () => string): string {
+	return state === "running" ? indicator() : state === "failed" ? "✖" : state === "done" ? "●" : "○"
 }
 
 function stateText(state: StageState): string {
@@ -60,12 +97,17 @@ function oneLine(value: string, maximum = 64): string {
 	return truncateToWidth(value.replace(/\s+/g, " ").trim(), maximum, "…")
 }
 
-export function renderReviewProgress(model: ReviewProgressModel, theme: Theme, width: number): string[] {
+export function renderReviewProgress(
+	model: ReviewProgressModel,
+	theme: Theme,
+	width: number,
+	indicator: () => string = () => "◐",
+): string[] {
 	const safeWidth = Math.max(1, width)
 	const scope = model.target.scope
 	const progress = model.progress
 	const branch = friendlyRef(scope.refs.head)
-	const base = friendlyRef(scope.refs.resolvedBase)
+	const base = friendlyRef(model.target.baseDisplayRef ?? scope.refs.resolvedBase)
 	const fileNoun = scope.files.changed === 1 ? "file" : "files"
 	const suffix = `  →  ${base}   (${scope.files.changed} ${fileNoun} · ${scope.pinned.headSha.slice(0, 7)})`
 	const branchWidth = Math.max(1, Math.min(34, safeWidth - "Reviewing  ".length - suffix.length))
@@ -93,8 +135,9 @@ export function renderReviewProgress(model: ReviewProgressModel, theme: Theme, w
 				? oneLine(current?.error ?? (current?.status === "cancelled" ? "cancelled" : "failed"), 32)
 				: ""
 		const count = issueCount(current?.candidateCount ?? 0, state === "running" || state === "waiting")
+		const countLabel = count === "no issues" && state === "done" ? theme.fg("dim", count) : count
 		const prefix = index === 0 ? "  1 Review   " : "             "
-		const content = `${prefix}${stateIcon(state)} ${lens.id.padEnd(lensWidth)} ${stateText(state).padEnd(8)}${count ? ` ${count}` : ""}${reason ? ` ${reason}` : ""}`
+		const content = `${prefix}${stateIcon(state, indicator)} ${lens.id.padEnd(lensWidth)} ${stateText(state).padEnd(8)}${countLabel ? ` ${countLabel}` : ""}${reason ? ` ${reason}` : ""}`
 		lines.push(stateColor(theme, state, truncateToWidth(content, safeWidth, "…")))
 	})
 	if (selectedLenses.length === 0) lines.push(stateColor(theme, "waiting", "  1 Review   ○ waiting"))
@@ -106,21 +149,33 @@ export function renderReviewProgress(model: ReviewProgressModel, theme: Theme, w
 		stateColor(
 			theme,
 			stages.merge,
-			truncateToWidth(`  2 Merge    ${stateIcon(stages.merge)} dedupe & verify issues${mergeReason}`, safeWidth, "…"),
+			truncateToWidth(
+				`  2 Merge    ${stateIcon(stages.merge, indicator)} dedupe & verify issues${mergeReason}`,
+				safeWidth,
+				"…",
+			),
 		),
 		stateColor(
 			theme,
 			stages.report,
-			truncateToWidth(`  3 Report   ${stateIcon(stages.report)} write findings${reportReason}`, safeWidth, "…"),
+			truncateToWidth(
+				`  3 Report   ${stateIcon(stages.report, indicator)} write findings${reportReason}`,
+				safeWidth,
+				"…",
+			),
 		),
 	)
 	return lines
 }
 
-export function createReviewProgressComponent(theme: Theme, model: () => ReviewProgressModel) {
+export function createReviewProgressComponent(
+	theme: Theme,
+	model: () => ReviewProgressModel,
+	indicator?: () => string,
+) {
 	return {
 		render(width: number): string[] {
-			return renderReviewProgress(model(), theme, width)
+			return renderReviewProgress(model(), theme, width, indicator)
 		},
 		invalidate(): void {},
 	}
