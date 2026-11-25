@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { inflateSync } from "node:zlib"
 import { SKIPPED_TUI_TESTS } from "../tests/e2e/tui/skip-list.js"
+import { exactFileFilter } from "./tui-e2e-file-filter.js"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const tuiCwd = resolve(repoRoot, "tests/e2e/tui")
@@ -33,7 +34,7 @@ const env = {
 	...(debugEnabled ? { KIMCHI_TUI_E2E_DEBUG: "1" } : {}),
 }
 
-// No filter: run each non-quarantined file separately (one filter matching many files runs only one).
+// No filter: run each non-quarantined file in its own tui-test process.
 const hasTestFilter = args.some((arg) => !arg.startsWith("-"))
 const stems = hasTestFilter ? [] : testsToRun(shard)
 if (dryRun) {
@@ -70,7 +71,7 @@ function runTui(runArgs) {
 function runEach(stems) {
 	let status = 0
 	for (const stem of stems) {
-		const code = runTui([...args, stem])
+		const code = runTui([...args, exactFileFilter(stem)])
 		if (code !== 0) status = code
 	}
 	return status

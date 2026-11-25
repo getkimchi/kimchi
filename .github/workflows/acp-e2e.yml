@@ -40,35 +40,21 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
         with:
-          submodules: true
-
-      - name: Enable corepack
-        run: corepack enable
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22.19.0"
-          cache: pnpm
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.4"
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tools/proxy-helper/go.mod
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          bun: "true"
+          go: "true"
+          search-tools: "true"
 
       - name: Build proxy-helper
         run: make -C tools/proxy-helper build
 
       - name: Run ACP E2E tests
         run: KIMCHI_PROXY_HELPER=$(pwd)/bin/proxy-helper pnpm run test:e2e:acp
+        env:
+          # CI's lint job already typechecks this tree; test:e2e:acp builds the binary.
+          KIMCHI_SKIP_TYPECHECK: "1"
 
       - name: Upload ACP E2E artifacts
         if: failure()

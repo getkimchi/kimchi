@@ -36,17 +36,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       - uses: ./.github/actions/setup
         with:
           bun: "true"
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tools/proxy-helper/go.mod
-          cache-dependency-path: tools/proxy-helper/go.sum
+          go: "true"
 
       - name: Build proxy-helper
         run: make -C tools/proxy-helper build
@@ -55,6 +49,9 @@ jobs:
         run: |
           test -x tools/proxy-helper/bin/proxy-helper
           KIMCHI_PROXY_HELPER=$(pwd)/tools/proxy-helper/bin/proxy-helper pnpm run test:e2e:mcp
+        env:
+          # CI's lint job already typechecks this tree; test:e2e:mcp builds the binary.
+          KIMCHI_SKIP_TYPECHECK: "1"
 
       - name: Upload MCP E2E artifacts
         if: failure()

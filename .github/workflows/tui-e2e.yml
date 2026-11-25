@@ -35,31 +35,21 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       - uses: ./.github/actions/setup
         with:
           bun: "true"
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tools/proxy-helper/go.mod
-          cache-dependency-path: tools/proxy-helper/go.sum
-
-      # Fresh test homes otherwise download these before the editor accepts input.
-      - name: Install search tools
-        timeout-minutes: 3
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install --yes --no-install-recommends ripgrep fd-find
+          go: "true"
 
       - name: Build proxy-helper
         run: make copy-for-dev # Builds the binary and copies it to bin/ where the tests expect it
         working-directory: tools/proxy-helper
 
+      # CI's lint job already typechecks this tree.
       - name: Build binary
         run: pnpm run build:binary
+        env:
+          KIMCHI_SKIP_TYPECHECK: "1"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -85,12 +75,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
+      # The shards run the tests, so they need rg/fd: fresh test homes otherwise
+      # download them before the editor accepts input.
       - uses: ./.github/actions/setup
         with:
           bun: "true"
+          search-tools: "true"
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
