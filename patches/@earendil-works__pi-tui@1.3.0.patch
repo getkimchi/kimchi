@@ -15,7 +15,11 @@
 #     invisible on light themes that pin the terminal background white via
 #     OSC 11). Styled content and headings keep their own colors. The wrap
 #     is guarded on `typeof theme.text === "function"` so stock markdown
-#     themes (no text entry) render exactly as before.
+#     themes (no text entry) render exactly as before. Known limitation:
+#     content mixing plain text with any non-fg ANSI escape (e.g. a
+#     hyperlink sequence) skips the pin entirely, so its plain parts still
+#     fall back to the terminal bold color; narrowing the detection to
+#     fg-producing sequences is left to the planned upstream PR.
 #     Tracking: publication pending (upstream issue/PR planned; see the
 #     pi-coding-agent patch's markdown bullet). Removal: delete the hunk
 #     once upstream pins unstyled bold to the theme text color itself.
