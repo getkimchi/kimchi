@@ -38,6 +38,11 @@ export interface McpCallCatalog {
 	candidates: readonly McpToolCandidate[]
 	registeredToolNames: ReadonlySet<string>
 	staleServers: ReadonlySet<string>
+	/**
+	 * Earliest `cachedAt + ttlMs` over the persistent entries this snapshot used as
+	 * valid; `Number.POSITIVE_INFINITY` when there are none.
+	 */
+	expiresAt: number
 }
 
 const DESCRIBE_KEYS = new Set(["describe", "server"])

@@ -10,6 +10,7 @@ export function snapshotMcpCallCatalog(
 ): McpCallCatalog {
 	const cache = loadMetadataCache()
 	const staleServers = new Set<string>()
+	let expiresAt = Number.POSITIVE_INFINITY
 	for (const [serverName, definition] of Object.entries(config.mcpServers)) {
 		if (isServerDisabled(definition)) continue
 		const privateEntry = privateCatalogs.get(serverName)
@@ -18,8 +19,14 @@ export function snapshotMcpCallCatalog(
 			continue
 		}
 		const persistentEntry = cache?.servers[serverName]
-		if (persistentEntry !== undefined && !isServerCacheValid(persistentEntry, definition)) {
+		if (persistentEntry === undefined) continue
+		if (!isServerCacheValid(persistentEntry, definition)) {
 			staleServers.add(serverName)
+		} else {
+			const { ttlMs } = persistentEntry
+			if (typeof ttlMs === "number" && Number.isSafeInteger(ttlMs) && ttlMs > 0) {
+				expiresAt = Math.min(expiresAt, persistentEntry.cachedAt + ttlMs)
+			}
 		}
 	}
 	return {
@@ -27,6 +34,7 @@ export function snapshotMcpCallCatalog(
 		candidates: collectMcpToolCandidates(config, cache, privateCatalogs),
 		registeredToolNames,
 		staleServers,
+		expiresAt,
 	}
 }
 
@@ -36,15 +44,7 @@ export function snapshotMcpCallCatalog(
  * win over original names, followed by prefixed-server and candidate aliases;
  * every ambiguity, stale metadata entry, and cross-server collision fails closed.
  */
-export function isReadOnlyQualifiedMcpGatewayTool(
-	config: McpConfig,
-	toolName: string,
-	server?: string,
-	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
-): boolean {
-	const facts = resolveMcpGatewayTool(
-		{ tool: toolName, server },
-		snapshotMcpCallCatalog(config, privateCatalogs ?? new Map(), new Set()),
-	)
+export function isReadOnlyQualifiedMcpGatewayTool(catalog: McpCallCatalog, toolName: string, server?: string): boolean {
+	const facts = resolveMcpGatewayTool({ tool: toolName, server }, catalog)
 	return facts.kind === "tool" && isReadOnlyEvidence(facts.evidence)
 }

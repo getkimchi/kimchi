@@ -3,7 +3,7 @@ import type { CachedTool, McpConfig, MetadataCache, ServerCacheEntry } from "pi-
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { isReadOnlyQualifiedMcpGatewayTool, snapshotMcpCallCatalog } from "./call-catalog.js"
 import { describeMcpCall } from "./call-facts.js"
-import { collectReadOnlyMcpWireNames } from "./read-only.js"
+import { collectMcpToolCandidates, collectReadOnlyMcpWireNames } from "./read-only.js"
 
 const cacheState = vi.hoisted(() => ({
 	cache: undefined as MetadataCache | undefined,
@@ -76,6 +76,63 @@ describe("snapshotMcpCallCatalog", () => {
 		snapshotMcpCallCatalog(config, new Map(), new Set(["mcp", "docs_get_issue"]))
 
 		expect(cacheState.loadMetadataCache).toHaveBeenCalledTimes(1)
+	})
+
+	it("sets expiresAt to the earliest valid persistent TTL", () => {
+		const config: McpConfig = {
+			mcpServers: {
+				docs: { url: "https://docs.example/mcp", directTools: true },
+				wiki: { url: "https://wiki.example/mcp", directTools: true },
+			},
+		}
+		const now = Date.now()
+		const docs = { ...persistentEntry(config, "docs"), cachedAt: now - 100, ttlMs: 1000 }
+		const wiki = { ...persistentEntry(config, "wiki"), cachedAt: now - 100, ttlMs: 500 }
+		cacheState.cache = { version: 1, servers: { docs, wiki } }
+		vi.spyOn(Date, "now").mockReturnValue(now)
+		try {
+			expect(snapshotMcpCallCatalog(config, new Map(), new Set()).expiresAt).toBe(now - 100 + 500)
+		} finally {
+			vi.restoreAllMocks()
+		}
+	})
+
+	it("ignores private, expired and TTL-less entries for expiresAt", () => {
+		const config: McpConfig = {
+			mcpServers: {
+				priv: { url: "https://priv.example/mcp", directTools: true },
+				old: { url: "https://old.example/mcp", directTools: true },
+				plain: { url: "https://plain.example/mcp", directTools: true },
+			},
+		}
+		const now = Date.now()
+		cacheState.cache = {
+			version: 1,
+			servers: {
+				priv: { ...persistentEntry(config, "priv"), ttlMs: 1000 },
+				old: { ...persistentEntry(config, "old"), cachedAt: now - 2000, ttlMs: 1000 },
+				plain: persistentEntry(config, "plain"),
+			},
+		}
+		const catalog = snapshotMcpCallCatalog(config, new Map([["priv", privateEntry(config, "priv", true)]]), new Set())
+		expect(catalog.staleServers).toEqual(new Set(["old"]))
+		expect(catalog.expiresAt).toBe(Number.POSITIVE_INFINITY)
+	})
+
+	// The adapter treats a ttlMs that is not a non-negative safe integer as "no TTL", so the
+	// entry stays valid; it must then contribute nothing to expiresAt.
+	it.each([
+		["fractional", 1000.5],
+		["huge unsafe-integer", Number.MAX_SAFE_INTEGER + 1],
+		["non-finite", Number.POSITIVE_INFINITY],
+		["negative", -5],
+	])("ignores a valid persistent entry with a %s ttlMs for expiresAt", (_label, ttlMs) => {
+		const config: McpConfig = { mcpServers: { docs: { url: "https://docs.example/mcp", directTools: true } } }
+		cacheState.cache = { version: 1, servers: { docs: { ...persistentEntry(config, "docs"), ttlMs } } }
+		const catalog = snapshotMcpCallCatalog(config, new Map(), new Set())
+		expect(catalog.staleServers.size).toBe(0)
+		expect(catalog.candidates.length).toBeGreaterThan(0)
+		expect(catalog.expiresAt).toBe(Number.POSITIVE_INFINITY)
 	})
 
 	it("keeps private catalog candidates isolated between session snapshots", () => {
@@ -227,6 +284,19 @@ describe("isReadOnlyQualifiedMcpGatewayTool", () => {
 		return cache
 	}
 
+	function isReadOnly(
+		config: McpConfig,
+		toolName: string,
+		server?: string,
+		privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
+	): boolean {
+		return isReadOnlyQualifiedMcpGatewayTool(
+			snapshotMcpCallCatalog(config, privateCatalogs ?? new Map(), new Set()),
+			toolName,
+			server,
+		)
+	}
+
 	beforeEach(() => {
 		cacheState.loadMetadataCache.mockReset().mockImplementation(() => cacheState.cache)
 		setCache(config, {
@@ -244,15 +314,15 @@ describe("isReadOnlyQualifiedMcpGatewayTool", () => {
 			tools: [{ name: "getJiraIssue", annotations: { readOnlyHint: true } }],
 			cacheScope: "private" as const,
 		}
-		expect(isReadOnlyQualifiedMcpGatewayTool(config, "getJiraIssue", "alpha")).toBe(false)
-		expect(isReadOnlyQualifiedMcpGatewayTool(config, "getJiraIssue", "alpha", new Map([["alpha", privateEntry]]))).toBe(
-			true,
-		)
-		expect(isReadOnlyQualifiedMcpGatewayTool(config, "alpha_getJiraIssue", "alpha", new Map())).toBe(false)
+		expect(isReadOnly(config, "getJiraIssue", "alpha")).toBe(false)
+		expect(isReadOnly(config, "getJiraIssue", "alpha", new Map([["alpha", privateEntry]]))).toBe(true)
+		expect(isReadOnly(config, "alpha_getJiraIssue", "alpha", new Map())).toBe(false)
 		const currentCatalog = new Map([["alpha", privateEntry]])
-		expect(collectReadOnlyMcpWireNames(config, "alpha", currentCatalog)).toEqual(["alpha_getJiraIssue"])
 		expect(
-			isReadOnlyQualifiedMcpGatewayTool(
+			collectReadOnlyMcpWireNames(collectMcpToolCandidates(config, cacheState.cache ?? null, currentCatalog), "alpha"),
+		).toEqual(["alpha_getJiraIssue"])
+		expect(
+			isReadOnly(
 				config,
 				"getJiraIssue",
 				"alpha",
@@ -262,9 +332,9 @@ describe("isReadOnlyQualifiedMcpGatewayTool", () => {
 	})
 
 	it("accepts original names when they resolve to one read-only tool", () => {
-		expect(isReadOnlyQualifiedMcpGatewayTool(config, "get_issue", "alpha")).toBe(true)
-		expect(isReadOnlyQualifiedMcpGatewayTool(config, "get_issue")).toBe(true)
-		expect(isReadOnlyQualifiedMcpGatewayTool(config, "create_issue", "alpha")).toBe(false)
+		expect(isReadOnly(config, "get_issue", "alpha")).toBe(true)
+		expect(isReadOnly(config, "get_issue")).toBe(true)
+		expect(isReadOnly(config, "create_issue", "alpha")).toBe(false)
 	})
 
 	it("fails closed for ambiguous unscoped originals but allows server-scoped matches", () => {
@@ -273,9 +343,9 @@ describe("isReadOnlyQualifiedMcpGatewayTool", () => {
 			alpha: [{ name: "get_access", annotations: { readOnlyHint: false } }],
 			beta: [{ name: "get_access", annotations: { readOnlyHint: true } }],
 		})
-		expect(isReadOnlyQualifiedMcpGatewayTool(collisionConfig, "get_access")).toBe(false)
-		expect(isReadOnlyQualifiedMcpGatewayTool(collisionConfig, "get_access", "alpha")).toBe(false)
-		expect(isReadOnlyQualifiedMcpGatewayTool(collisionConfig, "get_access", "beta")).toBe(true)
+		expect(isReadOnly(collisionConfig, "get_access")).toBe(false)
+		expect(isReadOnly(collisionConfig, "get_access", "alpha")).toBe(false)
+		expect(isReadOnly(collisionConfig, "get_access", "beta")).toBe(true)
 	})
 
 	it("qualifies cached resource-backed read tools", () => {
@@ -283,8 +353,8 @@ describe("isReadOnlyQualifiedMcpGatewayTool", () => {
 		const cache = setCache(resourceConfig, { alpha: [] })
 		cache.servers.alpha.resources = [{ name: "figjam", uri: "file:///board" }]
 
-		expect(isReadOnlyQualifiedMcpGatewayTool(resourceConfig, "read_figjam", "alpha")).toBe(true)
-		expect(isReadOnlyQualifiedMcpGatewayTool(resourceConfig, "alpha_read_figjam", "alpha")).toBe(true)
+		expect(isReadOnly(resourceConfig, "read_figjam", "alpha")).toBe(true)
+		expect(isReadOnly(resourceConfig, "alpha_read_figjam", "alpha")).toBe(true)
 	})
 
 	it("preserves displayed-name precedence when an original alias names another tool", () => {
@@ -292,8 +362,8 @@ describe("isReadOnlyQualifiedMcpGatewayTool", () => {
 			alpha: [{ name: "get_issue", annotations: { readOnlyHint: true } }],
 			beta: [{ name: "get_issue", annotations: { readOnlyHint: false } }],
 		})
-		expect(isReadOnlyQualifiedMcpGatewayTool(config, "get_issue")).toBe(false)
-		expect(isReadOnlyQualifiedMcpGatewayTool(config, "alpha_get_issue")).toBe(true)
+		expect(isReadOnly(config, "get_issue")).toBe(false)
+		expect(isReadOnly(config, "alpha_get_issue")).toBe(true)
 	})
 
 	it("rejects a tool name that two servers' prefixes match with equal length", () => {
@@ -309,6 +379,6 @@ describe("isReadOnlyQualifiedMcpGatewayTool", () => {
 			servers: { jira: persistentEntry(config, "jira"), "jira-mcp": persistentEntry(config, "jira-mcp") },
 		}
 
-		expect(isReadOnlyQualifiedMcpGatewayTool(config, "jira_get_issue")).toBe(false)
+		expect(isReadOnly(config, "jira_get_issue")).toBe(false)
 	})
 })

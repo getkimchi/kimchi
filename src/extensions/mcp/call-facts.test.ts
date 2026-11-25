@@ -37,6 +37,7 @@ function catalog(overrides: Partial<McpCallCatalog> = {}): McpCallCatalog {
 		candidates: [read, write],
 		registeredToolNames: new Set(["mcp", "docs_get_issue", "docs_create_issue"]),
 		staleServers: new Set<string>(),
+		expiresAt: Number.POSITIVE_INFINITY,
 		...overrides,
 	}
 }

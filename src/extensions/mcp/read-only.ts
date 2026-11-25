@@ -20,12 +20,7 @@
  */
 
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
-import {
-	computeServerHash,
-	isServerCacheValid,
-	loadMetadataCache,
-	reconstructToolMetadata,
-} from "pi-mcp-adapter/metadata-cache"
+import { computeServerHash, isServerCacheValid, reconstructToolMetadata } from "pi-mcp-adapter/metadata-cache"
 import {
 	formatServerNamespace,
 	formatToolName,
@@ -158,13 +153,9 @@ export function collectMcpToolCandidates(
  * registered tools before exposing them to the planning profile. With
  * `server`, only that server's tools qualify, as for a gateway call naming it.
  */
-export function collectReadOnlyMcpWireNames(
-	config: McpConfig,
-	server?: string,
-	privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
-): string[] {
+export function collectReadOnlyMcpWireNames(candidates: readonly McpToolCandidate[], server?: string): string[] {
 	const qualified = new Map<string, boolean>()
-	for (const { serverName, tool, evidence } of collectMcpToolCandidates(config, loadMetadataCache(), privateCatalogs)) {
+	for (const { serverName, tool, evidence } of candidates) {
 		qualified.set(
 			tool.name,
 			(server === undefined || serverName === server) && !qualified.has(tool.name) && isReadOnlyEvidence(evidence),

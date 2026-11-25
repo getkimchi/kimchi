@@ -9,7 +9,12 @@ vi.mock("pi-mcp-adapter/metadata-cache", async (importOriginal) => ({
 	loadMetadataCache: () => cacheState.cache,
 }))
 
-import { collectReadOnlyMcpWireNames, getMcpReadOnlyEvidence, isReadOnlyQualifiedMcpTool } from "./read-only.js"
+import {
+	collectMcpToolCandidates,
+	collectReadOnlyMcpWireNames,
+	getMcpReadOnlyEvidence,
+	isReadOnlyQualifiedMcpTool,
+} from "./read-only.js"
 
 describe("isReadOnlyQualifiedMcpTool", () => {
 	it("qualifies any tool with an explicit readOnlyHint, regardless of name", () => {
@@ -70,6 +75,10 @@ describe("getMcpReadOnlyEvidence", () => {
 })
 
 describe("collectReadOnlyMcpWireNames", () => {
+	function wireNames(config: McpConfig, server?: string): string[] {
+		return collectReadOnlyMcpWireNames(collectMcpToolCandidates(config, cacheState.cache ?? null), server)
+	}
+
 	const config: McpConfig = {
 		mcpServers: {
 			alpha: { url: "https://a.example/mcp", directTools: true },
@@ -98,12 +107,12 @@ describe("collectReadOnlyMcpWireNames", () => {
 	})
 
 	it("emits qualified wire names and excludes unconfigured servers", () => {
-		expect(collectReadOnlyMcpWireNames(config).sort()).toEqual(["alpha_get_issue", "alpha_stats", "fetch_items"])
-		expect(collectReadOnlyMcpWireNames({ mcpServers: { beta: config.mcpServers.beta } })).toEqual(["fetch_items"])
+		expect(wireNames(config).sort()).toEqual(["alpha_get_issue", "alpha_stats", "fetch_items"])
+		expect(wireNames({ mcpServers: { beta: config.mcpServers.beta } })).toEqual(["fetch_items"])
 	})
 
 	it('honours the "mcp" toolPrefix mode', () => {
-		expect(collectReadOnlyMcpWireNames({ ...config, settings: { toolPrefix: "mcp" } })).toEqual([
+		expect(wireNames({ ...config, settings: { toolPrefix: "mcp" } })).toEqual([
 			"mcp__alpha_get_issue",
 			"mcp__alpha_stats",
 			"fetch_items",
@@ -121,7 +130,7 @@ describe("collectReadOnlyMcpWireNames", () => {
 			old: [{ name: "get_access", annotations: { readOnlyHint: true } }],
 			current: [{ name: "get_access", annotations: { readOnlyHint: false } }],
 		})
-		expect(collectReadOnlyMcpWireNames(collisionConfig)).toEqual([])
+		expect(wireNames(collisionConfig)).toEqual([])
 	})
 
 	it("rejects ambiguous wire names across enabled servers", () => {
@@ -130,14 +139,14 @@ describe("collectReadOnlyMcpWireNames", () => {
 			alpha: [{ name: "get_access", annotations: { readOnlyHint: false } }],
 			beta: [{ name: "get_access", annotations: { readOnlyHint: true } }],
 		})
-		expect(collectReadOnlyMcpWireNames(collisionConfig)).toEqual([])
-		expect(collectReadOnlyMcpWireNames(collisionConfig, "beta")).toEqual([])
+		expect(wireNames(collisionConfig)).toEqual([])
+		expect(wireNames(collisionConfig, "beta")).toEqual([])
 	})
 
 	it("qualifies only the named server's tools for a gateway call that names one", () => {
-		expect(collectReadOnlyMcpWireNames(config, "alpha").sort()).toEqual(["alpha_get_issue", "alpha_stats"])
-		expect(collectReadOnlyMcpWireNames(config, "beta")).toEqual(["fetch_items"])
-		expect(collectReadOnlyMcpWireNames(config, "missing")).toEqual([])
+		expect(wireNames(config, "alpha").sort()).toEqual(["alpha_get_issue", "alpha_stats"])
+		expect(wireNames(config, "beta")).toEqual(["fetch_items"])
+		expect(wireNames(config, "missing")).toEqual([])
 	})
 
 	it("ignores metadata from another endpoint or an expired cache", () => {
@@ -147,7 +156,7 @@ describe("collectReadOnlyMcpWireNames", () => {
 		// next connect refresh; expiry is driven by ttlMs now.
 		cache.servers.beta.ttlMs = 1000
 		cache.servers.beta.cachedAt = Date.now() - 8 * 24 * 60 * 60 * 1000
-		expect(collectReadOnlyMcpWireNames(config)).toEqual([])
+		expect(wireNames(config)).toEqual([])
 	})
 
 	it("rejects sanitized-name collisions within a server even with direct-tool selection", () => {
@@ -160,7 +169,7 @@ describe("collectReadOnlyMcpWireNames", () => {
 				{ name: "get_access", annotations: { readOnlyHint: false } },
 			],
 		})
-		expect(collectReadOnlyMcpWireNames(collisionConfig)).toEqual([])
+		expect(wireNames(collisionConfig)).toEqual([])
 	})
 
 	it("respects tool exclusions and app-only visibility", () => {
@@ -168,7 +177,7 @@ describe("collectReadOnlyMcpWireNames", () => {
 			mcpServers: { alpha: { ...config.mcpServers.alpha, excludeTools: ["get_issue"] } },
 		}
 		setCache(filteredConfig, { alpha: [{ name: "get_issue" }, { name: "get_app", uiVisibility: ["app"] }] })
-		expect(collectReadOnlyMcpWireNames(filteredConfig)).toEqual([])
+		expect(wireNames(filteredConfig)).toEqual([])
 	})
 
 	it("never qualifies gateway or namespace proxy names", () => {
@@ -178,6 +187,6 @@ describe("collectReadOnlyMcpWireNames", () => {
 				{ name: "mcp__alpha", annotations: { readOnlyHint: true } },
 			],
 		})
-		expect(collectReadOnlyMcpWireNames(config)).toEqual([])
+		expect(wireNames(config)).toEqual([])
 	})
 })

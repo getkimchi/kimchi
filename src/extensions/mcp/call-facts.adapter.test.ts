@@ -71,6 +71,7 @@ const catalog: McpCallCatalog = {
 	candidates: collectMcpToolCandidates(config, cache),
 	registeredToolNames: new Set(["mcp"]),
 	staleServers: new Set(),
+	expiresAt: Number.POSITIVE_INFINITY,
 }
 
 type AdapterState = Parameters<typeof executeCall>[0]

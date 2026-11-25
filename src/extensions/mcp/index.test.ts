@@ -153,30 +153,32 @@ vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 // Wire names carry their server's prefix, as with the adapter's default "server" prefix mode.
 vi.mock("./read-only.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("./read-only.js")>()),
-	collectReadOnlyMcpWireNames: (
-		_config: McpConfig,
-		server?: string,
-		privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
-	) => {
-		readOnlyState.privateCatalogs.push(privateCatalogs)
+	collectReadOnlyMcpWireNames: (_candidates: readonly McpToolCandidate[], server?: string) => {
 		return [...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`))
 	},
 }))
 
-vi.mock("./call-catalog.js", async (importOriginal) => ({
-	...(await importOriginal<typeof import("./call-catalog.js")>()),
-	isReadOnlyQualifiedMcpGatewayTool: (
-		config: McpConfig,
-		toolName: string,
-		server?: string,
-		privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
-	) => {
-		readOnlyState.authorizationConfigs.push(config)
-		readOnlyState.privateCatalogs.push(privateCatalogs)
-		const names = [...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`))
-		return names.includes(toolName) || (server !== undefined && names.includes(`${server}_${toolName}`))
-	},
-}))
+vi.mock("./call-catalog.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("./call-catalog.js")>()
+	return {
+		...original,
+		// The facade now hands the read-only helpers a snapshot, so record the config and
+		// private catalogs it snapshots with.
+		snapshotMcpCallCatalog: (
+			config: McpConfig,
+			privateCatalogs: ReadonlyMap<string, ServerCacheEntry>,
+			registeredToolNames: ReadonlySet<string>,
+		) => {
+			readOnlyState.authorizationConfigs.push(config)
+			readOnlyState.privateCatalogs.push(privateCatalogs)
+			return original.snapshotMcpCallCatalog(config, privateCatalogs, registeredToolNames)
+		},
+		isReadOnlyQualifiedMcpGatewayTool: (_catalog: McpCallCatalog, toolName: string, server?: string) => {
+			const names = [...readOnlyState.wireNames].filter((name) => server === undefined || name.startsWith(`${server}_`))
+			return names.includes(toolName) || (server !== undefined && names.includes(`${server}_${toolName}`))
+		},
+	}
+})
 
 vi.mock("../permissions/mode-controller.js", () => ({
 	getPermissionMode: vi.fn((sessionId: string) => {
@@ -207,6 +209,7 @@ vi.mock("./project-trust.js", () => ({
 import { lookupMcpCall } from "../../shared/mcp-call-lookup.js"
 import { describeMcpCall, type McpCallCatalog } from "./call-facts.js"
 import mcpAdapterExtension, { createKimchiMcpAdapterExtension } from "./index.js"
+import type { McpToolCandidate } from "./read-only.js"
 
 function tool(name: string, label: string): ToolDefinition {
 	return {

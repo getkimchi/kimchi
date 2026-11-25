@@ -552,8 +552,17 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					(upstreamEvent, handler) => {
 						upstreamHandlers[upstreamEvent].push(handler)
 					},
-					(server) => collectReadOnlyMcpWireNames(effectiveConfig, server, privateCatalogs),
-					(toolName, server) => isReadOnlyQualifiedMcpGatewayTool(effectiveConfig, toolName, server, privateCatalogs),
+					(server) =>
+						collectReadOnlyMcpWireNames(
+							snapshotMcpCallCatalog(effectiveConfig, privateCatalogs, registeredToolNames).candidates,
+							server,
+						),
+					(toolName, server) =>
+						isReadOnlyQualifiedMcpGatewayTool(
+							snapshotMcpCallCatalog(effectiveConfig, privateCatalogs, registeredToolNames),
+							toolName,
+							server,
+						),
 					oauthTurnContinuation,
 					options.parentSessionId,
 				),
