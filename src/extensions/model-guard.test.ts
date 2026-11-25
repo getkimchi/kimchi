@@ -20,6 +20,7 @@ import modelGuardExtension, {
 	getLatestMessagesTimestamp,
 	hasImages,
 	markImagesAsStripped,
+	refreshLatestMessagesFromSession,
 	resolveContextTokens,
 	sessionHasImages,
 	stripImages,
@@ -113,8 +114,8 @@ function makePostCompactionMessages(opts: {
 	] as ContextEvent["messages"]
 }
 
-function makeImageBlock(): ImageContent {
-	return { type: "image", data: "aGVsbG8=", mimeType: "image/png" }
+function makeImageBlock(data = "aGVsbG8="): ImageContent {
+	return { type: "image", data, mimeType: "image/png" }
 }
 
 // ── estimateTokens ───────────────────────────────────────────────────────────
@@ -1514,7 +1515,7 @@ describe("markImagesAsStripped", () => {
 		expect(sessionHasImages()).toBe(false)
 
 		// User pastes a new image — context event fires with images again
-		await trigger("context", { messages: [makeUser("new image", [makeImageBlock()])] }, ctx)
+		await trigger("context", { messages: [makeUser("new image", [makeImageBlock("bmV3LWltYWdl")])] }, ctx)
 		expect(sessionHasImages()).toBe(true)
 	})
 
@@ -1538,6 +1539,131 @@ describe("markImagesAsStripped", () => {
 		// After reset, triggering context with images should detect them again
 		await trigger("context", { messages: [makeUser("look", [makeImageBlock()])] }, ctx)
 		expect(sessionHasImages()).toBe(true)
+	})
+})
+
+describe("lazy session context refresh", () => {
+	beforeEach(() => {
+		__resetImagesDetectedForTest()
+	})
+
+	const restoredImageEntries = (text: string): SessionEntry[] => [
+		{
+			type: "message",
+			id: "restored-image",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: makeUser(text, [makeImageBlock()]),
+		},
+	]
+
+	it("loads persisted images before any context event", async () => {
+		const ctx = makeMockCtx({
+			sessionManager: { getBranch: () => restoredImageEntries("restored") } as never,
+		})
+		expect(getLatestMessages()).toEqual([])
+
+		await expect(refreshLatestMessagesFromSession(ctx)).resolves.toMatchObject({ status: "ok" })
+		expect(sessionHasImages()).toBe(true)
+		expect(getLatestMessages()[0]).toMatchObject({ role: "user" })
+	})
+
+	it("keeps the newest result when branch reads overlap", async () => {
+		let resolveOlder!: (entries: SessionEntry[]) => void
+		let resolveNewer!: (entries: SessionEntry[]) => void
+		const olderCtx = makeMockCtx({
+			sessionManager: {
+				getBranch: () =>
+					new Promise<SessionEntry[]>((resolve) => {
+						resolveOlder = resolve
+					}),
+			} as never,
+		})
+		const newerCtx = makeMockCtx({
+			sessionManager: {
+				getBranch: () =>
+					new Promise<SessionEntry[]>((resolve) => {
+						resolveNewer = resolve
+					}),
+			} as never,
+		})
+
+		const older = refreshLatestMessagesFromSession(olderCtx)
+		const newer = refreshLatestMessagesFromSession(newerCtx)
+		resolveNewer(restoredImageEntries("newer"))
+		await expect(newer).resolves.toMatchObject({ status: "ok" })
+		resolveOlder(restoredImageEntries("older"))
+		await expect(older).resolves.toEqual({ status: "superseded" })
+		expect(getLatestMessages()[0]).toMatchObject({
+			content: expect.arrayContaining([{ type: "text", text: "newer" }]),
+		})
+	})
+
+	it("does not overwrite a context event that arrives during a branch read", async () => {
+		let resolveBranch!: (entries: SessionEntry[]) => void
+		const ctx = makeMockCtx({
+			sessionManager: {
+				getBranch: () =>
+					new Promise<SessionEntry[]>((resolve) => {
+						resolveBranch = resolve
+					}),
+			} as never,
+		})
+		const pending = refreshLatestMessagesFromSession(ctx)
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const current = [makeUser("current")]
+		await trigger("context", { messages: current }, ctx)
+
+		resolveBranch(restoredImageEntries("stale"))
+		await expect(pending).resolves.toMatchObject({ status: "ok" })
+		expect(getLatestMessages()).toBe(current)
+	})
+
+	it("retries once after an intervening context event", async () => {
+		let resolveFirst!: (entries: SessionEntry[]) => void
+		const getBranch = vi
+			.fn()
+			.mockImplementationOnce(
+				() =>
+					new Promise<SessionEntry[]>((resolve) => {
+						resolveFirst = resolve
+					}),
+			)
+			.mockImplementationOnce(async () => restoredImageEntries("latest"))
+		const ctx = makeMockCtx({ sessionManager: { getBranch } as never })
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const pending = refreshLatestMessagesFromSession(ctx)
+		await trigger("context", { messages: [makeUser("intervening")] }, ctx)
+
+		resolveFirst(restoredImageEntries("older"))
+
+		await expect(pending).resolves.toMatchObject({ status: "ok" })
+		expect(getLatestMessages()[0]).toMatchObject({
+			content: expect.arrayContaining([{ type: "text", text: "intervening" }]),
+		})
+		expect(getBranch).toHaveBeenCalledOnce()
+	})
+
+	it("returns a diagnostic error without changing cached messages", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const current = [makeUser("current")]
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const failingCtx = makeMockCtx({
+			sessionManager: {
+				getBranch: () => {
+					throw new Error("unavailable")
+				},
+			} as never,
+		})
+		await trigger("context", { messages: current }, failingCtx)
+
+		await expect(refreshLatestMessagesFromSession(failingCtx)).resolves.toMatchObject({ status: "error" })
+		expect(getLatestMessages()).toBe(current)
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("lazy session context refresh failed"), expect.any(Error))
+		warn.mockRestore()
 	})
 })
 
@@ -1775,7 +1901,7 @@ describe("session_compact state refresh", () => {
 
 			// Should emit a diagnostic warning
 			expect(warn).toHaveBeenCalledWith(
-				expect.stringContaining("session_compact state refresh failed"),
+				expect.stringContaining("lazy session context refresh failed"),
 				expect.anything(),
 			)
 		} finally {
@@ -1908,7 +2034,10 @@ describe("session_compact → model_select integration", () => {
 			makeMockCtx({
 				model: { id: "kimi-k2.6", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
 				getContextUsage: () => ({ tokens: null, contextWindow: 200_000, percent: null }),
-				sessionManager: { getSessionId: () => "test-session" } as unknown as ExtensionContext["sessionManager"],
+				sessionManager: {
+					getSessionId: () => "test-session",
+					getBranch: () => makeCompactedEntries("Summary of previous conversation."),
+				} as unknown as ExtensionContext["sessionManager"],
 				ui: { notify: vi.fn() } as unknown as ExtensionContext["ui"],
 			}),
 		)
@@ -1965,7 +2094,10 @@ describe("session_compact → model_select integration", () => {
 			makeMockCtx({
 				model: { id: "kimi-k2.6", input: ["text", "image"], contextWindow: 200_000 } as ExtensionContext["model"],
 				getContextUsage: () => ({ tokens: 1_000, contextWindow: 200_000, percent: 1 }),
-				sessionManager: { getSessionId: () => "test-session" } as unknown as ExtensionContext["sessionManager"],
+				sessionManager: {
+					getSessionId: () => "test-session",
+					getBranch: () => makeCompactedEntries("Summary of previous conversation."),
+				} as unknown as ExtensionContext["sessionManager"],
 				ui: { notify: vi.fn() } as unknown as ExtensionContext["ui"],
 			}),
 		)
@@ -2062,7 +2194,10 @@ describe("session_compact → model_select integration", () => {
 							: undefined,
 				} as unknown as ExtensionContext["modelRegistry"],
 				getContextUsage: () => ({ tokens: null, contextWindow: 200_000, percent: null }),
-				sessionManager: { getSessionId: () => "test-session" } as unknown as ExtensionContext["sessionManager"],
+				sessionManager: {
+					getSessionId: () => "test-session",
+					getBranch: () => makeCompactedEntries("Summary of previous conversation."),
+				} as unknown as ExtensionContext["sessionManager"],
 			}),
 		)
 

@@ -49,6 +49,8 @@ vi.mock("./model-guard.js", async () => {
 		...(actual as Record<string, unknown>),
 		hasImages: vi.fn().mockReturnValue(true),
 		sessionHasImages: vi.fn().mockReturnValue(true),
+		refreshedSessionIsCurrent: vi.fn().mockReturnValue(true),
+		refreshLatestMessagesFromSession: vi.fn(),
 		markImagesAsStripped: vi.fn(),
 		getLatestMessages: vi.fn().mockReturnValue([]),
 		storeImageDescription: vi.fn(),
@@ -56,9 +58,16 @@ vi.mock("./model-guard.js", async () => {
 	}
 })
 
-import { getLatestMessages, markImagesAsStripped, sessionHasImages, storeImageDescription } from "./model-guard.js"
+import {
+	getLatestMessages,
+	markImagesAsStripped,
+	refreshedSessionIsCurrent,
+	refreshLatestMessagesFromSession,
+	sessionHasImages,
+	storeImageDescription,
+} from "./model-guard.js"
 // Import the extension after mocks are set up
-import stripImagesExtension from "./strip-images.js"
+import stripImagesExtension, { stripSessionImages } from "./strip-images.js"
 
 describe("strip-images extension", () => {
 	let attributionDir: string
@@ -79,6 +88,13 @@ describe("strip-images extension", () => {
 		markImagesAsStripped()
 		mockPi = createMockPi()
 		vi.mocked(sessionHasImages).mockReturnValue(true)
+		vi.mocked(refreshedSessionIsCurrent).mockReturnValue(true)
+		vi.mocked(refreshLatestMessagesFromSession).mockImplementation(async () => ({
+			status: "ok",
+			messages: getLatestMessages(),
+			generation: 1,
+			revision: 1,
+		}))
 	})
 
 	describe("command registration", () => {
@@ -105,6 +121,77 @@ describe("strip-images extension", () => {
 	})
 
 	describe("strip-images command handler", () => {
+		it("processes images returned by the lazy session refresh", async () => {
+			vi.mocked(getLatestMessages).mockReturnValue([
+				{ role: "user", content: [{ type: "image", data: "restored-image", mimeType: "image/png" }] },
+			] as never)
+			completeMock.mockResolvedValue({ content: [{ type: "text", text: "restored description" }] })
+			stripImagesExtension(mockPi as never)
+			const handler = mockPi.getHandler("strip-images") as (args: string[], ctx: unknown) => Promise<void>
+
+			await handler([], createMockCtx())
+
+			expect(refreshLatestMessagesFromSession).toHaveBeenCalledOnce()
+			expect(refreshLatestMessagesFromSession).toHaveBeenCalledWith(expect.anything())
+			expect(completeMock).toHaveBeenCalledOnce()
+			expect(storeImageDescription).toHaveBeenCalledWith("test-hash", "restored description")
+		})
+
+		it("does not invoke a model when lazy refresh fails", async () => {
+			vi.mocked(refreshLatestMessagesFromSession).mockResolvedValue({ status: "superseded" })
+			const result = await stripSessionImages(createMockCtx() as never)
+
+			expect(result).toEqual({ status: "refresh-failed", reason: "superseded" })
+			expect(completeMock).not.toHaveBeenCalled()
+			expect(markImagesAsStripped).toHaveBeenCalledTimes(1) // beforeEach only
+		})
+
+		it("does not commit stripped state after the session changes during analysis", async () => {
+			vi.mocked(getLatestMessages).mockReturnValue([
+				{ role: "user", content: [{ type: "image", data: "stale-image", mimeType: "image/png" }] },
+			] as never)
+			completeMock.mockResolvedValue({ content: [{ type: "text", text: "stale description" }] })
+			vi.mocked(refreshedSessionIsCurrent).mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValue(false)
+
+			const result = await stripSessionImages(createMockCtx() as never)
+
+			expect(result).toEqual({ status: "refresh-failed", reason: "superseded" })
+			expect(storeImageDescription).not.toHaveBeenCalled()
+			expect(markImagesAsStripped).toHaveBeenCalledTimes(1)
+		})
+
+		it("deduplicates identical restored image blocks", async () => {
+			vi.mocked(getLatestMessages).mockReturnValue([
+				{
+					role: "user",
+					content: [
+						{ type: "image", data: "same-image", mimeType: "image/png" },
+						{ type: "image", data: "same-image", mimeType: "image/png" },
+					],
+				},
+			] as never)
+			completeMock.mockResolvedValue({ content: [{ type: "text", text: "one description" }] })
+
+			const result = await stripSessionImages(createMockCtx() as never)
+
+			expect(result).toMatchObject({ status: "stripped", processedCount: 1 })
+			expect(completeMock).toHaveBeenCalledOnce()
+		})
+
+		it("returns description failures after stripping with placeholders", async () => {
+			vi.mocked(getLatestMessages).mockReturnValue([
+				{ role: "user", content: [{ type: "image", data: "broken-image", mimeType: "image/png" }] },
+			] as never)
+			completeMock.mockRejectedValue(new Error("caption failed"))
+			const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {})
+
+			const result = await stripSessionImages(createMockCtx() as never)
+
+			expect(result).toMatchObject({ status: "stripped", processedCount: 0, errors: ["caption failed"] })
+			expect(markImagesAsStripped).toHaveBeenCalledTimes(2) // beforeEach and completion
+			diagnostic.mockRestore()
+		})
+
 		it("requires a vision-capable model to process images", async () => {
 			const ctx = createMockCtx({
 				model: { id: "non-vision-model", input: ["text"] },

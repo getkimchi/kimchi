@@ -6,15 +6,15 @@ import { resolveEffectiveModel } from "./auto-model/state.js"
 import { startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
 import {
 	contextFitsModel,
-	getLatestMessages,
-	getLatestMessagesTimestamp,
 	getSafeContextWindow,
+	refreshLatestMessagesFromSession,
 	resolveContextTokens,
 	sessionHasImages,
 } from "./model-guard.js"
 import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
 import type { ModelTier } from "./orchestration/model-registry/types.js"
 import { shouldSuppressInteractiveTools } from "./print-mode.js"
+import { formatStrippedImagesOutcome, notifyStripSessionImagesResult, stripSessionImages } from "./strip-images.js"
 
 /** Prevents model_select handler from re-checking what set_model tool already validated. */
 let suppressModelSelectGuard = false
@@ -108,16 +108,19 @@ export default function modelSwitchExtension(
 				const effectiveTarget = resolveEffectiveModel(target, sessionId) ?? target
 
 				const usage = ctx.getContextUsage()
-				// getLatestMessages() returns the most recent context from model-guard's
-				// "context" handler. It is updated on every LLM call, so data is fresh
-				// as long as the session has processed at least one context event.
-				const messages = getLatestMessages()
-				if (messages.length > 0 && getLatestMessagesTimestamp() === 0) {
-					// Defensive: messages array is non-empty but timestamp is unset
-					// (should never happen). Treat as stale and skip local estimate.
-					console.warn("[model-switch] getLatestMessages() has messages but no timestamp — treating as stale")
+				const refreshed = await refreshLatestMessagesFromSession(ctx)
+				if (refreshed.status !== "ok") {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: "Could not load the latest session context. Retry the model switch after the current session update finishes.",
+							},
+						],
+						details: null,
+					}
 				}
-				const tokens = resolveContextTokens(usage, messages)
+				const tokens = resolveContextTokens(usage, refreshed.messages)
 				if (tokens != null && !contextFitsModel(tokens, effectiveTarget.contextWindow)) {
 					return {
 						content: [
@@ -131,15 +134,17 @@ export default function modelSwitchExtension(
 				}
 
 				// Vision compatibility guard
-				if (sessionHasImages() && !effectiveTarget.input.includes("image") && ctx.model?.input.includes("image")) {
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: `Current conversation contains images but target model "${model}" does not support vision input. Run /strip-images to replace images with text descriptions, then retry.`,
-							},
-						],
-						details: null,
+				if (!effectiveTarget.input.includes("image") && ctx.model?.input.includes("image")) {
+					if (sessionHasImages()) {
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: `Current conversation contains images but target model "${model}" does not support vision input. Run /strip-images to replace images with text descriptions, then retry.`,
+								},
+							],
+							details: null,
+						}
 					}
 				}
 
@@ -176,31 +181,83 @@ export default function modelSwitchExtension(
 	}
 
 	pi.on("model_select", async (event, ctx) => {
-		// Skip if a revert is already in progress
-		if (isRevertingModel) return
-		// Skip if set_model tool initiated this (already validated)
-		if (suppressModelSelectGuard) return
-		// Session recovery must restore the persisted model without prompting.
-		if (event.source === "restore") return
-		// Nothing to revert to
-		if (!event.previousModel) return
+		if (isRevertingModel || suppressModelSelectGuard || event.source === "restore" || !event.previousModel) return
 
+		const previousModel = event.previousModel
 		const sessionId = ctx.sessionManager.getSessionId()
 		const effectiveTarget = resolveEffectiveModel(event.model, sessionId) ?? event.model
-		const usage = ctx.getContextUsage?.()
+		const refreshed = await refreshLatestMessagesFromSession(ctx)
+		let reverted = false
 
-		// Context window guard — block if current tokens exceed target safe context window.
-		// Falls back to local estimate when upstream tokens are null (post-compaction).
-		const messages = getLatestMessages()
-		const tokens = resolveContextTokens(usage, messages)
-		if (tokens != null && !contextFitsModel(tokens, effectiveTarget.contextWindow)) {
+		const revertToPrevious = async (): Promise<boolean> => {
+			if (reverted) return true
 			isRevertingModel = true
 			try {
-				await pi.setModel(event.previousModel)
+				reverted = await pi.setModel(previousModel)
+				if (!reverted) {
+					ctx.ui.notify(
+						`Could not restore ${refFromModel(previousModel)}. ${refFromModel(event.model)} remains active; check the model configuration and retry.`,
+						"error",
+					)
+				}
+				return reverted
 			} finally {
 				isRevertingModel = false
 			}
+		}
 
+		if (refreshed.status !== "ok") {
+			if (await revertToPrevious()) {
+				ctx.ui.notify("Could not load the latest session context; the previous model remains active.", "error")
+			}
+			return
+		}
+
+		const needsImageStrip = () =>
+			sessionHasImages() && !effectiveTarget.input.includes("image") && previousModel.input.includes("image")
+
+		const switchToValidatedTarget = async (): Promise<boolean> => {
+			const ok = await withSuppressedModelSelectGuard(() => pi.setModel(event.model))
+			if (!ok) ctx.ui.notify("Could not activate the requested model; the previous model remains active.", "error")
+			return ok
+		}
+
+		const offerStripAndSwitch = async (): Promise<void> => {
+			if (!(await revertToPrevious())) return
+			if (!ctx.hasUI) {
+				ctx.ui.notify(
+					`Session contains images but ${event.model.id} does not support vision. Run /strip-images to unlock non-vision models, or use a vision-capable model.`,
+					"error",
+				)
+				return
+			}
+
+			const stripAndSwitch = "Strip images and switch"
+			const choice = await ctx.ui.select(`Session contains images but ${event.model.id} does not support vision`, [
+				stripAndSwitch,
+			])
+			if (choice !== stripAndSwitch) {
+				ctx.ui.notify("Model switch cancelled; the previous model remains active.", "info")
+				return
+			}
+
+			const result = await stripSessionImages(ctx)
+			if (result.status !== "stripped") {
+				notifyStripSessionImagesResult(ctx, result)
+				ctx.ui.notify("Model switch cancelled; the previous model remains active.", "info")
+				return
+			}
+			if (!(await switchToValidatedTarget())) return
+			ctx.ui.notify(
+				`${formatStrippedImagesOutcome(result)} and switched to ${refFromModel(event.model)}.`,
+				result.processedCount === 0 ? "warning" : "info",
+			)
+		}
+
+		const usage = ctx.getContextUsage?.()
+		const tokens = resolveContextTokens(usage, refreshed.messages)
+		if (tokens != null && !contextFitsModel(tokens, effectiveTarget.contextWindow)) {
+			if (!(await revertToPrevious())) return
 			const limit = getSafeContextWindow(effectiveTarget.contextWindow)
 			const excess = tokens - limit
 			if (!ctx.hasUI) {
@@ -211,7 +268,9 @@ export default function modelSwitchExtension(
 				return
 			}
 
-			const compactAndSwitch = "Compact conversation and switch"
+			const compactAndSwitch = needsImageStrip()
+				? "Compact conversation and continue"
+				: "Compact conversation and switch"
 			const startNewSession = "Start a new session"
 			const choice = await ctx.ui.select(
 				`Context is ${excess.toLocaleString()} tokens over ${event.model.id}'s safe limit (${tokens.toLocaleString()} current vs ${limit.toLocaleString()} safe)`,
@@ -223,10 +282,29 @@ export default function modelSwitchExtension(
 					await new Promise<void>((resolve, reject) => {
 						ctx.compact({ force: true, onComplete: () => resolve(), onError: reject })
 					})
-					await withSuppressedModelSelectGuard(() => pi.setModel(event.model))
-					ctx.ui.notify(`Compacted context and switched to ${refFromModel(event.model)}.`, "info")
-				} catch {
+				} catch (error) {
+					console.error("[model-switch] compaction before model switch failed:", error)
 					ctx.ui.notify("Compaction failed; the previous model remains active.", "error")
+					return
+				}
+
+				const postCompaction = await refreshLatestMessagesFromSession(ctx, { preserveStripped: true })
+				if (postCompaction.status !== "ok") {
+					ctx.ui.notify("Could not load the compacted context; the previous model remains active.", "error")
+					return
+				}
+				const compactedTokens = resolveContextTokens(ctx.getContextUsage?.(), postCompaction.messages)
+				if (compactedTokens != null && !contextFitsModel(compactedTokens, effectiveTarget.contextWindow)) {
+					ctx.ui.notify(
+						"Compaction did not reduce context enough for this model; the previous model remains active.",
+						"error",
+					)
+					return
+				}
+				if (needsImageStrip()) {
+					await offerStripAndSwitch()
+				} else if (await switchToValidatedTarget()) {
+					ctx.ui.notify(`Compacted context and switched to ${refFromModel(event.model)}.`, "info")
 				}
 				return
 			}
@@ -242,20 +320,6 @@ export default function modelSwitchExtension(
 			return
 		}
 
-		// Vision guard — block if session has images but target lacks vision support
-		if (
-			sessionHasImages() &&
-			!effectiveTarget.input.includes("image") &&
-			event.previousModel?.input.includes("image")
-		) {
-			isRevertingModel = true
-			await pi.setModel(event.previousModel)
-			isRevertingModel = false
-			ctx.ui?.notify(
-				`Session contains images but ${event.model.id} does not support vision. Run /strip-images to unlock non-vision models, or use a vision-capable model.`,
-				"error",
-			)
-			return
-		}
+		if (needsImageStrip()) await offerStripAndSwitch()
 	})
 }

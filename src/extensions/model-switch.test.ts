@@ -13,6 +13,13 @@ import modelSwitchExtension, {
 	getModelTier,
 	withSuppressedModelSelectGuard,
 } from "./model-switch.js"
+import { notifyStripSessionImagesResult, stripSessionImages } from "./strip-images.js"
+
+vi.mock("./strip-images.js", () => ({
+	formatStrippedImagesOutcome: vi.fn(() => "Stripped 1 image with AI descriptions"),
+	stripSessionImages: vi.fn(),
+	notifyStripSessionImagesResult: vi.fn(),
+}))
 
 type RegisteredTool = {
 	name: string
@@ -42,7 +49,7 @@ interface Harness {
 	getAvailable: ReturnType<typeof vi.fn>
 	exec: (
 		model: string,
-		opts?: { currentModel?: ModelEntry; imagesPresent?: boolean },
+		opts?: { currentModel?: ModelEntry; imagesPresent?: boolean; largeContext?: boolean },
 	) => Promise<{ content: Array<{ type: string; text: string }>; details: unknown }>
 }
 
@@ -104,6 +111,27 @@ function createHarness(options: { setModelResult?: boolean } = {}): Harness {
 					}
 				: { id: MODELS[0].id, provider: MODELS[0].provider, input: ["text", "image"] },
 		})
+		if (opts.imagesPresent) {
+			Object.assign(ctx.sessionManager, {
+				getBranch: () => [
+					{
+						type: "message",
+						id: "image-entry",
+						parentId: null,
+						timestamp: new Date().toISOString(),
+						message: {
+							role: "user",
+							content: [
+								{ type: "text", text: "persisted image" },
+								{ type: "image", data: "persisted-image-data", mimeType: "image/png" },
+							],
+							timestamp: 0,
+						},
+					},
+				],
+			})
+		}
+		if (opts.largeContext) Object.assign(ctx.sessionManager, { getBranch: () => persistedTextEntries(60_000) })
 		return tool.execute("test-call-id", { model }, undefined, undefined, ctx)
 	}
 
@@ -158,6 +186,22 @@ function makeMockCtx() {
 
 function textOf(result: { content: Array<{ type: string; text: string }> }): string {
 	return result.content.map((c) => c.text).join("\n")
+}
+
+function persistedTextEntries(textLength: number) {
+	return [
+		{
+			type: "message" as const,
+			id: "persisted-text",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: {
+				role: "user" as const,
+				content: [{ type: "text" as const, text: "x".repeat(textLength) }],
+				timestamp: 0,
+			},
+		},
+	]
 }
 
 describe("modelSwitchExtension", () => {
@@ -316,7 +360,7 @@ describe("modelSwitchExtension", () => {
 			)
 			expect(sessionHasImages()).toBe(true)
 
-			const result = await h.exec("kimchi-dev/minimax-m2.7")
+			const result = await h.exec("kimchi-dev/minimax-m2.7", { imagesPresent: true })
 			expect(h.setModel).not.toHaveBeenCalled()
 			expect(textOf(result)).toContain("Current conversation contains images")
 			expect(textOf(result)).toContain('target model "kimchi-dev/minimax-m2.7" does not support vision input')
@@ -637,7 +681,7 @@ describe("modelSwitchExtension", () => {
 						model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 						modelRegistry: { getAvailable: () => MODELS },
 						getContextUsage: () => ({ tokens: 150_000 }),
-						sessionManager: { getSessionId: () => "test-session" },
+						sessionManager: { getSessionId: () => "test-session", getBranch: () => [] },
 						ui: { notify },
 					} as never,
 				)
@@ -669,7 +713,7 @@ describe("modelSwitchExtension", () => {
 					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					modelRegistry: { getAvailable: () => MODELS },
 					getContextUsage: () => ({ tokens: 150_000 }),
-					sessionManager: { getSessionId: () => "test-session" },
+					sessionManager: { getSessionId: () => "test-session", getBranch: () => [] },
 					ui: { notify },
 				} as never,
 			)
@@ -694,7 +738,7 @@ describe("modelSwitchExtension", () => {
 					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					modelRegistry: { getAvailable: () => MODELS },
 					getContextUsage: () => ({ tokens: 150_000 }),
-					sessionManager: { getSessionId: () => "test-session" },
+					sessionManager: { getSessionId: () => "test-session", getBranch: () => [] },
 					ui: { notify },
 				} as never,
 			)
@@ -724,7 +768,7 @@ describe("modelSwitchExtension", () => {
 					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					modelRegistry: { getAvailable: () => MODELS },
 					getContextUsage: () => ({ tokens: 150_000 }),
-					sessionManager: { getSessionId: () => "test-session" },
+					sessionManager: { getSessionId: () => "test-session", getBranch: () => [] },
 					ui: { notify: notify1 },
 				} as never,
 			)
@@ -749,7 +793,7 @@ describe("modelSwitchExtension", () => {
 					model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					modelRegistry: { getAvailable: () => MODELS },
 					getContextUsage: () => ({ tokens: 150_000 }),
-					sessionManager: { getSessionId: () => "test-session" },
+					sessionManager: { getSessionId: () => "test-session", getBranch: () => [] },
 					ui: { notify: notify2 },
 				} as never,
 			)
@@ -790,7 +834,7 @@ describe("modelSwitchExtension", () => {
 						model.id === "kimi-k2.6" && model.provider === "kimchi-dev" ? { ...model, contextWindow: 10_000 } : model,
 					),
 				)
-				const result = await h.exec("kimchi-dev/kimi-k2.6")
+				const result = await h.exec("kimchi-dev/kimi-k2.6", { largeContext: true })
 
 				expect(h.setModel).not.toHaveBeenCalled()
 				const text = textOf(result)
@@ -922,6 +966,7 @@ describe("modelSwitchExtension", () => {
 					getContextUsage: () => ({ tokens: null }),
 					model: { id: "nemotron-3-ultra-fp4", provider: "kimchi-dev", input: ["text", "image"] },
 				})
+				Object.assign(ctx.sessionManager, { getBranch: () => persistedTextEntries(60_000) })
 				const result = await registered.execute("test", { model: "kimchi-dev/kimi-k2.6" }, undefined, undefined, ctx)
 
 				// Should reject — local estimate (15,000) exceeds safe window (9,500)
@@ -955,17 +1000,98 @@ describe("modelSwitchExtension", () => {
 				model: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 				modelRegistry: { getAvailable: () => MODELS },
 				getContextUsage: () => ({ tokens }),
-				sessionManager: { getSessionId: () => "test-session" },
+				sessionManager: { getSessionId: () => "test-session", getBranch: () => [] },
 				hasUI,
 				ui: { notify: vi.fn(), select: vi.fn(), input: vi.fn(), ...overrides.ui },
 				...overrides,
-			} as ExtensionContext
+			} as unknown as ExtensionContext
+		}
+
+		const restoredBranch = (withImage = true, count = 1, textLength = 17) =>
+			Array.from({ length: count }, (_, index) => ({
+				type: "message" as const,
+				id: `restored-message-${index}`,
+				parentId: index === 0 ? null : `restored-message-${index - 1}`,
+				timestamp: new Date().toISOString(),
+				message: {
+					role: "user" as const,
+					content: [
+						{ type: "text" as const, text: "restored context".padEnd(textLength, "x") },
+						...(withImage ? [{ type: "image" as const, data: "image-data", mimeType: "image/png" }] : []),
+					],
+					timestamp: 0,
+				},
+			}))
+
+		const useRestoredBranch = (ctx: ExtensionContext, getBranch: () => unknown = () => restoredBranch()) => {
+			Object.assign(ctx.sessionManager, { getBranch })
+			return ctx
+		}
+
+		const runRestoredVisionSwitch = async (choice?: string, setModelResult = true) => {
+			const { pi, trigger, setModel } = createHarnessWithTrigger({ setModelResult })
+			modelSwitchExtension(pi)
+			const notify = vi.fn()
+			const select = vi.fn().mockResolvedValue(choice)
+			const ctx = useRestoredBranch(createContext({ tokens: 10_000, hasUI: true, mode: "tui", ui: { notify, select } }))
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"], contextWindow: 200_000 },
+					source: "set",
+				},
+				ctx,
+			)
+			return { setModel, select, notify }
+		}
+
+		const runCombinedRecovery = async (
+			options: { imagesAfterCompaction?: boolean; sufficientCompaction?: boolean; stripChoice?: string } = {},
+		) => {
+			const { pi, trigger, setModel } = createHarnessWithTrigger()
+			modelSwitchExtension(pi)
+			let images = true
+			let tokens = 150_000
+			const select = vi
+				.fn()
+				.mockResolvedValueOnce("Compact conversation and continue")
+				.mockResolvedValueOnce(options.stripChoice)
+			const compact = vi.fn((compactOptions: Parameters<ExtensionContext["compact"]>[0]) => {
+				images = options.imagesAfterCompaction ?? true
+				tokens = options.sufficientCompaction === false ? 150_000 : 10_000
+				compactOptions?.onComplete?.({} as never)
+			})
+			const notify = vi.fn()
+			const ctx = useRestoredBranch(
+				createContext({ tokens: 150_000, hasUI: true, mode: "tui", compact, ui: { notify, select } }),
+				() => restoredBranch(images),
+			)
+			Object.assign(ctx, { getContextUsage: () => ({ tokens }) })
+			await trigger(
+				"model_select",
+				{
+					type: "model_select",
+					model: { id: "minimax-m2.7", provider: "kimchi-dev", input: ["text"], contextWindow: 100_000 },
+					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"], contextWindow: 200_000 },
+					source: "set",
+				},
+				ctx,
+			)
+			return { setModel, select, compact, notify }
 		}
 
 		beforeEach(() => {
 			__resetModelSwitchStateForTest()
 			__resetImagesDetectedForTest()
 			vi.clearAllMocks()
+			vi.mocked(stripSessionImages).mockResolvedValue({
+				status: "stripped",
+				modelId: "kimi-k2.6",
+				processedCount: 1,
+				errors: [],
+			})
 		})
 
 		it("skips when isRevertingModel guard is set", async () => {
@@ -1069,7 +1195,9 @@ describe("modelSwitchExtension", () => {
 			modelSwitchExtension(pi)
 			const notify = vi.fn()
 			const select = vi.fn().mockResolvedValue("Compact conversation and switch")
+			let remainingTokens = 150_000
 			const compact = vi.fn((options: Parameters<ExtensionContext["compact"]>[0]) => {
+				remainingTokens = 10_000
 				options?.onComplete?.({} as never)
 			})
 			const target = {
@@ -1087,7 +1215,9 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "cycle",
 				},
-				createContext({ tokens: 150_000, hasUI: true, mode: "tui", compact, ui: { notify, select } }),
+				Object.assign(createContext({ tokens: 150_000, hasUI: true, mode: "tui", compact, ui: { notify, select } }), {
+					getContextUsage: () => ({ tokens: remainingTokens }),
+				}),
 			)
 
 			expect(setModel).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "kimi-k2.6" }))
@@ -1245,6 +1375,86 @@ describe("modelSwitchExtension", () => {
 			}
 		})
 
+		it("offers to strip restored images before completing a text-only switch", async () => {
+			const { setModel } = await runRestoredVisionSwitch("Strip images and switch")
+
+			expect(stripSessionImages).toHaveBeenCalledOnce()
+			expect(setModel).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "kimi-k2.6" }))
+			expect(setModel).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "minimax-m2.7" }))
+		})
+
+		it("warns instead of silently continuing when the previous model cannot be restored", async () => {
+			const { setModel, select, notify } = await runRestoredVisionSwitch("Strip images and switch", false)
+
+			expect(setModel).toHaveBeenCalledOnce()
+			expect(select).not.toHaveBeenCalled()
+			expect(stripSessionImages).not.toHaveBeenCalled()
+			expect(notify).toHaveBeenCalledWith(expect.stringContaining("Could not restore"), "error")
+		})
+
+		it("detects newly persisted images after an earlier text-only context", async () => {
+			__setLatestMessagesForTest([])
+
+			const { setModel } = await runRestoredVisionSwitch("Strip images and switch")
+
+			expect(stripSessionImages).toHaveBeenCalledOnce()
+			expect(setModel).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "minimax-m2.7" }))
+		})
+
+		it("keeps the previous model without analysis when stripping is dismissed", async () => {
+			const { setModel, notify } = await runRestoredVisionSwitch(undefined)
+
+			expect(stripSessionImages).not.toHaveBeenCalled()
+			expect(setModel).toHaveBeenCalledOnce()
+			expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
+			expect(notify).toHaveBeenCalledWith(expect.stringContaining("previous model remains active"), "info")
+		})
+
+		it("does not retry the target when image stripping has a blocking failure", async () => {
+			vi.mocked(stripSessionImages).mockResolvedValue({ status: "no-vision-model" })
+
+			const { setModel } = await runRestoredVisionSwitch("Strip images and switch")
+
+			expect(notifyStripSessionImagesResult).toHaveBeenCalledOnce()
+			expect(setModel).toHaveBeenCalledOnce()
+			expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
+		})
+
+		it("compacts and strips surviving images before switching", async () => {
+			const { setModel, select, compact } = await runCombinedRecovery({ stripChoice: "Strip images and switch" })
+
+			expect(compact).toHaveBeenCalledOnce()
+			expect(select).toHaveBeenCalledTimes(2)
+			expect(stripSessionImages).toHaveBeenCalledOnce()
+			expect(setModel).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "minimax-m2.7" }))
+		})
+
+		it("switches without a second prompt when compaction removes images", async () => {
+			const { setModel, select } = await runCombinedRecovery({ imagesAfterCompaction: false })
+
+			expect(select).toHaveBeenCalledOnce()
+			expect(stripSessionImages).not.toHaveBeenCalled()
+			expect(setModel).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "minimax-m2.7" }))
+		})
+
+		it("keeps the previous model but retains compaction when the second prompt is dismissed", async () => {
+			const { setModel, select, notify } = await runCombinedRecovery({})
+
+			expect(select).toHaveBeenCalledTimes(2)
+			expect(stripSessionImages).not.toHaveBeenCalled()
+			expect(setModel).toHaveBeenCalledOnce()
+			expect(notify).toHaveBeenCalledWith(expect.stringContaining("previous model remains active"), "info")
+		})
+
+		it("does not strip or switch when compaction remains too large", async () => {
+			const { setModel, select, notify } = await runCombinedRecovery({ sufficientCompaction: false })
+
+			expect(select).toHaveBeenCalledOnce()
+			expect(stripSessionImages).not.toHaveBeenCalled()
+			expect(setModel).toHaveBeenCalledOnce()
+			expect(notify).toHaveBeenCalledWith(expect.stringContaining("did not reduce context enough"), "error")
+		})
+
 		it("reverts when session has images and target lacks vision", async () => {
 			const { pi: imgPi, trigger: imgTrigger } = createHarnessWithTrigger()
 			createModelGuardExtension(imgPi)
@@ -1281,7 +1491,7 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "kimi-k2.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "set",
 				},
-				createContext({ tokens: 10_000, ui: { notify } }),
+				useRestoredBranch(createContext({ tokens: 10_000, ui: { notify } })),
 			)
 			expect(setModel).toHaveBeenCalledWith(expect.objectContaining({ id: "kimi-k2.6" }))
 			expect(notify).toHaveBeenCalledWith(expect.stringContaining("vision"), "error")
@@ -1368,6 +1578,7 @@ describe("modelSwitchExtension", () => {
 		})
 
 		it("reverts when getContextUsage returns null but local estimate exceeds target context window", async () => {
+			const largeRestoredBranch = restoredBranch(false, 30, 2000)
 			// Simulate post-compaction: getContextUsage returns null, but accumulated messages
 			// are large enough to exceed the target context window.
 			// 30 messages × 2000 chars → ~15,000 tokens; 15,000 > 10,000 × 0.95 = 9,500 → guard fires.
@@ -1388,7 +1599,10 @@ describe("modelSwitchExtension", () => {
 					previousModel: { id: "claude-opus-4.6", provider: "kimchi-dev", input: ["text", "image"] },
 					source: "set",
 				},
-				createContext({ getContextUsage: () => ({ tokens: null as unknown as number }) }),
+				useRestoredBranch(
+					createContext({ getContextUsage: () => ({ tokens: null as unknown as number }) }),
+					() => largeRestoredBranch,
+				),
 			)
 
 			expect(h.setModel).toHaveBeenCalledWith({

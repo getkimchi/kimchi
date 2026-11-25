@@ -105,6 +105,90 @@ describe("ACP vision image gating", () => {
 		expect(userMessage).toContain(`data:image/png;base64,${TINY_PNG}`)
 	})
 
+	it("offers standard elicitation to strip images before switching to a text-only model", async () => {
+		fixture = await startAcpFixture({
+			artifactName: "acp-model-switch-strips-images",
+			models: [
+				{ slug: "text-only-model", displayName: "Text Only", contextWindow: 200_000, maxTokens: 8_192 },
+				{
+					slug: "vision-model",
+					displayName: "Vision Model",
+					input: ["text", "image"],
+					contextWindow: 200_000,
+					maxTokens: 8_192,
+				},
+			],
+			defaultModel: "vision-model",
+			clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, elicitation: { form: {} } },
+			responses: [
+				{ stream: ["Image received."] },
+				{ stream: ["A tiny image described for text context."] },
+				{ stream: ["Text model received descriptions only."] },
+			],
+		})
+		const sessionId = await newSession(fixture, fixture.workDir)
+		await prompt(fixture, sessionId, "remember this image", [imageBlock()])
+		fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Strip images and switch" } })
+
+		await fixture.conn.request("session/set_config_option", {
+			sessionId,
+			configId: "model",
+			value: "fake/text-only-model",
+		})
+
+		expect(fixture.client.elicitationRequests).toHaveLength(1)
+		expect(JSON.stringify(fixture.client.elicitationRequests[0]?.params)).toContain("Strip images and switch")
+		const result = await prompt(fixture, sessionId, "continue without the image")
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.chunks).toContain("Text model received descriptions only.")
+		const bodies = chatBodies(fixture) as Array<{ model: string }>
+		expect(bodies.map((body) => body.model)).toEqual(["vision-model", "vision-model", "text-only-model"])
+		const finalBody = JSON.stringify(bodies[2])
+		expect(finalBody).toContain("A tiny image described for text context.")
+		expect(finalBody).not.toContain('"image_url"')
+	})
+
+	it("uses request_permission for strip recovery when the client lacks elicitation", async () => {
+		fixture = await startAcpFixture({
+			artifactName: "acp-model-switch-strips-images-permission-fallback",
+			models: [
+				{ slug: "text-only-model", displayName: "Text Only", contextWindow: 200_000, maxTokens: 8_192 },
+				{
+					slug: "vision-model",
+					displayName: "Vision Model",
+					input: ["text", "image"],
+					contextWindow: 200_000,
+					maxTokens: 8_192,
+				},
+			],
+			defaultModel: "vision-model",
+			responses: [
+				{ stream: ["Image received."] },
+				{ stream: ["Permission-approved image description."] },
+				{ stream: ["Permission fallback completed."] },
+			],
+		})
+		const sessionId = await newSession(fixture, fixture.workDir)
+		await prompt(fixture, sessionId, "remember this image", [imageBlock()])
+
+		await fixture.conn.request("session/set_config_option", {
+			sessionId,
+			configId: "model",
+			value: "fake/text-only-model",
+		})
+
+		expect(fixture.client.elicitationRequests).toHaveLength(0)
+		expect(fixture.client.permissionRequests).toHaveLength(1)
+		expect(JSON.stringify(fixture.client.permissionRequests[0])).toContain("Strip images and switch")
+		const result = await prompt(fixture, sessionId, "continue without the image")
+		expect(result.stopReason).toBe("end_turn")
+		expect(result.chunks).toContain("Permission fallback completed.")
+		const bodies = chatBodies(fixture) as Array<{ model: string }>
+		expect(bodies.map((body) => body.model)).toEqual(["vision-model", "vision-model", "text-only-model"])
+		expect(JSON.stringify(bodies[2])).toContain("Permission-approved image description.")
+		expect(JSON.stringify(bodies[2])).not.toContain('"image_url"')
+	})
+
 	it("advertises image support for an Auto-only registry with text-only descriptors", async () => {
 		// Auto is backend-routed: the descriptor says text-only, but the routed
 		// pool accepts images, so the connection must advertise image support.
