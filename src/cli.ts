@@ -233,6 +233,7 @@ import { setAvailableModels } from "./startup-context.js"
 import { applyTelemetryPolicy } from "./telemetry-policy.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installTuiConsoleLogging } from "./tui-console.js"
+import { applyOneTimeFullscreenSwitch } from "./tui-one-time-fullscreen.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
 import { installCompactionRecoveryPatch, installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
 import { runSecureExport } from "./utils/export-post-process.js"
@@ -811,7 +812,16 @@ async function cliMain(): Promise<void> {
 				console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
 				process.exit(1)
 			}
-			const rawArgs = atFileArgs.args
+			// Hidden one-time migration: latest-version regular TUI sessions start
+			// fullscreen without rewriting the user's persisted tuiMode choice.
+			// Non-TUI modes return before reading settings, checking, or persisting.
+			const rawArgs = await applyOneTimeFullscreenSwitch({
+				args: atFileArgs.args,
+				isTerminalUi: isTerminalUiMode(atFileArgs.args, terminalIo),
+				agentDir,
+				cwd: process.cwd(),
+				currentVersion: getVersion(),
+			})
 
 			// Parse Kimchi-local CLI flags once before upstream pi-mono sees them.
 			populateCliArgs(rawArgs)

@@ -498,6 +498,23 @@ describe("kimchi config set tui.wheelScrollLines", () => {
 	})
 })
 
+describe("hidden one-time fullscreen migration", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.spyOn(console, "log").mockImplementation(() => {})
+		vi.spyOn(console, "error").mockImplementation(() => {})
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("is not exposed as a config setting", async () => {
+		expect(await runConfig(["set", "tui.oneTimeFullscreenSwitch", "on"])).toBe(2)
+		expect(await runConfig(["get", "tui.oneTimeFullscreenSwitch"])).toBe(2)
+	})
+})
+
 describe("kimchi config set/get tui timestamp preferences", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
