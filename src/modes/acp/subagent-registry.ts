@@ -255,7 +255,7 @@ export class SubagentRegistry<T extends ChildProjectionRecord> {
 		this.recovering.set(parentSessionId, request)
 		for (const [childId, child] of this.live) {
 			if (child.parentSessionId !== parentSessionId) continue
-			child.pendingState = child.state
+			child.pendingState = child.state ?? child.pendingState
 			child.state = undefined
 			child.configReporter.invalidate()
 			this.dependencies.send(replacedAnnouncement(parentSessionId, childId))
@@ -274,7 +274,6 @@ export class SubagentRegistry<T extends ChildProjectionRecord> {
 		for (const child of this.live.values()) {
 			if (child.parentSessionId !== parentSessionId) continue
 			child.state = undefined
-			child.pendingState = undefined
 			child.pendingPrompt = undefined
 			child.configReporter.invalidate()
 		}

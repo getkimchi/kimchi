@@ -110,8 +110,11 @@ export function collectRecoveredSubagents(entries: readonly unknown[], parent: R
  * whether the reconstructed route still has a real manager-owned abort. */
 export function recoveredSubagentState(subagent: RecoveredSubagent): RecoveredSubagentState {
 	if (ACTIVE_STATUSES.has(subagent.status)) return { state: "unknown" }
-	if (subagent.status === "stopped" || subagent.status === "steered") {
+	if (subagent.status === "stopped") {
 		return { state: "idle", stopReason: "cancelled" }
+	}
+	if (subagent.status === "steered") {
+		return { state: "idle", stopReason: "end_turn" }
 	}
 	if (subagent.status === "error" || subagent.status === "aborted") {
 		return {

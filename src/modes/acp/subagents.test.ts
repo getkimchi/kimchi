@@ -691,9 +691,7 @@ describe("subagent cancellation", () => {
 		await agent.cancel({ sessionId: child.sessionId })
 		expect(abort).not.toHaveBeenCalled()
 
-		// A successful retry alone cannot restore stale state: it needs a fresh
-		// native state observation before cancellation becomes available again.
-		replay.mockImplementationOnce(async () => child.emit({ type: "agent_start" } as AgentSessionEvent))
+		replay.mockResolvedValueOnce(undefined)
 		await agent.loadSession({ sessionId: "parent", cwd: "/workspace/root", mcpServers: [] })
 		await new Promise<void>((resolve) => setImmediate(resolve))
 		expect(states().at(-1)?.update).toMatchObject({ state: { state: "running" }, capabilities: { cancel: {} } })

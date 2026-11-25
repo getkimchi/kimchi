@@ -92,7 +92,7 @@ describe("recovered subagent states", () => {
 
 	it("maps only observed terminal outcomes, without a cancelled tool status", () => {
 		expect(recoveredSubagentState(child("stopped"))).toEqual({ state: "idle", stopReason: "cancelled" })
-		expect(recoveredSubagentState(child("steered"))).toEqual({ state: "idle", stopReason: "cancelled" })
+		expect(recoveredSubagentState(child("steered"))).toEqual({ state: "idle", stopReason: "end_turn" })
 		expect(recoveredSubagentState(child("completed"))).toEqual({ state: "idle", stopReason: "end_turn" })
 		expect(recoveredSubagentState(child("aborted"))).toMatchObject({
 			state: "idle",
