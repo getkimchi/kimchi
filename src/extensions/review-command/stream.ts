@@ -1,9 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
-import {
-	flushRawStdout,
-	writeRawStdout,
-} from "../../../node_modules/@earendil-works/pi-coding-agent/dist/core/output-guard.js"
 import type { ReviewPanelChildUsage } from "../review-panel/types.js"
+import { flushRawStdout, writeRawStdout } from "./print-output.js"
 
 export const REVIEW_PRINT_GRACE_MS = 60_000
 export const REVIEW_PRINT_EXIT_MARGIN_MS = 3_000
@@ -58,6 +55,16 @@ export async function flushReviewPrintEvents(): Promise<void> {
 	await flushRawStdout()
 }
 
+type RawSignalListener = NodeJS.SignalsListener & { listener?: NodeJS.SignalsListener }
+
+function sameListenerRegistration(left: RawSignalListener, right: RawSignalListener): boolean {
+	if (left === right) return true
+	return (
+		(left.listener ?? left) === (right.listener ?? right) &&
+		(typeof left.listener === "function") === (typeof right.listener === "function")
+	)
+}
+
 /** Scoped replacement for upstream print-mode's immediate TERM disposal. Only
  * an active review command installs this; ordinary print sessions are untouched. */
 export class ReviewPrintTermination {
@@ -77,7 +84,7 @@ export class ReviewPrintTermination {
 
 	start(): void {
 		for (const signal of ["SIGTERM"] as const) {
-			const listeners = process.listeners(signal) as NodeJS.SignalsListener[]
+			const listeners = process.rawListeners(signal) as NodeJS.SignalsListener[]
 			this.previous.set(signal, listeners)
 			for (const listener of listeners) process.off(signal, listener)
 			process.on(signal, this.terminateHandler)
@@ -93,6 +100,7 @@ export class ReviewPrintTermination {
 				this.terminated = true
 				this.options.abort(new Error("Review print finalization grace expired."))
 				this.abortController.abort(new Error("Review print finalization grace expired."))
+				emitReviewAgentSettled()
 				void flushReviewPrintEvents().finally(() => {
 					process.exitCode = 143
 					// Last-resort watchdog only. Normal and TERM finalization return through
@@ -122,7 +130,12 @@ export class ReviewPrintTermination {
 		await flushReviewPrintEvents()
 		for (const [signal, listeners] of this.previous) {
 			process.off(signal, this.terminateHandler)
-			for (const listener of listeners) process.on(signal, listener)
+			const current = process.rawListeners(signal) as RawSignalListener[]
+			for (const listener of listeners) {
+				const existing = current.findIndex((candidate) => sameListenerRegistration(listener, candidate))
+				if (existing >= 0) current.splice(existing, 1)
+				else process.on(signal, listener)
+			}
 		}
 		this.previous.clear()
 		termination = undefined

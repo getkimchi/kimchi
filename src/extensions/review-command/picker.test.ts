@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createCommandContext } from "../__mocks__/context.js"
 import { getReviewTargetChoices } from "../review-targets/index.js"
-import type { BareReviewRequest } from "../review-targets/types.js"
+import { type BareReviewRequest, REVIEW_TARGET_SYNTAX, type ReviewTargetChoices } from "../review-targets/types.js"
 import { selectBareTarget } from "./command.js"
 
 const temporaryDirectories: string[] = []
@@ -62,5 +62,20 @@ describe("bare review picker exclusions", () => {
 		const selection = await selectBareTarget(bare(), ctx, { choices: getReviewTargetChoices })
 		expect(selection.request?.kind).toBe("working-tree")
 		expect(vi.mocked(ctx.ui.select).mock.calls[0]?.[1]).toEqual(["Working tree (default)", "Branch"])
+	})
+
+	it("rejects malformed choices without a branch entry", async () => {
+		const ctx = createCommandContext()
+		ctx.hasUI = false
+		const malformed = {
+			choices: [{ kind: "working-tree", preselected: false }],
+			syntax: REVIEW_TARGET_SYNTAX,
+			workingTreeStatus: "clean",
+			flaggedPaths: [],
+			flaggedPathCount: 0,
+		} as unknown as ReviewTargetChoices
+		await expect(selectBareTarget(bare(), ctx, { choices: vi.fn(async () => malformed) })).rejects.toMatchObject({
+			code: "invalid_target_choices",
+		})
 	})
 })

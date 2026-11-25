@@ -213,6 +213,13 @@ export async function selectBareTarget(
 		root: ctx.cwd,
 		excludedDirectories: reviewOwnedDirectories(cliDirectories(ctx)),
 	})
+	const branch = choices.choices[1]
+	if (branch?.kind !== "branch") {
+		throw new ReviewTargetError(
+			"invalid_target_choices",
+			"Review target discovery did not provide the required branch choice.",
+		)
+	}
 	// ACP intentionally uses explicit syntax rather than a picker. Every other
 	// headless frontend gets the same deterministic fallback; only a real TUI picks.
 	if (!ctx.hasUI || getParsedCliArgs().options.mode !== undefined) {
@@ -220,12 +227,11 @@ export async function selectBareTarget(
 			message:
 				"Choose an explicit review target:\n" +
 				choices.syntax.join("\n") +
-				(choices.choices[1].baseSuggestion
-					? `\nSuggested branch base: ${choices.choices[1].baseSuggestion.ref}`
+				(branch.baseSuggestion
+					? `\nSuggested branch base: ${branch.baseSuggestion.ref}`
 					: "\nNo unique base was resolved; --base is required for a branch review."),
 		}
 	}
-	const branch = choices.choices[1]
 	const ordered = [...choices.choices].sort((left, right) => Number(right.preselected) - Number(left.preselected))
 	const labels = ordered.map(
 		(choice) =>
@@ -409,6 +415,7 @@ async function runLocal(
 	if (parsed.kind === "bare") {
 		const selected = await selectBareTarget(parsed, ctx, deps)
 		if (selected.message) {
+			if (isPrintModeEnabled()) throw invalid(selected.message)
 			notify(ctx, selected.message)
 			return
 		}
@@ -427,16 +434,16 @@ async function runLocal(
 	const report = reporter(ctx, true)
 	let operation: ReviewOperation | undefined
 	try {
-		const outputDir = await createLocalReviewRunDirectory(directories.outputDir)
-		operation = await acquireReviewOperation(ctx, target.scope.checkoutPath, outputDir)
-		report.scope(target, outputDir)
+		const run = await createLocalReviewRunDirectory(directories.outputDir)
+		operation = await acquireReviewOperation(ctx, target.scope.checkoutPath, run)
+		report.scope(target, run.runDir)
 		const selection = deps.resolvePanel({ ...request.panel, requiredLenses: settings.requiredLenses })
 		report.selection(selection)
 		const result = await deps.runPanel({
 			ctx,
 			pi,
 			target,
-			outputDir,
+			outputDir: run.runDir,
 			...request.panel,
 			requiredLenses: settings.requiredLenses,
 			checkDefinitions: settings.checkDefinitions,

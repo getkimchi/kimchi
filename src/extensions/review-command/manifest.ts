@@ -1,7 +1,7 @@
 import { readFile, realpath } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
 import { localAnchors, selectAnchors } from "../review-targets/anchors.js"
-import { gitText, repositoryRoot, resolveCommit } from "../review-targets/git.js"
+import { GitCommandError, gitText, repositoryRoot, resolveCommit } from "../review-targets/git.js"
 import type { ResolvedReviewTarget } from "../review-targets/types.js"
 import { ReviewTargetError } from "../review-targets/types.js"
 
@@ -43,6 +43,10 @@ function object(value: unknown): value is Record<string, unknown> {
 
 function invalid(message: string): ReviewTargetError {
 	return new ReviewTargetError("invalid_manifest", message)
+}
+
+function throwIfManifestAborted(signal?: AbortSignal): void {
+	if (signal?.aborted) throw signal.reason
 }
 
 /** Strict RFC 3339 UTC instant. Offset forms, non-existent dates and leap seconds
@@ -125,9 +129,30 @@ export async function prepareReviewManifestTarget(
 	manifest: ReviewManifest,
 	signal?: AbortSignal,
 ): Promise<PreparedReviewManifest> {
+	throwIfManifestAborted(signal)
 	const deadlineMs = parseReviewManifestDeadline(manifest.deadline)
-	const root = await repositoryRoot(manifest.checkout_path, signal)
-	if (root !== (await realpath(resolve(manifest.checkout_path)))) {
+	let checkoutPath: string
+	try {
+		checkoutPath = await realpath(resolve(manifest.checkout_path))
+	} catch (error) {
+		throwIfManifestAborted(signal)
+		const code = (error as NodeJS.ErrnoException).code
+		if (code !== "ENOENT" && code !== "ENOTDIR") throw error
+		throw new ReviewTargetError(
+			"checkout_path_mismatch",
+			`Review manifest checkout_path ${manifest.checkout_path} cannot be resolved: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		)
+	}
+	let root: string
+	try {
+		root = await repositoryRoot(checkoutPath, signal)
+	} catch (error) {
+		throwIfManifestAborted(signal)
+		throw error
+	}
+	if (root !== checkoutPath) {
 		throw new ReviewTargetError(
 			"checkout_path_mismatch",
 			`Review manifest checkout_path ${manifest.checkout_path} does not resolve to repository root ${root}.`,
@@ -141,6 +166,7 @@ export async function prepareReviewManifestTarget(
 			const resolved = await resolveCommit(root, sha, signal)
 			if (resolved !== sha) throw new Error(`resolved to ${resolved}`)
 		} catch (error) {
+			throwIfManifestAborted(signal)
 			throw new ReviewTargetError(
 				"manifest_revision_mismatch",
 				`Review manifest ${label} ${sha} does not match the prepared checkout ${root}: ${
@@ -149,7 +175,28 @@ export async function prepareReviewManifestTarget(
 			)
 		}
 	}
-	const mergeBase = await gitText(root, ["merge-base", manifest.base_sha, manifest.head_sha], { signal })
+	let mergeBase: string
+	try {
+		mergeBase = await gitText(root, ["merge-base", manifest.base_sha, manifest.head_sha], { signal })
+	} catch (error) {
+		throwIfManifestAborted(signal)
+		if (error instanceof GitCommandError) {
+			const processCode = (error.cause as { code?: unknown } | undefined)?.code
+			const noMergeBase = error.exitCode === 1 && typeof processCode !== "string"
+			const unknownRevision = /not a valid object name|bad revision|unknown revision|ambiguous argument/i.test(
+				error.stderr,
+			)
+			if (noMergeBase || unknownRevision) {
+				throw new ReviewTargetError(
+					"manifest_revision_mismatch",
+					`Could not verify the review manifest merge base in prepared checkout ${root}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				)
+			}
+		}
+		throw error
+	}
 	if (mergeBase !== manifest.base_sha) {
 		throw new ReviewTargetError(
 			"manifest_revision_mismatch",

@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto"
 import { mkdir, open, readFile, rm, unlink } from "node:fs/promises"
-import { dirname, resolve } from "node:path"
+import { dirname } from "node:path"
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { ReviewTargetError } from "../review-targets/types.js"
 import { currentReviewHost, currentReviewOwnerIdentity, reviewProcessStartIdentity } from "./owner-identity.js"
+import type { LocalReviewRunDirectory } from "./run-directory.js"
 
 interface ActiveReview {
 	checkoutPath: string
@@ -45,9 +46,9 @@ async function processAlive(pid: number): Promise<boolean> {
 
 async function acquirePersistentLock(
 	checkoutPath: string,
-	runDir: string,
+	run: LocalReviewRunDirectory,
 ): Promise<{ path: string; token: string } | undefined> {
-	const path = resolve(dirname(runDir), "..", "active-review.json")
+	const path = run.lockPath
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		const token = randomUUID()
 		try {
@@ -56,7 +57,7 @@ async function acquirePersistentLock(
 			try {
 				const owner = await currentReviewOwnerIdentity()
 				await handle.writeFile(
-					`${JSON.stringify({ token, pid: process.pid, checkoutPath, runDir, owner_host: owner.hostname, owner_start: owner.startIdentity })}\n`,
+					`${JSON.stringify({ token, pid: process.pid, checkoutPath, runDir: run.runDir, owner_host: owner.hostname, owner_start: owner.startIdentity })}\n`,
 					"utf8",
 				)
 				await handle.sync()
@@ -114,7 +115,7 @@ async function acquirePersistentLock(
 export async function acquireReviewOperation(
 	ctx: ExtensionCommandContext,
 	checkoutPath: string,
-	runDir: string,
+	run: LocalReviewRunDirectory,
 ): Promise<ReviewOperation> {
 	const sessionId = ctx.sessionManager.getSessionId()
 	if (activeBySession.has(sessionId) || activeByCheckout.has(checkoutPath)) throw activeError(checkoutPath)
@@ -125,7 +126,7 @@ export async function acquireReviewOperation(
 	const controller = new AbortController()
 	const active: ActiveReview = { checkoutPath, controller, completion, complete: resolveCompletion }
 	try {
-		const lock = await acquirePersistentLock(checkoutPath, runDir)
+		const lock = await acquirePersistentLock(checkoutPath, run)
 		if (!lock)
 			throw new ReviewTargetError("review_lock_failed", `Could not acquire the active-review lock for ${checkoutPath}.`)
 		active.lockPath = lock.path
@@ -141,7 +142,7 @@ export async function acquireReviewOperation(
 		activeByCheckout.set(checkoutPath, active)
 		return {
 			signal: controller.signal,
-			runDir,
+			runDir: run.runDir,
 			get cancelled() {
 				return controller.signal.aborted
 			},

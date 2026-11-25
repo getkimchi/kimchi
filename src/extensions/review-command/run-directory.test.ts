@@ -38,10 +38,11 @@ describe("local run directory safety", () => {
 		expect(readdirSync(outside)).toEqual([])
 	})
 
-	it("returns a canonical run directory under a real owned root", async () => {
+	it("returns a canonical run directory and lock path under a real owned root", async () => {
 		const { outputRoot } = fixture()
-		const runDir = await createLocalReviewRunDirectory(outputRoot)
-		expect(realpathSync(runDir)).toBe(runDir)
-		expect(runDir.startsWith(realpathSync(join(outputRoot, "runs")))).toBe(true)
+		const run = await createLocalReviewRunDirectory(outputRoot)
+		expect(realpathSync(run.runDir)).toBe(run.runDir)
+		expect(run.runDir.startsWith(realpathSync(join(outputRoot, "runs")))).toBe(true)
+		expect(run.lockPath).toBe(join(realpathSync(outputRoot), "active-review.json"))
 	})
 })

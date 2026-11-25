@@ -5,7 +5,12 @@ import { dirname, join, relative, resolve } from "node:path"
 import { checkReviewDirectory } from "../review-submit/directory-safety.js"
 import type { resolveReviewDirectories } from "../review-submit/paths.js"
 
-export async function createLocalReviewRunDirectory(outputRoot: string): Promise<string> {
+export interface LocalReviewRunDirectory {
+	runDir: string
+	lockPath: string
+}
+
+export async function createLocalReviewRunDirectory(outputRoot: string): Promise<LocalReviewRunDirectory> {
 	const checked = async (path: string) => {
 		const result = await checkReviewDirectory(path, { isDefault: false, create: true })
 		if (result.kind !== "ready") {
@@ -20,7 +25,7 @@ export async function createLocalReviewRunDirectory(outputRoot: string): Promise
 	const generatedId = `${new Date().toISOString().replace(/:/g, "-")}-${randomUUID()}`
 	const runDir = join(runsRoot, generatedId)
 	await mkdir(runDir)
-	return runDir
+	return { runDir, lockPath: join(ownedRoot, "active-review.json") }
 }
 
 function canonicalPath(path: string): string {

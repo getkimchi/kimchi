@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process"
+import * as fsPromises from "node:fs/promises"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import * as reviewGit from "../review-targets/git.js"
 import {
 	loadPreparedReviewManifest,
 	parseReviewManifestDeadline,
@@ -12,10 +14,16 @@ import {
 	validateReviewManifest,
 } from "./manifest.js"
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof fsPromises>()
+	return { ...actual, realpath: vi.fn(actual.realpath) }
+})
+
 const exec = promisify(execFile)
 const temporaryDirectories: string[] = []
 
 afterEach(async () => {
+	vi.restoreAllMocks()
 	await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
@@ -141,6 +149,60 @@ describe("prepared manifest checkout", () => {
 		).rejects.toMatchObject({
 			code: "manifest_revision_mismatch",
 		})
+	})
+
+	it("reports a missing checkout as a structured path mismatch", async () => {
+		const { manifest, checkout } = await repositoryFixture()
+		const path = await writeManifest(manifest)
+		await rm(checkout, { recursive: true, force: true })
+		await expect(loadPreparedReviewManifest(path)).rejects.toMatchObject({
+			code: "checkout_path_mismatch",
+		})
+	})
+
+	it("rethrows checkout permission errors as generic review failures", async () => {
+		const { manifest } = await repositoryFixture()
+		const failure = Object.assign(new Error("permission denied"), { code: "EACCES" })
+		vi.mocked(fsPromises.realpath).mockRejectedValueOnce(failure)
+		await expect(loadPreparedReviewManifest(await writeManifest(manifest))).rejects.toBe(failure)
+	})
+
+	it("rethrows unrelated merge-base operational failures", async () => {
+		const { manifest } = await repositoryFixture()
+		const failure = new Error("forced merge-base failure")
+		const originalGitText = reviewGit.gitText
+		vi.spyOn(reviewGit, "gitText").mockImplementation(async (cwd, args, options) => {
+			if (args[0] === "merge-base") throw failure
+			return originalGitText(cwd, args, options)
+		})
+		await expect(loadPreparedReviewManifest(await writeManifest(manifest))).rejects.toBe(failure)
+	})
+
+	it("classifies a genuine no-merge-base result as a revision mismatch", async () => {
+		const { manifest } = await repositoryFixture()
+		const originalGitText = reviewGit.gitText
+		vi.spyOn(reviewGit, "gitText").mockImplementation(async (cwd, args, options) => {
+			if (args[0] === "merge-base") throw new reviewGit.GitCommandError(args, 1, "")
+			return originalGitText(cwd, args, options)
+		})
+		await expect(loadPreparedReviewManifest(await writeManifest(manifest))).rejects.toMatchObject({
+			code: "manifest_revision_mismatch",
+		})
+	})
+
+	it("preserves the abort reason when merge-base is cancelled", async () => {
+		const { manifest } = await repositoryFixture()
+		const controller = new AbortController()
+		const reason = new Error("merge-base cancelled")
+		const originalGitText = reviewGit.gitText
+		vi.spyOn(reviewGit, "gitText").mockImplementation(async (cwd, args, options) => {
+			if (args[0] === "merge-base") {
+				controller.abort(reason)
+				throw reason
+			}
+			return originalGitText(cwd, args, options)
+		})
+		await expect(loadPreparedReviewManifest(await writeManifest(manifest), controller.signal)).rejects.toBe(reason)
 	})
 
 	async function writeManifest(manifest: ReturnType<typeof validateReviewManifest>): Promise<string> {

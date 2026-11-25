@@ -51,7 +51,13 @@ function runPrint(
 	homeDir: string,
 	prompt: string,
 	directories: { contextDir: string; outputDir: string },
-	options: { sessionId?: string; timeoutMs?: number; submitGraceMs?: number; worktreeTempDir?: string } = {},
+	options: {
+		sessionId?: string
+		timeoutMs?: number
+		submitGraceMs?: number
+		worktreeTempDir?: string
+		cwd?: string
+	} = {},
 ): RunningPrint {
 	const runDir = join(homeDir, "run")
 	const child = spawn(
@@ -79,7 +85,7 @@ function runPrint(
 			prompt,
 		],
 		{
-			cwd: runDir,
+			cwd: options.cwd ?? runDir,
 			detached: process.platform !== "win32",
 			env: {
 				...(options.submitGraceMs === undefined
@@ -298,6 +304,22 @@ for (const scenario of [
 		}
 	})
 }
+
+it("reports bare target syntax on stderr without corrupting JSON stdout", { timeout: 30_000 }, async () => {
+	const f = await fixture()
+	try {
+		const result = await runPrint(f.homeDir, "/review", f.directories, { cwd: f.checkout }).done
+		expect(result.timedOut).toBe(false)
+		expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(1)
+		expect(result.stderr).toContain("Review error [invalid_arguments]: Choose an explicit review target:")
+		expect(result.stderr).toContain("/review working-tree")
+		for (const line of result.stdout.split("\n").filter(Boolean)) {
+			expect(() => JSON.parse(line)).not.toThrow()
+		}
+	} finally {
+		await cleanup(f.tempRoot, f.fake)
+	}
+})
 
 it("shares repeated routine checks and allows only one panel command at a time", { timeout: 45_000 }, async () => {
 	const root = mkdtempSync(join(tmpdir(), "kimchi-review-command-queue-"))

@@ -20,8 +20,9 @@ reclaim private snapshot refs and worktree runs older than 24 hours; normal
 cleanup uses the owning runner's finalization path.
 
 Fresh local runs are isolated in `.kimchi/review-output/runs/<timestamp>-<uuid>/`,
-with the concrete run directory shown in the report. One active lock per checkout
-rejects concurrent invocations. A lock records the owner hostname and process
+with the concrete run directory shown in the report. The persistent lock provides
+mutual exclusion per output root; within one process, reviews are additionally
+exclusive per checkout. A lock records the owner hostname and process
 start identity (`/proc/<pid>/stat` on Linux, `ps lstart` elsewhere). It is
 reclaimed only on the same host when the PID is dead or that identity differs.
 Foreign-host locks and locks whose identity cannot be established are preserved
@@ -171,8 +172,10 @@ The platform sends TERM at the manifest deadline and KILL 60 seconds later.
 Only an active print review replaces upstream's immediate TERM disposal. It
 aborts the coordinator, continues forwarding submit/usage events, finalizes
 from durable candidates, emits `agent_settled`, and returns through the normal
-print host with exit code 143. The last-resort exit watchdog fires at deadline
-+ 60 s − 3 s, after flushing extension output; production grace is fixed at 60
+print host with exit code 143. Review-session `agent_settled` records always
+keep `aborted: false`, including after TERM; exit code 143 is the TERM indicator.
+The last-resort exit watchdog fires at deadline + 60 s − 3 s, after flushing
+extension output; production grace is fixed at 60
 seconds. Other print sessions retain upstream TERM behavior exactly. Aborted
 runner cleanup is capped by the earlier of the manifest deadline and one
 post-abort settlement second. Message-boundary session persistence and atomic

@@ -29,7 +29,7 @@ describe("active local review runs", () => {
 		const first = await acquireReviewOperation(ctx, checkoutPath, firstDir)
 		expect(existsSync(join(outputRoot, "active-review.json"))).toBe(true)
 		const competingDir = await createLocalReviewRunDirectory(outputRoot)
-		expect(competingDir).not.toBe(firstDir)
+		expect(competingDir.runDir).not.toBe(firstDir.runDir)
 		await expect(acquireReviewOperation(ctx, checkoutPath, competingDir)).rejects.toMatchObject({
 			code: "review_in_progress",
 		})
@@ -75,12 +75,19 @@ describe("active local review runs", () => {
 				owner_host: currentReviewHost(),
 				owner_start: "different-process-start",
 				checkoutPath,
-				runDir,
+				runDir: runDir.runDir,
 			}),
 		)
 		const operation = await acquireReviewOperation(ctx, checkoutPath, runDir)
 		const current = JSON.parse(readFileSync(join(outputRoot, "active-review.json"), "utf8"))
-		expect(current.token).not.toBe("old-process-start")
+		const owner = await currentReviewOwnerIdentity()
+		expect(current.token).not.toBe("reused-pid-owner")
+		expect(current).toMatchObject({
+			pid: process.pid,
+			owner_host: owner.hostname,
+			owner_start: owner.startIdentity,
+			runDir: runDir.runDir,
+		})
 		await operation.finish()
 	})
 
@@ -97,7 +104,7 @@ describe("active local review runs", () => {
 				owner_host: "another-host.invalid",
 				owner_start: "different-process-start",
 				checkoutPath,
-				runDir,
+				runDir: runDir.runDir,
 			}),
 		)
 		await expect(acquireReviewOperation(ctx, checkoutPath, runDir)).rejects.toThrow(
@@ -120,7 +127,7 @@ describe("active local review runs", () => {
 				owner_host: owner.hostname,
 				owner_start: owner.startIdentity,
 				checkoutPath,
-				runDir,
+				runDir: runDir.runDir,
 			}),
 		)
 		await expect(acquireReviewOperation(ctx, checkoutPath, runDir)).rejects.toMatchObject({
@@ -133,7 +140,7 @@ describe("active local review runs", () => {
 		const ctx = createCommandContext()
 		const { outputRoot, checkoutPath } = sandbox()
 		const runDir = await createLocalReviewRunDirectory(outputRoot)
-		const oldArtifact = join(runDir, "summary.json")
+		const oldArtifact = join(runDir.runDir, "summary.json")
 		writeFileSync(oldArtifact, "{}")
 		writeFileSync(
 			join(outputRoot, "active-review.json"),
@@ -143,7 +150,7 @@ describe("active local review runs", () => {
 				owner_host: currentReviewHost(),
 				owner_start: "dead-process-start",
 				checkoutPath,
-				runDir,
+				runDir: runDir.runDir,
 			}),
 		)
 		const operation = await acquireReviewOperation(ctx, checkoutPath, runDir)
