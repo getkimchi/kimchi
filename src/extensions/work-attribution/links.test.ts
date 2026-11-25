@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { backendFor, capture, setNote } from "@getkimchi/kimchi-bridge/ledger"
+import { calculatePullRequestCosts, requestWorkLinks } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createContext } from "../__mocks__/context.js"
@@ -11,7 +12,6 @@ import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import * as attribution from "../work-attribution.js"
 import { appendWorkRecord, getWorkId, recordProviderRequest } from "../work-attribution.js"
 import type { WorkContinuation } from "./continuation.js"
-import { calculatePullRequestCosts } from "./costs.js"
 import type { ContinuationProgress } from "./links.js"
 import {
 	confirmWorkContinuation,
@@ -20,7 +20,6 @@ import {
 	readContinuationHistory,
 	readContinuationHistoryAsync,
 	reconcileWorkContinuations,
-	requestWorkLinks,
 } from "./links.js"
 import * as scope from "./scope.js"
 import * as summary from "./summary.js"

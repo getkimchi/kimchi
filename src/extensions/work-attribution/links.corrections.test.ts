@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { calculatePullRequestCosts } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createContext } from "../__mocks__/context.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { appendWorkRecord, getWorkId, recordProviderRequest, workLedgerPath } from "../work-attribution.js"
-import { calculatePullRequestCosts } from "./costs.js"
 import {
 	confirmWorkContinuation,
 	correctWorkLink,

@@ -1,10 +1,15 @@
 import { pullRequestKey } from "@getkimchi/kimchi-bridge/ledger"
-import { plainURL, repositoryPath, SHA, type WorkPullRequest } from "@getkimchi/kimchi-bridge/reconcile"
+import {
+	plainURL,
+	repositoryPath,
+	requestWorkLinks,
+	SHA,
+	type WorkPullRequest,
+} from "@getkimchi/kimchi-bridge/reconcile"
 import { savedBranchIssueKeys } from "../../shared/issue-keys.js"
 import { providerId, pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
 import { isWorkSegment, type WorkSegment } from "../work-attribution.js"
 
-import { requestWorkLinks } from "./links.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object, SHA256_HEX, type WorkRecord } from "./summary.js"
 
@@ -552,19 +557,6 @@ function allocation(
 		return { allocation: "post-merge" }
 	if (keys.length > 1) return { allocation: "shared" }
 	return { allocation: linked[0].state === "merged" ? "pull-request" : "unmerged" }
-}
-
-/** Recompute from durable evidence so repeated syncs and late prices cannot accumulate twice. */
-export function calculatePullRequestCosts(
-	records: readonly WorkRecord[],
-	observations: readonly RequestCostObservation[],
-	incompleteRequestIds: ReadonlySet<string> = new Set(),
-	noCharge: ReadonlyMap<string, WorkAccount> = new Map(),
-): PullRequestCostReport {
-	const steps = calculatePullRequestCostsSteps(records, observations, incompleteRequestIds, noCharge)
-	let step = steps.next()
-	while (!step.done) step = steps.next()
-	return step.value
 }
 
 /** Breathing twin of the reporting calculation for callers that must not hold the thread. */

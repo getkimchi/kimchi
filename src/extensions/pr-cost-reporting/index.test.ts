@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext, SessionStartEvent } from "@earendil-works/pi-coding-agent"
-import { readReportingState as barrelReadReportingState } from "@getkimchi/kimchi-bridge/reconcile"
+import { readReportingState as barrelReadReportingState, queueSnapshots } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { INFRA_BREAKER_THRESHOLD_ENV } from "../../upstream-retry-patch.js"
 import { createCommandContext, createContext } from "../__mocks__/context.js"
@@ -13,7 +13,7 @@ import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } f
 import { CI_VARIABLES } from "./automation.js"
 import reportingExtension from "./index.js"
 import type * as queue from "./queue.js"
-import { queueSnapshots, readReportingState, setReportingEnabled } from "./queue.js"
+import { readReportingState, setReportingEnabled } from "./queue.js"
 
 // The extension reads reporting state through the bridge barrel; its queue reads host
 // config through HostPorts, so bind Kimchi's in-process host outside a supervisor pass.

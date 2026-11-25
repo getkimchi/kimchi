@@ -11,7 +11,12 @@ import {
 	type RecordBackend,
 	setNote,
 } from "@getkimchi/kimchi-bridge/ledger"
-import { PRICED_TAG_LIMIT, readWorkCostReport, reconcileWorkCosts } from "@getkimchi/kimchi-bridge/reconcile"
+import {
+	calculatePullRequestCosts,
+	PRICED_TAG_LIMIT,
+	readWorkCostReport,
+	reconcileWorkCosts,
+} from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type * as json from "../../config/json.js"
 import * as config from "../../config.js"
@@ -21,8 +26,8 @@ import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import { captureBillingSource, requestTagSelector } from "./billing-source.js"
 import { readWorkBrowser } from "./browser.js"
 import { costDetailLines, workCostDetails, workCostTotals } from "./cost-details.js"
-import * as costs from "./costs.js"
-import { calculatePullRequestCosts, decimalNanos, roundedUsd } from "./costs.js"
+import type * as costs from "./costs.js"
+import { decimalNanos, roundedUsd } from "./costs.js"
 import { installKimchiHostPorts } from "./host-ports.js"
 import { isWorkAccount, sameWorkAccount } from "./scope.js"
 import type * as summary from "./summary.js"
@@ -1842,13 +1847,14 @@ describe("automatic exact work cost lookup", () => {
 	})
 	it("stops reading the journals once aborted instead of finishing the calculation", async () => {
 		tagged()
-		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
 		const controller = new AbortController()
 		const running = reconcileWorkCosts(dir, controller.signal)
 		// Closing a session aborts the pass while the journals are still being read.
 		controller.abort()
 		await expect(running).rejects.toThrow(expect.objectContaining({ name: "AbortError" }))
-		expect(calculate).not.toHaveBeenCalled()
+		// The calculation now runs inside the bridge, so the abort is observed through its
+		// effects: no cost rows are recorded and no upload was attempted.
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual([])
 		expect(fetchMock).not.toHaveBeenCalled()
 	})
 })

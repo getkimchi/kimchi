@@ -7,19 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type * as costs from "../work-attribution/costs.js"
 import type * as summary from "../work-attribution/summary.js"
 import { flushWorkSummaries } from "../work-attribution/summary.js"
-import {
-	pendingFrozenSnapshots,
-	queueSnapshots,
-	readPendingBody,
-	readReportingState,
-	setReportingEnabled,
-} from "./queue.js"
+import { pendingFrozenSnapshots, readPendingBody, readReportingState, setReportingEnabled } from "./queue.js"
 import type { RepositorySnapshot, WireSnapshot } from "./snapshot.js"
 import { statusText } from "./status.js"
 /** The bridge worker's limit retry window (6 h); pinned here because the constant is not exported. */
 const LIMIT_RETRY_MS = 6 * 3600_000
 
-import { deliverSnapshots, reconcileReporting } from "@getkimchi/kimchi-bridge/reconcile"
+import { deliverSnapshots, queueSnapshots, reconcileReporting } from "@getkimchi/kimchi-bridge/reconcile"
 import { installKimchiHostPorts } from "../work-attribution/host-ports.js"
 
 const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.example" }))
