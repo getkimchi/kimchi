@@ -1200,11 +1200,12 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	function appendSubagentRecord(record: AgentRecord): void {
+	function appendSubagentRecord(record: AgentRecord, delegatedPrompt?: string): void {
 		pi.appendEntry("subagents:record", {
 			id: record.id,
 			type: record.type,
 			description: record.description,
+			...(delegatedPrompt !== undefined ? { prompt: delegatedPrompt } : {}),
 			agentId: record.id,
 			sessionId: record.sessionId ?? "",
 			parentSessionId: record.parentSessionId ?? "",
@@ -1249,9 +1250,9 @@ export default function (pi: ExtensionAPI) {
 	 * enrichment, tolerating a stale runtime: the entry cannot be written
 	 * once the session is replaced, and it is auxiliary — the run's result
 	 * still reaches the orchestrator. Any other error still propagates. */
-	function appendSubagentRecordSafe(record: AgentRecord): void {
+	function appendSubagentRecordSafe(record: AgentRecord, delegatedPrompt?: string): void {
 		try {
-			appendSubagentRecord(record)
+			appendSubagentRecord(record, delegatedPrompt)
 		} catch (err) {
 			if (!isStaleCtxError(err)) throw err
 		}
@@ -1509,7 +1510,7 @@ export default function (pi: ExtensionAPI) {
 		},
 		(record, session) => {
 			if (!record.remote && record.visibility === "user" && record.sessionFile) {
-				appendSubagentRecordSafe(record)
+				appendSubagentRecordSafe(record, record.prompt)
 			}
 			emitSubagentEvent("subagents:session_created", {
 				...buildAgentLifecycleData(record),
@@ -1600,7 +1601,7 @@ export default function (pi: ExtensionAPI) {
 		manager.adoptRecords(handoff.records, handoff.queued, handoff.midResumeIds, pi, ctx)
 		for (const record of handoff.records) {
 			if (!record.session || !record.sessionId) continue
-			appendSubagentRecordSafe(record)
+			appendSubagentRecordSafe(record, record.prompt)
 			emitSubagentEvent("subagents:session_created", {
 				...buildAgentLifecycleData(record),
 				sessionId: record.sessionId,

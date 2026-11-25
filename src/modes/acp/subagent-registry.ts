@@ -142,7 +142,7 @@ export class SubagentRegistry<T extends ChildProjectionRecord> {
 		return false
 	}
 
-	childForTool(parentSessionId: string, toolCallId: string, upstreamId: string): string | undefined {
+	childForTool(parentSessionId: string, toolCallId: string, upstreamId = toolCallId): string | undefined {
 		const mapped = this.byParentTool.get(parentSessionId)
 		return mapped?.get(toolCallId) ?? mapped?.get(upstreamId)
 	}
@@ -232,7 +232,10 @@ export class SubagentRegistry<T extends ChildProjectionRecord> {
 		}
 		// A second cancel while native shutdown is still settling must await it
 		// too; `accepted:false` is not proof that the run has stopped.
-		await cancellation.stopped
+		await cancellation.stopped.then(
+			() => undefined,
+			() => undefined,
+		)
 		return cancellation.accepted
 	}
 
@@ -281,33 +284,39 @@ export class SubagentRegistry<T extends ChildProjectionRecord> {
 		}
 	}
 
-	complete(parentSessionId: string, request: object | undefined): void {
-		if (!request || this.recovering.get(parentSessionId) !== request) return
+	complete(parentSessionId: string, request: object | undefined): Promise<void> {
+		if (!request || this.recovering.get(parentSessionId) !== request) return Promise.resolve()
 		this.recovering.delete(parentSessionId)
 		// The SDK responds in its microtask chain; publication belongs strictly
 		// after a successful parent response, not after a failed load/resume.
-		setImmediate(() => {
-			if (!this.dependencies.rootExists(parentSessionId)) return
-			for (const child of this.live.values()) {
-				if (child.parentSessionId !== parentSessionId) continue
-				child.state = child.pendingState
-				child.pendingState = undefined
-				for (const message of child.pendingPrompt ?? []) this.dependencies.send(message)
-				child.pendingPrompt = undefined
-				this.dependencies.send(currentNotification(child))
-				child.configReporter.publishInitial(this.dependencies.send)
-			}
-			for (const [childId, child] of this.recovered.get(parentSessionId) ?? []) {
-				child.state = recoveredSubagentState(child.association)
-				this.dependencies.send(replacedAnnouncement(parentSessionId, childId, child.state, child.association))
-				if (child.configReporter) child.configReporter.publishInitial(this.dependencies.send)
-				else {
-					this.dependencies.send({
-						sessionId: childId,
-						update: { sessionUpdate: "config_option_update", configOptions: [] },
-					})
+		return new Promise<void>((resolve) => {
+			setImmediate(() => {
+				try {
+					if (!this.dependencies.rootExists(parentSessionId)) return
+					for (const child of this.live.values()) {
+						if (child.parentSessionId !== parentSessionId) continue
+						child.state = child.pendingState
+						child.pendingState = undefined
+						for (const message of child.pendingPrompt ?? []) this.dependencies.send(message)
+						child.pendingPrompt = undefined
+						this.dependencies.send(currentNotification(child))
+						child.configReporter.publishInitial(this.dependencies.send)
+					}
+					for (const [childId, child] of this.recovered.get(parentSessionId) ?? []) {
+						child.state = recoveredSubagentState(child.association)
+						this.dependencies.send(replacedAnnouncement(parentSessionId, childId, child.state, child.association))
+						if (child.configReporter) child.configReporter.publishInitial(this.dependencies.send)
+						else {
+							this.dependencies.send({
+								sessionId: childId,
+								update: { sessionUpdate: "config_option_update", configOptions: [] },
+							})
+						}
+					}
+				} finally {
+					resolve()
 				}
-			}
+			})
 		})
 	}
 

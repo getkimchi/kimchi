@@ -105,6 +105,16 @@ function reconstructMessageText(
 	return messages
 }
 
+function childTextChunk(updates: SessionNotification[], sessionId: string, text: string) {
+	return updates.find(
+		({ sessionId: id, update }) =>
+			id === sessionId &&
+			update.sessionUpdate === "agent_message_chunk" &&
+			update.content.type === "text" &&
+			update.content.text === text,
+	)
+}
+
 async function flush(): Promise<void> {
 	await new Promise<void>((resolve) => setImmediate(resolve))
 }
@@ -234,7 +244,7 @@ describe("ACP parent-driven subagent replay", () => {
 		expect(updates.slice(beforeResume).some((item) => item.update.sessionUpdate === "agent_message_chunk")).toBe(false)
 	})
 
-	it("replays existing live children from their native session without reopening or replacing it", async () => {
+	it("replays existing live children with stable text identity without reopening or replacing them", async () => {
 		const root = new ReplayFakeSession("parent")
 		root.entries = [association("parent", "child")]
 		const child = new ReplayFakeSession("child", "/workspace/child", "/sessions/parent.jsonl")
@@ -259,6 +269,7 @@ describe("ACP parent-driven subagent replay", () => {
 			agentSession: asSession(child),
 		})
 		child.emit({ type: "agent_start" } as AgentSessionEvent)
+		child.streamAssistantText("Child observation.")
 		child.emit({
 			type: "tool_execution_start",
 			toolCallId: "child-bash",
@@ -269,6 +280,8 @@ describe("ACP parent-driven subagent replay", () => {
 			({ sessionId, update }) => sessionId === child.sessionId && update.sessionUpdate === "tool_call",
 		)
 		if (liveTool?.update.sessionUpdate !== "tool_call") throw new Error("Missing live tool")
+		const liveText = childTextChunk(updates, child.sessionId, "Child observation.")
+		if (liveText?.update.sessionUpdate !== "agent_message_chunk") throw new Error("Missing live child text")
 		const before = updates.length
 		await agent.loadSession({ sessionId: "parent", cwd: "/workspace", mcpServers: [] })
 		await flush()
@@ -284,7 +297,16 @@ describe("ACP parent-driven subagent replay", () => {
 		)
 		if (replayedTool?.update.sessionUpdate !== "tool_call") throw new Error("Missing live tool on reattach")
 		expect(replayedTool.update.toolCallId).toBe(liveTool.update.toolCallId)
+		const replayedText = childTextChunk(replayed, child.sessionId, "Child observation.")
+		if (replayedText?.update.sessionUpdate !== "agent_message_chunk") throw new Error("Missing replayed child text")
+		expect(replayedText.update.messageId).toBe(liveText.update.messageId)
 		expect(loader).not.toHaveBeenCalled()
+		child.emit({ type: "agent_start" } as AgentSessionEvent)
+		child.streamAssistantText("Child follow-up.")
+		child.emit({ type: "agent_settled" } as AgentSessionEvent)
+		const followUp = childTextChunk(updates.slice(before), child.sessionId, "Child follow-up.")
+		if (followUp?.update.sessionUpdate !== "agent_message_chunk") throw new Error("Missing live follow-up text")
+		expect(followUp.update.messageId).not.toBe(liveText.update.messageId)
 		const beforeResume = updates.length
 		await agent.resumeSession({ sessionId: "parent", cwd: "/workspace" })
 		await flush()

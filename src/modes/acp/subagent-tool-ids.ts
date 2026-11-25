@@ -50,7 +50,13 @@ export class SubagentToolIdHistory {
 		if (this.seen.get(piToolCallId) === acpToolCallId) return
 		this.seen.set(piToolCallId, acpToolCallId)
 		this.recordSequence(acpToolCallId)
-		this.persist?.({ version: 1, piToolCallId, acpToolCallId })
+		try {
+			this.persist?.({ version: 1, piToolCallId, acpToolCallId })
+		} catch (error) {
+			console.warn(
+				`[acp] Could not persist child tool-call identity ${acpToolCallId}: ${error instanceof Error ? error.message : String(error)}`,
+			)
+		}
 	}
 
 	takeForReplay(piToolCallId: string): string | undefined {

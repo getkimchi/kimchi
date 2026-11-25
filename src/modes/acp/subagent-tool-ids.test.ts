@@ -25,6 +25,22 @@ describe("child tool ID history", () => {
 		expect(history.nextSequenceFloor()).toBe(3)
 	})
 
+	it("keeps live mappings when best-effort persistence fails", () => {
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const history = new SubagentToolIdHistory(() => {
+				throw new Error("storage refused")
+			})
+			expect(() => history.record("pi-one", "kt.read.0")).not.toThrow()
+			history.record("pi-one", "kt.read.0")
+			expect(history.nextSequenceFloor()).toBe(1)
+			expect(warning).toHaveBeenCalledOnce()
+			expect(String(warning.mock.calls[0]?.[0])).toContain("kt.read.0")
+		} finally {
+			warning.mockRestore()
+		}
+	})
+
 	it("restores mappings in branch order, including recycled provider ids, without writing on replay", () => {
 		const history = SubagentToolIdHistory.fromEntries([
 			entry("same-id", "kt.bash.0"),

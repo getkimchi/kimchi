@@ -464,6 +464,7 @@ describe("session_shutdown nudge race (integration)", () => {
 			parentSessionId: "parent-session",
 			toolCallId: "kt.Agent.7",
 			cwd: "/work/child",
+			sessionFile: "/tmp/recoverable-child.jsonl",
 			isBackground: background,
 			visibility,
 			remote,
@@ -486,6 +487,23 @@ describe("session_shutdown nudge race (integration)", () => {
 			agentSession: { sessionId: "child-session" },
 			abort: expect.any(Function),
 		})
+		if (!remote && visibility === "user") {
+			expect(pi.appendEntry).toHaveBeenCalledWith(
+				"subagents:record",
+				expect.objectContaining({
+					agentId: "projection-agent",
+					sessionId: "child-session",
+					parentSessionId: "parent-session",
+					toolCallId: "kt.Agent.7",
+					prompt: "original full\ndelegated prompt",
+					status: "running",
+					sessionFile: "/tmp/recoverable-child.jsonl",
+				}),
+			)
+			expect(vi.mocked(pi.appendEntry).mock.calls.filter(([type]) => type === "subagents:record")).toHaveLength(1)
+		} else {
+			expect(pi.appendEntry).not.toHaveBeenCalledWith("subagents:record", expect.anything())
+		}
 	})
 })
 

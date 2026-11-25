@@ -8,6 +8,10 @@ export class RecordingFakeAgentSession extends BaseFakeAgentSession {
 	constructor(sessionId: string, cwd = "/tmp") {
 		super(sessionId)
 		this.sessionManager.getCwd = () => cwd
+		Object.assign(this.sessionManager, {
+			getSessionFile: () => `/sessions/${sessionId}.jsonl`,
+			getHeader: () => ({ cwd, parentSession: undefined }),
+		})
 	}
 
 	clearQueue = () => ({ steering: [], followUp: [] })
@@ -22,5 +26,25 @@ export class RecordingFakeAgentSession extends BaseFakeAgentSession {
 
 	emit(event: AgentSessionEvent): void {
 		for (const listener of [...this.listeners]) listener(event)
+	}
+
+	streamAssistantText(text: string): void {
+		const message = {
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "test",
+			provider: "test",
+			model: "test-model",
+			usage: undefined,
+			stopReason: "stop",
+			timestamp: Date.now(),
+		}
+		this.emit({ type: "message_start", message } as unknown as AgentSessionEvent)
+		this.emit({
+			type: "message_update",
+			message,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text, partial: message },
+		} as unknown as AgentSessionEvent)
+		this.emit({ type: "message_end", message } as unknown as AgentSessionEvent)
 	}
 }

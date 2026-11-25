@@ -1,5 +1,5 @@
 import type { AgentContext, ClientCapabilities, SessionNotification } from "@agentclientprotocol/sdk/unstable"
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent"
+import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { asSession } from "./__mocks__/fake-agent-session.js"
 import { RecordingFakeAgentSession as ProjectionFakeSession } from "./__mocks__/recording-agent-session.js"
@@ -41,6 +41,8 @@ function setCapabilities(agent: KimchiAcpAgent, capabilities: ClientCapabilities
 function subagentRegistry(agent: KimchiAcpAgent): {
 	getLive(childId: string): { record: { unsubscribe: () => void } } | undefined
 	childForTool(parentSessionId: string, toolCallId: string, upstreamId: string): string | undefined
+	begin(parentSessionId: string): object | undefined
+	replay(session: AgentSession, replayHistory: boolean): Promise<void>
 } {
 	return Reflect.get(agent, "subagentRegistry")
 }
@@ -123,29 +125,9 @@ function reconstructMessageText(
 	return messages
 }
 
-function assistant(text: string): Record<string, unknown> {
-	return {
-		role: "assistant",
-		content: [{ type: "text", text }],
-		api: "test",
-		provider: "test",
-		model: "test-model",
-		usage: undefined,
-		stopReason: "stop",
-		timestamp: Date.now(),
-	}
-}
-
 function streamChild(session: ProjectionFakeSession, text: string): void {
-	const message = assistant(text)
 	session.emit({ type: "agent_start" } as AgentSessionEvent)
-	session.emit({ type: "message_start", message } as unknown as AgentSessionEvent)
-	session.emit({
-		type: "message_update",
-		message,
-		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text, partial: message },
-	} as unknown as AgentSessionEvent)
-	session.emit({ type: "message_end", message } as unknown as AgentSessionEvent)
+	session.streamAssistantText(text)
 	session.emit({ type: "agent_settled" } as AgentSessionEvent)
 }
 
@@ -567,6 +549,85 @@ describe("subagent cancellation", () => {
 		expect(updates.some((item) => item.update.sessionUpdate === "agent_message_chunk")).toBe(false)
 		finishStop()
 		await closing
+	})
+
+	it("cleans up after a rejected child stop promise", async () => {
+		const { agent } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("rejected-stop-child")
+		let rejectStop!: (error: Error) => void
+		const stopped = new Promise<void>((_, reject) => (rejectStop = reject))
+		const abort = vi.fn(() => ({ accepted: true, stopped }))
+		createChild(agent, childEvent("parent", child, { abort }))
+
+		const closing = agent.closeSession({ sessionId: "parent" })
+		rejectStop(new Error("child run failed while stopping"))
+		await expect(closing).resolves.toEqual({})
+		expect(subagentRegistry(agent).getLive(child.sessionId)).toBeUndefined()
+	})
+
+	it("serializes different load intents while allowing another root to recover", async () => {
+		const { agent } = await createRoot("parent")
+		agents.push(agent)
+		const registry = Reflect.get(agent, "subagentRegistry") as ReturnType<typeof subagentRegistry>
+		const begin = vi.spyOn(registry, "begin")
+		const histories: boolean[] = []
+		let releaseReplay!: () => void
+		const blocked = new Promise<void>((resolve) => (releaseReplay = resolve))
+		vi.spyOn(registry, "replay").mockImplementation(async (_session, replayHistory) => {
+			histories.push(replayHistory)
+			await blocked
+		})
+		const operations: Promise<unknown>[] = [
+			agent.loadSession({ sessionId: "parent", cwd: "/workspace/root", mcpServers: [] }),
+		]
+		try {
+			await vi.waitFor(() => expect(begin).toHaveBeenCalledOnce())
+			operations.push(agent.resumeSession({ sessionId: "parent", cwd: "/workspace/root" }))
+			expect(begin).toHaveBeenCalledOnce()
+			const other = await createRoot("other")
+			agents.push(other.agent)
+			const otherLoad = other.agent.loadSession({ sessionId: "other", cwd: "/workspace/root", mcpServers: [] })
+			operations.push(otherLoad)
+			await otherLoad
+			expect(begin).toHaveBeenCalledOnce()
+			releaseReplay()
+			await Promise.all(operations)
+			expect(histories).toEqual([true, false])
+		} finally {
+			releaseReplay()
+			await Promise.allSettled(operations)
+		}
+	})
+
+	it("discards queued child events when root loading fails", async () => {
+		const parentId = "failed-parent"
+		const parent = new ProjectionFakeSession(parentId)
+		const child = new ProjectionFakeSession("queued-child")
+		const { conn, updates } = recordingConnection()
+		let failLoad = true
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/acp-subagent-tests",
+			sessionLoader: async () => {
+				if (failLoad) {
+					failLoad = false
+					createChild(agent, childEvent(parentId, child))
+					throw new Error("root loading failed")
+				}
+				return asSession(parent)
+			},
+			subagentSessionResolver: (agentId) => nativeSessions.get(agentId),
+		})
+		setCapabilities(agent, { subagents: {} } as ClientCapabilities)
+		agents.push(agent)
+
+		await expect(agent.loadSession({ sessionId: parentId, cwd: "/workspace/root", mcpServers: [] })).rejects.toThrow(
+			"root loading failed",
+		)
+		await agent.loadSession({ sessionId: parentId, cwd: "/workspace/root", mcpServers: [] })
+		expect(subagentRegistry(agent).getLive(child.sessionId)).toBeUndefined()
+		expect(updates.some((entry) => entry.sessionId === child.sessionId)).toBe(false)
 	})
 
 	it("registers an adopted child once its cloned parent is registered", async () => {

@@ -691,6 +691,11 @@ export type SetSessionModelResponse = Record<string, never>
 /** Wire name of the upstream-removed set-model method, kept for old clients. */
 const SET_MODEL_COMPAT_METHOD = "session/set_model"
 
+interface ParentSessionLoadResult {
+	response: LoadSessionResponse
+	publication: Promise<void>
+}
+
 export class KimchiAcpAgent {
 	private sessions = new Map<string, SessionRecord>()
 	private pendingSubagentEvents = new Map<string, SubagentSessionCreatedEvent[]>()
@@ -719,6 +724,7 @@ export class KimchiAcpAgent {
 	// the JSONL twice, and the later registration overwrites (and leaks) the
 	// earlier session record.
 	private loadingSessions = new Map<string, Promise<LoadSessionResponse>>()
+	private readonly parentSessionLoads = new Map<string, Promise<void>>()
 	private shutdownPromise: Promise<void> | undefined
 	/** Held-prompt plan reviews finalize when permissions reports the review
 	 * closed without a follow-up turn (rework / menu dismissal). Execution
@@ -779,8 +785,8 @@ export class KimchiAcpAgent {
 			},
 			projectReplay: (association, session) => this.createSubagentReplayProjection(session, association),
 			replay: (_parent, _association, projection, replayHistory) => {
-				this.seedBlockCounterFromBranch(projection.record.session, projection.record)
-				if (replayHistory) this.replayTranscript(projection.record.session, projection.record)
+				if (replayHistory) this.replaySubagentTranscript(projection.record.session, projection.record)
+				else this.seedBlockCounterFromBranch(projection.record.session, projection.record)
 			},
 		})
 		this.mcpProbe = options.mcpProbe
@@ -1414,6 +1420,38 @@ export class KimchiAcpAgent {
 	private async loadSessionInternal(params: LoadSessionRequest, replayHistory: boolean): Promise<LoadSessionResponse> {
 		const sessionId = params.sessionId
 		this.rejectSubagentMutation(sessionId)
+		const attached = this.sessions.has(sessionId)
+		const coalesceKey = `${sessionId}:${replayHistory ? "load" : "resume"}`
+		if (!attached) {
+			const loading = this.loadingSessions.get(coalesceKey)
+			if (loading) return loading
+		}
+		const operation = this.serializeParentSessionLoad(sessionId, () => this.loadSessionOnce(params, replayHistory))
+		if (attached) return operation
+		this.loadingSessions.set(coalesceKey, operation)
+		try {
+			return await operation
+		} finally {
+			if (this.loadingSessions.get(coalesceKey) === operation) this.loadingSessions.delete(coalesceKey)
+		}
+	}
+
+	private serializeParentSessionLoad(
+		sessionId: string,
+		load: () => Promise<ParentSessionLoadResult>,
+	): Promise<LoadSessionResponse> {
+		const previous = this.parentSessionLoads.get(sessionId)
+		const operation = previous ? previous.then(load) : load()
+		const completion = operation.then(({ publication }) => publication).catch(() => undefined)
+		this.parentSessionLoads.set(sessionId, completion)
+		void completion.then(() => {
+			if (this.parentSessionLoads.get(sessionId) === completion) this.parentSessionLoads.delete(sessionId)
+		})
+		return operation.then(({ response }) => response)
+	}
+
+	private async loadSessionOnce(params: LoadSessionRequest, replayHistory: boolean): Promise<ParentSessionLoadResult> {
+		const sessionId = params.sessionId
 		const recovery = this.subagentRegistry.begin(sessionId)
 		try {
 			const existing = this.sessions.get(sessionId)
@@ -1430,33 +1468,12 @@ export class KimchiAcpAgent {
 				this.scheduleProjectTrustUpdate(sessionId)
 
 				const configOptions = buildConfigOptions(existing.session, this.getInitialPermissionMode(existing.session).mode)
-				const response = { configOptions }
-				this.subagentRegistry.complete(sessionId, recovery)
-				return response
+				return { response: { configOptions }, publication: this.subagentRegistry.complete(sessionId, recovery) }
 			}
-			// Coalesce only across identical intents: concurrent load + resume of
-			// the same id must each run with their own replayHistory decision,
-			// otherwise the second caller inherits the first's replay behavior.
-			const coalesceKey = `${sessionId}:${replayHistory ? "load" : "resume"}`
-			const loading = this.loadingSessions.get(coalesceKey)
-			if (loading) {
-				const response = await loading
-				this.subagentRegistry.complete(sessionId, recovery)
-				return response
-			}
-
-			const loadingPromise = this.loadSessionFresh(params, replayHistory)
-			this.loadingSessions.set(coalesceKey, loadingPromise)
-			try {
-				const response = await loadingPromise
-				this.subagentRegistry.complete(sessionId, recovery)
-				return response
-			} finally {
-				if (this.loadingSessions.get(coalesceKey) === loadingPromise) {
-					this.loadingSessions.delete(coalesceKey)
-				}
-			}
+			const response = await this.loadSessionFresh(params, replayHistory)
+			return { response, publication: this.subagentRegistry.complete(sessionId, recovery) }
 		} catch (error) {
+			this.pendingSubagentEvents.delete(sessionId)
 			this.subagentRegistry.discard(sessionId, recovery)
 			this.subagentRegistry.clearRecovered(sessionId)
 			throw error
@@ -1577,7 +1594,7 @@ export class KimchiAcpAgent {
 				existing.unsubscribe()
 			}
 			await this.disposeOrphanSession(session)
-			this.subagentRegistry.cleanup(sessionId)
+			this.cleanupSubagentsForParent(sessionId)
 			throw err
 		}
 	}
@@ -3513,6 +3530,16 @@ export class KimchiAcpAgent {
 		flushTurnArtifacts()
 	}
 
+	private replaySubagentTranscript(session: AgentSession, record: SessionRecord): void {
+		const nextBlockId = record.nextBlockId
+		record.nextBlockId = 0
+		try {
+			this.replayTranscript(session, record)
+		} finally {
+			record.nextBlockId = nextBlockId
+		}
+	}
+
 	/**
 	 * Walk the persisted branch and count how many ACP content chunks the
 	 * replay would emit (text segments + dimmed text parts + non-redacted
@@ -3788,7 +3815,7 @@ export class KimchiAcpAgent {
 	}
 
 	private subagentSessionForTool(parentSessionId: string, toolCallId: string): string | undefined {
-		return this.subagentRegistry.childForTool(parentSessionId, toolCallId, toolCallId)
+		return this.subagentRegistry.childForTool(parentSessionId, toolCallId)
 	}
 
 	private agentContent(
