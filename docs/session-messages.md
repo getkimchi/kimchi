@@ -6,14 +6,19 @@ part, so a program driving Kimchi never sees a turn it did not start.
 
 ## Turn it on
 
-Messages between sessions are off until you allow them. The first time a session finds
-another live session working in the same repository (worktrees of one repository count),
-it asks once, when Kimchi is idle and the prompt is empty:
+Messages between sessions are off until you allow them. The first time the agent is about
+to start a subagent while another live session works in the same repository (worktrees of
+one repository count), Kimchi asks once:
 
 ```text
-Let Kimchi sessions message each other?
+Ask your other session instead of a subagent?
+I was about to start a subagent for “Fix checkout rounding”. You have a session open in this
+repository, “Checkout rounding”, that may already know this work. Turn on session messages
+so I can ask it instead?
 ```
 
+Yes stops that subagent: the agent sends the work to the other session when it is that
+session's work, and otherwise starts the subagent again. No lets the subagent start.
 Your answer is saved in your profile's `session-messages.json` and applies to every
 session; a no is remembered too, so Kimchi does not ask again. Change it any time:
 

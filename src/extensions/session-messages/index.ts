@@ -11,8 +11,9 @@
  *
  * Messages between sessions stay off until the user allows them, once per
  * profile (`session-messages.json`, like PR watching's `pr-watch.json`): a
- * session asks when another live session works in the same repository.
- * Until then sessions only answer who they are, so they can find each other.
+ * session asks the first time its agent is about to start a subagent while
+ * another live session works in the same repository. Until then sessions
+ * only answer who they are, so they can find each other.
  *
  * Every TUI session listens on a Unix socket in a private (0700)
  * folder, `~/.config/kimchi/live-sessions/<ref>.sock`, where ref is the
@@ -34,13 +35,19 @@ import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs"
 import net from "node:net"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
-import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	getAgentDir,
+	type MessageRenderer,
+	type ToolCallEventResult,
+} from "@earendil-works/pi-coding-agent"
+import { Box, Spacer, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { readJson, readJsonCached, writeJson } from "../../config/json.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { listSubagents, messageSubagent } from "../agents/index.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
-import { isRawInputCaptureActive } from "../shared-input.js"
 import { workRepository } from "../work-attribution/scope.js"
 
 export const CROSS_SESSION_MESSAGE_TYPE = "cross-session-message"
@@ -64,14 +71,25 @@ interface SessionInfo {
 	startedAt: number
 }
 
-const OFFER_TITLE = "Let Kimchi sessions message each other?"
+export const OFFER_TITLE = "Ask your other session instead of a subagent?"
 export const ENABLED_NOTICE = "Sessions on this machine can message each other. /session-messages disable turns it off."
 export const DISABLED_NOTICE = "Session messages are off. /session-messages enable turns them on."
 const UNDECIDED_NOTICE =
-	"Session messages are off until you allow them; Kimchi asks when another session works in the same repository. /session-messages enable turns them on."
+	"Session messages are off until you allow them; Kimchi asks the first time it is about to start a subagent while another session works in this repository. /session-messages enable turns them on."
 
-/** The question is asked once per process; other sessions wait for its saved answer (as PR watching does). */
-let asking: Promise<unknown> | undefined
+/** The question is asked once per process; parallel subagent starts wait for the same answer (as PR watching does). */
+let asking: Promise<boolean> | undefined
+
+/** What the receiving user sees: who wrote and what, without the wrapper and reply line meant for the model. */
+const renderMessage: MessageRenderer<{ from?: string; text?: string }> = (message, { outputPad }, theme) => {
+	const { from, text: body } = message.details ?? {}
+	if (!from || body === undefined) return undefined
+	const box = new Box(outputPad, 1, (line) => theme.fg("accent", line))
+	box.addChild(new Text(theme.bold(theme.fg("customMessageLabel", `Message from ${from}`)), 0, 0))
+	box.addChild(new Spacer(1))
+	box.addChild(new Text(theme.fg("customMessageText", body), 0, 0))
+	return box
+}
 
 type Request = { type: "info" } | { type: "message"; from: string; mode: string; text: string }
 
@@ -194,6 +212,7 @@ export function createSessionMessagesExtension(
 
 	return (pi: ExtensionAPI): void => {
 		if (isAgentWorker()) return
+		pi.registerMessageRenderer(CROSS_SESSION_MESSAGE_TYPE, renderMessage)
 
 		let server: net.Server | undefined
 		let self: { ref: string; path: string; ctx: ExtensionContext; repository: string; startedAt: number } | undefined
@@ -209,28 +228,39 @@ export function createSessionMessagesExtension(
 				startedAt: self.startedAt,
 			}
 
-		/** Asks once, when another live session works in the same repository and Kimchi is idle with an empty prompt. */
-		async function offer(ctx: ExtensionContext): Promise<void> {
+		/**
+		 * Asks once, when it matters: the agent is about to start a subagent while another live session works in
+		 * the same repository. Yes stops that subagent, so the agent can hand the work over; no lets it start.
+		 */
+		async function offer(task: string, ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
 			const me = self
-			if (!me || asking || readPreference() !== undefined) return
-			if (!ctx.isIdle() || ctx.hasPendingMessages() || ctx.ui.getEditorText().trim() || isRawInputCaptureActive())
-				return
-			const peer = (await listPeers(dir, me.ref)).find((other) => other.repository === me.repository)
-			if (!peer || self !== me || asking || readPreference() !== undefined) return
-			asking = ctx.ui
-				.confirm(
-					OFFER_TITLE,
-					`Another session works in this repository: ${address(peer)}, in ${peer.cwd}. With messages on, this session can hand it work or questions instead of starting a subagent. Saved for future sessions; /session-messages enable or disable changes it.`,
-				)
-				.then((accepted) => {
+			if (!me || readPreference() !== undefined) return undefined
+			const peers = (await listPeers(dir, me.ref)).filter((peer) => peer.repository === me.repository)
+			if (peers.length === 0) return undefined
+			// Another subagent started at the same time may have asked while the peers were listed.
+			if (readPreference() === undefined) {
+				if (asking) await asking
+				else {
+					asking = ctx.ui
+						.confirm(
+							OFFER_TITLE,
+							`I was about to start a subagent for “${task}”. You have a session open in this repository, “${peers[0].name}”, that may already know this work. Turn on session messages so I can ask it instead? Your choice is saved for future sessions; /session-messages changes it.`,
+						)
+						.finally(() => {
+							asking = undefined
+						})
+					const accepted = await asking
 					if (readPreference() === undefined) writePreference(accepted)
-					if (readPreference() === true) registerTools()
 					ctx.ui.notify(readPreference() === true ? ENABLED_NOTICE : DISABLED_NOTICE, "info")
-				})
-				.finally(() => {
-					asking = undefined
-				})
-			await asking
+				}
+			}
+			if (readPreference() !== true) return undefined
+			registerTools()
+			const sessions = peers.map(address).join(", ")
+			return {
+				block: true,
+				reason: `Not started: session messages are on now, and ${sessions} ${peers.length === 1 ? "works" : "work"} in this repository. If this is that session's work, send it there with send_message; otherwise start the subagent again.`,
+			}
 		}
 		const permissionMode = (ctx: ExtensionContext) =>
 			getPermissionMode(ctx.sessionManager.getSessionId())?.mode ?? "default"
@@ -249,7 +279,7 @@ export function createSessionMessagesExtension(
 						customType: CROSS_SESSION_MESSAGE_TYPE,
 						content: `<cross-session-message from="${request.from}">\n${request.text}\n</cross-session-message>\n${replyHint(request.from)}`,
 						display: true,
-						details: { from: request.from },
+						details: { from: request.from, text: request.text },
 					},
 					// No ACP opt-in gate needed: session_start registers nothing outside the TUI,
 					// so this wake never reaches an ACP or RPC client.
@@ -299,7 +329,6 @@ export function createSessionMessagesExtension(
 				// No inbox (an unwritable home, a path too long for a socket): this
 				// session can still list and message others; list_agents says so.
 			}
-			offer(ctx).catch(() => {})
 		})
 
 		// Another session may have turned messages on since this one started.
@@ -307,10 +336,11 @@ export function createSessionMessagesExtension(
 			if (ctx.mode === "tui" && readPreference() === true) registerTools()
 		})
 
-		pi.on("agent_settled", (_event, ctx) => {
-			if (ctx.mode !== "tui") return
-			if (readPreference() === true) registerTools()
-			offer(ctx).catch(() => {})
+		pi.on("tool_call", (event, ctx) => {
+			if (event.toolName !== "Agent") return undefined
+			const task = typeof event.input.description === "string" ? event.input.description : "this task"
+			// A failed question must never stop the subagent.
+			return offer(task, ctx).catch(() => undefined)
 		})
 
 		pi.on("session_shutdown", () => {

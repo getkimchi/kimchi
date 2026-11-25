@@ -2,14 +2,22 @@ import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { stripVTControlCharacters } from "node:util"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { testTheme } from "../__mocks__/theme.js"
 import { listSubagents, messageSubagent } from "../agents/index.js"
 import type { AgentRecord } from "../agents/personas/types.js"
 import { clearPermissionModeEnv, setPermissionMode } from "../permissions/mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "../permissions/mode-controller-registry.js"
-import { CROSS_SESSION_MESSAGE_TYPE, createSessionMessagesExtension, DISABLED_NOTICE, ENABLED_NOTICE } from "./index.js"
+import {
+	CROSS_SESSION_MESSAGE_TYPE,
+	createSessionMessagesExtension,
+	DISABLED_NOTICE,
+	ENABLED_NOTICE,
+	OFFER_TITLE,
+} from "./index.js"
 
 vi.mock("../agents/index.js", () => ({ listSubagents: vi.fn(), messageSubagent: vi.fn() }))
 
@@ -85,6 +93,19 @@ async function startSession(
 	return { harness, ctx, run, stop }
 }
 
+/** The agent is about to start a subagent: the tool_call results, one per handler. */
+const startSubagent = (session: Awaited<ReturnType<typeof startSession>>, description = "Count the TODOs") =>
+	session.harness.emit(
+		"tool_call",
+		{
+			type: "tool_call",
+			toolName: "Agent",
+			toolCallId: "call",
+			input: { description, prompt: description, subagent_type: "general-purpose" },
+		},
+		session.ctx,
+	)
+
 describe("session-messages", () => {
 	it("lists live peers and steers a message into the target, which can reply", async () => {
 		const dir = tempDir()
@@ -106,10 +127,24 @@ describe("session-messages", () => {
 				content:
 					'<cross-session-message from="alpha [aaaaa1]">\nRun the tests, please.\n</cross-session-message>\nThat session does not see your replies here. Answer it with send_message to "alpha [aaaaa1]".',
 				display: true,
-				details: { from: "alpha [aaaaa1]" },
+				details: { from: "alpha [aaaaa1]", text: "Run the tests, please." },
 			},
 			STEER_AND_WAKE,
 		)
+		// Its user sees who wrote and what, not the wrapper and reply line meant for the model.
+		const render = beta.harness.registerMessageRenderer.mock.calls[0][1]
+		const screen = stripVTControlCharacters(
+			render(
+				{ details: { from: "alpha [aaaaa1]", text: "Run the tests, please." } } as never,
+				{ expanded: false, outputPad: 1 },
+				testTheme,
+			)
+				?.render(80)
+				.join("\n") ?? "",
+		)
+		expect(screen).toContain("Message from alpha [aaaaa1]")
+		expect(screen).toContain("Run the tests, please.")
+		expect(screen).not.toContain("cross-session-message")
 
 		expect(await beta.run("send_message", { to: "alpha [aaaaa1]", message: "Tests pass." })).toContain(
 			"Delivered to alpha [aaaaa1]: it was idle, so it starts a turn now",
@@ -197,7 +232,7 @@ describe("session-messages", () => {
 		expect(await alpha.run("list_agents", {})).toContain("No other Kimchi session is running on this machine.")
 	})
 
-	it("asks once when another session works in the same repository, and yes lets them message each other", async () => {
+	it("asks once, when the agent is about to start a subagent while another session works in the same repository", async () => {
 		const dir = tempDir()
 		const other = await startSession(dir, {
 			id: "0190aaaa-0000-7000-8000-00000cccccc3",
@@ -219,15 +254,27 @@ describe("session-messages", () => {
 			answer: true,
 		})
 
-		await vi.waitFor(() => expect(alpha.ctx.ui.notify).toHaveBeenCalledWith(ENABLED_NOTICE, "info"))
-		expect(alpha.ctx.ui.confirm).toHaveBeenCalledWith(
-			"Let Kimchi sessions message each other?",
-			expect.stringContaining("Another session works in this repository: beta [bbbbb2], in /work/shop."),
-		)
-		// Neither earlier session had a session in its repository to ask about.
+		// Nothing is asked at startup, nor for a subagent with no other session in its repository.
+		expect(await startSubagent(other)).toEqual([undefined])
 		expect(other.ctx.ui.confirm).not.toHaveBeenCalled()
-		expect(beta.ctx.ui.confirm).not.toHaveBeenCalled()
+		expect(alpha.ctx.ui.confirm).not.toHaveBeenCalled()
+
+		// Yes stops that subagent and tells the agent where the work can go instead.
+		expect(await startSubagent(alpha, "Fix checkout rounding")).toEqual([
+			{ block: true, reason: expect.stringContaining("beta [bbbbb2] works in this repository") },
+		])
+		expect(alpha.ctx.ui.confirm).toHaveBeenCalledWith(
+			OFFER_TITLE,
+			expect.stringContaining(
+				"I was about to start a subagent for “Fix checkout rounding”. You have a session open in this repository, “beta”,",
+			),
+		)
+		expect(alpha.ctx.ui.notify).toHaveBeenCalledWith(ENABLED_NOTICE, "info")
 		expect(savedPreference(dir)).toBe(true)
+		expect(await startSubagent(alpha)).toEqual([undefined])
+		expect(alpha.ctx.ui.confirm).toHaveBeenCalledTimes(1)
+		expect(beta.ctx.ui.confirm).not.toHaveBeenCalled()
+
 		expect(await alpha.run("list_agents", {})).toContain("beta [bbbbb2]  ·  idle  ·  /work/shop  ·  same repository")
 		expect(await alpha.run("send_message", { to: "beta", message: "Take the checkout bug." })).toContain(
 			"Delivered to beta [bbbbb2]",
@@ -238,7 +285,7 @@ describe("session-messages", () => {
 		expect(await beta.run("send_message", { to: "alpha", message: "On it." })).toContain("Delivered to alpha")
 	})
 
-	it("saves a no without asking again, and /session-messages enable turns messages on later", async () => {
+	it("saves a no and lets the subagent start; /session-messages enable turns messages on later", async () => {
 		const dir = tempDir()
 		await startSession(dir, {
 			id: "0190aaaa-0000-7000-8000-00000bbbbbb2",
@@ -254,10 +301,14 @@ describe("session-messages", () => {
 			answer: false,
 		})
 
-		await vi.waitFor(() => expect(alpha.ctx.ui.notify).toHaveBeenCalledWith(DISABLED_NOTICE, "info"))
+		// Two subagents started together share one question.
+		expect(await Promise.all([startSubagent(alpha), startSubagent(alpha)])).toEqual([[undefined], [undefined]])
+		expect(alpha.ctx.ui.confirm).toHaveBeenCalledTimes(1)
+		expect(alpha.ctx.ui.notify).toHaveBeenCalledTimes(1)
+		expect(alpha.ctx.ui.notify).toHaveBeenCalledWith(DISABLED_NOTICE, "info")
 		expect(savedPreference(dir)).toBe(false)
 		expect(alpha.harness.registerTool).not.toHaveBeenCalled()
-		await alpha.harness.emit("agent_settled", {}, alpha.ctx)
+		await startSubagent(alpha)
 		expect(alpha.ctx.ui.confirm).toHaveBeenCalledTimes(1)
 
 		await alpha.harness.getRegisteredCommand("session-messages").handler("enable", alpha.ctx as never)
