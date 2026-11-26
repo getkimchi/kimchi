@@ -74,8 +74,26 @@ describe("classify detected outcomes", () => {
 			flakyNames: [],
 			failingNames: ["bash-commands.test.ts"],
 			assert(stats: { totalRuns: number; failures: number; failureRate: number; failureMessages: string[] }) {
-				expect(stats).toMatchObject({ totalRuns: 2, failures: 2, failureRate: 1, failureMessages: ["card timeout"] })
+				expect(stats).toMatchObject({
+					totalRuns: 2,
+					failures: 2,
+					failureRate: 1,
+					failureMessages: ["card timeout"],
+					lastFailedCommit: "abc123",
+					lastSeen: 1_700_000_000_000,
+				})
 			},
+		},
+		{
+			name: "a persistent failure that passes on the most recent commit drops out",
+			records: [
+				record({ resultId: 20, status: "failed", commit: "broken-older", createdAt: 1_600_000_000_000 }),
+				record({ resultId: 21, status: "failed", commit: "broken-older", createdAt: 1_650_000_000_000 }),
+				record({ resultId: 22, status: "passed", commit: "fixed-latest", createdAt: 1_700_000_000_000 }),
+			],
+			flakyNames: [],
+			failingNames: [],
+			assert: undefined,
 		},
 		{
 			name: "stable passing result",

@@ -39,11 +39,29 @@ export function classify(records, options = {}) {
 		const failureCommitCount = commitOutcomes.filter((outcome) => outcome.failed && !outcome.passed).length
 		const flakyFlagCount = testResults.filter((result) => result.flaky).length
 		const failures = testResults.filter((result) => result.status === "failed").length
+		const latestResult = testResults.reduce(
+			(latest, result) => (result.createdAt >= latest.createdAt ? result : latest),
+			testResults[0],
+		)
+		const latestResults = testResults.filter((result) => result.commit === latestResult.commit)
+		const latestHasPass = latestResults.some((result) => result.status === "passed")
+		const latestHasFailures = latestResults.some((result) => result.status === "failed")
 		const classification =
-			mixedCommitCount > 0 || flakyFlagCount > 0 ? "flaky" : failureCommitCount > 0 ? "failing" : "stable"
+			mixedCommitCount > 0 || flakyFlagCount > 0
+				? "flaky"
+				: latestHasFailures && !latestHasPass && failures > 0
+					? "failing"
+					: "stable"
 		if (classification === "stable") continue
 
 		const createdTimes = testResults.map((result) => result.createdAt)
+		const lastFailed = testResults
+			.filter((result) => result.status === "failed")
+			.reduce((latest, result) => (result.createdAt >= latest.createdAt ? result : latest), {
+				createdAt: -Infinity,
+				commit: null,
+			})
+		const lastFailedCommit = lastFailed.commit
 		const messages = new Map()
 		for (const result of testResults) {
 			if (result.status !== "failed" || !result.message) continue
@@ -62,6 +80,7 @@ export function classify(records, options = {}) {
 			failureRate: failures / testResults.length,
 			firstSeen: Math.min(...createdTimes),
 			lastSeen: Math.max(...createdTimes),
+			lastFailedCommit,
 			failureMessages: [...messages.entries()]
 				.sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
 				.slice(0, 3)
@@ -232,6 +251,8 @@ function publicReport(report) {
 		mixedCommitCount: row.mixedCommitCount,
 		failureCommitCount: row.failureCommitCount,
 		failureRate: row.failureRate,
+		lastFailedCommit: row.lastFailedCommit,
+		lastSeen: row.lastSeen,
 		failureMessages: row.failureMessages,
 		links: row.links,
 	})
@@ -471,13 +492,19 @@ function appendTable(lines, rows) {
 		lines.push("None detected.")
 		return
 	}
-	lines.push("| Test | Runs | Failures | Flaky flags | Mixed commits | Failure rate | Failure messages | Links |")
-	lines.push("| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |")
+	lines.push(
+		"| Test | Runs | Failures | Flaky flags | Mixed commits | Failure rate | Last failed commit | Last seen | Failure messages | Links |",
+	)
+	lines.push("| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |")
 	for (const row of rows) {
 		lines.push(
-			`| ${cell(row.fullName)} | ${row.totalRuns} | ${row.failures} | ${row.flakyFlagCount} | ${row.mixedCommitCount} | ${(row.failureRate * 100).toFixed(1)}% | ${cell(row.failureMessages.join("<br>") || "—")} | ${row.links.map((link) => `[${cell(link.title)}](${link.url})`).join("<br>") || "—"} |`,
+			`| ${cell(row.fullName)} | ${row.totalRuns} | ${row.failures} | ${row.flakyFlagCount} | ${row.mixedCommitCount} | ${(row.failureRate * 100).toFixed(1)}% | ${cell(row.lastFailedCommit ?? "—")} | ${dateCell(row.lastSeen)} | ${cell(row.failureMessages.join("<br>") || "—")} | ${row.links.map((link) => `[${cell(link.title)}](${link.url})`).join("<br>") || "—"} |`,
 		)
 	}
+}
+
+function dateCell(timestamp) {
+	return new Date(timestamp).toISOString().replace("T", " ").replace(".000Z", "Z")
 }
 
 function cell(value) {
