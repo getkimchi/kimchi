@@ -823,6 +823,57 @@ describe("fermentLegacyFlagError", () => {
 		expect(fermentLegacyFlagError(["-p", "hello"])).toBeUndefined()
 	})
 
+	it.each([
+		["--ferment-oneshot"],
+		["--ferment-oneshot=true"],
+		["--ferment-oneshot=false"],
+		["--ferment-oneshot=0"],
+		["--ferment-oneshot="],
+		["--ferment-oneshot", "false"],
+	])("catches %j with legacy off, since upstream would reject it as unknown", (...flagArgs) => {
+		expect(fermentLegacyFlagError(["-p", ...flagArgs, "x"])).toBe(
+			`--ferment-oneshot needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`,
+		)
+	})
+
+	it.each([
+		["--init-git"],
+		["--init-git=true"],
+		["--init-git=false"],
+		["--init-git=0"],
+		["--init-git="],
+		["--init-git", "false"],
+	])("catches %j with legacy off, since upstream would reject it as unknown", (...flagArgs) => {
+		expect(fermentLegacyFlagError(["-p", ...flagArgs, "x"])).toBe(
+			`--init-git needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`,
+		)
+	})
+
+	it("catches =false values under an org FORCE_OFF too", async () => {
+		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "FORCE_OFF" } })
+		expect(fermentLegacyFlagError(["--init-git=false"])).toContain("--init-git needs the legacy Ferment")
+		expect(fermentLegacyFlagError(["--ferment-oneshot=false"])).toContain("--ferment-oneshot needs the legacy Ferment")
+	})
+
+	it("does not match flags that only share a prefix", () => {
+		expect(fermentLegacyFlagError(["--init-gitx"])).toBeUndefined()
+		expect(fermentLegacyFlagError(["--ferment-oneshotx=true"])).toBeUndefined()
+		expect(fermentLegacyFlagError(["--foo-init-git=false"])).toBeUndefined()
+	})
+
+	it.each([
+		["--ferment-oneshot"],
+		["--ferment-oneshot=true"],
+		["--ferment-oneshot=false"],
+		["--init-git"],
+		["--init-git=true"],
+		["--init-git=false"],
+		["--init-git", "false"],
+	])("returns undefined for %j when legacy is on", (...flagArgs) => {
+		process.env.KIMCHI_ENABLE_RESOURCES = FERMENT_LEGACY_RESOURCE_ID
+		expect(fermentLegacyFlagError(["-p", ...flagArgs, "x"])).toBeUndefined()
+	})
+
 	it("returns undefined when legacy is enabled via env", () => {
 		process.env.KIMCHI_ENABLE_RESOURCES = FERMENT_LEGACY_RESOURCE_ID
 		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toBeUndefined()

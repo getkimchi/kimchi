@@ -508,9 +508,21 @@ export function hasInitGitArg(args: readonly string[]): boolean {
  * V1-only flag is present, so callers can gate without re-checking the flags. */
 export function fermentLegacyFlagError(args: readonly string[]): string | undefined {
 	if (isFermentLegacyEnabled()) return undefined
-	const flag = hasFermentOneshotArg(args) ? "--ferment-oneshot" : hasInitGitArg(args) ? "--init-git" : undefined
+	const flag =
+		mentionsFlag(args, "--ferment-oneshot") || hasFermentOneshotArg(args)
+			? "--ferment-oneshot"
+			: mentionsFlag(args, "--init-git")
+				? "--init-git"
+				: undefined
 	if (flag === undefined) return undefined
 	return fermentLegacyOffMessage(flag)
+}
+
+/** True for `--flag` and any `--flag=<value>`. With legacy off the flag is not
+ * registered, so upstream rejects every value (even `=false`) as an unknown
+ * option. The gate must catch them all to show its own message instead. */
+function mentionsFlag(args: readonly string[], flag: string): boolean {
+	return args.some((a) => a === flag || a.startsWith(`${flag}=`))
 }
 
 export function stripExperimentalFeaturesArg(args: string[]): string[] {
