@@ -134,6 +134,9 @@ jobs:
       timeout-minutes: 15
       use-build: true
       search-tools: true
+      allure-launch: TUI E2E
+      allure-upload: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment') }}
+      allure-kind: experiment
       # The timings file feeds pnpm run test:e2e:tui:timings (docs/ci.md).
       command: KIMCHI_TUI_TIMINGS_OUT="$PWD/tui-e2e-timings.json" pnpm run test:e2e:tui:ci --shard "$SHARD_INDEX/$SHARD_TOTAL"
       report-artifacts: tui-e2e-timings.json
