@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto"
-import { mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { link, mkdir, open, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises"
+import { hostname, tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { checkReviewDirectory } from "../review-submit/directory-safety.js"
 import { gitBytes, gitResultError, gitText, repositoryRoot } from "../review-targets/git.js"
@@ -39,6 +39,8 @@ interface WorktreeManifest {
 	baseSha: string
 	headSha: string
 	snapshotRef?: string
+	pid?: number
+	host?: string
 	createdAt: number
 	updatedAt: number
 	worktrees: WorktreeManifestEntry[]
@@ -99,20 +101,17 @@ async function serializeRepository<T>(repository: string, operation: () => Promi
 }
 
 async function atomicJson(path: string, value: unknown, exclusive = false): Promise<void> {
-	if (exclusive) {
-		const handle = await open(path, "wx", 0o600)
-		try {
-			await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8")
-			await handle.sync()
-		} finally {
-			await handle.close()
-		}
-		return
-	}
 	const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`)
-	await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" })
+	const handle = await open(temporary, "wx", 0o600)
 	try {
-		await rename(temporary, path)
+		await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8")
+		await handle.sync()
+	} finally {
+		await handle.close()
+	}
+	try {
+		if (exclusive) await link(temporary, path)
+		else await rename(temporary, path)
 	} finally {
 		await rm(temporary, { force: true }).catch(() => {})
 	}
@@ -277,6 +276,8 @@ class WorktreePool implements ReviewWorktreePool {
 		if (this.cleaned) throw new Error("Reviewer worktrees have already been cleaned up.")
 		if (options.signal?.aborted) throw options.signal.reason ?? new Error("Reviewer worktree lease was cancelled.")
 		await this.getWorktree(id, { kind: "reviewer", revision: "head" })
+		if (this.cleaned) throw new Error("Reviewer worktrees have already been cleaned up.")
+		if (options.signal?.aborted) throw options.signal.reason ?? new Error("Reviewer worktree lease was cancelled.")
 		return new Promise<ReviewWorktreeLease>((resolveLease, reject) => {
 			const waiter: (typeof this.waiters)[number] = {
 				id,
@@ -301,7 +302,12 @@ class WorktreePool implements ReviewWorktreePool {
 	private drainLeases(): void {
 		while (!this.cleaned && this.activeLeases < this.concurrency && this.waiters.length) {
 			const waiter = this.waiters.shift()
-			if (!waiter || waiter.signal?.aborted) continue
+			if (!waiter) continue
+			if (waiter.signal?.aborted) {
+				waiter.signal.removeEventListener("abort", waiter.onAbort ?? (() => {}))
+				waiter.reject(waiter.signal.reason ?? new Error("Reviewer worktree lease was cancelled."))
+				continue
+			}
 			waiter.signal?.removeEventListener("abort", waiter.onAbort ?? (() => {}))
 			this.activeLeases += 1
 			void this.getWorktree(waiter.id).then(
@@ -364,31 +370,34 @@ class WorktreePool implements ReviewWorktreePool {
 }
 
 export async function createReviewWorktreePool(options: ReviewWorktreeOptions): Promise<ReviewWorktreePool> {
-	if (!Number.isSafeInteger(options.concurrency ?? 1) || (options.concurrency ?? 1) < 1) {
-		throw new Error("Reviewer worktree concurrency must be a positive integer.")
-	}
-	options.signal?.throwIfAborted()
-	const repository = await repositoryRoot(options.target.scope.checkoutPath, options.signal)
-	const rootParent = await checkedDirectory(resolve(options.rootDir ?? DEFAULT_ROOT))
-	const contextDir = resolve(options.target.scope.contextDir)
-	const outputDir = resolve(options.outputDir)
-	assertOutside(repository, contextDir, outputDir, rootParent)
-	const runDir = join(rootParent, `${safeName(basename(repository))}-${randomUUID()}`)
-	await mkdir(runDir, { mode: 0o700 })
-	const scope = options.target.scope
-	const manifest: WorktreeManifest = {
-		schema_version: MANIFEST_VERSION,
-		repository,
-		contextDir,
-		outputDir,
-		baseSha: scope.pinned.baseSha,
-		headSha: scope.pinned.headSha,
-		...(scope.pinned.snapshotRef ? { snapshotRef: scope.pinned.snapshotRef } : {}),
-		createdAt: Date.now(),
-		updatedAt: Date.now(),
-		worktrees: [],
-	}
+	let runDir: string | undefined
 	try {
+		if (!Number.isSafeInteger(options.concurrency ?? 1) || (options.concurrency ?? 1) < 1) {
+			throw new Error("Reviewer worktree concurrency must be a positive integer.")
+		}
+		options.signal?.throwIfAborted()
+		const repository = await repositoryRoot(options.target.scope.checkoutPath, options.signal)
+		const rootParent = await checkedDirectory(resolve(options.rootDir ?? DEFAULT_ROOT))
+		const contextDir = resolve(options.target.scope.contextDir)
+		const outputDir = resolve(options.outputDir)
+		assertOutside(repository, contextDir, outputDir, rootParent)
+		runDir = join(rootParent, `${safeName(basename(repository))}-${randomUUID()}`)
+		await mkdir(runDir, { mode: 0o700 })
+		const scope = options.target.scope
+		const manifest: WorktreeManifest = {
+			schema_version: MANIFEST_VERSION,
+			repository,
+			contextDir,
+			outputDir,
+			baseSha: scope.pinned.baseSha,
+			headSha: scope.pinned.headSha,
+			...(scope.pinned.snapshotRef ? { snapshotRef: scope.pinned.snapshotRef } : {}),
+			pid: process.pid,
+			host: hostname(),
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+			worktrees: [],
+		}
 		await atomicJson(join(runDir, MANIFEST), manifest, true)
 		return new WorktreePool(
 			scope,
@@ -400,7 +409,7 @@ export async function createReviewWorktreePool(options: ReviewWorktreeOptions): 
 			options.worktreeCrashPoint,
 		)
 	} catch (error) {
-		await rm(runDir, { recursive: true, force: true }).catch(() => {})
+		if (runDir) await rm(runDir, { recursive: true, force: true }).catch(() => {})
 		await options.target.cleanup().catch(() => {})
 		throw error
 	}
@@ -428,6 +437,16 @@ async function removeRunContentsExceptManifest(runDir: string): Promise<void> {
 	for (const entry of await readdir(runDir)) {
 		if (entry === MANIFEST) continue
 		await rm(join(runDir, entry), { recursive: true, force: true })
+	}
+}
+
+function manifestProcessIsAlive(manifest: WorktreeManifest): boolean {
+	if (manifest.host !== hostname() || !Number.isSafeInteger(manifest.pid) || (manifest.pid ?? 0) < 1) return false
+	try {
+		process.kill(manifest.pid ?? 0, 0)
+		return true
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM"
 	}
 }
 
@@ -460,47 +479,55 @@ export async function recoverReviewWorktrees(
 	for (const directory of await readdir(root, { withFileTypes: true })) {
 		if (!directory.isDirectory()) continue
 		const runDir = join(root, directory.name)
-		const manifestPath = join(runDir, MANIFEST)
-		if (!(await pathExists(manifestPath))) continue
-		const metadata = await stat(manifestPath)
-		if (options.olderThanMs > 0 && metadata.mtimeMs > cutoff) continue
-		const manifest = parseManifest(runDir, JSON.parse(await readFile(manifestPath, "utf8")))
-		await serializeRepository(manifest.repository, async () => {
-			const ownedPaths = await ownedReviewWorktreeRegistrations(manifest.repository, runDir, options.signal)
-			const paths = new Set([...manifest.worktrees.map((entry) => entry.path), ...ownedPaths])
-			const removedWorktrees: string[] = []
-			for (const path of [...paths].reverse()) {
-				if (await pathExists(path)) {
-					const args = ["worktree", "remove", "--force", path] as const
-					const result = await gitBytes(manifest.repository, args, {
-						signal: options.signal,
-						allowFailure: true,
-					})
-					if (result.exitCode !== 0 && (await pathExists(join(path, ".git")))) {
-						throw gitResultError(args, result)
+		try {
+			const manifestPath = join(runDir, MANIFEST)
+			if (!(await pathExists(manifestPath))) continue
+			const metadata = await stat(manifestPath)
+			if (options.olderThanMs > 0 && metadata.mtimeMs > cutoff) continue
+			const manifest = parseManifest(runDir, JSON.parse(await readFile(manifestPath, "utf8")))
+			if (manifestProcessIsAlive(manifest)) continue
+			await serializeRepository(manifest.repository, async () => {
+				const ownedPaths = await ownedReviewWorktreeRegistrations(manifest.repository, runDir, options.signal)
+				const paths = new Set([...manifest.worktrees.map((entry) => entry.path), ...ownedPaths])
+				const removedWorktrees: string[] = []
+				for (const path of [...paths].reverse()) {
+					if (await pathExists(path)) {
+						const args = ["worktree", "remove", "--force", path] as const
+						const result = await gitBytes(manifest.repository, args, {
+							signal: options.signal,
+							allowFailure: true,
+						})
+						if (result.exitCode !== 0 && (await pathExists(join(path, ".git")))) {
+							throw gitResultError(args, result)
+						}
+						await rm(path, { recursive: true, force: true })
 					}
-					await rm(path, { recursive: true, force: true })
+					removedWorktrees.push(path)
 				}
-				removedWorktrees.push(path)
-			}
-			await removeRunContentsExceptManifest(runDir)
-			await gitText(manifest.repository, ["worktree", "prune"], { signal: options.signal })
-			if (manifest.snapshotRef) {
-				await cleanupReviewSnapshot({
-					root: manifest.repository,
-					ref: manifest.snapshotRef,
-					expectedHeadSha: manifest.headSha,
-					signal: options.signal,
+				await removeRunContentsExceptManifest(runDir)
+				await gitText(manifest.repository, ["worktree", "prune"], { signal: options.signal })
+				if (manifest.snapshotRef) {
+					await cleanupReviewSnapshot({
+						root: manifest.repository,
+						ref: manifest.snapshotRef,
+						expectedHeadSha: manifest.headSha,
+						signal: options.signal,
+					})
+				}
+				await rm(runDir, { recursive: true, force: true })
+				recovered.push({
+					runDir,
+					repository: manifest.repository,
+					removedWorktrees,
+					...(manifest.snapshotRef ? { releasedSnapshotRef: manifest.snapshotRef } : {}),
 				})
-			}
-			await rm(runDir, { recursive: true, force: true })
-			recovered.push({
-				runDir,
-				repository: manifest.repository,
-				removedWorktrees,
-				...(manifest.snapshotRef ? { releasedSnapshotRef: manifest.snapshotRef } : {}),
 			})
-		})
+		} catch (error) {
+			options.signal?.throwIfAborted()
+			console.warn(
+				`Could not recover reviewer worktree run ${runDir}: ${error instanceof Error ? error.message : String(error)}`,
+			)
+		}
 	}
 	return recovered
 }

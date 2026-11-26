@@ -24,6 +24,15 @@ function git(cwd: string, ...args: string[]): string {
 	}).trim()
 }
 
+function refExists(root: string, ref: string): boolean {
+	try {
+		git(root, "rev-parse", "--verify", "--quiet", ref)
+		return true
+	} catch {
+		return false
+	}
+}
+
 describe("review runner writer and worktree isolation", () => {
 	let sandbox: string
 	let repo: string
@@ -187,5 +196,30 @@ describe("review runner writer and worktree isolation", () => {
 		await cleanup
 		expect(agentFinished).toBe(true)
 		expect(existsSync(worktreePath)).toBe(false)
+	})
+
+	it("releases the target when runner validation fails before pool creation", async () => {
+		writeFileSync(join(repo, "file.txt"), "working tree\n")
+		const target = await resolveReviewTarget(parseReviewTargetArgs(["working-tree"]) as ExplicitReviewRequest, {
+			root: repo,
+			contextDir: join(sandbox, "review-context"),
+		})
+		const snapshotRef = target.scope.pinned.snapshotRef ?? ""
+		expect(snapshotRef).not.toBe("")
+		try {
+			await expect(
+				ReviewRunner.create({
+					ctx: createContext({ cwd: repo }),
+					pi: createExtensionApi().api,
+					target,
+					outputDir,
+					rootDir: join(sandbox, "worktrees"),
+					writerLimit: 0,
+				}),
+			).rejects.toThrow("Review writer limit")
+			expect(refExists(repo, snapshotRef)).toBe(false)
+		} finally {
+			await target.cleanup()
+		}
 	})
 })

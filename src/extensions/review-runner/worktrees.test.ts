@@ -1,10 +1,10 @@
 import { execFileSync, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { parseReviewTargetArgs } from "../review-targets/parser.js"
 import { resolveReviewTarget } from "../review-targets/resolve.js"
 import type { ExplicitReviewRequest, ResolvedReviewTarget } from "../review-targets/types.js"
@@ -27,6 +27,18 @@ function refExists(root: string, ref: string): boolean {
 	} catch {
 		return false
 	}
+}
+
+async function markManifestProcessExited(runDir: string): Promise<void> {
+	const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" })
+	await new Promise<void>((resolve, reject) => {
+		child.once("error", reject)
+		child.once("close", (code) => (code === 0 ? resolve() : reject(new Error(`PID fixture exited with ${code}`))))
+	})
+	if (child.pid === undefined) throw new Error("PID fixture did not expose a process ID")
+	const manifestPath = join(runDir, REVIEW_WORKTREE_TESTING.MANIFEST)
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>
+	writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, pid: child.pid }, null, 2)}\n`)
 }
 
 function checkoutState(root: string) {
@@ -72,6 +84,7 @@ describe("review worktree lifecycle", () => {
 	})
 
 	afterEach(async () => {
+		vi.restoreAllMocks()
 		await recoverReviewWorktrees({ rootDir, olderThanMs: 0 }).catch(() => {})
 		rmSync(sandbox, { recursive: true, force: true })
 	})
@@ -166,6 +179,7 @@ describe("review worktree lifecycle", () => {
 		const worktree = await pool.getWorktree("crashed")
 		const snapshotRef = target.scope.pinned.snapshotRef
 		expect(snapshotRef).toBeDefined()
+		await markManifestProcessExited(pool.runDir)
 		const recovered = await recoverReviewWorktrees({ rootDir, olderThanMs: 0 })
 		expect(recovered).toHaveLength(1)
 		expect(recovered[0]).toMatchObject({
@@ -237,8 +251,11 @@ describe("review worktree lifecycle", () => {
 		const worktree = await pool.getWorktree("interrupted")
 		const snapshotRef = target.scope.pinned.snapshotRef
 		if (!snapshotRef) throw new Error("expected a snapshot ref")
+		await markManifestProcessExited(pool.runDir)
 		git(repo, "update-ref", snapshotRef, baseSha)
-		await expect(recoverReviewWorktrees({ rootDir, olderThanMs: 0 })).rejects.toThrow("no longer points")
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		await expect(recoverReviewWorktrees({ rootDir, olderThanMs: 0 })).resolves.toEqual([])
+		expect(warning).toHaveBeenCalledWith(expect.stringContaining("no longer points"))
 		expect(existsSync(join(pool.runDir, REVIEW_WORKTREE_TESTING.MANIFEST))).toBe(true)
 		expect(refExists(repo, snapshotRef)).toBe(true)
 
@@ -248,5 +265,77 @@ describe("review worktree lifecycle", () => {
 		expect(recovered[0]?.removedWorktrees).toContain(worktree.path)
 		expect(existsSync(pool.runDir)).toBe(false)
 		expect(refExists(repo, snapshotRef)).toBe(false)
+	})
+
+	it("settles a lease when cleanup races checkout creation", async () => {
+		const pool = await createReviewWorktreePool({ target: await branchTarget(), outputDir, rootDir })
+		const lease = pool.leaseReviewer("racing-reviewer")
+		const outcome = lease.then(
+			() => "resolved",
+			() => "rejected",
+		)
+		await pool.cleanup()
+		const settled = await Promise.race([
+			outcome,
+			new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 500)),
+		])
+		expect(settled).toBe("rejected")
+	})
+
+	it("continues recovery past a corrupt manifest", async () => {
+		const pool = await createReviewWorktreePool({ target: await branchTarget(), outputDir, rootDir })
+		const worktree = await pool.getWorktree("recoverable")
+		await markManifestProcessExited(pool.runDir)
+		const broken = join(rootDir, "aaa-broken")
+		mkdirSync(broken, { recursive: true })
+		writeFileSync(join(broken, REVIEW_WORKTREE_TESTING.MANIFEST), "")
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const recovered = await recoverReviewWorktrees({ rootDir, olderThanMs: 0 })
+			expect(recovered.map((run) => run.runDir)).toEqual([pool.runDir])
+			expect(existsSync(worktree.path)).toBe(false)
+			expect(warning).toHaveBeenCalledWith(expect.stringContaining(broken))
+		} finally {
+			rmSync(broken, { recursive: true, force: true })
+		}
+	})
+
+	it("does not reclaim an old manifest while its process is alive", async () => {
+		writeFileSync(join(repo, "file.txt"), "live working tree\n")
+		const target = await resolveReviewTarget(parseReviewTargetArgs(["working-tree"]) as ExplicitReviewRequest, {
+			root: repo,
+			contextDir,
+		})
+		const snapshotRef = target.scope.pinned.snapshotRef ?? ""
+		const pool = await createReviewWorktreePool({ target, outputDir, rootDir })
+		const lease = await pool.leaseReviewer("live-reviewer")
+		const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+		utimesSync(join(pool.runDir, REVIEW_WORKTREE_TESTING.MANIFEST), old, old)
+		try {
+			await expect(recoverReviewWorktrees({ rootDir, olderThanMs: 60 * 60 * 1000 })).resolves.toEqual([])
+			expect(existsSync(lease.worktree.path)).toBe(true)
+			expect(refExists(repo, snapshotRef)).toBe(true)
+		} finally {
+			lease.release()
+			await pool.cleanup().catch(() => {})
+		}
+	})
+
+	it("releases the target when pool creation fails before manifest setup", async () => {
+		writeFileSync(join(repo, "file.txt"), "uncommitted working tree\n")
+		const target = await resolveReviewTarget(parseReviewTargetArgs(["working-tree"]) as ExplicitReviewRequest, {
+			root: repo,
+			contextDir,
+		})
+		const snapshotRef = target.scope.pinned.snapshotRef ?? ""
+		expect(snapshotRef).not.toBe("")
+		try {
+			await expect(createReviewWorktreePool({ target, outputDir, rootDir: join(repo, "nested") })).rejects.toThrow(
+				"must be separate from the checkout",
+			)
+			expect(refExists(repo, snapshotRef)).toBe(false)
+		} finally {
+			await target.cleanup()
+		}
 	})
 })

@@ -98,18 +98,21 @@ export class ReviewRunner {
 	}
 
 	static async create(options: ReviewRunnerOptions): Promise<ReviewRunner> {
-		const writerLimit = options.writerLimit ?? DEFAULT_WRITER_LIMIT
-		if (!Number.isSafeInteger(writerLimit) || writerLimit < 1 || writerLimit > 1000) {
-			throw new Error("Review writer limit must be a decimal integer from 1 to 1000.")
-		}
-		const worktrees = await createReviewWorktreePool({
-			target: options.target,
-			rootDir: options.rootDir,
-			outputDir: options.outputDir,
-			concurrency: options.concurrency,
-			signal: options.signal,
-		})
+		let worktrees: ReviewWorktreePool | undefined
+		let poolCreationStarted = false
 		try {
+			const writerLimit = options.writerLimit ?? DEFAULT_WRITER_LIMIT
+			if (!Number.isSafeInteger(writerLimit) || writerLimit < 1 || writerLimit > 1000) {
+				throw new Error("Review writer limit must be a decimal integer from 1 to 1000.")
+			}
+			poolCreationStarted = true
+			worktrees = await createReviewWorktreePool({
+				target: options.target,
+				rootDir: options.rootDir,
+				outputDir: options.outputDir,
+				concurrency: options.concurrency,
+				signal: options.signal,
+			})
 			const checkQueue = await ReviewCheckQueue.create({
 				scope: options.target.scope,
 				worktrees,
@@ -120,7 +123,8 @@ export class ReviewRunner {
 			})
 			return new ReviewRunner(options, worktrees, checkQueue)
 		} catch (error) {
-			await worktrees.cleanup().catch(() => {})
+			if (worktrees) await worktrees.cleanup().catch(() => {})
+			else if (!poolCreationStarted) await options.target.cleanup().catch(() => {})
 			throw error
 		}
 	}
