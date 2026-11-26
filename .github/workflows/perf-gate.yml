@@ -40,8 +40,7 @@ jobs:
     # are calibrated per runner class and record their class in _meta;
     # recalibrate via the calibrate dispatch when this label moves.
     runs-on: ubuntu-24.04-arm
-    # Heavy ledger fixtures and all lane repetitions exceed the former 15m budget.
-    timeout-minutes: 120
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
