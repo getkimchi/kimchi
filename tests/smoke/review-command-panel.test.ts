@@ -305,14 +305,15 @@ for (const scenario of [
 	})
 }
 
-it("reports bare target syntax on stderr without corrupting JSON stdout", { timeout: 30_000 }, async () => {
+it("rejects bare local review without the experimental flag and preserves JSON stdout", { timeout: 30_000 }, async () => {
 	const f = await fixture()
 	try {
 		const result = await runPrint(f.homeDir, "/review", f.directories, { cwd: f.checkout }).done
 		expect(result.timedOut).toBe(false)
 		expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(1)
-		expect(result.stderr).toContain("Review error [invalid_arguments]: Choose an explicit review target:")
-		expect(result.stderr).toContain("/review working-tree")
+		expect(result.stderr).toContain(
+			"Review error [invalid_arguments]: Local /review targets require --enable-experimental-features; use --manifest or wrap-up.",
+		)
 		for (const line of result.stdout.split("\n").filter(Boolean)) {
 			expect(() => JSON.parse(line)).not.toThrow()
 		}
