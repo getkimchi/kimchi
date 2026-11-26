@@ -353,9 +353,15 @@ function normalizeResult({ launch, tags, summary, detail, resultId }) {
 
 function hasFlakyFlag(summary, detail = {}) {
 	const statusDetails = detail.statusDetails ?? detail.execution?.statusDetails ?? summary.statusDetails ?? {}
-	return [statusDetails.flaky, detail.flaky, detail.execution?.flaky, summary.flaky].some(
-		(value) => value === true || value === "true",
-	)
+	if (
+		[statusDetails.flaky, detail.flaky, detail.execution?.flaky, summary.flaky].some(
+			(value) => value === true || value === "true",
+		)
+	) {
+		return true
+	}
+	const message = statusDetails.message ?? detail.message ?? summary.message
+	return typeof message === "string" && /^passed after \d+ failed attempts?$/.test(message.trim())
 }
 
 function normalizeStatus(value) {

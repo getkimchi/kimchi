@@ -352,7 +352,8 @@ describe("report mode", () => {
 					id: detailLaunch.resultId,
 					fullName: detailLaunch.fullName,
 					status: detailLaunch.status,
-					statusDetails: { flaky: detailLaunch.flaky },
+					statusDetails: { flaky: false },
+					...(detailLaunch.status === "passed" ? { message: "passed after 1 failed attempt" } : {}),
 					createdDate: detailLaunch.createdDate,
 				})
 			}
