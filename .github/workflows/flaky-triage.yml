@@ -87,7 +87,6 @@ jobs:
       ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
       KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
       KIMCHI_API_KEY_AVAILABLE: ${{ secrets.KIMCHI_API_KEY != '' }}
-      KIMCHI_BIN: ${{ runner.temp }}/kimchi-agent/bin/kimchi
       FLAKY_REPORT: flaky-report/flaky-report.json
       FLAKY_FIX_OUT_DIR: flaky-fix
       FLAKY_FIX_MODEL: kimi-k3.1-pro
@@ -114,6 +113,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           agent_dir="$RUNNER_TEMP/kimchi-agent"
+          export KIMCHI_BIN="$agent_dir/bin/kimchi"
+          echo "KIMCHI_BIN=$KIMCHI_BIN" >> "$GITHUB_ENV"
           mkdir -p "$agent_dir"
           gh release download --repo getkimchi/kimchi --dir "$agent_dir" \
             --pattern 'kimchi_linux_amd64.tar.gz' --pattern checksums.txt
