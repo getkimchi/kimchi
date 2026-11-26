@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { describeChanges, mergeTimings, parseTarget, runIdsWithReports } from "./update-tui-timings.js"
+import { describeChanges, mergeTimings, parseTarget, runIdsWithReports } from "./update-timings.js"
 
 describe("mergeTimings", () => {
 	it("replaces an old time with the new measurement", () => {

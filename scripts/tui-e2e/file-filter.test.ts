@@ -1,9 +1,9 @@
 import { readdirSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { describe, expect, it } from "vitest"
-import { exactFileFilter } from "./tui-e2e-file-filter.js"
+import { exactFileFilter } from "./file-filter.js"
 
-const tuiDir = resolve(import.meta.dirname, "../tests/e2e/tui")
+const tuiDir = resolve(import.meta.dirname, "../../tests/e2e/tui")
 
 // Same transformation tui-test 0.0.4 applies before it builds the RegExp.
 const asTuiTestRegExp = (filter: string) => new RegExp(filter.replaceAll("\\", "\\\\"))

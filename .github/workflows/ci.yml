@@ -21,7 +21,7 @@ permissions:
 # jobs pin ubuntu-24.04. Remove the pins when upgrading to Playwright 1.61+.
 jobs:
   # Decides which path-filtered suites this change needs. The rules live in
-  # scripts/ci-changes.js. Only pull requests are filtered.
+  # scripts/ci/changes.js. Only pull requests are filtered.
   changes:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -42,9 +42,9 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           if [ "$EVENT" = pull_request ]; then
-            node scripts/ci-changes.js HEAD^1 HEAD
+            node scripts/ci/changes.js HEAD^1 HEAD
           else
-            node scripts/ci-changes.js --all
+            node scripts/ci/changes.js --all
           fi
 
   lint:

@@ -4,8 +4,8 @@ import { basename, dirname, isAbsolute, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { inflateSync } from "node:zlib"
 import { SKIPPED_TUI_TESTS } from "../tests/e2e/tui/skip-list.js"
-import { exactFileFilter } from "./tui-e2e-file-filter.js"
-import { planShards, shardDriftWarning } from "./tui-e2e-shards.js"
+import { exactFileFilter } from "./tui-e2e/file-filter.js"
+import { planShards, shardDriftWarning } from "./tui-e2e/shards.js"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const tuiCwd = resolve(repoRoot, "tests/e2e/tui")

@@ -35,7 +35,7 @@ but a failure turns the CI run red.
 | `documents-cross-os` | every PR, on macOS and Windows |
 
 The `changes` job decides which suites a PR needs. The rules are in
-`scripts/ci-changes.js`, with tests beside it. Docs-only changes skip all
+`scripts/ci/changes.js`, with tests beside it. Docs-only changes skip all
 three e2e suites. The merge queue and manual runs do not filter.
 
 ## Where to change what
@@ -47,7 +47,7 @@ so most suite changes do not touch `ci.yml`.
 |---|---|
 | A test | the test file. CI picks up new files by itself |
 | How a suite runs its files | its config or script, and its `test:e2e:<suite>:ci` script in `package.json` |
-| When a suite runs | `scripts/ci-changes.js` |
+| When a suite runs | `scripts/ci/changes.js` |
 | Shard count, timeout, logs to keep | the suite's block in `ci.yml` |
 | Setup for every suite | `.github/workflows/_test-suite.yml` or `.github/actions/setup` |
 | What blocks a merge | `needs` of `master-checks` |
@@ -94,7 +94,7 @@ job ends. So `scripts/run-tui-e2e.js --shard k/N` splits by measured time:
 1. It reads the seconds per file from `tests/e2e/tui/timings.json`. A file
    with no timing counts as the median.
 2. It gives each file, slowest first, to the shard with the least work so
-   far (`scripts/tui-e2e-shards.js`).
+   far (`scripts/tui-e2e/shards.js`).
 
 Every shard computes the same plan, so each file runs in exactly one shard.
 

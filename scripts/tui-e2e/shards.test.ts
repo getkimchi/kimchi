@@ -1,9 +1,9 @@
 import { readdirSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
-import { planShards, shardDriftWarning } from "./tui-e2e-shards.js"
+import { planShards, shardDriftWarning } from "./shards.js"
 
-const tuiDir = resolve(import.meta.dirname, "../tests/e2e/tui")
+const tuiDir = resolve(import.meta.dirname, "../../tests/e2e/tui")
 
 describe("planShards", () => {
 	it("puts every file in exactly one shard", () => {

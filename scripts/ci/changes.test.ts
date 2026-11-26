@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { suitesToRun } from "./ci-changes.js"
+import { suitesToRun } from "./changes.js"
 
 describe("suitesToRun", () => {
 	it("skips every suite when nothing changed", () => {

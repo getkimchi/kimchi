@@ -11,7 +11,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
-const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)))
+const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)))
 const tuiDir = resolve(repoRoot, "tests/e2e/tui")
 const timingsPath = resolve(tuiDir, "timings.json")
 

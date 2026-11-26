@@ -1,8 +1,8 @@
 // Decides which CI suites a change needs. One place for the rules that the
 // separate workflows used to copy into their own `paths-ignore` lists.
 //
-// Usage in CI: node scripts/ci-changes.js <base> <head>   (only the diff decides)
-//              node scripts/ci-changes.js --all           (every suite runs)
+// Usage in CI: node scripts/ci/changes.js <base> <head>   (only the diff decides)
+//              node scripts/ci/changes.js --all           (every suite runs)
 // Writes `<suite>=true|false` lines to $GITHUB_OUTPUT and to stdout.
 import { execFileSync } from "node:child_process"
 import { appendFileSync } from "node:fs"
@@ -72,7 +72,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 		console.log(`${files.length} changed file(s)`)
 		result = suitesToRun(files)
 	} else {
-		console.error("usage: node scripts/ci-changes.js <base> <head> | --all")
+		console.error("usage: node scripts/ci/changes.js <base> <head> | --all")
 		process.exit(2)
 	}
 	const lines = Object.entries(result).map(([suite, run]) => `${suite}=${run}`)
