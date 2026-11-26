@@ -143,11 +143,17 @@ describe("public artifact redaction", () => {
 						statusDetails: { flaky: true, message: "sensitive failure detail" },
 					},
 				],
+				totalPages: 12,
+				totalElements: 24,
+				number: 0,
+				size: 1,
+				numberOfElements: 1,
 			},
 			"launch",
 		)
 		const launch = shaped.content.items[0]
 		expect(shaped.content).toMatchObject({ $type: "array", length: 1 })
+		expect(shaped).toMatchObject({ totalPages: 12, totalElements: 24, number: 0, size: 1, numberOfElements: 1 })
 		expect(launch.name).toBe("TUI E2E experiment shard 1/4 iteration 1")
 		expect(launch.createdDate).toBe(123456)
 		expect(launch.status).toBe("failed")
@@ -280,6 +286,72 @@ describe("report mode", () => {
 			const logged = logs.mock.calls.flat().join("\n")
 			expect(logged).not.toContain("secret-api-token")
 			expect(logged).not.toContain("secret-bearer")
+		} finally {
+			rmSync(root, { recursive: true, force: true })
+		}
+	})
+
+	it("follows totalPages when launch pages are smaller than the requested size", async () => {
+		const root = mkdtempSync(join(tmpdir(), "kimchi-flaky-pagination-"))
+		const launches = [
+			{ id: 201, resultId: 601, fullName: "tests/e2e/tui/zz-planted-flaky.test.ts", status: "passed", flaky: true },
+			{ id: 202, resultId: 602, fullName: "tests/e2e/tui/bash-commands.test.ts", status: "failed", flaky: false },
+		].map((item) => ({
+			...item,
+			createdDate: Date.parse("2026-11-26T07:00:00Z"),
+			tags: [{ name: "event=experiment" }, { name: "commit=abc123" }],
+		}))
+		const launchPages: number[] = []
+		const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+			const url = new URL(input instanceof Request ? input.url : String(input))
+			if (url.pathname === "/api/uaa/oauth/token") return jsonResponse({ access_token: "test-bearer" })
+			if (url.pathname === "/api/rs/launch/__search") {
+				const pageNumber = Number(url.searchParams.get("page"))
+				launchPages.push(pageNumber)
+				return jsonResponse({
+					content: [launches[pageNumber]],
+					number: pageNumber,
+					size: 1,
+					totalPages: 2,
+					last: pageNumber === 1,
+				})
+			}
+			const launch = launches.find((item) => url.searchParams.get("launchId") === String(item.id))
+			if (url.pathname === "/api/rs/testresult" && launch) {
+				return jsonResponse(
+					page([
+						{ id: launch.resultId, fullName: launch.fullName, status: launch.status, createdDate: launch.createdDate },
+					]),
+				)
+			}
+			const detailLaunch = launches.find((item) => url.pathname === `/api/rs/testresult/${item.resultId}`)
+			if (detailLaunch) {
+				return jsonResponse({
+					id: detailLaunch.resultId,
+					fullName: detailLaunch.fullName,
+					status: detailLaunch.status,
+					statusDetails: { flaky: detailLaunch.flaky },
+					createdDate: detailLaunch.createdDate,
+				})
+			}
+			return new Response("not found", { status: 404 })
+		})
+
+		try {
+			const report = await runReport({
+				env: {
+					ALLURE_ENDPOINT: "https://testops.example",
+					ALLURE_TOKEN: "[REDACTED-GENERIC_SECRET]",
+					ALLURE_PROJECT_ID: "42",
+					FLAKY_EVENTS: "experiment",
+					FLAKY_OUT_DIR: join(root, "out"),
+				},
+				fetchImpl: fetchImpl as typeof fetch,
+				now: () => Date.parse("2026-11-26T08:00:00Z"),
+			})
+			expect(launchPages).toEqual([0, 1])
+			expect(report.flaky.map((test: TestRecord) => test.fullName)).toEqual([launches[0].fullName])
+			expect(report.failing.map((test: TestRecord) => test.fullName)).toEqual([launches[1].fullName])
 		} finally {
 			rmSync(root, { recursive: true, force: true })
 		}

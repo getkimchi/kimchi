@@ -185,7 +185,8 @@ export function apiShape(value, documentKind = "result", path = []) {
 function allowedPrimitive(path, documentKind) {
 	const key = path.at(-1)
 	const parent = path.at(-2)
-	if (["status", "flaky", "known", "createdDate"].includes(key)) return true
+	if (["status", "flaky", "known"].includes(key)) return true
+	if (["createdDate", "totalElements", "totalPages", "number", "size", "numberOfElements"].includes(key)) return true
 	if (parent === "status" && (key === "name" || key === "value")) return true
 	if (path.some((part) => part === "tags" || part === "tag" || part === "launchTags")) {
 		return key === "name" || typeof key === "number"
@@ -258,10 +259,15 @@ async function createClient(config, fetchImpl) {
 			const page = url.searchParams.has("page") ? undefined : "0"
 			if (page) url.searchParams.set("page", page)
 			if (!url.searchParams.has("size")) url.searchParams.set("size", String(PAGE_SIZE))
-			const result = await fetchImpl(url, {
-				headers: { Accept: "application/json", Authorization: `Bearer ${bearer}` },
-			})
-			console.log(`GET ${url.pathname} ${result.status}`)
+			let result
+			for (let attempt = 0; attempt < 3; attempt += 1) {
+				result = await fetchImpl(url, {
+					headers: { Accept: "application/json", Authorization: `Bearer ${bearer}` },
+				})
+				console.log(`GET ${url.pathname} ${result.status}`)
+				if (result.ok || ![502, 503, 504].includes(result.status) || attempt === 2) break
+				await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)))
+			}
 			if (!result.ok) throw new Error(`GET ${url.pathname} failed: HTTP ${result.status}: ${await result.text()}`)
 			return result.json()
 		},
@@ -275,8 +281,13 @@ async function getAllPages(client, path, params) {
 		const data = await client.get(path, { ...params, page, size: PAGE_SIZE })
 		const current = pageItems(data)
 		items.push(...current)
-		if (data.last === true || current.length < PAGE_SIZE) return items
-		if (Number.isFinite(data.totalPages) && page + 1 >= data.totalPages) return items
+		const hasTotalPages = Number.isFinite(data.totalPages)
+		if (data.last === true || (hasTotalPages && page + 1 >= data.totalPages)) return items
+		if (data.last === false || hasTotalPages) {
+			page += 1
+			continue
+		}
+		if (current.length < PAGE_SIZE) return items
 		page += 1
 	}
 }
