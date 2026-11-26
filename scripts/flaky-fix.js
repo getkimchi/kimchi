@@ -33,9 +33,20 @@ export function determineVerdict(baseline, patched) {
 		if (counts.total === 0) throw new Error("total must be positive")
 		if (counts.passed > counts.total) throw new Error("passed cannot exceed total")
 	}
+	if (patched.passed * baseline.total < baseline.passed * patched.total) return "regressed"
 	if (patched.passed === patched.total && baseline.passed < baseline.total) return "fixed"
 	if (baseline.passed === baseline.total) return "unproven"
 	return "not-fixed"
+}
+
+export function agentFailureMetadata(agent, message) {
+	const elapsed = formatDuration(agent.durationMs)
+	return {
+		agentOutcome: agent.timedOut ? "timed-out" : "exited",
+		agentResultReason: agent.timedOut
+			? `Agent timed out after ${elapsed} (exit code ${agent.code}); ${message}`
+			: `Agent exited with code ${agent.code} after ${elapsed}; ${message}`,
+	}
 }
 
 export function buildEvidenceMarkdown(row, logs = [], { maxLogBytes = DEFAULT_EVIDENCE_LOG_BYTES } = {}) {
@@ -265,18 +276,23 @@ async function processFlakyTest({ row, slug, env, cwd, outDir, runs, baselineRun
 		})
 		result.agentExitCode = agent.code
 		result.agentTimedOut = agent.timedOut
+		result.agentDurationMs = agent.durationMs
+		result.agentOutcome = agent.timedOut ? "timed-out" : agent.code === 0 ? "completed" : "exited"
 		result.agentUsage = extractAgentUsage(agent.output)
 		try {
 			const summary = parseAgentSummary(agent.output)
 			Object.assign(result, summary)
 		} catch (error) {
 			result.agentResultError = error.message
+			Object.assign(result, agentFailureMetadata(agent, error.message))
 		}
 
 		const diff = captureDiff(worktree)
 		if (!diff.patch.trim()) {
 			result.verdict = "no fix proposed"
-			result.fixSummary = result.agentResultError ? "No parseable agent result and no diff." : result.fixSummary
+			result.fixSummary = result.agentResultError
+				? `No parseable agent result and no diff. ${result.agentResultReason}`
+				: result.fixSummary
 			return finish(result, started)
 		}
 		writeFileSync(patchPath, diff.patch)
@@ -504,11 +520,11 @@ function writeOutputs({ outDir, reportPath, model, runs, baselineRuns, started, 
 		skipped,
 	}
 	writeFileSync(join(outDir, "flaky-fix.json"), `${JSON.stringify(document, null, 2)}\n`)
-	const markdown = renderMarkdown(document)
+	const markdown = renderFlakyFixReport(document)
 	writeFileSync(join(outDir, "flaky-fix.md"), markdown)
 }
 
-function renderMarkdown(document) {
+export function renderFlakyFixReport(document) {
 	const lines = [
 		"# Flaky test AI triage",
 		"",
@@ -518,7 +534,17 @@ function renderMarkdown(document) {
 	if (document.results.length === 0) lines.push("No flaky tests selected.", "")
 	for (const skip of document.skipped) lines.push(`- **Skipped ${skip.fullName}:** ${skip.reason}`)
 	if (document.skipped.length > 0) lines.push("")
-	for (const result of document.results) {
+	const verdictOrder = new Map([
+		["fixed", 0],
+		["not-fixed", 1],
+		["no fix proposed", 2],
+		["unproven", 3],
+		["regressed", 4],
+	])
+	const results = [...document.results].sort(
+		(left, right) => (verdictOrder.get(left.verdict) ?? 99) - (verdictOrder.get(right.verdict) ?? 99),
+	)
+	for (const result of results) {
 		lines.push(
 			`## ${result.fullName}`,
 			"",
@@ -536,11 +562,21 @@ function renderMarkdown(document) {
 		if (result.filesChanged.length > 0)
 			lines.push(`- **Files changed:** ${result.filesChanged.map((path) => `\`${path}\``).join(", ")}`)
 		if (result.agentUsage) lines.push(`- **Agent usage:** ${result.agentUsage}`)
-		if (result.agentResultError) lines.push(`- **Agent result error:** ${result.agentResultError}`)
+		if (result.agentResultError) {
+			lines.push(`- **Agent result:** ${result.agentResultReason ?? result.agentResultError}`)
+		}
 		if (result.error) lines.push(`- **Error:** ${result.error}`)
 		if (result.cleanupError) lines.push(`- **Cleanup error:** ${result.cleanupError}`)
 		lines.push("")
 	}
+	const regressed = results.filter((result) => result.verdict === "regressed")
+	if (regressed.length > 0) lines.push("## Do not apply", "")
+	for (const result of regressed) {
+		lines.push(
+			`- **Do not apply ${result.fullName}:** ${result.baseline.passed}/${result.baseline.total} → ${result.patched.passed}/${result.patched.total} passed.`,
+		)
+	}
+	if (regressed.length > 0) lines.push("")
 	return lines.join("\n")
 }
 

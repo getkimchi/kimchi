@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 const {
+	agentFailureMetadata,
 	buildAgentPrompt,
 	buildEvidenceMarkdown,
 	buildPermissionsConfig,
@@ -8,6 +9,7 @@ const {
 	determineVerdict,
 	parseAgentSummary,
 	parseUntrackedFiles,
+	renderFlakyFixReport,
 	selectFlakyTests,
 	slugify,
 } = await import(new URL("./flaky-fix.js", import.meta.url).href)
@@ -57,6 +59,11 @@ describe("verification verdict success cases", () => {
 		expect(determineVerdict({ passed: 8, total: 10 }, { passed: 20, total: 20 })).toBe("fixed")
 		expect(determineVerdict({ passed: 10, total: 10 }, { passed: 20, total: 20 })).toBe("unproven")
 		expect(determineVerdict({ passed: 8, total: 10 }, { passed: 19, total: 20 })).toBe("not-fixed")
+	})
+
+	it("marks a lower patched pass rate as regressed, including fractional rates", () => {
+		expect(determineVerdict({ passed: 10, total: 10 }, { passed: 7, total: 10 })).toBe("regressed")
+		expect(determineVerdict({ passed: 9, total: 10 }, { passed: 8, total: 9 })).toBe("regressed")
 	})
 })
 
@@ -147,6 +154,57 @@ describe("expected-failure detection", () => {
 		expect(declaresExpectedFailure('test("normal", async () => {})')).toBe(false)
 		expect(declaresExpectedFailure('test.skip("skipped", async () => {})')).toBe(false)
 		expect(declaresExpectedFailure('// test.fail("comment only")')).toBe(false)
+	})
+})
+
+describe("result reporting success cases", () => {
+	it("orders detailed verdicts and lists regressed patches in a final rejection section", () => {
+		const verdicts = ["regressed", "unproven", "not-fixed", "fixed"]
+		const results = verdicts.map((verdict, index) => ({
+			fullName: `${verdict}.test.ts`,
+			verdict,
+			rootCause: "cause",
+			confidence: 0.5,
+			fixSummary: "summary",
+			filesChanged: [],
+			baseline: { passed: 10, total: 10 },
+			patched: { passed: verdict === "regressed" ? 7 : 10, total: 10 },
+			durationMs: 1_000,
+			patch: `patches/${index}.patch`,
+			evidence: `tests/${index}/evidence.md`,
+			agentLog: `tests/${index}/agent.log`,
+		}))
+		const markdown = renderFlakyFixReport({
+			model: "kimi-k3.1-pro",
+			baselineRunsRequested: 10,
+			patchedRunsRequested: 10,
+			results,
+			skipped: [],
+		})
+
+		expect(markdown.indexOf("## fixed.test.ts")).toBeLessThan(markdown.indexOf("## not-fixed.test.ts"))
+		expect(markdown.indexOf("## not-fixed.test.ts")).toBeLessThan(markdown.indexOf("## unproven.test.ts"))
+		expect(markdown.indexOf("## unproven.test.ts")).toBeLessThan(markdown.indexOf("## regressed.test.ts"))
+		expect(markdown.indexOf("## Do not apply")).toBeGreaterThan(markdown.indexOf("## regressed.test.ts"))
+		expect(markdown).toContain("**Do not apply regressed.test.ts:** 10/10 → 7/10 passed.")
+	})
+
+	it("records agent outcome, exit code, and elapsed time when structured output is absent", () => {
+		expect(
+			agentFailureMetadata({ code: 3, timedOut: false, durationMs: 842_000 }, "agent did not emit a final JSON block"),
+		).toEqual({
+			agentOutcome: "exited",
+			agentResultReason: "Agent exited with code 3 after 14m 2s; agent did not emit a final JSON block",
+		})
+		expect(
+			agentFailureMetadata(
+				{ code: 143, timedOut: true, durationMs: 1_200_000 },
+				"agent did not emit a final JSON block",
+			),
+		).toEqual({
+			agentOutcome: "timed-out",
+			agentResultReason: "Agent timed out after 20m 0s (exit code 143); agent did not emit a final JSON block",
+		})
 	})
 })
 
