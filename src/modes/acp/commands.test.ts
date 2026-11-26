@@ -1,7 +1,14 @@
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
+import { markFermentLegacyLoaded, resetFermentLegacyLoadedForTests } from "../../extensions/ferment/resource.js"
+import { FERMENT_LEGACY_RESOURCE_ID } from "../../extensions/ferment/resource-id.js"
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
+import { resetOrgPolicyForTests } from "../../org-policy.js"
+import { setResourceOverride } from "../../resources/store.js"
 import { asSession, BaseFakeAgentSession } from "./__mocks__/fake-agent-session.js"
 import { makeResourceLoader } from "./__mocks__/resource-loader.js"
 import {
@@ -102,32 +109,19 @@ describe("composeAvailableCommands", () => {
 
 		const commands = composeAvailableCommands(skills, true, true)
 
-		expect(commands.slice(0, 6).map((c) => c.name)).toEqual([
-			"bug",
-			"compact",
-			"language",
-			"review",
-			"pr-watch",
-			"ferment-legacy",
-		])
+		expect(commands.slice(0, 5).map((c) => c.name)).toEqual(["bug", "compact", "language", "review", "pr-watch"])
 		const skillCmds = commands.filter((c) => c.name.startsWith("skill:"))
 		expect(skillCmds.map((c) => c.name)).toEqual(["skill:alpha", "skill:beta"])
 		expect(skillCmds[0]?.input).toEqual({ hint: "Optional prompt to run with this skill loaded." })
 	})
 
 	it("returns only the static palette when a session has no skills", () => {
-		expect(composeAvailableCommands(new Map()).map((c) => c.name)).toEqual([
-			"bug",
-			"compact",
-			"language",
-			"ferment-legacy",
-		])
+		expect(composeAvailableCommands(new Map()).map((c) => c.name)).toEqual(["bug", "compact", "language"])
 		expect(composeAvailableCommands(new Map(), true).map((c) => c.name)).toEqual([
 			"bug",
 			"compact",
 			"language",
 			"pr-watch",
-			"ferment-legacy",
 		])
 		expect(composeAvailableCommands(new Map(), true, true).map((c) => c.name)).toEqual([
 			"bug",
@@ -135,21 +129,73 @@ describe("composeAvailableCommands", () => {
 			"language",
 			"review",
 			"pr-watch",
-			"ferment-legacy",
 		])
 	})
+})
 
-	// V1 or its stub always owns /ferment-legacy, so IDE users can always find it.
-	it("advertises /ferment-legacy with an input hint for the legacy subcommands", () => {
-		const legacy = composeAvailableCommands(new Map()).find((c) => c.name === "ferment-legacy")
+// Real resource store in a temp agent dir, so the live legacy setting and the
+// startup loaded marker are both exercised.
+describe("composeAvailableCommands — /ferment-legacy", () => {
+	let agentDir: string
+
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "acp-ferment-legacy-palette-"))
+		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+		resetOrgPolicyForTests()
+		resetFermentLegacyLoadedForTests()
+	})
+
+	afterEach(() => {
+		resetFermentLegacyLoadedForTests()
+		resetOrgPolicyForTests()
+		Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
+		rmSync(agentDir, { recursive: true, force: true })
+	})
+
+	const legacyNames = (prMonitoring?: boolean) =>
+		composeAvailableCommands(new Map(), prMonitoring).filter((c) => c.name === "ferment-legacy")
+
+	it("lists /ferment-legacy after the static commands when V1 loaded at startup", () => {
+		setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+		markFermentLegacyLoaded()
+
+		expect(composeAvailableCommands(new Map(), true).map((c) => c.name)).toEqual([
+			"bug",
+			"compact",
+			"language",
+			"pr-watch",
+			"ferment-legacy",
+		])
+		const legacy = legacyNames()[0]
 		expect(legacy).toEqual(FERMENT_LEGACY_AVAILABLE_COMMAND)
-		expect(legacy?.description).toBe("Legacy Ferment (V1). Off by default. Run it to see its status.")
+		expect(legacy?.description).toBe("Legacy Ferment (V1).")
 		expect(legacy?.input).toEqual({ hint: 'A legacy command, such as list, new "Name", or switch <id>.' })
 	})
 
+	it("does not list /ferment-legacy when legacy is off and V1 did not load", () => {
+		expect(legacyNames()).toHaveLength(0)
+		expect(legacyNames(true)).toHaveLength(0)
+	})
+
+	// Turning legacy on mid-session does not load V1. Only the stub runs.
+	it("does not list /ferment-legacy when legacy is turned on but V1 did not load", () => {
+		setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+		expect(legacyNames()).toHaveLength(0)
+	})
+
+	it("hides /ferment-legacy again when legacy is turned off after V1 loaded", () => {
+		setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+		markFermentLegacyLoaded()
+		setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, false)
+		expect(legacyNames()).toHaveLength(0)
+	})
+
 	it("advertises /ferment-legacy once, and not through /help (SLASH_COMMANDS)", () => {
+		setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+		markFermentLegacyLoaded()
 		expect(SLASH_COMMANDS).not.toHaveProperty("ferment-legacy")
-		expect(composeAvailableCommands(new Map(), true).filter((c) => c.name === "ferment-legacy")).toHaveLength(1)
+		expect(legacyNames(true)).toHaveLength(1)
 	})
 })
 

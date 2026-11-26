@@ -2,6 +2,7 @@ import type { AvailableCommand } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-agent"
 
 import { isExperimentalFeaturesEnabled } from "../../extensions/experimental.js"
+import { isFermentLegacyLoadedAndEnabled } from "../../extensions/ferment/resource.js"
 import { FERMENT_LEGACY_COMMAND_NAME } from "../../extensions/ferment/resource-id.js"
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
 import {
@@ -53,13 +54,13 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 
 /**
  * `/ferment-legacy` is kept out of /help (SLASH_COMMANDS), so it is not in
- * AVAILABLE_COMMANDS. It is always registered, by V1 or by its stub, and IDE
- * users who used `/ferment <word>` before need to find it. The stub tells
- * them how to turn legacy on.
+ * AVAILABLE_COMMANDS. It is listed only when V1 loaded at startup. The stub
+ * warns through pi_notify, which plain ACP clients do not show, so listing
+ * the stub would add an entry that seems to do nothing.
  */
 export const FERMENT_LEGACY_AVAILABLE_COMMAND: AvailableCommand = {
 	name: FERMENT_LEGACY_COMMAND_NAME,
-	description: "Legacy Ferment (V1). Off by default. Run it to see its status.",
+	description: "Legacy Ferment (V1).",
 	input: { hint: 'A legacy command, such as list, new "Name", or switch <id>.' },
 }
 
@@ -117,7 +118,7 @@ export function composeAvailableCommands(
 ): AvailableCommand[] {
 	return [
 		...AVAILABLE_COMMANDS.filter(({ name }) => (name !== "pr-watch" || prMonitoring) && (name !== "review" || review)),
-		FERMENT_LEGACY_AVAILABLE_COMMAND,
+		...(isFermentLegacyLoadedAndEnabled() ? [FERMENT_LEGACY_AVAILABLE_COMMAND] : []),
 		...buildSkillAvailableCommands(Array.from(skillCommands.values())),
 	]
 }
