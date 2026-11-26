@@ -526,10 +526,9 @@ async function cliMain(): Promise<void> {
 			setExperimentalFeaturesEnabled(experimentalFeatures)
 			// Gate V1-only entry points (--ferment-oneshot, --init-git) when the
 			// legacy Ferment resource is off. Org policy is already loaded above
-			// (initOrgPolicy), so a FORCE_ON lock lifts the gate. Exit through the
-			// event loop (exitCode + return), never process.exit(), like cli.ts:337.
-			// This runs before setPrintGate and the legacy-on oneshot org check below,
-			// which stay unchanged for the legacy-on path.
+			// (initOrgPolicy), so a FORCE_ON lock lifts the gate. Use exitCode and
+			// return, not process.exit(), like the doc-cli route. A hard exit can
+			// cut off output before stdio has flushed, and this path prints an error.
 			const legacyFlagError = fermentLegacyFlagError(originalArgs)
 			if (legacyFlagError !== undefined) {
 				console.error(legacyFlagError)
