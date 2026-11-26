@@ -1556,7 +1556,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 	return { promise, resolve }
 }
 
-describe("messageSubagent (send_message to a subagent)", () => {
+describe("messageSubagent (message_agent to a subagent)", () => {
 	function spawnRecord(pi: ReturnType<typeof makeMockPi>, parentSessionId = "test-session", fresh = true) {
 		// Mock managers reuse IDs, so earlier tests' managers must not answer for this one.
 		if (fresh) clearSubagentMessengersForTest()
@@ -1605,7 +1605,7 @@ describe("messageSubagent (send_message to a subagent)", () => {
 
 		expect(await messageSubagent(id, "also list the tests")).toContain("resumes in the background")
 		expect(manager.resume).toHaveBeenCalledWith(id, "also list the tests", { maxTurns: getDefaultMaxTurns() })
-		// The usual background-agent completion wake; ACP sessions get send_message only with the backgroundRuns opt-in.
+		// The usual background-agent completion wake; ACP sessions get message_agent only with the backgroundRuns opt-in.
 		await vi.waitFor(() =>
 			expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "subagent-notification" }), {
 				deliverAs: "followUp",

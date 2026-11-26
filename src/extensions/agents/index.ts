@@ -611,7 +611,7 @@ export function getActiveManager(): AgentManager | undefined {
 }
 
 /**
- * Each live session's agent manager and how to message its subagents, for list_agents and send_message
+ * Each live session's agent manager and how to message its subagents, for list_agents and message_agent
  * (session-messages extension). One ACP process serves several sessions, so a single global would hand a session
  * another session's subagents.
  */
@@ -624,7 +624,7 @@ export function listSubagents(sessionId: string): AgentRecord[] {
 	)
 }
 
-/** send_message to a subagent: a running one is steered, a finished one resumes in the background. */
+/** message_agent to a subagent: a running one is steered, a finished one resumes in the background. */
 export function messageSubagent(agentId: string, message: string): Promise<string> {
 	for (const [manager, send] of messengers) if (manager.getRecord(agentId)) return send(agentId, message)
 	return Promise.resolve(`Agent not found: "${agentId}". It may have been cleaned up.`)
@@ -2946,7 +2946,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 		}),
 	)
 
-	/** Shared by steer_subagent and send_message (session-messages extension). */
+	/** Shared by steer_subagent and message_agent (session-messages extension). */
 	async function steerRunningAgent(record: AgentRecord, message: string): Promise<string> {
 		if (!record.session) {
 			if (!record.pendingSteers) record.pendingSteers = []

@@ -74,7 +74,7 @@ it.each([
 		const sessionId = await newSession(fixture, fixture.workDir)
 		expect((await prompt(fixture, sessionId, "Reply briefly.")).stopReason).toBe("end_turn")
 		expect(sockets(fixture.homeDir)).toEqual([])
-		expect(chatRequests(fixture).some((request) => requestAdvertisesTool(request, "send_message"))).toBe(false)
+		expect(chatRequests(fixture).some((request) => requestAdvertisesTool(request, "message_agent"))).toBe(false)
 		expect(advertisedCommands(fixture)).not.toContain("session-messages")
 		await expect(fixture.conn.request("_kimchi.dev/live_sessions", { sessionId })).rejects.toThrow()
 	} finally {
@@ -112,7 +112,7 @@ it("an opted-in client lists sessions for its @ list and shows a received messag
 		await new Promise<void>((resolve) => web.listen(join(liveDir(fixture.homeDir), "fffff1.sock"), resolve))
 		const sessionId = await newSession(fixture, fixture.workDir)
 		expect((await prompt(fixture, sessionId, "Reply briefly.")).stopReason).toBe("end_turn")
-		expect(chatRequests(fixture).some((request) => requestAdvertisesTool(request, "send_message"))).toBe(true)
+		expect(chatRequests(fixture).some((request) => requestAdvertisesTool(request, "message_agent"))).toBe(true)
 		expect(advertisedCommands(fixture)).toContain("session-messages")
 
 		expect(await fixture.conn.request("_kimchi.dev/live_sessions", { sessionId })).toEqual({

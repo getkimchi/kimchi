@@ -49,7 +49,7 @@ The agent uses three tools:
   as a message; other work can still go to a new subagent.
   A session's name is its session name (set with `/name` or picked after the first turn)
   or, before that, the folder name. The ref is the last six characters of the session id.
-- `send_message` takes `to` and the text. `to` is a subagent ID, a session name or tag, or
+- `message_agent` takes `to` and the text. `to` is a subagent ID, a session name or tag, or
   `name [ref]` when two sessions share a name. A subagent ID wins over a session name.
 - `watch_session` takes a session and sends one notice back when that session finishes its
   current work or exits, so "tell me when the shipping session is done" needs no polling.
@@ -93,7 +93,7 @@ The other session sees the text as
 `<cross-session-message from="name [ref]">…</cross-session-message>`, followed by a line
 saying it comes from another session's agent, not from its user, so it cannot approve
 anything: the agent stays within what its own user asked and asks them before pushing,
-publishing or deleting. The line also tells it to answer with `send_message` when asked
+publishing or deleting. The line also tells it to answer with `message_agent` when asked
 something and to send no thanks or acknowledgements, since every message wakes the other
 session. Its user sees
 "Message from name [ref]" and the first line; ctrl+o shows the rest. A busy session reads

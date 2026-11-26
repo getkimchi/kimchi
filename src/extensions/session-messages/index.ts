@@ -27,7 +27,7 @@
  * digits are a timestamp shared by sessions started close together).
  * `list_agents` asks each socket who it is, so a session is listed only
  * while it answers; a socket nobody listens on is left by a crashed session
- * and is removed. `send_message` hands the text to the target, which steers
+ * and is removed. `message_agent` hands the text to the target, which steers
  * it into its conversation as `<cross-session-message from="name [ref]">`
  * and starts a turn when idle. A target in another permission mode holds
  * an agent's message for its user's approval, so a stricter session cannot
@@ -206,11 +206,11 @@ export const AGENT_NOTE =
 
 /** Without it, models answer in their own transcript, where the sending session never sees it. */
 export const replyHint = (from: string) =>
-	`${AGENT_NOTE} That session does not see your replies here. If it asks you something, answer with send_message to "${from}"; send no thanks or acknowledgements, since every message wakes it.`
+	`${AGENT_NOTE} That session does not see your replies here. If it asks you something, answer with message_agent to "${from}"; send no thanks or acknowledgements, since every message wakes it.`
 
 /** The user is at the other session, so the outcome goes back there. */
 export const userHint = (from: string) =>
-	`Your user typed this in session ${from}: treat it as their instruction. They are watching that session, so when you finish or need them, tell them with send_message to "${from}".`
+	`Your user typed this in session ${from}: treat it as their instruction. They are watching that session, so when you finish or need them, tell them with message_agent to "${from}".`
 
 /** What a prompt can call a session: its folder, branch, name, address or ref. */
 const aliasesOf = (peer: SessionInfo) =>
@@ -380,7 +380,7 @@ const text = (value: string, details: Record<string, unknown> = {}) => ({
 	details,
 })
 
-export const LIST_AGENTS_DESCRIPTION = `List the agents send_message can reach: this session's subagents (ID, type, status, task, start time), then the other interactive Kimchi sessions on this machine (name [ref], branch, idle or busy, folder, start time, and whether it works in the same repository). A subagent's address is its ID; a session's is its name. A listed session is alive and will receive a message. Before starting a subagent for work in this repository, check whether another session already works on it, and message that session instead. To check or build on another session's work, ask it what it changed, or read its folder; leave its files to it: keep your checks in your own folder, and send it what you find so it can fix its work. Never poll this to wait for an answer: replies and results arrive by themselves.`
+export const LIST_AGENTS_DESCRIPTION = `List the agents message_agent can reach: this session's subagents (ID, type, status, task, start time), then the other interactive Kimchi sessions on this machine (name [ref], branch, idle or busy, folder, start time, and whether it works in the same repository). A subagent's address is its ID; a session's is its name. A listed session is alive and will receive a message. Before starting a subagent for work in this repository, check whether another session already works on it, and message that session instead. To check or build on another session's work, ask it what it changed, or read its folder; leave its files to it: keep your checks in your own folder, and send it what you find so it can fix its work. Never poll this to wait for an answer: replies and results arrive by themselves.`
 
 export const SEND_MESSAGE_DESCRIPTION = `Send a message to one of your subagents or to another Kimchi session on this machine (find both with list_agents).
 
@@ -434,7 +434,7 @@ export function createSessionMessagesExtension(
 			const whose = peers.length === 1 ? "that session's" : "those sessions'"
 			return {
 				block: true,
-				reason: `Held, not failed: your user just agreed to ask ${names} (open in this repository) instead of starting subagents for related work, so do not ask them again. If ${work} is related to ${whose} work, send it with send_message to ${addresses}; if it is unrelated, start this subagent again.`,
+				reason: `Held, not failed: your user just agreed to ask ${names} (open in this repository) instead of starting subagents for related work, so do not ask them again. If ${work} is related to ${whose} work, send it with message_agent to ${addresses}; if it is unrelated, start this subagent again.`,
 			}
 		}
 
@@ -882,8 +882,8 @@ export function createSessionMessagesExtension(
 			})
 
 			pi.registerTool({
-				name: "send_message",
-				label: "send_message",
+				name: "message_agent",
+				label: "message_agent",
 				description: SEND_MESSAGE_DESCRIPTION,
 				promptSnippet: "message one of your subagents or another Kimchi session on this machine",
 				parameters: Type.Object({

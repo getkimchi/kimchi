@@ -230,7 +230,9 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"steer_subagent",
 	// Like steer_subagent, a message changes nothing here; the receiving
 	// session gates whatever it does with its own permission mode.
-	"send_message",
+	"message_agent",
+	// A watch only asks another session for one notice when its work ends.
+	"watch_session",
 	// Plan-review control plane: writes the plan artifact and opens the review
 	// flow — there is nothing for permissions to gate here.
 	SUBMIT_PLAN_TOOL_NAME,

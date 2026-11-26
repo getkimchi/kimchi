@@ -202,7 +202,7 @@ export function getClientOptedIntoModelEffort(capabilities: ClientCapabilities |
 
 /**
  * Client opt-in for messages between Kimchi sessions on one machine (docs/session-messages.md): the session
- * opens an inbox, gets list_agents and send_message, and reads @tags in prompts. A received message starts a run
+ * opens an inbox, gets list_agents and message_agent, and reads @tags in prompts. A received message starts a run
  * no prompt owns, so it also needs backgroundRuns. No RFD covers messages between unrelated live sessions;
  * Subagent Sessions (https://agentclientprotocol.com/rfds/subagents) only links a parent to its children.
  */

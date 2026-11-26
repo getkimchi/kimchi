@@ -43,9 +43,9 @@ vi.mock("../../modes/acp/state.js", async (importOriginal) => ({
 
 /** Delivery options: a wake only TUI sessions and ACP clients with the session-messages opt-in get; nothing else opens an inbox. */
 const STEER_AND_WAKE = { deliverAs: "steer", triggerTurn: true }
-const ALPHA = "0190aaaa-0000-7000-8000-00000aaaaaa1"
-const BETA = "0190aaaa-0000-7000-8000-00000bbbbbb2"
-const GAMMA = "0190aaaa-0000-7000-8000-00000cccccc3"
+const A1 = "00000000-0000-7000-8000-000000000001"
+const A2 = "00000000-0000-7000-8000-000000000002"
+const A3 = "00000000-0000-7000-8000-000000000003"
 
 const dirs: string[] = []
 const running: Array<() => Promise<unknown>> = []
@@ -163,52 +163,52 @@ const startSubagent = (session: Awaited<ReturnType<typeof startSession>>, descri
 describe("session-messages", () => {
 	it("lists live peers and steers a message into the target, which can reply", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000aaaaaa1", name: "alpha" })
-		const beta = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "beta", idle: false })
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		const a2 = await startSession(dir, { id: A2, name: "a2", idle: false })
 
 		expect((statSync(dir).mode & 0o777).toString(8)).toBe("700")
-		const listing = await alpha.run("list_agents", {})
-		expect(listing).toContain("This session is alpha [aaaaa1]")
-		expect(listing).toContain("beta [bbbbb2]  ·  busy  ·  /work/beta")
-		expect(listing).not.toContain("alpha [aaaaa1]  ·")
+		const listing = await a1.run("list_agents", {})
+		expect(listing).toContain("This session is a1 [000001]")
+		expect(listing).toContain("a2 [000002]  ·  busy  ·  /work/a2")
+		expect(listing).not.toContain("a1 [000001]  ·")
 
-		expect(await alpha.run("send_message", { to: "beta", message: "Run the tests, please." })).toContain(
-			"Delivered to beta [bbbbb2]: it is busy and reads it when its current step ends",
+		expect(await a1.run("message_agent", { to: "a2", message: "Run the tests, please." })).toContain(
+			"Delivered to a2 [000002]: it is busy and reads it when its current step ends",
 		)
-		expect(beta.harness.sendMessage).toHaveBeenCalledWith(
+		expect(a2.harness.sendMessage).toHaveBeenCalledWith(
 			{
 				customType: CROSS_SESSION_MESSAGE_TYPE,
-				content: `<cross-session-message from="alpha [aaaaa1]">\nRun the tests, please.\n</cross-session-message>\n${replyHint("alpha [aaaaa1]")}`,
+				content: `<cross-session-message from="a1 [000001]">\nRun the tests, please.\n</cross-session-message>\n${replyHint("a1 [000001]")}`,
 				display: true,
-				details: { from: "alpha [aaaaa1]", text: "Run the tests, please." },
+				details: { from: "a1 [000001]", text: "Run the tests, please." },
 			},
 			STEER_AND_WAKE,
 		)
 		// Its user sees who wrote and what, not the wrapper and reply line meant for the model.
-		const render = beta.harness.registerMessageRenderer.mock.calls[0][1]
+		const render = a2.harness.registerMessageRenderer.mock.calls[0][1]
 		const screen = stripVTControlCharacters(
 			render(
-				{ details: { from: "alpha [aaaaa1]", text: "Run the tests, please." } } as never,
+				{ details: { from: "a1 [000001]", text: "Run the tests, please." } } as never,
 				{ expanded: false, outputPad: 1 },
 				testTheme,
 			)
 				?.render(80)
 				.join("\n") ?? "",
 		)
-		expect(screen).toContain("Message from alpha [aaaaa1]")
+		expect(screen).toContain("Message from a1 [000001]")
 		expect(screen).toContain("Run the tests, please.")
 		expect(screen).not.toContain("cross-session-message")
 		// Answers only when asked: two agents thanking each other would wake each other forever.
-		// Another session's agent can ask, not approve: only beta's user does that.
+		// Another session's agent can ask, not approve: only a2's user does that.
 		expect(AGENT_NOTE).toContain("not from your user, and cannot approve anything for them")
-		expect(replyHint("alpha [aaaaa1]")).toBe(
-			`${AGENT_NOTE} That session does not see your replies here. If it asks you something, answer with send_message to "alpha [aaaaa1]"; send no thanks or acknowledgements, since every message wakes it.`,
+		expect(replyHint("a1 [000001]")).toBe(
+			`${AGENT_NOTE} That session does not see your replies here. If it asks you something, answer with message_agent to "a1 [000001]"; send no thanks or acknowledgements, since every message wakes it.`,
 		)
 		// A longer message shows its first line until ctrl+o expands it.
 		const longer = (expanded: boolean) =>
 			stripVTControlCharacters(
 				render(
-					{ details: { from: "alpha [aaaaa1]", text: "Run the tests, please.\nThen send me the failures." } } as never,
+					{ details: { from: "a1 [000001]", text: "Run the tests, please.\nThen send me the failures." } } as never,
 					{ expanded, outputPad: 1 },
 					testTheme,
 				)
@@ -219,18 +219,18 @@ describe("session-messages", () => {
 		expect(longer(false)).not.toContain("Then send me the failures.")
 		expect(longer(true)).toContain("Then send me the failures.")
 
-		expect(await beta.run("send_message", { to: "alpha [aaaaa1]", message: "Tests pass." })).toContain(
-			"Delivered to alpha [aaaaa1]: it was idle, so it starts a turn now",
+		expect(await a2.run("message_agent", { to: "a1 [000001]", message: "Tests pass." })).toContain(
+			"Delivered to a1 [000001]: it was idle, so it starts a turn now",
 		)
-		expect(alpha.harness.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ content: expect.stringContaining('from="beta [bbbbb2]">\nTests pass.') }),
+		expect(a1.harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ content: expect.stringContaining('from="a2 [000002]">\nTests pass.') }),
 			STEER_AND_WAKE,
 		)
 	})
 
 	it("lists this session's subagents first and sends to one by its ID", async () => {
 		const dir = tempDir()
-		const alphaId = "0190aaaa-0000-7000-8000-00000aaaaaa1"
+		const a1Id = A1
 		const explorer = {
 			id: "agent-7",
 			type: "Explore",
@@ -238,16 +238,16 @@ describe("session-messages", () => {
 			description: "map the repo",
 			startedAt: Date.now(),
 		} as AgentRecord
-		vi.mocked(listSubagents).mockImplementation((sessionId) => (sessionId === alphaId ? [explorer] : []))
+		vi.mocked(listSubagents).mockImplementation((sessionId) => (sessionId === a1Id ? [explorer] : []))
 		vi.mocked(messageSubagent).mockResolvedValue("Steering message sent to agent agent-7.")
-		const alpha = await startSession(dir, { id: alphaId, name: "alpha" })
-		await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "agent-7" })
+		const a1 = await startSession(dir, { id: a1Id, name: "a1" })
+		await startSession(dir, { id: A2, name: "agent-7" })
 
-		const listing = await alpha.run("list_agents", {})
+		const listing = await a1.run("list_agents", {})
 		expect(listing).toContain("Subagents (1):\n  agent-7  ·  Explore  ·  running  ·  map the repo  ·  started just now")
 		expect(listing.indexOf("Subagents (1)")).toBeLessThan(listing.indexOf("Peer sessions (1)"))
 		// A session with the same name loses to the subagent, as in the listing order.
-		expect(await alpha.run("send_message", { to: "agent-7", message: "Also list the tests." })).toBe(
+		expect(await a1.run("message_agent", { to: "agent-7", message: "Also list the tests." })).toBe(
 			"Steering message sent to agent agent-7.",
 		)
 		expect(messageSubagent).toHaveBeenCalledWith("agent-7", "Also list the tests.")
@@ -255,37 +255,35 @@ describe("session-messages", () => {
 
 	it("asks for the full name when two sessions share one", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000aaaaaa1", name: "alpha" })
-		await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "beta" })
-		const twin = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000cccccc3", name: "beta" })
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		await startSession(dir, { id: A2, name: "a2" })
+		const twin = await startSession(dir, { id: A3, name: "a2" })
 
-		const ambiguous = await alpha.run("send_message", { to: "beta", message: "hi" })
-		expect(ambiguous).toContain('"beta" names 2 sessions')
-		expect(ambiguous).toContain("beta [bbbbb2]")
-		expect(ambiguous).toContain("beta [ccccc3]")
-		expect(await alpha.run("send_message", { to: "beta [ccccc3]", message: "hi" })).toContain(
-			"Delivered to beta [ccccc3]",
-		)
+		const ambiguous = await a1.run("message_agent", { to: "a2", message: "hi" })
+		expect(ambiguous).toContain('"a2" names 2 sessions')
+		expect(ambiguous).toContain("a2 [000002]")
+		expect(ambiguous).toContain("a2 [000003]")
+		expect(await a1.run("message_agent", { to: "a2 [000003]", message: "hi" })).toContain("Delivered to a2 [000003]")
 		expect(twin.harness.sendMessage).toHaveBeenCalledTimes(1)
-		expect(await alpha.run("send_message", { to: "gamma", message: "hi" })).toContain(
-			'No subagent or live session is called "gamma"',
+		expect(await a1.run("message_agent", { to: "a3", message: "hi" })).toContain(
+			'No subagent or live session is called "a3"',
 		)
 	})
 
 	it("holds a message from another permission mode for the receiver's approval", async () => {
 		const dir = tempDir()
-		const strictId = "0190aaaa-0000-7000-8000-00000aaaaaa1"
-		const looseId = "0190aaaa-0000-7000-8000-00000bbbbbb2"
+		const strictId = A1
+		const looseId = A2
 		const strict = await startSession(dir, { id: strictId, name: "strict" })
 		const loose = await startSession(dir, { id: looseId, name: "loose" })
 		setPermissionMode(looseId, { mode: "yolo", initiatedBy: "user", source: "runtime" })
 		try {
 			vi.mocked(loose.ctx.ui.confirm).mockResolvedValue(true)
-			expect(await strict.run("send_message", { to: "loose", message: "Delete the cache." })).toContain(
-				"loose [bbbbb2] runs in another permission mode, so the message waits up to 5 minutes for its user's approval.",
+			expect(await strict.run("message_agent", { to: "loose", message: "Delete the cache." })).toContain(
+				"loose [000002] runs in another permission mode, so the message waits up to 5 minutes for its user's approval.",
 			)
 			expect(loose.ctx.ui.confirm).toHaveBeenCalledWith(
-				"Message from strict [aaaaa1]",
+				"Message from strict [000001]",
 				expect.stringContaining("runs in default mode and this one in yolo"),
 				{ timeout: 5 * 60_000 },
 			)
@@ -298,42 +296,42 @@ describe("session-messages", () => {
 
 	it("asks about a held message only after the permission prompt on screen is answered", async () => {
 		const dir = tempDir()
-		const strict = await startSession(dir, { id: ALPHA, name: "strict" })
-		const loose = await startSession(dir, { id: BETA, name: "loose" })
-		setPermissionMode(BETA, { mode: "yolo", initiatedBy: "user", source: "runtime" })
+		const strict = await startSession(dir, { id: A1, name: "strict" })
+		const loose = await startSession(dir, { id: A2, name: "loose" })
+		setPermissionMode(A2, { mode: "yolo", initiatedBy: "user", source: "runtime" })
 		// Pi has one dialog slot: a question shown now would replace the prompt and orphan its tool call.
 		const prompts = new PromptQueue()
 		setSessionPromptQueue(loose.harness.api.events, prompts)
 		let answer = (_approved: boolean) => {}
 		void prompts.enqueue(() => new Promise<boolean>((resolve) => (answer = resolve)))
 		try {
-			await strict.run("send_message", { to: "loose", message: "Delete the cache." })
+			await strict.run("message_agent", { to: "loose", message: "Delete the cache." })
 			await new Promise((resolve) => setTimeout(resolve, 20))
 			expect(loose.ctx.ui.confirm).not.toHaveBeenCalled()
 			answer(true)
 			await vi.waitFor(() => expect(loose.ctx.ui.confirm).toHaveBeenCalledTimes(1))
 		} finally {
-			unregisterSessionPermissionFlagController(BETA)
-			clearPermissionModeEnv(BETA)
+			unregisterSessionPermissionFlagController(A2)
+			clearPermissionModeEnv(A2)
 		}
 	})
 
 	it("tells the sender when its held message is declined or expires", async () => {
 		const dir = tempDir()
-		const strictId = "0190aaaa-0000-7000-8000-00000aaaaaa1"
-		const looseId = "0190aaaa-0000-7000-8000-00000bbbbbb2"
+		const strictId = A1
+		const looseId = A2
 		const strict = await startSession(dir, { id: strictId, name: "strict" })
 		const loose = await startSession(dir, { id: looseId, name: "loose" })
 		setPermissionMode(looseId, { mode: "yolo", initiatedBy: "user", source: "runtime" })
 		try {
-			await strict.run("send_message", { to: "loose", message: "Delete the cache." })
+			await strict.run("message_agent", { to: "loose", message: "Delete the cache." })
 			await vi.waitFor(() =>
 				expect(strict.harness.sendMessage).toHaveBeenCalledWith(
 					{
 						customType: CROSS_SESSION_NOTICE_TYPE,
-						content: "Your message to loose [bbbbb2] was not delivered: its user declined it.",
+						content: "Your message to loose [000002] was not delivered: its user declined it.",
 						display: true,
-						details: { title: "Not delivered to loose [bbbbb2]", text: "Its user declined it." },
+						details: { title: "Not delivered to loose [000002]", text: "Its user declined it." },
 					},
 					STEER_AND_WAKE,
 				),
@@ -346,11 +344,11 @@ describe("session-messages", () => {
 				vi.spyOn(Date, "now").mockReturnValue(shown + 5 * 60_000)
 				return false
 			})
-			await strict.run("send_message", { to: "loose", message: "Delete the cache, please." })
+			await strict.run("message_agent", { to: "loose", message: "Delete the cache, please." })
 			await vi.waitFor(() =>
 				expect(strict.harness.sendMessage).toHaveBeenLastCalledWith(
 					expect.objectContaining({
-						content: "Your message to loose [bbbbb2] was not delivered: its user did not answer within 5 minutes.",
+						content: "Your message to loose [000002] was not delivered: its user did not answer within 5 minutes.",
 					}),
 					STEER_AND_WAKE,
 				),
@@ -364,83 +362,83 @@ describe("session-messages", () => {
 
 	it("stops a chain after 8 messages without a user; the user's own words start it again", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
-		const beta = await startSession(dir, { id: BETA, name: "beta" })
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		const a2 = await startSession(dir, { id: A2, name: "a2" })
 		for (let hop = 1; hop <= 8; hop++) {
-			const [from, to] = hop % 2 === 1 ? [beta, "alpha"] : [alpha, "beta"]
-			expect(await from.run("send_message", { to, message: `Hop ${hop}.` })).toContain("Delivered to")
+			const [from, to] = hop % 2 === 1 ? [a2, "a1"] : [a1, "a2"]
+			expect(await from.run("message_agent", { to, message: `Hop ${hop}.` })).toContain("Delivered to")
 		}
 		const refused =
 			"Not sent: 8 messages have passed between sessions since a user last wrote. Ask your user before sending more."
-		expect(await beta.run("send_message", { to: "alpha", message: "Thanks!" })).toBe(refused)
+		expect(await a2.run("message_agent", { to: "a1", message: "Thanks!" })).toBe(refused)
 		// Input another extension injects is not a user.
-		await beta.harness.emit("input", { type: "input", text: "nudge", source: "extension" }, beta.ctx)
-		expect(await beta.run("send_message", { to: "alpha", message: "Thanks!" })).toBe(refused)
-		// Words the user writes to beta from another session count like typing in beta, so a team keeps working.
-		expect(await alpha.type("@beta keep going")).toEqual([{ action: "handled" }])
-		expect(await beta.run("send_message", { to: "alpha", message: "Done." })).toContain("Delivered to alpha")
+		await a2.harness.emit("input", { type: "input", text: "nudge", source: "extension" }, a2.ctx)
+		expect(await a2.run("message_agent", { to: "a1", message: "Thanks!" })).toBe(refused)
+		// Words the user writes to a2 from another session count like typing in a2, so a team keeps working.
+		expect(await a1.type("@a2 keep going")).toEqual([{ action: "handled" }])
+		expect(await a2.run("message_agent", { to: "a1", message: "Done." })).toContain("Delivered to a1")
 	})
 
 	it("lets the user change how many messages sessions send in a row", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
-		const beta = await startSession(dir, { id: BETA, name: "beta" })
-		const command = alpha.harness.getRegisteredCommand("session-messages")
-		await command.handler("limit 0", alpha.ctx as never)
-		expect(alpha.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("a whole number"), "warning")
-		await command.handler("limit 2", alpha.ctx as never)
-		expect(alpha.ctx.ui.notify).toHaveBeenLastCalledWith(limitNotice(2), "info")
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		const a2 = await startSession(dir, { id: A2, name: "a2" })
+		const command = a1.harness.getRegisteredCommand("session-messages")
+		await command.handler("limit 0", a1.ctx as never)
+		expect(a1.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("a whole number"), "warning")
+		await command.handler("limit 2", a1.ctx as never)
+		expect(a1.ctx.ui.notify).toHaveBeenLastCalledWith(limitNotice(2), "info")
 		expect(JSON.parse(readFileSync(preferenceFile(dir), "utf8"))).toEqual({ enabled: true, limit: 2 })
 
-		expect(await beta.run("send_message", { to: "alpha", message: "Hop 1." })).toContain("Delivered to")
-		expect(await alpha.run("send_message", { to: "beta", message: "Hop 2." })).toContain("Delivered to")
-		expect(await beta.run("send_message", { to: "alpha", message: "Hop 3." })).toBe(
+		expect(await a2.run("message_agent", { to: "a1", message: "Hop 1." })).toContain("Delivered to")
+		expect(await a1.run("message_agent", { to: "a2", message: "Hop 2." })).toContain("Delivered to")
+		expect(await a2.run("message_agent", { to: "a1", message: "Hop 3." })).toBe(
 			"Not sent: 2 messages have passed between sessions since a user last wrote. Ask your user before sending more.",
 		)
 	})
 
 	it("tells a watcher once when the watched session's work ends, or when it exits", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
-		const beta = await startSession(dir, { id: BETA, name: "beta", idle: false })
-		await startSession(dir, { id: GAMMA, name: "gamma" })
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		const a2 = await startSession(dir, { id: A2, name: "a2", idle: false })
+		await startSession(dir, { id: A3, name: "a3" })
 		const notices = () =>
 			vi
-				.mocked(alpha.harness.sendMessage)
+				.mocked(a1.harness.sendMessage)
 				.mock.calls.filter(([message]) => message.customType === CROSS_SESSION_NOTICE_TYPE)
 
-		expect(await alpha.run("watch_session", { to: "gamma" })).toBe(
-			"gamma [ccccc3] is idle already: it is not working on anything.",
+		expect(await a1.run("watch_session", { to: "a3" })).toBe(
+			"a3 [000003] is idle already: it is not working on anything.",
 		)
-		expect(await alpha.run("watch_session", { to: "beta" })).toBe(
-			"Watching beta [bbbbb2]: one notice arrives here when it finishes its current work or exits.",
+		expect(await a1.run("watch_session", { to: "a2" })).toBe(
+			"Watching a2 [000002]: one notice arrives here when it finishes its current work or exits.",
 		)
 		// A run Pi is about to retry has not ended.
-		await beta.harness.emit("agent_end", { type: "agent_end", messages: [], willRetry: true }, beta.ctx)
+		await a2.harness.emit("agent_end", { type: "agent_end", messages: [], willRetry: true }, a2.ctx)
 		expect(notices()).toEqual([])
-		await beta.harness.emit("agent_end", { type: "agent_end", messages: [] }, beta.ctx)
+		await a2.harness.emit("agent_end", { type: "agent_end", messages: [] }, a2.ctx)
 		await vi.waitFor(() =>
 			expect(notices()).toEqual([
 				[
 					{
 						customType: CROSS_SESSION_NOTICE_TYPE,
-						content: "beta [bbbbb2] is idle now: it finished what it was working on.",
+						content: "a2 [000002] is idle now: it finished what it was working on.",
 						display: true,
-						details: { title: "beta [bbbbb2] is idle", text: "It finished what it was working on." },
+						details: { title: "a2 [000002] is idle", text: "It finished what it was working on." },
 					},
 					STEER_AND_WAKE,
 				],
 			]),
 		)
 		// Once: the next run's end tells nobody.
-		await beta.harness.emit("agent_end", { type: "agent_end", messages: [] }, beta.ctx)
+		await a2.harness.emit("agent_end", { type: "agent_end", messages: [] }, a2.ctx)
 		expect(notices()).toHaveLength(1)
 
-		await alpha.run("watch_session", { to: "beta" })
-		await beta.stop()
+		await a1.run("watch_session", { to: "a2" })
+		await a2.stop()
 		await vi.waitFor(() =>
-			expect(alpha.harness.sendMessage).toHaveBeenLastCalledWith(
-				expect.objectContaining({ content: "beta [bbbbb2] has exited." }),
+			expect(a1.harness.sendMessage).toHaveBeenLastCalledWith(
+				expect.objectContaining({ content: "a2 [000002] has exited." }),
 				STEER_AND_WAKE,
 			),
 		)
@@ -448,33 +446,33 @@ describe("session-messages", () => {
 
 	it("refuses an agent's word-for-word repeat within seconds, but never the user's own words", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
-		const beta = await startSession(dir, { id: BETA, name: "beta" })
-		expect(await alpha.run("send_message", { to: "beta", message: "Run the tests." })).toContain("Delivered to")
-		expect(await alpha.run("send_message", { to: "beta", message: "Run the tests." })).toBe(
-			"Not delivered to beta [bbbbb2]: it got this same message from you seconds ago.",
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		const a2 = await startSession(dir, { id: A2, name: "a2" })
+		expect(await a1.run("message_agent", { to: "a2", message: "Run the tests." })).toContain("Delivered to")
+		expect(await a1.run("message_agent", { to: "a2", message: "Run the tests." })).toBe(
+			"Not delivered to a2 [000002]: it got this same message from you seconds ago.",
 		)
-		expect(await alpha.run("send_message", { to: "beta", message: "Run the lint too." })).toContain("Delivered to")
+		expect(await a1.run("message_agent", { to: "a2", message: "Run the lint too." })).toContain("Delivered to")
 		const now = Date.now()
 		vi.spyOn(Date, "now").mockReturnValue(now + 10_000)
 		try {
-			expect(await alpha.run("send_message", { to: "beta", message: "Run the lint too." })).toContain("Delivered to")
+			expect(await a1.run("message_agent", { to: "a2", message: "Run the lint too." })).toContain("Delivered to")
 		} finally {
 			vi.restoreAllMocks()
 		}
-		expect(await alpha.type("@beta and the docs")).toEqual([{ action: "handled" }])
-		expect(await alpha.type("@beta and the docs")).toEqual([{ action: "handled" }])
-		expect(beta.harness.sendMessage).toHaveBeenCalledTimes(5)
+		expect(await a1.type("@a2 and the docs")).toEqual([{ action: "handled" }])
+		expect(await a1.type("@a2 and the docs")).toEqual([{ action: "handled" }])
+		expect(a2.harness.sendMessage).toHaveBeenCalledTimes(5)
 	})
 
 	it("puts live sessions at the top of the @ list with their branch, state and folder", async () => {
 		const dir = tempDir()
 		const shop = repository(dir, "fix/rounding")
-		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
-		await startSession(dir, { id: BETA, name: "beta", cwd: shop, idle: false })
-		await startSession(dir, { id: GAMMA, name: "Checkout rounding" })
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		await startSession(dir, { id: A2, name: "a2", cwd: shop, idle: false })
+		await startSession(dir, { id: A3, name: "Checkout rounding" })
 		// The folder is the tag when no other session answers to it; the name the session picked shows beside it.
-		const beta = { value: "@fix-rounding", label: "@fix-rounding", description: "fix/rounding · busy · beta" }
+		const a2 = { value: "@fix-rounding", label: "@fix-rounding", description: "fix/rounding · busy · a2" }
 		const checkout = {
 			value: '@"Checkout rounding"',
 			label: '@"Checkout rounding"',
@@ -482,35 +480,35 @@ describe("session-messages", () => {
 		}
 		const file = { value: "@src/", label: "src/" }
 
-		const all = await atList(alpha, { prefix: "@", items: [file] })("@")
+		const all = await atList(a1, { prefix: "@", items: [file] })("@")
 		expect(all?.prefix).toBe("@")
 		expect(all?.items).toHaveLength(3)
-		expect(all?.items).toEqual(expect.arrayContaining([beta, checkout]))
+		expect(all?.items).toEqual(expect.arrayContaining([a2, checkout]))
 		expect(all?.items.at(-1)).toEqual(file)
 		// Typing narrows by folder, branch or name, with or without matching files.
-		expect(await atList(alpha)("@fix/r")).toEqual({ prefix: "@fix/r", items: [beta] })
+		expect(await atList(a1)("@fix/r")).toEqual({ prefix: "@fix/r", items: [a2] })
 		// A session already tagged is not offered again.
-		expect(await atList(alpha)("@beta and @")).toEqual({ prefix: "@", items: [checkout] })
+		expect(await atList(a1)("@a2 and @")).toEqual({ prefix: "@", items: [checkout] })
 		// The session itself is never listed.
-		expect((await atList(alpha)("@alpha"))?.items ?? []).toEqual([])
+		expect((await atList(a1)("@a1"))?.items ?? []).toEqual([])
 	})
 
 	it("writes leading tags straight to those sessions as the user's words; other tags go to the agent", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
-		const beta = await startSession(dir, { id: BETA, name: "beta", idle: false })
-		const checkout = await startSession(dir, { id: GAMMA, name: "Checkout rounding" })
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		const a2 = await startSession(dir, { id: A2, name: "a2", idle: false })
+		const checkout = await startSession(dir, { id: A3, name: "Checkout rounding" })
 		// The user's own words need no approval in another permission mode: they could type them there.
-		setPermissionMode(BETA, { mode: "yolo", initiatedBy: "user", source: "runtime" })
+		setPermissionMode(A2, { mode: "yolo", initiatedBy: "user", source: "runtime" })
 		try {
-			expect(await alpha.type('@beta @"Checkout rounding": use v2 instead')).toEqual([{ action: "handled" }])
-			expect(beta.ctx.ui.confirm).not.toHaveBeenCalled()
-			expect(beta.harness.sendMessage).toHaveBeenCalledWith(
+			expect(await a1.type('@a2 @"Checkout rounding": use v2 instead')).toEqual([{ action: "handled" }])
+			expect(a2.ctx.ui.confirm).not.toHaveBeenCalled()
+			expect(a2.harness.sendMessage).toHaveBeenCalledWith(
 				{
 					customType: CROSS_SESSION_MESSAGE_TYPE,
-					content: `<cross-session-message from="alpha [aaaaa1]" by="user">\nuse v2 instead\n</cross-session-message>\n${userHint("alpha [aaaaa1]")}`,
+					content: `<cross-session-message from="a1 [000001]" by="user">\nuse v2 instead\n</cross-session-message>\n${userHint("a1 [000001]")}`,
 					display: true,
-					details: { from: "alpha [aaaaa1]", text: "use v2 instead", title: "From you in alpha [aaaaa1]" },
+					details: { from: "a1 [000001]", text: "use v2 instead", title: "From you in a1 [000001]" },
 				},
 				STEER_AND_WAKE,
 			)
@@ -519,52 +517,52 @@ describe("session-messages", () => {
 				STEER_AND_WAKE,
 			)
 			// This session starts no turn; it keeps a record its agent reads when answers come back.
-			expect(alpha.harness.sendMessage).toHaveBeenCalledWith(
+			expect(a1.harness.sendMessage).toHaveBeenCalledWith(
 				{
 					customType: CROSS_SESSION_SENT_TYPE,
-					content: "Your user wrote this straight to beta [bbbbb2], Checkout rounding [ccccc3]:\nuse v2 instead",
+					content: "Your user wrote this straight to a2 [000002], Checkout rounding [000003]:\nuse v2 instead",
 					display: true,
-					details: { title: "To beta [bbbbb2], Checkout rounding [ccccc3]", text: "use v2 instead" },
+					details: { title: "To a2 [000002], Checkout rounding [000003]", text: "use v2 instead" },
 				},
 				{ triggerTurn: false },
 			)
 
 			// Tags inside the sentence leave it to the agent, which has the tools by now.
-			expect(await alpha.type('ask @beta and @"Checkout rounding" to agree on the endpoint')).toEqual([undefined])
-			expect(alpha.harness.registerTool).toHaveBeenCalled()
-			expect(beta.harness.sendMessage).toHaveBeenCalledTimes(1)
+			expect(await a1.type('ask @a2 and @"Checkout rounding" to agree on the endpoint')).toEqual([undefined])
+			expect(a1.harness.registerTool).toHaveBeenCalled()
+			expect(a2.harness.sendMessage).toHaveBeenCalledTimes(1)
 			// A word that tags no live session is plain text.
-			expect(await alpha.type("@gamma use v2")).toEqual([undefined])
-			expect(await alpha.run("send_message", { to: '@"Checkout rounding"', message: "Agree with beta." })).toContain(
-				"Delivered to Checkout rounding [ccccc3]",
+			expect(await a1.type("@a3 use v2")).toEqual([undefined])
+			expect(await a1.run("message_agent", { to: '@"Checkout rounding"', message: "Agree with a2." })).toContain(
+				"Delivered to Checkout rounding [000003]",
 			)
 		} finally {
-			unregisterSessionPermissionFlagController(BETA)
-			clearPermissionModeEnv(BETA)
+			unregisterSessionPermissionFlagController(A2)
+			clearPermissionModeEnv(A2)
 		}
 	})
 
 	it("still finds a tagged session by its folder after the session renames itself", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
 		// Sessions pick a name after their first turn; a tag picked before that names the folder.
-		const shipping = await startSession(dir, { id: BETA, name: "Add express shipping", cwd: "/work/shop-shipping" })
-		expect((await atList(alpha)("@ship"))?.items).toEqual([
+		const shipping = await startSession(dir, { id: A2, name: "Add express shipping", cwd: "/work/shop-shipping" })
+		expect((await atList(a1)("@ship"))?.items).toEqual([
 			{ value: "@shop-shipping", label: "@shop-shipping", description: "idle · Add express shipping" },
 		])
-		expect(await alpha.type("@shop-shipping make it 9.90")).toEqual([{ action: "handled" }])
+		expect(await a1.type("@shop-shipping make it 9.90")).toEqual([{ action: "handled" }])
 		expect(shipping.harness.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({ details: expect.objectContaining({ text: "make it 9.90" }) }),
 			STEER_AND_WAKE,
 		)
-		expect(await alpha.run("send_message", { to: "@shop-shipping", message: "And a test." })).toContain(
-			"Delivered to Add express shipping [bbbbb2]",
+		expect(await a1.run("message_agent", { to: "@shop-shipping", message: "And a test." })).toContain(
+			"Delivered to Add express shipping [000002]",
 		)
 	})
 
 	it("gives the prompt back when no tagged session takes it", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
 		// A session that answers who it is, then turns the message away.
 		const refusing = net.createServer((socket) =>
 			socket.once("data", (data) => {
@@ -585,25 +583,25 @@ describe("session-messages", () => {
 		await new Promise<void>((resolve) => refusing.listen(join(dir, "fffff1.sock"), resolve))
 		running.push(() => new Promise((resolve) => refusing.close(resolve)))
 
-		expect(await alpha.type("@web use v2 instead")).toEqual([{ action: "handled" }])
-		expect(alpha.ctx.ui.notify).toHaveBeenCalledWith("Not delivered to web [fffff1]: it is shutting down.", "warning")
-		expect(alpha.ctx.ui.setEditorText).toHaveBeenCalledWith("@web use v2 instead")
-		expect(alpha.harness.sendMessage).not.toHaveBeenCalled()
+		expect(await a1.type("@web use v2 instead")).toEqual([{ action: "handled" }])
+		expect(a1.ctx.ui.notify).toHaveBeenCalledWith("Not delivered to web [fffff1]: it is shutting down.", "warning")
+		expect(a1.ctx.ui.setEditorText).toHaveBeenCalledWith("@web use v2 instead")
+		expect(a1.harness.sendMessage).not.toHaveBeenCalled()
 
 		// With two tags, the part that did not get through comes back addressed to that session only.
-		const beta = await startSession(dir, { id: BETA, name: "beta" })
-		expect(await alpha.type("@beta @web use v2")).toEqual([{ action: "handled" }])
-		expect(beta.harness.sendMessage).toHaveBeenCalledTimes(1)
-		expect(alpha.ctx.ui.setEditorText).toHaveBeenLastCalledWith("@web use v2")
-		expect(alpha.harness.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ details: { title: "To beta [bbbbb2]", text: "use v2" } }),
+		const a2 = await startSession(dir, { id: A2, name: "a2" })
+		expect(await a1.type("@a2 @web use v2")).toEqual([{ action: "handled" }])
+		expect(a2.harness.sendMessage).toHaveBeenCalledTimes(1)
+		expect(a1.ctx.ui.setEditorText).toHaveBeenLastCalledWith("@web use v2")
+		expect(a1.harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ details: { title: "To a2 [000002]", text: "use v2" } }),
 			{ triggerTurn: false },
 		)
 	})
 
 	it("does not let a frozen session hold up typing", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
 		// Accepts the connection, never answers: a Kimchi suspended with Ctrl+Z.
 		const held: net.Socket[] = []
 		const frozen = net.createServer((socket) => held.push(socket))
@@ -614,18 +612,18 @@ describe("session-messages", () => {
 		})
 
 		const started = Date.now()
-		expect(await atList(alpha)("@")).toBeNull()
+		expect(await atList(a1)("@")).toBeNull()
 		expect(Date.now() - started).toBeLessThan(1500)
 	})
 
 	it("leaves a session's inbox with the process that opened it first", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: ALPHA, name: "alpha" })
-		const first = await startSession(dir, { id: BETA, name: "beta" })
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		const first = await startSession(dir, { id: A2, name: "a2" })
 		// The same session resumed in a second terminal.
-		const second = await startSession(dir, { id: BETA, name: "beta" })
+		const second = await startSession(dir, { id: A2, name: "a2" })
 
-		expect(await alpha.run("send_message", { to: "beta", message: "hi" })).toContain("Delivered to beta [bbbbb2]")
+		expect(await a1.run("message_agent", { to: "a2", message: "hi" })).toContain("Delivered to a2 [000002]")
 		expect(first.harness.sendMessage).toHaveBeenCalledTimes(1)
 		expect(second.harness.sendMessage).not.toHaveBeenCalled()
 		expect(await second.run("list_agents", {})).toContain("This session has no inbox")
@@ -633,10 +631,10 @@ describe("session-messages", () => {
 
 	it("tells the receiver when the sender cannot take a reply", async () => {
 		const dir = tempDir()
-		const beta = await startSession(dir, { id: BETA, name: "beta" })
+		const a2 = await startSession(dir, { id: A2, name: "a2" })
 		const message = { type: "message", from: "gone (cannot receive replies)", mode: "default", text: "hi", hops: 1 }
-		expect(await rawAsk(join(dir, "bbbbb2.sock"), message)).toEqual({ ok: true })
-		expect(beta.harness.sendMessage).toHaveBeenCalledWith(
+		expect(await rawAsk(join(dir, "000002.sock"), message)).toEqual({ ok: true })
+		expect(a2.harness.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				content: expect.stringContaining(`\n${AGENT_NOTE} That session cannot receive replies.`),
 			}),
@@ -646,130 +644,130 @@ describe("session-messages", () => {
 
 	it("asks once when a prompt tags a session before messages were allowed", async () => {
 		const dir = tempDir()
-		const beta = await startSession(dir, { id: BETA, name: "beta", preference: "unset" })
-		const alpha = await startSession(dir, { id: ALPHA, name: "alpha", preference: "unset", answer: true })
+		const a2 = await startSession(dir, { id: A2, name: "a2", preference: "unset" })
+		const a1 = await startSession(dir, { id: A1, name: "a1", preference: "unset", answer: true })
 
 		// The @ list shows sessions before the choice, so the user can find them.
-		expect((await atList(alpha)("@"))?.items.map(({ value }) => value)).toEqual(["@beta"])
-		expect(await alpha.type("@beta use v2 instead")).toEqual([{ action: "handled" }])
-		expect(alpha.ctx.ui.confirm).toHaveBeenCalledWith("Message @beta?", REMEMBERED)
+		expect((await atList(a1)("@"))?.items.map(({ value }) => value)).toEqual(["@a2"])
+		expect(await a1.type("@a2 use v2 instead")).toEqual([{ action: "handled" }])
+		expect(a1.ctx.ui.confirm).toHaveBeenCalledWith("Message @a2?", REMEMBERED)
 		expect(savedPreference(dir)).toBe(true)
-		expect(beta.harness.sendMessage).toHaveBeenCalledTimes(1)
+		expect(a2.harness.sendMessage).toHaveBeenCalledTimes(1)
 	})
 
 	it("after a no, tags stay plain text and the @ list shows only files", async () => {
 		const dir = tempDir()
-		const beta = await startSession(dir, { id: BETA, name: "beta", preference: "unset" })
-		const alpha = await startSession(dir, { id: ALPHA, name: "alpha", preference: "unset", answer: false })
+		const a2 = await startSession(dir, { id: A2, name: "a2", preference: "unset" })
+		const a1 = await startSession(dir, { id: A1, name: "a1", preference: "unset", answer: false })
 
-		expect(await alpha.type("@beta use v2 instead")).toEqual([undefined])
+		expect(await a1.type("@a2 use v2 instead")).toEqual([undefined])
 		expect(savedPreference(dir)).toBe(false)
-		expect(beta.harness.sendMessage).not.toHaveBeenCalled()
-		expect(alpha.harness.registerTool).not.toHaveBeenCalled()
+		expect(a2.harness.sendMessage).not.toHaveBeenCalled()
+		expect(a1.harness.registerTool).not.toHaveBeenCalled()
 		const files = { prefix: "@", items: [{ value: "@src/", label: "src/" }] }
-		expect(await atList(alpha, files)("@")).toBe(files)
-		expect(await alpha.type("@beta again")).toEqual([undefined])
-		expect(alpha.ctx.ui.confirm).toHaveBeenCalledTimes(1)
+		expect(await atList(a1, files)("@")).toBe(files)
+		expect(await a1.type("@a2 again")).toEqual([undefined])
+		expect(a1.ctx.ui.confirm).toHaveBeenCalledTimes(1)
 	})
 
 	it("over ACP, takes part only when the client opted in, and refuses what it would have to ask about", async () => {
 		const dir = tempDir()
-		const tui = await startSession(dir, { id: ALPHA, name: "tui" })
+		const tui = await startSession(dir, { id: A1, name: "tui" })
 		acp.server = true
 		try {
 			setSessionMessagesPermitted(false)
-			const plain = await startSession(dir, { id: BETA, name: "plain", mode: "rpc" })
+			const plain = await startSession(dir, { id: A2, name: "plain", mode: "rpc" })
 			expect(plain.harness.registerTool).not.toHaveBeenCalled()
 			expect(plain.harness.registerCommand).not.toHaveBeenCalled()
-			expect(existsSync(join(dir, "bbbbb2.sock"))).toBe(false)
+			expect(existsSync(join(dir, "000002.sock"))).toBe(false)
 			expect(await plain.type("@tui use v2")).toEqual([])
 
 			setSessionMessagesPermitted(true)
-			const studio = await startSession(dir, { id: GAMMA, name: "studio", mode: "rpc" })
+			const studio = await startSession(dir, { id: A3, name: "studio", mode: "rpc" })
 			expect(studio.harness.registerTool).toHaveBeenCalled()
 			// The client draws its own @ list, from _kimchi.dev/live_sessions.
 			expect(studio.ctx.ui.addAutocompleteProvider).not.toHaveBeenCalled()
-			expect(await tui.run("send_message", { to: "studio", message: "Run the tests." })).toContain(
-				"Delivered to studio [ccccc3]",
+			expect(await tui.run("message_agent", { to: "studio", message: "Run the tests." })).toContain(
+				"Delivered to studio [000003]",
 			)
 			// A leading tag goes through the agent, whose reply the client shows; a prompt handled here would end blank.
 			expect(await studio.type("@tui use v2")).toEqual([undefined])
 			expect(tui.harness.sendMessage).toHaveBeenCalledTimes(0)
 
 			// Kimchi may not ask an ACP client's user between turns, so another mode's message is refused at once.
-			setPermissionMode(GAMMA, { mode: "yolo", initiatedBy: "user", source: "runtime" })
-			expect(await tui.run("send_message", { to: "studio", message: "Delete the cache." })).toBe(
-				"Not delivered to studio [ccccc3]: it runs in yolo mode in an app where Kimchi cannot ask its user, and your session runs in default mode.",
+			setPermissionMode(A3, { mode: "yolo", initiatedBy: "user", source: "runtime" })
+			expect(await tui.run("message_agent", { to: "studio", message: "Delete the cache." })).toBe(
+				"Not delivered to studio [000003]: it runs in yolo mode in an app where Kimchi cannot ask its user, and your session runs in default mode.",
 			)
 			expect(studio.ctx.ui.confirm).not.toHaveBeenCalled()
 		} finally {
 			acp.server = false
 			setSessionMessagesPermitted(false)
-			unregisterSessionPermissionFlagController(GAMMA)
-			clearPermissionModeEnv(GAMMA)
+			unregisterSessionPermissionFlagController(A3)
+			clearPermissionModeEnv(A3)
 		}
 	})
 
 	it("gives an ACP client the list its @ list needs", async () => {
 		const dir = tempDir()
 		const shop = repository(dir, "fix/rounding")
-		await startSession(dir, { id: BETA, name: "beta", cwd: shop })
-		await startSession(dir, { id: GAMMA, name: "beta" })
-		const sessions = await liveSessions(ALPHA, shop, { dir, preferenceFile: preferenceFile(dir) })
+		await startSession(dir, { id: A2, name: "a2", cwd: shop })
+		await startSession(dir, { id: A3, name: "a2" })
+		const sessions = await liveSessions(A1, shop, { dir, preferenceFile: preferenceFile(dir) })
 		expect(sessions).toHaveLength(2)
 		expect(sessions).toEqual(
 			expect.arrayContaining([
 				{
 					tag: "@fix-rounding",
-					name: "beta",
-					ref: "bbbbb2",
+					name: "a2",
+					ref: "000002",
 					branch: "fix/rounding",
 					state: "idle",
 					cwd: shop,
 					sameRepository: true,
 				},
 				{
-					tag: '@"beta [ccccc3]"',
-					name: "beta",
-					ref: "ccccc3",
+					tag: '@"a2 [000003]"',
+					name: "a2",
+					ref: "000003",
 					branch: null,
 					state: "idle",
-					cwd: "/work/beta",
+					cwd: "/work/a2",
 					sameRepository: false,
 				},
 			]),
 		)
 		writeFileSync(preferenceFile(dir), JSON.stringify({ enabled: false }))
-		expect(await liveSessions(ALPHA, shop, { dir, preferenceFile: preferenceFile(dir) })).toEqual([])
+		expect(await liveSessions(A1, shop, { dir, preferenceFile: preferenceFile(dir) })).toEqual([])
 	})
 
 	it("leaves sessions driven by a program out (Pi's own RPC mode)", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000aaaaaa1", name: "alpha" })
-		const driven = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "driven", mode: "rpc" })
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		const driven = await startSession(dir, { id: A2, name: "driven", mode: "rpc" })
 
 		expect(driven.harness.registerTool).not.toHaveBeenCalled()
-		expect(existsSync(join(dir, "bbbbb2.sock"))).toBe(false)
-		expect(await alpha.run("list_agents", {})).toContain("No other Kimchi session is running on this machine.")
+		expect(existsSync(join(dir, "000002.sock"))).toBe(false)
+		expect(await a1.run("list_agents", {})).toContain("No other Kimchi session is running on this machine.")
 	})
 
 	it("asks once, when the agent is about to start a subagent while another session works in the same repository", async () => {
 		const dir = tempDir()
 		const other = await startSession(dir, {
-			id: "0190aaaa-0000-7000-8000-00000cccccc3",
+			id: A3,
 			name: "other",
 			cwd: "/work/elsewhere",
 			preference: "unset",
 		})
-		const beta = await startSession(dir, {
-			id: "0190aaaa-0000-7000-8000-00000bbbbbb2",
-			name: "beta",
+		const a2 = await startSession(dir, {
+			id: A2,
+			name: "a2",
 			cwd: "/work/shop",
 			preference: "unset",
 		})
-		const alpha = await startSession(dir, {
-			id: "0190aaaa-0000-7000-8000-00000aaaaaa1",
-			name: "alpha",
+		const a1 = await startSession(dir, {
+			id: A1,
+			name: "a1",
 			cwd: "/work/shop",
 			preference: "unset",
 			answer: true,
@@ -778,82 +776,82 @@ describe("session-messages", () => {
 		// Nothing is asked at startup, nor for a subagent with no other session in its repository.
 		expect(await startSubagent(other)).toEqual([undefined])
 		expect(other.ctx.ui.confirm).not.toHaveBeenCalled()
-		expect(alpha.ctx.ui.confirm).not.toHaveBeenCalled()
+		expect(a1.ctx.ui.confirm).not.toHaveBeenCalled()
 
 		// Yes stops that subagent and tells the agent where the work can go instead.
-		expect(await startSubagent(alpha, "Fix checkout rounding")).toEqual([
+		expect(await startSubagent(a1, "Fix checkout rounding")).toEqual([
 			{
 				block: true,
 				reason: expect.stringContaining(
-					'If “Fix checkout rounding” is related to that session\'s work, send it with send_message to "beta [bbbbb2]"; if it is unrelated, start this subagent again.',
+					'If “Fix checkout rounding” is related to that session\'s work, send it with message_agent to "a2 [000002]"; if it is unrelated, start this subagent again.',
 				),
 			},
 		])
-		expect(alpha.ctx.ui.confirm).toHaveBeenCalledWith(
+		expect(a1.ctx.ui.confirm).toHaveBeenCalledWith(
 			OFFER_TITLE,
-			`“beta” is open in this repository and may already know this work.\n${REMEMBERED}`,
+			`“a2” is open in this repository and may already know this work.\n${REMEMBERED}`,
 		)
-		expect(alpha.ctx.ui.notify).toHaveBeenCalledWith(ENABLED_NOTICE, "info")
+		expect(a1.ctx.ui.notify).toHaveBeenCalledWith(ENABLED_NOTICE, "info")
 		expect(savedPreference(dir)).toBe(true)
 		// The rest of that turn's subagents wait too, so the agent picks where each one goes.
-		expect(await startSubagent(alpha)).toEqual([
+		expect(await startSubagent(a1)).toEqual([
 			{ block: true, reason: expect.stringContaining("If “Count the TODOs” is related to that session's work") },
 		])
-		await alpha.harness.emit("turn_end", { type: "turn_end" }, alpha.ctx)
-		expect(await startSubagent(alpha)).toEqual([undefined])
-		expect(alpha.ctx.ui.confirm).toHaveBeenCalledTimes(1)
-		expect(beta.ctx.ui.confirm).not.toHaveBeenCalled()
+		await a1.harness.emit("turn_end", { type: "turn_end" }, a1.ctx)
+		expect(await startSubagent(a1)).toEqual([undefined])
+		expect(a1.ctx.ui.confirm).toHaveBeenCalledTimes(1)
+		expect(a2.ctx.ui.confirm).not.toHaveBeenCalled()
 
-		expect(await alpha.run("list_agents", {})).toContain("beta [bbbbb2]  ·  idle  ·  /work/shop  ·  same repository")
-		expect(await alpha.run("send_message", { to: "beta", message: "Take the checkout bug." })).toContain(
-			"Delivered to beta [bbbbb2]",
+		expect(await a1.run("list_agents", {})).toContain("a2 [000002]  ·  idle  ·  /work/shop  ·  same repository")
+		expect(await a1.run("message_agent", { to: "a2", message: "Take the checkout bug." })).toContain(
+			"Delivered to a2 [000002]",
 		)
 		// The message itself gives the session that started before the answer its tools, so it can reply
 		// in the turn the message starts.
-		expect(beta.harness.registerTool).toHaveBeenCalled()
-		expect(await beta.run("send_message", { to: "alpha", message: "On it." })).toContain("Delivered to alpha")
+		expect(a2.harness.registerTool).toHaveBeenCalled()
+		expect(await a2.run("message_agent", { to: "a1", message: "On it." })).toContain("Delivered to a1")
 	})
 
 	it("saves a no and lets the subagent start; /session-messages enable turns messages on later", async () => {
 		const dir = tempDir()
 		await startSession(dir, {
-			id: "0190aaaa-0000-7000-8000-00000bbbbbb2",
-			name: "beta",
+			id: A2,
+			name: "a2",
 			cwd: "/work/shop",
 			preference: "unset",
 		})
-		const alpha = await startSession(dir, {
-			id: "0190aaaa-0000-7000-8000-00000aaaaaa1",
-			name: "alpha",
+		const a1 = await startSession(dir, {
+			id: A1,
+			name: "a1",
 			cwd: "/work/shop",
 			preference: "unset",
 			answer: false,
 		})
 
 		// Two subagents started together share one question.
-		expect(await Promise.all([startSubagent(alpha), startSubagent(alpha)])).toEqual([[undefined], [undefined]])
-		expect(alpha.ctx.ui.confirm).toHaveBeenCalledTimes(1)
-		expect(alpha.ctx.ui.notify).toHaveBeenCalledTimes(1)
-		expect(alpha.ctx.ui.notify).toHaveBeenCalledWith(DISABLED_NOTICE, "info")
+		expect(await Promise.all([startSubagent(a1), startSubagent(a1)])).toEqual([[undefined], [undefined]])
+		expect(a1.ctx.ui.confirm).toHaveBeenCalledTimes(1)
+		expect(a1.ctx.ui.notify).toHaveBeenCalledTimes(1)
+		expect(a1.ctx.ui.notify).toHaveBeenCalledWith(DISABLED_NOTICE, "info")
 		expect(savedPreference(dir)).toBe(false)
-		expect(alpha.harness.registerTool).not.toHaveBeenCalled()
-		await startSubagent(alpha)
-		expect(alpha.ctx.ui.confirm).toHaveBeenCalledTimes(1)
+		expect(a1.harness.registerTool).not.toHaveBeenCalled()
+		await startSubagent(a1)
+		expect(a1.ctx.ui.confirm).toHaveBeenCalledTimes(1)
 
-		await alpha.harness.getRegisteredCommand("session-messages").handler("enable", alpha.ctx as never)
+		await a1.harness.getRegisteredCommand("session-messages").handler("enable", a1.ctx as never)
 		expect(savedPreference(dir)).toBe(true)
-		expect(alpha.ctx.ui.notify).toHaveBeenLastCalledWith(ENABLED_NOTICE, "info")
-		expect(await alpha.run("send_message", { to: "beta", message: "hi" })).toContain("Delivered to beta [bbbbb2]")
+		expect(a1.ctx.ui.notify).toHaveBeenLastCalledWith(ENABLED_NOTICE, "info")
+		expect(await a1.run("message_agent", { to: "a2", message: "hi" })).toContain("Delivered to a2 [000002]")
 
-		await alpha.harness.getRegisteredCommand("session-messages").handler("disable", alpha.ctx as never)
-		expect(await alpha.run("send_message", { to: "beta", message: "hi" })).toBe(DISABLED_NOTICE)
+		await a1.harness.getRegisteredCommand("session-messages").handler("disable", a1.ctx as never)
+		expect(await a1.run("message_agent", { to: "a2", message: "hi" })).toBe(DISABLED_NOTICE)
 	})
 
 	it("drops closed sessions and removes sockets left by crashed ones", async () => {
 		const dir = tempDir()
-		const alpha = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000aaaaaa1", name: "alpha" })
-		const beta = await startSession(dir, { id: "0190aaaa-0000-7000-8000-00000bbbbbb2", name: "beta" })
-		await beta.stop()
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		const a2 = await startSession(dir, { id: A2, name: "a2" })
+		await a2.stop()
 		const crashed = join(dir, "dead00.sock")
 		spawnSync(process.execPath, [
 			"-e",
@@ -861,8 +859,8 @@ describe("session-messages", () => {
 		])
 		expect(existsSync(crashed)).toBe(true)
 
-		expect(await alpha.run("list_agents", {})).toContain("No other Kimchi session is running on this machine.")
+		expect(await a1.run("list_agents", {})).toContain("No other Kimchi session is running on this machine.")
 		expect(existsSync(crashed)).toBe(false)
-		expect(existsSync(join(dir, "aaaaa1.sock"))).toBe(true)
+		expect(existsSync(join(dir, "000001.sock"))).toBe(true)
 	})
 })
