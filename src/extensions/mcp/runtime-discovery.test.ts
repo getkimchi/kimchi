@@ -170,6 +170,14 @@ async function startFixture(options: { tasks?: boolean } = {}) {
 	}
 }
 
+// Discovery requests must finish inside DISCOVERY_TIMEOUT_MS, so it needs a wide
+// margin on a loaded CI runner. Later requests are held for longer than that, so
+// they only succeed when the normal timeout was restored after discovery.
+const DISCOVERY_TIMEOUT_MS = 1_000
+const SLOWER_THAN_DISCOVERY_MS = 1_500
+const NORMAL_TIMEOUT_MS = 30_000
+const SLOW_TEST_TIMEOUT_MS = 15_000
+
 async function settle() {
 	await new Promise((resolve) => setImmediate(resolve))
 	await new Promise((resolve) => setImmediate(resolve))
@@ -358,51 +366,66 @@ describe("built-in gateway discovery", () => {
 		expect(saved).not.toContain("fixture-secret")
 	})
 
-	it("restores normal request timeouts on resident initial runtime connections", async () => {
-		createMcpAdapter({
-			config: { mcpServers: {}, settings: { autoAuth: false, directTools: false, requestTimeoutMs: 500 } },
-			initialRuntimeServers: { gateway: { url: fixture.url, lifecycle: "lazy", idleTimeout: 0 } },
-			initialRuntimeDiscoveryTimeoutMs: 25,
-		})(host.api)
-		await host.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
-		await host.emit("input", {}, ctx)
-		fixture.delayCalls(100)
-		const result = await callFixtureTool()
-		expect(result.details?.error).toBeUndefined()
-		expect(result.content.some((entry) => entry.text?.includes("PROJ-123"))).toBe(true)
-		expect(fixture.counts["tools/call"]).toBe(1)
-	})
+	it(
+		"restores normal request timeouts on resident initial runtime connections",
+		async () => {
+			createMcpAdapter({
+				config: {
+					mcpServers: {},
+					settings: { autoAuth: false, directTools: false, requestTimeoutMs: NORMAL_TIMEOUT_MS },
+				},
+				initialRuntimeServers: { gateway: { url: fixture.url, lifecycle: "lazy", idleTimeout: 0 } },
+				initialRuntimeDiscoveryTimeoutMs: DISCOVERY_TIMEOUT_MS,
+			})(host.api)
+			await host.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
+			await host.emit("input", {}, ctx)
+			fixture.delayCalls(SLOWER_THAN_DISCOVERY_MS)
+			const result = await callFixtureTool()
+			expect(result.details?.error).toBeUndefined()
+			expect(result.content.some((entry) => entry.text?.includes("PROJ-123"))).toBe(true)
+			expect(fixture.counts["tools/call"]).toBe(1)
+		},
+		SLOW_TEST_TIMEOUT_MS,
+	)
 
-	it("restores normal task-channel timeouts on resident initial runtime connections", async () => {
-		await new Promise<void>((resolve) => fixture.server.close(() => resolve()))
-		fixture = await startFixture({ tasks: true })
-		createMcpAdapter({
-			config: { mcpServers: {}, settings: { autoAuth: false, directTools: false } },
-			defaultProtocolVersion: "2026-07-28",
-			initialRuntimeServers: { gateway: { url: fixture.url, lifecycle: "lazy", idleTimeout: 0 } },
-			initialRuntimeDiscoveryTimeoutMs: 25,
-		})(host.api)
-		await host.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
-		await host.emit("input", {}, ctx)
-		fixture.delayTaskGets(100)
-		const result = await callFixtureTool()
-		expect(result.details?.error).toBeUndefined()
-		expect(result.content.some((entry) => entry.text?.includes("PROJ-123"))).toBe(true)
-		expect(fixture.counts["tasks/get"]).toBe(1)
-	})
+	it(
+		"restores normal task-channel timeouts on resident initial runtime connections",
+		async () => {
+			await new Promise<void>((resolve) => fixture.server.close(() => resolve()))
+			fixture = await startFixture({ tasks: true })
+			createMcpAdapter({
+				config: { mcpServers: {}, settings: { autoAuth: false, directTools: false } },
+				defaultProtocolVersion: "2026-07-28",
+				initialRuntimeServers: { gateway: { url: fixture.url, lifecycle: "lazy", idleTimeout: 0 } },
+				initialRuntimeDiscoveryTimeoutMs: DISCOVERY_TIMEOUT_MS,
+			})(host.api)
+			await host.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
+			await host.emit("input", {}, ctx)
+			fixture.delayTaskGets(SLOWER_THAN_DISCOVERY_MS)
+			const result = await callFixtureTool()
+			expect(result.details?.error).toBeUndefined()
+			expect(result.content.some((entry) => entry.text?.includes("PROJ-123"))).toBe(true)
+			expect(fixture.counts["tasks/get"]).toBe(1)
+		},
+		SLOW_TEST_TIMEOUT_MS,
+	)
 
-	it("does not apply runtime discovery timeout to a configured server with the same name", async () => {
-		createMcpAdapter({
-			config: {
-				mcpServers: { gateway: { url: fixture.url, requestTimeoutMs: 500 } },
-				settings: { autoAuth: false, directTools: false },
-			},
-			initialRuntimeServers: { gateway: { url: `${fixture.url}/other` } },
-			initialRuntimeDiscoveryTimeoutMs: 25,
-		})(host.api)
-		await host.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
-		fixture.delayLists(100)
-		await host.emit("input", {}, ctx)
-		expect(await search()).toContain("atlassian_get_issue")
-	})
+	it(
+		"does not apply runtime discovery timeout to a configured server with the same name",
+		async () => {
+			createMcpAdapter({
+				config: {
+					mcpServers: { gateway: { url: fixture.url, requestTimeoutMs: NORMAL_TIMEOUT_MS } },
+					settings: { autoAuth: false, directTools: false },
+				},
+				initialRuntimeServers: { gateway: { url: `${fixture.url}/other` } },
+				initialRuntimeDiscoveryTimeoutMs: DISCOVERY_TIMEOUT_MS,
+			})(host.api)
+			await host.emit("session_start", { type: "session_start", reason: "startup" }, ctx)
+			fixture.delayLists(SLOWER_THAN_DISCOVERY_MS)
+			await host.emit("input", {}, ctx)
+			expect(await search()).toContain("atlassian_get_issue")
+		},
+		SLOW_TEST_TIMEOUT_MS,
+	)
 })
