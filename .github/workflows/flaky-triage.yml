@@ -90,6 +90,7 @@ jobs:
       KIMCHI_BIN: ${{ github.workspace }}/dist/bin/kimchi
       FLAKY_REPORT: flaky-report/flaky-report.json
       FLAKY_FIX_OUT_DIR: flaky-fix
+      FLAKY_FIX_MODEL: kimi-k3.1-pro
     steps:
       - uses: actions/checkout@v4
         if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
@@ -112,7 +113,7 @@ jobs:
         run: |
           node scripts/build-proxy-helper.js --target linux-x64
           KIMCHI_SKIP_TYPECHECK=1 pnpm run build:binary
-          chmod +x dist/bin/kimchi dist/share/kimchi/bin/proxy-helper bin/proxy-helper
+          chmod +x dist/bin/kimchi dist/share/kimchi/bin/proxy-helper
 
       - uses: actions/download-artifact@v4
         if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
