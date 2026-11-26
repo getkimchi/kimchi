@@ -6,8 +6,8 @@ Kimchi includes a hidden, enabled-by-default migration that switches a regular-T
 
 All of these conditions must hold in one launch:
 
-1. The session is an interactive chat TUI. ACP, print, protocol, non-TTY, help, version, export, and model-listing sessions return before changing settings or claiming completion.
-2. The migration respects the saved startup mode. Existing fullscreen users keep that setting and get the internal completion marker, so a later return to regular is also honored. An explicit `--tui-mode regular` or `--tui-mode fullscreen` is respected as an opt-out and does not claim the marker.
+1. The session is an interactive chat TUI. ACP, print, protocol, non-TTY, help, version, export, and model-listing sessions return before changing settings or claiming completion, as do Pi's one-shot subcommands (`auth`, `config`, `install`, `list`, `mcp`, `remove`/`uninstall`, `update`).
+2. The migration respects the saved startup mode in the **global settings**. Project settings are not read, because the migration writes the global setting and a repository must not decide it. A project-level `tuiMode` still overrides the global one inside that project. Existing fullscreen users keep that setting and get the internal completion marker, so a later return to regular is also honored. An explicit `--tui-mode regular` or `--tui-mode fullscreen` is respected as an opt-out and does not claim the marker.
 3. The internal one-time completion marker has not already been claimed.
 
 For a regular-TUI user, Kimchi uses Pi's `SettingsManager` to persist `tuiMode: "fullscreen"` in the **global settings**. This is not a session-only CLI override. Already-fullscreen users are not rewritten. Any later deliberate mode choice is honored: in particular, choosing regular after the marker exists never triggers another forced switch.

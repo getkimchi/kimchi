@@ -813,10 +813,14 @@ async function cliMain(): Promise<void> {
 				process.exit(1)
 			}
 			// Hidden one-time migration: a regular TUI user is moved to fullscreen
-			// in global settings. Non-TUI modes return before feature I/O.
-			const rawArgs = await applyOneTimeFullscreenSwitch({
-				args: atFileArgs.args,
-				isTerminalUi: isTerminalUiMode(atFileArgs.args, terminalIo),
+			// in global settings. Non-TUI modes return before feature I/O. It parses
+			// Pi's own flags (--export, --list-models, --tui-mode), which the
+			// Kimchi-local getParsedCliArgs() does not carry. Pi's main loads
+			// settings later in this launch, so the switch applies immediately.
+			const rawArgs = atFileArgs.args
+			await applyOneTimeFullscreenSwitch({
+				args: rawArgs,
+				isTerminalUi: isTerminalUiMode(rawArgs, terminalIo),
 				agentDir,
 				cwd: process.cwd(),
 			})

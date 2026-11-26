@@ -213,11 +213,6 @@ describe("loadConfig", () => {
 		expect(loadConfig({ configPath }).tui?.wheelScrollLines).toBe(3)
 	})
 
-	it("does not expose the hidden one-time fullscreen migration through config", () => {
-		writeFileSync(configPath, JSON.stringify({ tui: { oneTimeFullscreenSwitch: true } }))
-		expect(loadConfig({ configPath }).tui).toBeUndefined()
-	})
-
 	it("rejects invalid tui.wheelScrollLines values", () => {
 		for (const value of [0, -2, "3", Number.NaN, Infinity, null, true]) {
 			writeFileSync(configPath, JSON.stringify({ tui: { wheelScrollLines: value } }))

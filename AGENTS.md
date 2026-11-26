@@ -63,6 +63,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/subagent-permissions.md](docs/subagent-permissions.md) — how a subagent's tool calls are permission-checked: main-session policy, classifier, approval in the main session, host pre-approvals
 - [docs/subagents/](docs/subagents/) — built-in subagent personae (code-reviewer, research-assistant, test-writer)
 - [docs/teleport.md](docs/teleport.md) — teleporting sessions to remote sandboxes
+- [docs/tui-one-time-fullscreen.md](docs/tui-one-time-fullscreen.md) — hidden one-time migration from regular TUI to fullscreen: eligibility, completion marker, failure handling
 - [docs/tui-wheel-scroll.md](docs/tui-wheel-scroll.md) — TUI wheel-scroll speed tuning
 - [docs/windows/](docs/windows/) — Windows platform notes
 - [docs/work-attribution.md](docs/work-attribution.md) — proxying agent work to authored PRs (`--work`)
