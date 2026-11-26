@@ -11150,6 +11150,7 @@ describe("setSessionConfigOption", () => {
 		it("advertises every availability state with model-owned aliases and actual fallback values", async () => {
 			const fixed = { ...REASONING_MODEL, id: "fixed", name: "Fixed" }
 			const provider = { ...REASONING_MODEL, id: "provider", name: "Provider controlled" }
+			const intersection = { ...REASONING_MODEL, id: "intersection", name: "Empty intersection" }
 			const plain = { ...REASONING_MODEL, id: "plain", name: "Plain", reasoning: false, thinkingLevelMap: {} }
 			const auto = { ...REASONING_MODEL, provider: "kimchi-dev", id: "auto", name: "Auto" }
 			const family = {
@@ -11167,13 +11168,14 @@ describe("setSessionConfigOption", () => {
 				description: "Configured model description",
 				searchAliases: ["other", "fast"],
 			}
-			const models = [REASONING_MODEL, fixed, provider, plain, auto, family, other].map((model) => ({
+			const models = [REASONING_MODEL, fixed, provider, intersection, plain, auto, family, other].map((model) => ({
 				...model,
 				name: model.name ?? model.id,
 			}))
 			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
 			registerModelThinkingLevels("test/fixed", ["high"])
 			registerModelThinkingLevels("test/provider", [])
+			registerModelThinkingLevels("test/intersection", ["xhigh"])
 			registerModelThinkingLevels("test/other", ["low", "high", "max"])
 			vi.mocked(readModelEffortDefaults).mockReturnValue({ chat: { "test/fixed": "high" } })
 			const fake = new FakeAgentSession("test-session-effort-availability")
@@ -11199,6 +11201,9 @@ describe("setSessionConfigOption", () => {
 				},
 			})
 			expect(configRow(configOptions, "model", "test/provider")._meta).toMatchObject({
+				"kimchi.dev": { modelEffort: { availability: "provider-controlled", currentValue: null } },
+			})
+			expect(configRow(configOptions, "model", "test/intersection")._meta).toMatchObject({
 				"kimchi.dev": { modelEffort: { availability: "provider-controlled", currentValue: null } },
 			})
 			expect(configRow(configOptions, "model", "test/plain")._meta).toMatchObject({

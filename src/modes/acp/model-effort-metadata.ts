@@ -88,10 +88,7 @@ export function buildModelEffortMeta(
 		return kimchiDevMetaOf({
 			modelEffort: withSearchAliases(
 				{
-					availability:
-						selection.mode === "none" && selection.noneReason === "curated-none"
-							? "provider-controlled"
-							: "unsupported",
+					availability: selection.mode === "none" && selection.reasoning ? "provider-controlled" : "unsupported",
 					currentValue: null,
 					defaultValue: null,
 				},
