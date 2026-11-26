@@ -271,10 +271,14 @@ export async function resolveReviewTarget(
 		} else {
 			const remote = await selectedRemote(root, options)
 			if (request.fetch) await fetchRemote(root, remote.name, options.signal)
+			await options.beforeHeadResolution?.()
 			try {
 				tipSha = await resolveCommit(root, "HEAD", options.signal)
 			} catch (error) {
 				if (!(error instanceof ReviewTargetError) || error.code !== "unknown_revision") throw error
+				// Confirm an unborn HEAD independently. optionalCommit propagates aborts
+				// and process failures; a successful second read preserves the original error.
+				if ((await optionalCommit(root, "HEAD", options.signal)) !== undefined) throw error
 				throw new ReviewTargetError(
 					"no_commits",
 					"No commits yet. Make a first commit before running a working-tree review.",

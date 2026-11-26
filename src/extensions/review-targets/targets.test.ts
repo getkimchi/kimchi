@@ -352,6 +352,22 @@ describe("review target resolution", () => {
 		})
 	})
 
+	it("does not misdiagnose an aborted HEAD lookup as no commits", async () => {
+		initialize()
+		const controller = new AbortController()
+		const failure = await resolve(
+			{ kind: "working-tree", fetch: false },
+			{
+				signal: controller.signal,
+				beforeHeadResolution: () => controller.abort(),
+			},
+		).catch((error: unknown) => error)
+
+		expect(controller.signal.aborted).toBe(true)
+		expect(failure).toBeInstanceOf(Error)
+		expect(failure).not.toMatchObject({ code: "no_commits" })
+	})
+
 	it("pins a remote tracking comparison at the merge base and suggests remote HEAD or a known target", async () => {
 		const base = initialize()
 		git(repo, "checkout", "-b", "feature")

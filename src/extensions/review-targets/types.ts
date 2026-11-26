@@ -70,6 +70,8 @@ export interface ResolveReviewTargetOptions extends ReviewInvocationOptions {
 	contextDir?: string
 	/** Provider-owned commentable-lines/v1 data for exactly this base/head comparison. */
 	providerAnchorMap?: unknown
+	/** @internal Test-only cancellation injection before the checkout HEAD is resolved. */
+	beforeHeadResolution?: () => void | Promise<void>
 	/** @internal Test-only filesystem race injection after the working tree has been added to the temporary index. */
 	beforeSnapshotCommit?: () => void | Promise<void>
 }
