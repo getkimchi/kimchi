@@ -47,7 +47,7 @@ vi.mock("node:fs", async (importOriginal) => ({ ...(await importOriginal<typeof 
 
 let dir: string
 beforeEach(() => {
-	dir = fs.mkdtempSync(join(tmpdir(), "kimchi-work-summary-"))
+	dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "kimchi-work-summary-")))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
 })
@@ -877,8 +877,8 @@ describe("readable work summaries", () => {
 		const workId = getWorkId(context("fresh"))
 		await flushWorkSummaries()
 		expect(scan.mock.calls.map(([source]) => String(source))).toEqual([
-			join(dir, "work-attribution"),
-			join(dir, "work-attribution", "transitions"),
+			join(fs.realpathSync(dir), "work-attribution"),
+			join(fs.realpathSync(dir), "work-attribution", "transitions"),
 		])
 		scan.mockClear()
 		const nextWorkId = getWorkId(context("next-fresh"))
@@ -1076,7 +1076,10 @@ describe("readable work summaries", () => {
 		const scan = vi.spyOn(fs, "readdirSync")
 		const workId = getWorkId(context())
 		await flushWorkSummaries()
-		const roots = [join(dir, "work-attribution"), join(dir, "work-attribution", "transitions")]
+		const roots = [
+			join(fs.realpathSync(dir), "work-attribution"),
+			join(fs.realpathSync(dir), "work-attribution", "transitions"),
+		]
 		expect(scan.mock.calls.map(([source]) => String(source))).toEqual(roots)
 		for (const session of ["first", "child", "next-child"]) {
 			const api = createExtensionApi()

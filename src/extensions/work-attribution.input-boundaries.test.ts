@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -33,7 +33,7 @@ import {
 let dir: string
 let captured: scope.WorkScopeSnapshot
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "kimchi-work-input-"))
+	dir = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-work-input-")))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
 	captured = createWorkScopeSnapshot(join(dir, ".git"))
 	vi.spyOn(scope, "captureWorkScope").mockResolvedValue(captured)

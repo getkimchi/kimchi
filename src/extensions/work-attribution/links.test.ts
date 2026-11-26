@@ -32,7 +32,7 @@ vi.mock("node:fs", async (original) => ({ ...(await original<typeof fs>()) }))
 
 let dir: string
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "kimchi-work-link-"))
+	dir = fs.realpathSync(mkdtempSync(join(tmpdir(), "kimchi-work-link-")))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
 	// Explicit legacy inputs are fixtures, not files created by the new capture path.
 	fs.mkdirSync(join(dir, "work-attribution"))
