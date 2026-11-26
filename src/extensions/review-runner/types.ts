@@ -30,6 +30,9 @@ export interface ReviewWorktree {
 	buildDir: string
 	cacheDir: string
 	homeDir: string
+	/** Canonical per-worktree Git admin path captured at trusted creation. Boundaries
+	 * omit this exception when it is absent or fails canonical ownership checks. */
+	readonly gitAdminDir?: string
 	/** Per-process cache and temporary-directory settings shared by child commands. */
 	env: Record<string, string>
 }

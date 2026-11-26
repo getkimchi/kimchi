@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { checkReviewDirectory } from "../review-submit/directory-safety.js"
 import { gitBytes, gitResultError, gitText, repositoryRoot } from "../review-targets/git.js"
 import { cleanupReviewSnapshot } from "../review-targets/resolve.js"
+import { captureReviewWorktreeGitAdmin } from "./git-admin.js"
 import type {
 	RecoveredReviewWorktrees,
 	RecoverReviewWorktreesOptions,
@@ -28,6 +29,7 @@ interface WorktreeManifestEntry {
 	revision: ReviewRevision
 	path: string
 	pinnedSha: string
+	gitAdminDir?: string
 	status: "pending" | "ready"
 }
 
@@ -254,12 +256,15 @@ class WorktreePool implements ReviewWorktreePool {
 					signal: AbortSignal.timeout(CLEANUP_TIMEOUT_MS),
 				})
 				await this.crashPoint?.("after-add", { path, runDir: this.runDir })
+				const gitAdminDir = await captureReviewWorktreeGitAdmin(path, AbortSignal.timeout(CLEANUP_TIMEOUT_MS))
+				entry.gitAdminDir = gitAdminDir
 				entry.status = "ready"
 				this.entries.set(key, entry)
 				this.manifest.worktrees = [...this.entries.values()]
 				this.manifest.updatedAt = Date.now()
 				await atomicJson(join(this.runDir, MANIFEST), this.manifest)
-				const worktree: ReviewWorktree = { ...worktreeBase, env: worktreeEnvironment(worktreeBase) }
+				const worktreeMetadata = { ...worktreeBase, gitAdminDir }
+				const worktree: ReviewWorktree = { ...worktreeMetadata, env: worktreeEnvironment(worktreeMetadata) }
 				this.worktrees.set(key, worktree)
 				return worktree
 			} catch (error) {

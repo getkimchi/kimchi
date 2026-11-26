@@ -1,8 +1,17 @@
 import { execFileSync, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { parseReviewTargetArgs } from "../review-targets/parser.js"
@@ -111,6 +120,11 @@ describe("review worktree lifecycle", () => {
 		expect(first.scratchDir.startsWith(first.path)).toBe(false)
 		expect(first.env.TMPDIR).toBe(first.scratchDir)
 		expect(first.env.CARGO_TARGET_DIR.startsWith(first.buildDir)).toBe(true)
+		expect(first.gitAdminDir).toBe(realpathSync(resolve(first.path, git(first.path, "rev-parse", "--git-dir"))))
+		const readyManifest = JSON.parse(readFileSync(join(pool.runDir, REVIEW_WORKTREE_TESTING.MANIFEST), "utf8")) as {
+			worktrees: Array<{ path: string; gitAdminDir?: string }>
+		}
+		expect(readyManifest.worktrees.find((entry) => entry.path === first.path)?.gitAdminDir).toBe(first.gitAdminDir)
 		expect(git(first.path, "rev-parse", "--abbrev-ref", "HEAD")).toBe("HEAD")
 		expect(git(first.path, "rev-parse", "HEAD")).toBe(target.scope.pinned.headSha)
 		expect(existsSync(hookMarker)).toBe(false)

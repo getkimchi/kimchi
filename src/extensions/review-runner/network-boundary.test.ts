@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process"
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -7,12 +8,13 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	createReviewExecutionController,
@@ -57,7 +59,15 @@ function linkedWorktree(root: string): {
 	git(repository, "worktree", "add", "--detach", checkout, "HEAD")
 	const gitAdminDir = realpathSync(resolve(checkout, git(checkout, "rev-parse", "--git-dir")))
 	const commonDir = realpathSync(resolve(checkout, git(checkout, "rev-parse", "--git-common-dir")))
-	return { worktree: fixtureWorktree(checkout), repository, gitAdminDir, commonDir }
+	return { worktree: Object.assign(fixtureWorktree(checkout), { gitAdminDir }), repository, gitAdminDir, commonDir }
+}
+
+function writableBinds(args: readonly string[]): string[][] {
+	const binds: string[][] = []
+	for (let index = 0; index < args.length; index++) {
+		if (args[index] === "--bind") binds.push(args.slice(index, index + 3))
+	}
+	return binds
 }
 
 function fixtureWorktree(root: string): ReviewWorktree {
@@ -266,21 +276,69 @@ describe("real OS offline network boundary", () => {
 		worktree = linked.worktree
 		const command = "git update-index --refresh"
 		const args = REVIEW_NETWORK_BOUNDARY_TESTING.linuxBoundaryArguments(worktree, command)
-		const writableBinds: string[][] = []
-		for (let index = 0; index < args.length; index++) {
-			if (args[index] === "--bind") writableBinds.push(args.slice(index, index + 3))
-		}
+		const binds = writableBinds(args)
 
 		expect(args.slice(0, 5)).toEqual(["bwrap", "--unshare-net", "--ro-bind", "/", "/"])
-		expect(writableBinds).toContainEqual(["--bind", linked.gitAdminDir, linked.gitAdminDir])
-		expect(writableBinds).not.toContainEqual(["--bind", linked.commonDir, linked.commonDir])
-		expect(writableBinds).not.toContainEqual([
-			"--bind",
-			join(linked.commonDir, "objects"),
-			join(linked.commonDir, "objects"),
-		])
-		expect(writableBinds).not.toContainEqual(["--bind", linked.repository, linked.repository])
+		expect(binds).toContainEqual(["--bind", linked.gitAdminDir, linked.gitAdminDir])
+		expect(binds).not.toContainEqual(["--bind", linked.commonDir, linked.commonDir])
+		expect(binds).not.toContainEqual(["--bind", join(linked.commonDir, "objects"), join(linked.commonDir, "objects")])
+		expect(binds).not.toContainEqual(["--bind", linked.repository, linked.repository])
 		expect(args.slice(-3)).toEqual(["/bin/sh", "-c", command])
+	})
+
+	it("keeps common metadata unwritable when consecutive Git lookups disagree", async () => {
+		const linked = linkedWorktree(root)
+		worktree = linked.worktree
+		const fakeCommon = join(worktree.path, "fake-common")
+		mkdirSync(fakeCommon)
+		symlinkSync("/", join(fakeCommon, "worktrees"), "dir")
+		const fakeGit = join(root, "git")
+		writeFileSync(
+			fakeGit,
+			`#!/bin/sh\nfor option do :; done\ncase "$option" in\n--git-dir) printf '%s\\n' ${JSON.stringify(linked.commonDir)} ;;\n--git-common-dir) printf '%s\\n' ${JSON.stringify(fakeCommon)} ;;\n*) exit 1 ;;\nesac\n`,
+		)
+		chmodSync(fakeGit, 0o755)
+		vi.stubEnv("PATH", `${dirname(fakeGit)}:${process.env.PATH ?? ""}`)
+
+		if (boundary && boundary.kind !== "unshare-net") {
+			const controller = createReviewExecutionController({ mode: "local", worktree, networkBoundary: boundary })
+			const objectWrite = join(linked.commonDir, "objects", "conflicting-lookup-write.txt")
+			const result = await controller.execute({
+				command: `printf denied > ${objectWrite}`,
+				cwd: worktree.path,
+				intendedCheck: "conflicting Git lookups",
+			})
+			expect(result).toMatchObject({ status: "failed", network: "offline" })
+			expect(existsSync(objectWrite)).toBe(false)
+		}
+
+		const binds = writableBinds(REVIEW_NETWORK_BOUNDARY_TESTING.linuxBoundaryArguments(worktree, "true"))
+		expect(binds).not.toContainEqual(["--bind", linked.commonDir, linked.commonDir])
+	})
+
+	it("rejects a redirected sibling admin directory on real and static boundaries", async () => {
+		const linked = linkedWorktree(root)
+		worktree = linked.worktree
+		const sibling = join(root, "sibling")
+		git(linked.repository, "worktree", "add", "--detach", sibling, "HEAD")
+		const siblingAdmin = realpathSync(resolve(sibling, git(sibling, "rev-parse", "--git-dir")))
+		writeFileSync(join(worktree.path, ".git"), `gitdir: ${siblingAdmin}\n`)
+
+		if (boundary && boundary.kind !== "unshare-net") {
+			const controller = createReviewExecutionController({ mode: "local", worktree, networkBoundary: boundary })
+			const siblingWrite = join(siblingAdmin, "redirected-write.txt")
+			const result = await controller.execute({
+				command: `printf denied > ${siblingWrite}`,
+				cwd: worktree.path,
+				intendedCheck: "sibling Git admin redirect",
+			})
+			expect(result).toMatchObject({ status: "failed", network: "offline" })
+			expect(existsSync(siblingWrite)).toBe(false)
+		}
+
+		const binds = writableBinds(REVIEW_NETWORK_BOUNDARY_TESTING.linuxBoundaryArguments(worktree, "true"))
+		expect(binds).toContainEqual(["--bind", linked.gitAdminDir, linked.gitAdminDir])
+		expect(binds).not.toContainEqual(["--bind", siblingAdmin, siblingAdmin])
 	})
 
 	it("prefers bwrap write confinement over the network-only Linux fallback", async () => {

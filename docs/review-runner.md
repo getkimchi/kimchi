@@ -183,14 +183,23 @@ Every local offline command is enclosed before execution:
 
 The `sandbox-exec` and `bwrap` writable locations are the linked checkout and
 its canonical private scratch/build/cache/home directories. One additional
-exception supports Git
-index operations: the boundary derives the linked worktree's admin directory
-with `git rev-parse --git-dir`, canonicalizes it, and verifies that it is inside
-`<common-dir>/worktrees/`. Only that per-worktree admin directory is writable;
-the main `.git` directory, shared object storage and refs, and the main working
-tree remain read-only. `git update-index` can therefore refresh its index and
-lock files. Commands that write objects or shared refs—including `git add`,
-`git commit`, and `git stash`—are unsupported inside review worktrees.
+exception supports Git index operations. Immediately after trusted
+`git worktree add`, the pool captures the assigned admin directory using one
+absolute `git rev-parse --git-dir --git-common-dir` result, canonicalizes it,
+and stores it on the worktree and its ready manifest. The boundary never
+rediscovers this directory from the checkout at command time.
+
+Before granting the exception, the boundary revalidates only the stored path:
+it must canonically remain a direct child of `<common-dir>/worktrees/`, and its
+`gitdir` back-link must canonically point at this checkout's `.git` file. A
+missing or mismatched assignment drops the exception, leaving no admin
+directory writable. Command-time `.git` changes therefore cannot select shared
+metadata or another worktree's admin directory. Within `sandbox-exec` and
+`bwrap`, shared objects and refs and the main working tree remain read-only;
+`git update-index` can refresh its index and lock files, while commands that
+write objects or shared refs—including `git add`, `git commit`, and `git
+stash`—remain unsupported. The `unshare-net` fallback applies none of these
+filesystem restrictions.
 
 A check that needs local IPC—such as a Docker socket, a local database, or a
 loopback HTTP server—cannot use an offline boundary and must request an

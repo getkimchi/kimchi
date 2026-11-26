@@ -1,6 +1,7 @@
-import { execFile, execFileSync } from "node:child_process"
-import { existsSync, realpathSync } from "node:fs"
-import { isAbsolute, join, relative, resolve } from "node:path"
+import { execFile } from "node:child_process"
+import { realpathSync } from "node:fs"
+import { join } from "node:path"
+import { validatedReviewWorktreeGitAdmin } from "./git-admin.js"
 import type { ReviewWorktree } from "./types.js"
 
 export interface ReviewNetworkBoundary {
@@ -19,32 +20,8 @@ function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
-function strictlyContained(parent: string, candidate: string): boolean {
-	const remainder = relative(parent, candidate)
-	return remainder !== "" && !remainder.startsWith("..") && !isAbsolute(remainder)
-}
-
-function gitPath(worktreePath: string, option: "--git-dir" | "--git-common-dir"): string {
-	return execFileSync("git", ["-C", worktreePath, "rev-parse", option], {
-		encoding: "utf8",
-		env: { PATH: process.env.PATH, HOME: process.env.HOME, GIT_CONFIG_NOSYSTEM: "1", LC_ALL: "C" },
-		stdio: ["ignore", "pipe", "pipe"],
-	}).trim()
-}
-
-function linkedWorktreeGitAdminDirectory(worktreePath: string): string | undefined {
-	if (!existsSync(join(worktreePath, ".git"))) return undefined
-	const gitAdminDir = realpathSync(resolve(worktreePath, gitPath(worktreePath, "--git-dir")))
-	const commonDir = realpathSync(resolve(worktreePath, gitPath(worktreePath, "--git-common-dir")))
-	const commonWorktrees = realpathSync(join(commonDir, "worktrees"))
-	if (!strictlyContained(commonWorktrees, gitAdminDir)) {
-		throw new Error(`Reviewer Git admin directory ${gitAdminDir} must be inside ${commonWorktrees}.`)
-	}
-	return gitAdminDir
-}
-
 function privateWritePaths(worktree: ReviewWorktree): string[] {
-	const gitAdminDir = linkedWorktreeGitAdminDirectory(worktree.path)
+	const gitAdminDir = validatedReviewWorktreeGitAdmin(worktree)
 	return [
 		...new Set(
 			[
