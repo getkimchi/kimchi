@@ -141,16 +141,21 @@ export async function runProbe({ env = process.env, fetchImpl = fetch, now = () 
 	})
 	writeProbe("launches.json", launchPage, "launch")
 	const launches = pageItems(launchPage).filter((launch) => events.has(tagMap(launch).get("event")))
-	const launch = launches[0] ?? pageItems(launchPage)[0]
+	const launch = launches.at(-1) ?? pageItems(launchPage).at(-1)
 	if (!launch) return { launches: 0, results: 0 }
 
-	const resultsPage = await client.get("/api/rs/testresult", { launchId: launch.id, page: 0, size: 3, sort: "id,asc" })
+	const resultsPage = await client.get("/api/rs/testresult", { launchId: launch.id, page: 0, size: 3, sort: "id,desc" })
 	writeProbe("test-results.json", resultsPage)
-	const summary = pageItems(resultsPage)[0]
-	const resultId = summary?.id ?? summary?.resultId
-	if (resultId === undefined || resultId === null) return { launches: 1, results: 0 }
-
-	const detail = await client.get(`/api/rs/testresult/${resultId}`)
+	let resultId
+	let detail
+	for (const summary of pageItems(resultsPage)) {
+		const candidateId = summary.id ?? summary.resultId
+		if (candidateId === undefined || candidateId === null) continue
+		resultId = candidateId
+		detail = await client.get(`/api/rs/testresult/${resultId}`)
+		if (hasFlakyFlag(summary, detail)) break
+	}
+	if (resultId === undefined || !detail) return { launches: 1, results: 0 }
 	writeProbe("test-result-detail.json", detail)
 	const attachments = await client.get("/api/rs/testresult/attachment", { testResultId: resultId, page: 0, size: 10 })
 	writeProbe("test-result-attachments.json", attachments)
@@ -335,7 +340,7 @@ function normalizeResult({ launch, tags, summary, detail, resultId }) {
 		testKey: String(testKey),
 		fullName: String(fullName),
 		status: normalizeStatus(detail.status ?? summary.status),
-		flaky: statusDetails.flaky === true || detail.flaky === true || summary.flaky === true,
+		flaky: hasFlakyFlag(summary, detail),
 		commit: tags.get("commit") ?? null,
 		runId: tags.get("run_id") ?? null,
 		runAttempt: tags.get("run_attempt") ?? null,
@@ -344,6 +349,13 @@ function normalizeResult({ launch, tags, summary, detail, resultId }) {
 		message: statusDetails.message ?? detail.message ?? summary.message ?? null,
 		createdAt: detail.createdDate ?? summary.createdDate ?? launch.createdDate,
 	}
+}
+
+function hasFlakyFlag(summary, detail = {}) {
+	const statusDetails = detail.statusDetails ?? detail.execution?.statusDetails ?? summary.statusDetails ?? {}
+	return [statusDetails.flaky, detail.flaky, detail.execution?.flaky, summary.flaky].some(
+		(value) => value === true || value === "true",
+	)
 }
 
 function normalizeStatus(value) {

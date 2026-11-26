@@ -261,7 +261,7 @@ describe("report mode", () => {
 					id: 501,
 					fullName: "tests/e2e/tui/zz-planted-flaky.test.ts",
 					status: { name: "passed" },
-					statusDetails: { flaky: true, message: "passed after 1 failed attempt" },
+					execution: { flaky: true, statusDetails: { message: "passed after 1 failed attempt" } },
 					createdDate: launch.createdDate,
 				})
 			}
