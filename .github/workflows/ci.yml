@@ -60,6 +60,8 @@ jobs:
 
   unit:
     uses: ./.github/workflows/_test-suite.yml
+    secrets:
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
     with:
       name: unit
       shards: "[1, 2, 3, 4]"
@@ -127,6 +129,8 @@ jobs:
     needs: [changes, build]
     if: github.event_name != 'merge_group' && needs.changes.outputs.tui == 'true'
     uses: ./.github/workflows/_test-suite.yml
+    secrets:
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
     with:
       name: tui-e2e
       # Shards are balanced by tests/e2e/tui/timings.json to about 7 minutes each.
@@ -152,6 +156,8 @@ jobs:
     needs: [changes, build]
     if: needs.changes.outputs.acp == 'true'
     uses: ./.github/workflows/_test-suite.yml
+    secrets:
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
     with:
       name: acp-e2e
       timeout-minutes: 15

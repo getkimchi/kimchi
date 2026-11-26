@@ -29,6 +29,7 @@ it.each([
 	const config = parseYaml(readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8"))
 	const target = config.jobs[job]
 	expect(target.uses).toBe("./.github/workflows/_test-suite.yml")
+	expect(target.secrets.ALLURE_TOKEN).toBe(githubExpression("secrets.ALLURE_TOKEN"))
 	expect(target.with).toMatchObject({
 		"allure-launch": launchName,
 		"allure-upload": githubExpression("github.event_name == 'merge_group'"),
@@ -37,6 +38,7 @@ it.each([
 	})
 
 	const suite = parseYaml(readFileSync(join(repoRoot, ".github", "workflows", "_test-suite.yml"), "utf8"))
+	expect(suite.on.workflow_call.secrets).toEqual({ ALLURE_TOKEN: { required: false } })
 	const setup = suite.jobs.run.steps.find((step: { uses?: string }) => step.uses === allureSetupAction)
 	expect(setup).toMatchObject({
 		id: "allurectl",

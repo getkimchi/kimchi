@@ -353,6 +353,7 @@ it.skipIf(process.platform === "win32")("continues executing files when an Allur
 
 it("offers non-blocking Allure uploads with visible failures in the reusable test suite", () => {
 	const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", "_test-suite.yml"), "utf8"))
+	expect(workflow.on.workflow_call.secrets).toEqual({ ALLURE_TOKEN: { required: false } })
 	expect(workflow.on.workflow_call.inputs).toMatchObject({
 		"allure-launch": { type: "string", default: "" },
 		"allure-upload": { type: "boolean", default: false },
@@ -389,13 +390,18 @@ it("offers non-blocking Allure uploads with visible failures in the reusable tes
 	expect(upload.run).toContain("allurectl upload")
 	expect(upload.run).toContain('"$ALLURE_RESULTS"')
 	const warning = job.steps.find((step: { name?: string }) => step.name === "Report TestOps upload failure")
-	expect(warning.run).toContain("::warning::Allure TestOps result delivery failed")
+	expect(warning.if).toContain("steps.allurectl.outcome != 'success'")
+	expect(warning.run).toContain("upload was skipped")
+	expect(warning.run).toContain("::warning::Allure TestOps result delivery failed or was skipped")
 	expect(warning.run).toContain("GITHUB_STEP_SUMMARY")
 })
 
 it("uses merge-queue unit and ACP reporting and always uploads TUI logs", () => {
 	const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8"))
 	expect(workflow.on.push).toBeUndefined()
+	expect(workflow.jobs.unit.secrets.ALLURE_TOKEN).toBe(githubExpression("secrets.ALLURE_TOKEN"))
+	expect(workflow.jobs["acp-e2e"].secrets.ALLURE_TOKEN).toBe(githubExpression("secrets.ALLURE_TOKEN"))
+	expect(workflow.jobs["tui-e2e"].secrets.ALLURE_TOKEN).toBe(githubExpression("secrets.ALLURE_TOKEN"))
 	expect(workflow.jobs.unit.with).toMatchObject({
 		"allure-launch": "Vitest",
 		"allure-upload": githubExpression("github.event_name == 'merge_group'"),

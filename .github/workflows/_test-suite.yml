@@ -63,6 +63,9 @@ on:
         description: "Optional TestOps iteration tag"
         type: string
         default: ""
+    secrets:
+      ALLURE_TOKEN:
+        required: false
 
 permissions:
   contents: read
@@ -131,10 +134,14 @@ jobs:
           "$ALLURE_RESULTS"
 
       - name: Report TestOps upload failure
-        if: always() && inputs.allure-upload && (steps.allurectl.outcome == 'failure' || steps.allure-upload.outcome == 'failure')
+        if: always() && inputs.allure-upload && (steps.allurectl.outcome != 'success' || steps.allure-upload.outcome != 'success')
         run: |
-          echo "::warning::Allure TestOps result delivery failed for ${{ inputs.name }} shard ${{ matrix.shard }}"
-          echo "Allure TestOps result delivery failed for ${{ inputs.name }} shard ${{ matrix.shard }}. See the Allure step log for details." >> "$GITHUB_STEP_SUMMARY"
+          reason="See the Allure step log for details"
+          if [[ "$ALLURE_TOKEN_AVAILABLE" != "true" || -z "$ALLURE_PROJECT_ID" ]]; then
+            reason="ALLURE_TOKEN or ALLURE_PROJECT_ID is missing, so the upload was skipped"
+          fi
+          echo "::warning::Allure TestOps result delivery failed or was skipped for ${{ inputs.name }} shard ${{ matrix.shard }}. $reason"
+          echo "Allure TestOps result delivery failed or was skipped for ${{ inputs.name }} shard ${{ matrix.shard }}. $reason" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload report
         if: always() && inputs.report-artifacts != ''
