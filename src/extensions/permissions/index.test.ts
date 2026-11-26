@@ -390,6 +390,9 @@ async function submitPlan(
 	return result
 }
 
+const START_FERMENT_LEGACY_OFF_NOTICE =
+	"Start as ferment needs the legacy Ferment, which is off. Submit the plan again to execute it."
+
 describe("auto MCP read-only approval", () => {
 	const toolCall = (toolName: string, input: Record<string, unknown>, toolCallId = "tc-mcp") => ({
 		type: "tool_call",
@@ -3311,15 +3314,96 @@ describe("plan mode assumption detection", () => {
 			// ferments dir then proves the legacy gate, not the trust gate.
 			setProjectScopeTrusted(tmpDir, true)
 			await submitPlan(harness, "# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.", ctx)
-			expect(ctx.ui.notify).toHaveBeenCalledWith(
-				"Start as ferment needs the legacy Ferment. Use Execute instead.",
-				"warning",
-			)
+			expect(ctx.ui.notify).toHaveBeenCalledWith(START_FERMENT_LEGACY_OFF_NOTICE, "warning")
 			// A warning toast, not a V1 ferment breadcrumb in the transcript.
 			const sent = vi.mocked(harness.pi.sendMessage).mock.calls.map((c) => JSON.stringify(c[0]))
 			expect(sent.some((s) => s.includes("Start as ferment needs the legacy Ferment"))).toBe(false)
 			expect(sent.some((s) => s.includes("ferment_breadcrumb"))).toBe(false)
 			expect(existsSync(join(tmpDir, ".kimchi", "ferments"))).toBe(false)
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	// Regression: the review is consumed before the gate runs, so no Execute
+	// option is left. The notice must not point at one.
+	it("start_ferment with legacy off does not tell the user to use Execute", async () => {
+		isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const ctx = createMockContext(["Start as ferment (legacy)"])
+		await submitPlan(harness, "# Plan\n\n## Goal\nAdd caching layer.", ctx)
+
+		const notices = vi.mocked(ctx.ui.notify).mock.calls.map((c) => String(c[0]))
+		expect(notices.some((n) => n.includes("Use Execute instead"))).toBe(false)
+		expect(notices).toContain(START_FERMENT_LEGACY_OFF_NOTICE)
+	})
+
+	it("start_ferment with legacy off stays in plan mode, starts no turn and closes the review", async () => {
+		isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const planApproved = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.PLAN_APPROVED, planApproved)
+		const closed: string[] = []
+		const unsubscribe = subscribePlanReviewClosed((sessionId) => closed.push(sessionId))
+		try {
+			const ctx = createMockContext(["Start as ferment (legacy)"])
+			await submitPlan(harness, "# Plan\n\n## Goal\nAdd caching layer.", ctx)
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(START_FERMENT_LEGACY_OFF_NOTICE, "warning")
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "flag", initiatedBy: "user" })
+			expect(harness.pi.sendMessage).not.toHaveBeenCalled()
+			expect(planApproved).not.toHaveBeenCalled()
+			expect(closed).toEqual([TEST_SESSION_ID])
+		} finally {
+			unsubscribe()
+		}
+	})
+
+	// Regression: the gate kept the slug, so the next submission overwrote the
+	// old plan file even when it had a different title.
+	it("start_ferment with legacy off releases the plan slug for the next submission", async () => {
+		isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-legacy-off-slug-"))
+		try {
+			const ctx = createMockContext(["Start as ferment (legacy)"])
+			ctx.cwd = tmpDir
+			await submitPlan(harness, "# Plan: Cache Layer\n\n## Goal\nAdd caching layer.", ctx)
+			expect(ctx.ui.notify).toHaveBeenCalledWith(START_FERMENT_LEGACY_OFF_NOTICE, "warning")
+
+			const ctx2 = createMockContext(["Rework the plan"])
+			ctx2.cwd = tmpDir
+			await submitPlan(harness, "# Plan: Rate Limits\n\n## Goal\nAdd rate limits.", ctx2)
+			expect(readdirSync(join(tmpDir, ".kimchi", "plans")).sort()).toEqual([
+				"plan-cache-layer.md",
+				"plan-rate-limits.md",
+			])
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	// Regression: legacy turned on in /resources after a start with it off.
+	// The menu hides the option, but a stale or external decision must still
+	// hit the gate, because V1 tools and storage were never registered.
+	it("start_ferment with legacy on but not loaded at startup is gated", async () => {
+		resetFermentLegacyLoadedForTests()
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-legacy-not-loaded-"))
+		try {
+			const ctx = createMockContext(["Start as ferment (legacy)"])
+			ctx.cwd = tmpDir
+			setProjectScopeTrusted(tmpDir, true)
+			await submitPlan(harness, "# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.", ctx)
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(START_FERMENT_LEGACY_OFF_NOTICE, "warning")
+			expect(harness.pi.sendMessage).not.toHaveBeenCalled()
+			expect(existsSync(join(tmpDir, ".kimchi", "ferments"))).toBe(false)
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", source: "flag", initiatedBy: "user" })
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true })
 		}

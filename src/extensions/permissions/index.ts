@@ -54,7 +54,7 @@ import {
 } from "../ferment/elevation-gate.js"
 import { appendRefEntry } from "../ferment/nudge.js"
 import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
-import { isFermentLegacyEnabled, isFermentLegacyLoadedAndEnabled } from "../ferment/resource.js"
+import { isFermentLegacyLoadedAndEnabled } from "../ferment/resource.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { safeSendMessage } from "../ferment/safe-send.js"
 import {
@@ -1782,11 +1782,18 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				}
 				await executeLocally()
 			} else if (payload.decision === "start_ferment") {
-				// Legacy-off gate: V1 "Start as ferment" is inert unless the user opted
-				// into the legacy Ferment. Warn the user, dispatch no follow-up turn,
-				// and create no ferment artifact.
-				if (!isFermentLegacyEnabled()) {
-					notifyUser(ctx, "Start as ferment needs the legacy Ferment. Use Execute instead.", "warning")
+				// Legacy-off gate: V1 "Start as ferment" is inert unless the legacy
+				// Ferment was loaded at startup and is still on. The review is already
+				// consumed, so no menu is left: tell the user to submit the plan again,
+				// and release the slug so the next submission starts a fresh review.
+				// Plan mode stays on, like "rework", so the user can resubmit.
+				if (!isFermentLegacyLoadedAndEnabled()) {
+					activePlanSlug = undefined
+					notifyUser(
+						ctx,
+						"Start as ferment needs the legacy Ferment, which is off. Submit the plan again to execute it.",
+						"warning",
+					)
 					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 					return
 				}
