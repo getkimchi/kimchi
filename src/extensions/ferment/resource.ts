@@ -58,3 +58,22 @@ export function fermentLegacyOffMessage(subject: string): string | undefined {
 	}
 	return `${subject} needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`
 }
+
+function isFermentLegacyOrgLocked(): boolean {
+	return getResourcePolicy(FERMENT_LEGACY_RESOURCE_ID) === "FORCE_OFF"
+}
+
+/**
+ * For entry points that exist only when V1 loaded at startup, such as the
+ * `/ferment-legacy` stub. A setting change needs a restart to load V1, so
+ * every case the user can fix locally says so. An org lock cannot be fixed
+ * locally, so a restart hint there would only mislead.
+ */
+export function fermentLegacyNotLoadedMessage(subject: string): string {
+	const offMessage = fermentLegacyOffMessage(subject)
+	if (offMessage === undefined) {
+		return `${subject} needs the legacy Ferment. It is on now, but it loads only when kimchi starts. Restart kimchi to use it.`
+	}
+	if (isFermentLegacyOrgLocked()) return offMessage
+	return `${offMessage}\nThen restart kimchi to load it.`
+}

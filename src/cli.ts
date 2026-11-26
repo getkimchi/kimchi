@@ -103,8 +103,7 @@ import documentIntakeExtension from "./extensions/documents/intake.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import feedbackExtension from "./extensions/feedback/index.js"
-import fermentExtension from "./extensions/ferment/index.js"
-import { isFermentLegacyEnabled } from "./extensions/ferment/resource.js"
+import { selectFermentLegacyExtension } from "./extensions/ferment/legacy-stub.js"
 import { FERMENT_V2_RESOURCE_ID } from "./extensions/ferment-v2/constants.js"
 import fermentV2Extension from "./extensions/ferment-v2/index.js"
 import helpExtension from "./extensions/help.js"
@@ -1025,7 +1024,8 @@ async function cliMain(): Promise<void> {
 				// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 				// Same gate as the flags. Later entry points (plan option, tips) also
 				// check that this factory ran, through isFermentLegacyLoadedAndEnabled().
-				...(isFermentLegacyEnabled() ? [fermentExtension] : []),
+				// When V1 is not loaded, a stub keeps /ferment-legacy away from the model.
+				selectFermentLegacyExtension(),
 				questionnaireExtension,
 				// Backend-routed virtual models (`auto`, `auto-beta`, …) learn + display
 				// the concrete pick, re-sync capabilities, and (main session) install the

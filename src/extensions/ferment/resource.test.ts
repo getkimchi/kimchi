@@ -14,6 +14,7 @@ vi.mock("../../resources/store.js", async (importOriginal) => ({
 import * as store from "../../resources/store.js"
 import {
 	FERMENT_LEGACY_RESOURCE_ID,
+	fermentLegacyNotLoadedMessage,
 	fermentLegacyOffMessage,
 	isFermentLegacyEnabled,
 	isFermentLegacyLoadedAndEnabled,
@@ -260,5 +261,64 @@ describe("fermentLegacyOffMessage", () => {
 		expect(fermentLegacyOffMessage("--init-git")).toBe(
 			"--init-git needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable extensions.ferment-legacy",
 		)
+	})
+})
+
+describe("fermentLegacyNotLoadedMessage", () => {
+	let agentDir: string
+
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "ferment-legacy-not-loaded-"))
+		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+		isResourceEnabledMock.mockReset()
+		isResourceEnabledMock.mockImplementation((id) => realStore.isResourceEnabled(id))
+		resetOrgPolicyForTests()
+	})
+
+	afterEach(() => {
+		resetOrgPolicyForTests()
+		Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
+		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+		rmSync(agentDir, { recursive: true, force: true })
+	})
+
+	it("adds a restart step to the enable hint when legacy is off locally", () => {
+		expect(fermentLegacyNotLoadedMessage("/ferment-legacy")).toBe(
+			"/ferment-legacy needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable extensions.ferment-legacy\nThen restart kimchi to load it.",
+		)
+	})
+
+	it("adds a restart step under a legacy soft OFF", async () => {
+		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "OFF" } })
+		expect(fermentLegacyNotLoadedMessage("/ferment-legacy")).toContain("Then restart kimchi to load it.")
+	})
+
+	it("says only a restart is needed when legacy was turned on after startup", () => {
+		store.setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+		expect(fermentLegacyNotLoadedMessage("/ferment-legacy")).toBe(
+			"/ferment-legacy needs the legacy Ferment. It is on now, but it loads only when kimchi starts. Restart kimchi to use it.",
+		)
+	})
+
+	it("says only a restart is needed under a legacy FORCE_ON", async () => {
+		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "FORCE_ON" } })
+		expect(fermentLegacyNotLoadedMessage("/ferment-legacy")).toContain("Restart kimchi to use it.")
+	})
+
+	it("names the org lock and gives no restart or enable hint under a legacy FORCE_OFF", async () => {
+		store.setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "FORCE_OFF" } })
+		expect(fermentLegacyNotLoadedMessage("/ferment-legacy")).toBe(
+			"/ferment-legacy needs the legacy Ferment, which your organization turned off (extensions.ferment-legacy is locked off). Ask your organization admin to change the policy.",
+		)
+	})
+
+	it("names extensions.ferment when the org lock is inherited from it", async () => {
+		await setOrgPolicyForTests({ resources: { "extensions.ferment": "FORCE_OFF" } })
+		const message = fermentLegacyNotLoadedMessage("/ferment-legacy")
+		expect(message).toContain("(extensions.ferment is locked off)")
+		expect(message).not.toContain("restart")
+		expect(message).not.toContain("resources enable")
 	})
 })

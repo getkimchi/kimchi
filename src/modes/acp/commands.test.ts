@@ -9,6 +9,7 @@ import {
 	composeAvailableCommands,
 	createCommandsRefresher,
 	discoverSkillCommandsMap,
+	FERMENT_LEGACY_AVAILABLE_COMMAND,
 	reloadSkillCommandsMap,
 	tryParseCompactCommand,
 } from "./commands.js"
@@ -101,19 +102,32 @@ describe("composeAvailableCommands", () => {
 
 		const commands = composeAvailableCommands(skills, true, true)
 
-		expect(commands.slice(0, 5).map((c) => c.name)).toEqual(["bug", "compact", "language", "review", "pr-watch"])
+		expect(commands.slice(0, 6).map((c) => c.name)).toEqual([
+			"bug",
+			"compact",
+			"language",
+			"review",
+			"pr-watch",
+			"ferment-legacy",
+		])
 		const skillCmds = commands.filter((c) => c.name.startsWith("skill:"))
 		expect(skillCmds.map((c) => c.name)).toEqual(["skill:alpha", "skill:beta"])
 		expect(skillCmds[0]?.input).toEqual({ hint: "Optional prompt to run with this skill loaded." })
 	})
 
 	it("returns only the static palette when a session has no skills", () => {
-		expect(composeAvailableCommands(new Map()).map((c) => c.name)).toEqual(["bug", "compact", "language"])
+		expect(composeAvailableCommands(new Map()).map((c) => c.name)).toEqual([
+			"bug",
+			"compact",
+			"language",
+			"ferment-legacy",
+		])
 		expect(composeAvailableCommands(new Map(), true).map((c) => c.name)).toEqual([
 			"bug",
 			"compact",
 			"language",
 			"pr-watch",
+			"ferment-legacy",
 		])
 		expect(composeAvailableCommands(new Map(), true, true).map((c) => c.name)).toEqual([
 			"bug",
@@ -121,7 +135,21 @@ describe("composeAvailableCommands", () => {
 			"language",
 			"review",
 			"pr-watch",
+			"ferment-legacy",
 		])
+	})
+
+	// V1 or its stub always owns /ferment-legacy, so IDE users can always find it.
+	it("advertises /ferment-legacy with an input hint for the legacy subcommands", () => {
+		const legacy = composeAvailableCommands(new Map()).find((c) => c.name === "ferment-legacy")
+		expect(legacy).toEqual(FERMENT_LEGACY_AVAILABLE_COMMAND)
+		expect(legacy?.description).toBe("Legacy Ferment (V1). Off by default. Run it to see its status.")
+		expect(legacy?.input).toEqual({ hint: 'A legacy command, such as list, new "Name", or switch <id>.' })
+	})
+
+	it("advertises /ferment-legacy once, and not through /help (SLASH_COMMANDS)", () => {
+		expect(SLASH_COMMANDS).not.toHaveProperty("ferment-legacy")
+		expect(composeAvailableCommands(new Map(), true).filter((c) => c.name === "ferment-legacy")).toHaveLength(1)
 	})
 })
 
