@@ -21,7 +21,10 @@ it("adds native Allure output without registering the native Allure runner or se
 	expect(enabled.test?.setupFiles).toEqual(["./tests/setup/existing.ts"])
 	expect(enabled.test?.reporters).toEqual([
 		"default",
-		[fileURLToPath(new URL("../tests/setup/allure-vitest-reporter.js", import.meta.url)), { resultsDir: "allure-results/unit" }],
+		[
+			fileURLToPath(new URL("../tests/setup/allure-vitest-reporter.js", import.meta.url)),
+			{ resultsDir: "allure-results/unit" },
+		],
 	])
 })
 

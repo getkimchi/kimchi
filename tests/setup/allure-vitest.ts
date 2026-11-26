@@ -16,10 +16,7 @@ export function withAllureReporter(config: VitestConfig, resultsDir = process.en
 			test: {
 				reporters: [
 					"default",
-					[
-						fileURLToPath(new URL("./allure-vitest-reporter.js", import.meta.url)),
-						{ resultsDir },
-					],
+					[fileURLToPath(new URL("./allure-vitest-reporter.js", import.meta.url)), { resultsDir }],
 				],
 			},
 		}),

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -92,9 +92,7 @@ describe("successful Allure Vitest results", () => {
 			],
 		})
 		expect(results[0].statusDetails).toEqual(statusDetails)
-		expect(results[0].uuid).toBe(
-			readdirSync(resultsDir)[0].replace(/-result\.json$/, ""),
-		)
+		expect(results[0].uuid).toBe(readdirSync(resultsDir)[0].replace(/-result\.json$/, ""))
 	})
 })
 
