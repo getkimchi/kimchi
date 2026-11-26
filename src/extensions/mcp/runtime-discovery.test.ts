@@ -174,7 +174,8 @@ async function startFixture(options: { tasks?: boolean } = {}) {
 // margin on a loaded CI runner. Later requests are held for longer than that, so
 // they only succeed when the normal timeout was restored after discovery.
 const DISCOVERY_TIMEOUT_MS = 1_000
-const SLOWER_THAN_DISCOVERY_MS = 1_500
+// Derived, so the delay can never drop to or below the discovery timeout.
+const SLOWER_THAN_DISCOVERY_MS = DISCOVERY_TIMEOUT_MS + 500
 const NORMAL_TIMEOUT_MS = 30_000
 const SLOW_TEST_TIMEOUT_MS = 15_000
 
