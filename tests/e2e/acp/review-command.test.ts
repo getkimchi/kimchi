@@ -143,12 +143,13 @@ describe("ACP review command", () => {
 				source: string
 				events: Array<{ kind: "notify" | "setWidget"; text?: string; lines?: string[] }>
 			}
+			const checkoutDir = realpathSync(fixture.workDir)
 			const normalize = (value: string) =>
 				value
 					.replaceAll(state.scope.pinned.headSha, "{{HEAD_SHA}}")
 					.replaceAll(state.scope.pinned.baseSha, "{{BASE_SHA}}")
 					.replaceAll(runDir, "{{RUN_DIR}}")
-					.replaceAll(fixture.workDir, "{{CHECKOUT}}")
+					.replaceAll(checkoutDir, "{{CHECKOUT}}")
 			expect(
 				events.map((event) => {
 					if (event.kind === "setWidget") return { ...event, lines: event.lines?.map(normalize) }

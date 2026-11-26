@@ -6,7 +6,7 @@
 	"events": [
 		{
 			"kind": "notify",
-			"text": "Review scope pinned:\n{{BASE_SHA}}..{{HEAD_SHA}}\nCheckout: /private{{CHECKOUT}}\nRun directory: {{RUN_DIR}}"
+			"text": "Review scope pinned:\n{{BASE_SHA}}..{{HEAD_SHA}}\nCheckout: {{CHECKOUT}}\nRun directory: {{RUN_DIR}}"
 		},
 		{
 			"kind": "setWidget",

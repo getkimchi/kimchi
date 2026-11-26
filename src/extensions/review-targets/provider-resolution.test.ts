@@ -244,6 +244,7 @@ describe("PR/MR provider resolution", () => {
 			fetch: false,
 		}
 		let metadataFetchStarted = false
+		const pathWithSystemTools = process.env.PATH ?? ""
 		vi.stubEnv("PATH", join(sandbox, "missing-bin"))
 		const fetchMock = vi.fn<typeof fetch>(async (_input, _init) => {
 			metadataFetchStarted = true
@@ -267,7 +268,7 @@ describe("PR/MR provider resolution", () => {
 			`#!/bin/sh\ncase "$*" in\n  *fetch*) printf started > "$GIT_PROBE_STARTED"; sleep 10;;\nesac\nexec "${realGit}" "$@"\n`,
 		)
 		chmodSync(wrapper, 0o755)
-		vi.stubEnv("PATH", `${sandbox}/bin:${process.env.PATH ?? ""}`)
+		vi.stubEnv("PATH", pathWithSystemTools)
 		const fetched = fetchProviderHead(
 			source,
 			"origin",
