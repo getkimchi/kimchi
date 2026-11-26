@@ -87,15 +87,18 @@ function configPath(homeDir: string): string {
 	return join(homeDir, ".config", "kimchi", "config.json")
 }
 
+function readConfig(homeDir: string): Record<string, unknown> {
+	return JSON.parse(readFileSync(configPath(homeDir), "utf-8"))
+}
+
 function seedDefaults(homeDir: string, modelEffortDefaults: unknown): void {
-	const path = configPath(homeDir)
-	const config = JSON.parse(readFileSync(path, "utf-8"))
+	const config = readConfig(homeDir)
 	config.modelEffortDefaults = modelEffortDefaults
-	writeFileSync(path, JSON.stringify(config, null, "\t"))
+	writeFileSync(configPath(homeDir), JSON.stringify(config, null, "\t"))
 }
 
 function readDefaults(homeDir: string): unknown {
-	return JSON.parse(readFileSync(configPath(homeDir), "utf-8")).modelEffortDefaults
+	return readConfig(homeDir).modelEffortDefaults
 }
 
 function readDefaultModel(homeDir: string): unknown {
@@ -143,11 +146,11 @@ function rowEffort(response: unknown, modelId: string): Record<string, unknown> 
 	return meta?.modelEffort
 }
 
-async function newEffortSession(fixture: AcpFixture, appMode: "chat" | "design" | "code") {
+async function newEffortSession(fixture: AcpFixture, legacyMode?: "chat" | "design" | "code") {
 	return fixture.conn.request("session/new", {
 		cwd: fixture.workDir,
 		mcpServers: [],
-		_meta: { "kimchi.dev": { appMode } },
+		...(legacyMode ? { _meta: { "kimchi.dev": { appMode: legacyMode } } } : {}),
 	})
 }
 
@@ -167,18 +170,12 @@ async function setStandardEffort(fixture: AcpFixture, sessionId: string, value: 
 	})
 }
 
-async function setFreshEffort(
-	fixture: AcpFixture,
-	sessionId: string,
-	appMode: "chat" | "design" | "code",
-	modelId: string,
-	value: string,
-) {
-	return fixture.conn.request(SET_MODEL_EFFORT, { sessionId, appMode, modelId, value })
+async function setFreshEffort(fixture: AcpFixture, sessionId: string, modelId: string, value: string) {
+	return fixture.conn.request(SET_MODEL_EFFORT, { sessionId, modelId, value })
 }
 
 describe("ACP integration — model Effort persistence", () => {
-	it("persists App-mode defaults and per-model session selections across a CLI restart", async () => {
+	it("persists concrete-model defaults and per-model Session selections across a CLI restart", async () => {
 		const first = await start({
 			artifactName: "model-effort-persistence-first",
 			models: CATALOG,
@@ -187,37 +184,28 @@ describe("ACP integration — model Effort persistence", () => {
 			clientMeta: MODEL_EFFORT_META,
 			keepDirsOnStop: true,
 		})
-		const chat = await newEffortSession(first, "chat")
-		const code = await newEffortSession(first, "code")
+		const session = await newEffortSession(first)
 
-		const chatLow = await setFreshEffort(first, chat.sessionId, "chat", ALPHA_REF, "low")
-		expect(currentEffort(chatLow)).toBe("low")
-		expect(rowEffort(chatLow, ALPHA_REF)).toMatchObject({
+		const low = await setFreshEffort(first, session.sessionId, ALPHA_REF, "low")
+		expect(currentEffort(low)).toBe("low")
+		expect(rowEffort(low, ALPHA_REF)).toEqual({
 			availability: "multiple",
 			levels: ["low", "high", "max"],
 			currentValue: "low",
-			defaultValue: "low",
 		})
-		const codeHigh = await setFreshEffort(first, code.sessionId, "code", ALPHA_REF, "high")
-		expect(currentEffort(codeHigh)).toBe("high")
-		expect(rowEffort(codeHigh, ALPHA_REF)).toMatchObject({ currentValue: "high", defaultValue: "high" })
-		expect(currentEffort(await newEffortSession(first, "chat"))).toBe("low")
-		expect(currentEffort(await newEffortSession(first, "code"))).toBe("high")
+		expect(currentEffort(await newEffortSession(first))).toBe("low")
 
-		await selectModel(first, chat.sessionId, BETA_REF)
-		expect(currentEffort(await setStandardEffort(first, chat.sessionId, "high"))).toBe("high")
-		expect(currentEffort(await selectModel(first, chat.sessionId, ALPHA_REF))).toBe("low")
-		expect(currentEffort(await selectModel(first, chat.sessionId, BETA_REF))).toBe("high")
+		await selectModel(first, session.sessionId, BETA_REF)
+		expect(currentEffort(await setStandardEffort(first, session.sessionId, "high"))).toBe("high")
+		expect(currentEffort(await selectModel(first, session.sessionId, ALPHA_REF))).toBe("low")
+		expect(currentEffort(await selectModel(first, session.sessionId, BETA_REF))).toBe("high")
 		const turn = await first.conn.request("session/prompt", {
-			sessionId: chat.sessionId,
+			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "Persist this session" }],
 		})
 		expect(turn.stopReason).toBe("end_turn")
-		expect(readDefaults(first.homeDir)).toEqual({
-			chat: { [ALPHA_REF]: "low" },
-			code: { [ALPHA_REF]: "high" },
-		})
-		expect(readSessionEffortEntries(first.homeDir, chat.sessionId)).toEqual([
+		expect(readDefaults(first.homeDir)).toEqual({ [ALPHA_REF]: "low" })
+		expect(readSessionEffortEntries(first.homeDir, session.sessionId)).toEqual([
 			{ modelId: ALPHA_REF, value: "high" },
 			{ modelId: ALPHA_REF, value: "low" },
 			{ modelId: BETA_REF, value: "low" },
@@ -238,19 +226,21 @@ describe("ACP integration — model Effort persistence", () => {
 			seedHome: (home) => seedDefaults(home, persistedDefaults),
 		})
 		const loaded = await second.conn.request("session/load", {
-			sessionId: chat.sessionId,
+			sessionId: session.sessionId,
 			cwd: workDir,
 			mcpServers: [],
 			_meta: { "kimchi.dev": { appMode: "chat" } },
 		})
 		expect(currentModel(loaded)).toBe(BETA_REF)
 		expect(currentEffort(loaded)).toBe("high")
-		const reselectedAlpha = await selectModel(second, chat.sessionId, ALPHA_REF)
+		const reselectedAlpha = await selectModel(second, session.sessionId, ALPHA_REF)
 		expect(currentEffort(reselectedAlpha)).toBe("low")
-		expect(rowEffort(reselectedAlpha, ALPHA_REF)).toMatchObject({ currentValue: "low", defaultValue: "low" })
-
-		const freshCode = await newEffortSession(second, "code")
-		expect(currentEffort(await selectModel(second, freshCode.sessionId, ALPHA_REF))).toBe("high")
+		expect(rowEffort(reselectedAlpha, ALPHA_REF)).toEqual({
+			availability: "multiple",
+			levels: ["low", "high", "max"],
+			currentValue: "low",
+		})
+		expect(currentEffort(await newEffortSession(second))).toBe("low")
 	})
 
 	it("keeps Effort-only model switches from overwriting the saved default model", async () => {
@@ -261,55 +251,109 @@ describe("ACP integration — model Effort persistence", () => {
 			responses: [],
 			clientMeta: MODEL_EFFORT_META,
 		})
-		const chat = await newEffortSession(fixture, "chat")
+		const session = await newEffortSession(fixture)
 
-		const result = await setFreshEffort(fixture, chat.sessionId, "chat", BETA_REF, "low")
+		const result = await setFreshEffort(fixture, session.sessionId, BETA_REF, "low")
 
 		expect(currentModel(result)).toBe(BETA_REF)
 		expect(readDefaultModel(fixture.homeDir)).toBe("alpha")
-		await selectModel(fixture, chat.sessionId, BETA_REF)
+		await selectModel(fixture, session.sessionId, BETA_REF)
 		expect(readDefaultModel(fixture.homeDir)).toBe("beta")
 	})
 
-	it("resolves persisted values to a supported higher level, then a lower level", async () => {
-		const models = [
-			{
-				...CATALOG[0],
-				metadata: { thinking_levels: ["low", "high"] },
-			},
-		]
+	it.each([
+		{ stored: "minimal", expected: "low", direction: "higher" },
+		{ stored: "max", expected: "high", direction: "lower" },
+	])("resolves a persisted value to the nearest $direction supported level", async ({ stored, expected }) => {
+		const models = [{ ...CATALOG[0], metadata: { thinking_levels: ["low", "high"] } }]
 		const fixture = await start({
-			artifactName: "model-effort-persistence-fallback",
+			artifactName: `model-effort-persistence-fallback-${stored}`,
 			models,
 			defaultModel: "alpha",
 			responses: [],
 			clientMeta: MODEL_EFFORT_META,
-			seedHome: (home) =>
-				seedDefaults(home, {
-					chat: { [ALPHA_REF]: "minimal" },
-					code: { [ALPHA_REF]: "max" },
-				}),
+			seedHome: (home) => seedDefaults(home, { [ALPHA_REF]: stored }),
 		})
 
-		const chat = await newEffortSession(fixture, "chat")
-		expect(currentEffort(chat)).toBe("low")
-		expect(rowEffort(chat, ALPHA_REF)).toMatchObject({ currentValue: "low", defaultValue: "low" })
-		const chatOptions = chat.configOptions?.find((option) => option.id === "reasoning_effort")
-		expect(chatOptions?.category).toBe("model_config")
-		expect(currentEffort(chat)).toBeOneOf(
-			chatOptions?.type === "select" ? chatOptions.options.map((option) => option.value) : [],
-		)
-
-		const code = await newEffortSession(fixture, "code")
-		expect(currentEffort(code)).toBe("high")
-		expect(rowEffort(code, ALPHA_REF)).toMatchObject({ currentValue: "high", defaultValue: "high" })
-		const codeOptions = code.configOptions?.find((option) => option.id === "reasoning_effort")
-		expect(currentEffort(code)).toBeOneOf(
-			codeOptions?.type === "select" ? codeOptions.options.map((option) => option.value) : [],
+		const session = await newEffortSession(fixture)
+		expect(currentEffort(session)).toBe(expected)
+		expect(rowEffort(session, ALPHA_REF)).toEqual({
+			availability: "multiple",
+			levels: ["low", "high"],
+			currentValue: expected,
+		})
+		const options = session.configOptions?.find((option) => option.id === "reasoning_effort")
+		expect(options?.category).toBe("model_config")
+		expect(currentEffort(session)).toBeOneOf(
+			options?.type === "select" ? options.options.map((option) => option.value) : [],
 		)
 	})
 
-	it("passes configured aliases and other-virtual identity through the real model registry", async () => {
+	it("clears legacy defaults without changing unrelated config or durable Session selections", async () => {
+		const first = await start({
+			artifactName: "model-effort-persistence-migration-first",
+			models: CATALOG,
+			defaultModel: "alpha",
+			settings: { defaultThinkingLevel: "low" },
+			responses: [{ stream: ["Persist migrated Session selections."] }],
+			clientMeta: MODEL_EFFORT_META,
+			keepDirsOnStop: true,
+			seedHome: (home) => {
+				const config = readConfig(home)
+				config.modelEffortDefaults = {
+					chat: { [ALPHA_REF]: "max" },
+					design: { [ALPHA_REF]: "high" },
+					code: { [ALPHA_REF]: "max" },
+					[BETA_REF]: "high",
+				}
+				config.unrelatedPreference = { keep: true }
+				writeFileSync(configPath(home), JSON.stringify(config, null, "\t"))
+			},
+		})
+		const created = await newEffortSession(first, "code")
+		const sessionEntries = [
+			{ modelId: ALPHA_REF, value: "low" },
+			{ modelId: ALPHA_REF, value: "max" },
+		]
+
+		expect(currentEffort(created)).toBe("low")
+		expect(currentEffort(await setStandardEffort(first, created.sessionId, "max"))).toBe("max")
+		const turn = await first.conn.request("session/prompt", {
+			sessionId: created.sessionId,
+			prompt: [{ type: "text", text: "Persist migrated Session selections" }],
+		})
+		expect(turn.stopReason).toBe("end_turn")
+		expect(readDefaults(first.homeDir)).toEqual({ [BETA_REF]: "high" })
+		expect(readConfig(first.homeDir)).toMatchObject({ unrelatedPreference: { keep: true } })
+		expect(readSessionEffortEntries(first.homeDir, created.sessionId)).toEqual(sessionEntries)
+
+		const persistedConfig = readConfig(first.homeDir)
+		const { homeDir, workDir } = first
+		await stop(first)
+		const second = await start({
+			artifactName: "model-effort-persistence-migration-second",
+			models: CATALOG,
+			defaultModel: "alpha",
+			responses: [],
+			clientMeta: MODEL_EFFORT_META,
+			homeDirOverride: homeDir,
+			workDirOverride: workDir,
+			seedHome: (home) => writeFileSync(configPath(home), JSON.stringify(persistedConfig, null, "\t")),
+		})
+		const loaded = await second.conn.request("session/load", {
+			sessionId: created.sessionId,
+			cwd: workDir,
+			mcpServers: [],
+			_meta: { "kimchi.dev": { appMode: "chat" } },
+		})
+
+		expect(currentEffort(loaded)).toBe("max")
+		expect(readDefaults(second.homeDir)).toEqual({ [BETA_REF]: "high" })
+		expect(readConfig(second.homeDir)).toMatchObject({ unrelatedPreference: { keep: true } })
+		expect(readSessionEffortEntries(second.homeDir, created.sessionId)).toEqual(sessionEntries)
+	})
+
+	it("passes other-virtual identity through the real model registry without alias or default metadata", async () => {
 		const family = { ...CATALOG[0], slug: "family", displayName: "Family alias" }
 		const fixture = await start({
 			artifactName: "model-effort-configured-virtual",
@@ -322,20 +366,18 @@ describe("ACP integration — model Effort persistence", () => {
 				const catalog = JSON.parse(readFileSync(path, "utf-8"))
 				for (const provider of Object.values(catalog.providers) as Array<{ models?: Array<Record<string, unknown>> }>) {
 					const model = provider.models?.find((candidate) => candidate.id === "family")
-					if (model) Object.assign(model, { searchAliases: ["family", "router"], virtual: "other" })
+					if (model) Object.assign(model, { virtual: "other" })
 				}
 				writeFileSync(path, JSON.stringify(catalog, null, "\t"))
 			},
 		})
 
-		const session = await newEffortSession(fixture, "chat")
+		const session = await newEffortSession(fixture)
 
 		expect(rowEffort(session, "fake/family")).toEqual({
 			availability: "routed",
 			currentValue: null,
-			defaultValue: null,
 			virtual: "other",
-			searchAliases: ["family", "router"],
 		})
 	})
 
@@ -348,7 +390,7 @@ describe("ACP integration — model Effort persistence", () => {
 			responses: [{ stream: ["Legacy turn."] }],
 			seedHome: (home) => seedDefaults(home, { chat: { [ALPHA_REF]: "max" } }),
 		})
-		const session = await newEffortSession(fixture, "chat")
+		const session = await newEffortSession(fixture)
 
 		expect(currentEffort(session)).toBe("high")
 		expect(modelRow(session, ALPHA_REF)._meta).toBeUndefined()
@@ -365,7 +407,7 @@ describe("ACP integration — model Effort persistence", () => {
 		expect(turn.stopReason).toBe("end_turn")
 		expect(readSessionEffortEntries(fixture.homeDir, session.sessionId)).toEqual([])
 		expect(readDefaults(fixture.homeDir)).toEqual({ chat: { [ALPHA_REF]: "max" } })
-		await expect(setFreshEffort(fixture, session.sessionId, "chat", ALPHA_REF, "max")).rejects.toMatchObject({
+		await expect(setFreshEffort(fixture, session.sessionId, ALPHA_REF, "max")).rejects.toMatchObject({
 			code: -32601,
 		})
 		expect(readDefaults(fixture.homeDir)).toEqual({ chat: { [ALPHA_REF]: "max" } })

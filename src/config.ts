@@ -1088,34 +1088,50 @@ function writeConfigField(key: string, value: unknown, configPath: string): void
 	})
 }
 
-type ModelEffortDefaults = Record<string, Record<string, string>>
+type ModelEffortDefaults = Record<string, string>
+
+// Legacy mode buckets have no deterministic merge order. Never promote one
+// into the concrete-provider/model map introduced after those buckets.
+const LEGACY_MODEL_EFFORT_BUCKET_KEYS = new Set(["chat", "design", "code"])
 
 function parseModelEffortDefaults(value: unknown): ModelEffortDefaults {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {}
 	const defaults: ModelEffortDefaults = Object.create(null)
-	for (const [appMode, rawModels] of Object.entries(value)) {
-		if (!rawModels || typeof rawModels !== "object" || Array.isArray(rawModels)) continue
-		const models = Object.fromEntries(
-			Object.entries(rawModels).filter(([modelId, effort]) => modelId.length > 0 && typeof effort === "string"),
-		) as Record<string, string>
-		if (Object.keys(models).length > 0) defaults[appMode] = models
+	for (const [modelId, effort] of Object.entries(value)) {
+		if (LEGACY_MODEL_EFFORT_BUCKET_KEYS.has(modelId)) continue
+		if (modelId.length > 0 && typeof effort === "string") defaults[modelId] = effort
 	}
 	return defaults
 }
 
+function hasLegacyModelEffortBuckets(value: unknown): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false
+	return Object.keys(value).some((key) => LEGACY_MODEL_EFFORT_BUCKET_KEYS.has(key))
+}
+
+/** Read flat concrete-model defaults and clear obsolete mode buckets on access.
+ * Re-read through the existing update helper so unrelated config survives. */
 export function readModelEffortDefaults(configPath: string = KIMCHI_CONFIG_PATH): ModelEffortDefaults {
-	return parseModelEffortDefaults(readConfigObject(configPath)?.modelEffortDefaults)
+	const raw = readConfigObject(configPath)
+	if (hasLegacyModelEffortBuckets(raw?.modelEffortDefaults)) {
+		let migrated: ModelEffortDefaults = {}
+		updateConfigFile(configPath, (next) => {
+			migrated = parseModelEffortDefaults(next.modelEffortDefaults)
+			next.modelEffortDefaults = migrated
+		})
+		return migrated
+	}
+	return parseModelEffortDefaults(raw?.modelEffortDefaults)
 }
 
 export function writeModelEffortDefault(
-	appMode: string,
 	modelId: string,
 	effort: string,
 	configPath: string = KIMCHI_CONFIG_PATH,
 ): void {
 	updateConfigFile(configPath, (raw) => {
 		const defaults = parseModelEffortDefaults(raw.modelEffortDefaults)
-		defaults[appMode] = { ...defaults[appMode], [modelId]: effort }
+		defaults[modelId] = effort
 		raw.modelEffortDefaults = defaults
 	})
 }

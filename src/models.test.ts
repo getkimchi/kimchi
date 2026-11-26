@@ -15,7 +15,6 @@ import {
 	discoverModelsConfig,
 	getModelDescription,
 	getModelLabel,
-	getModelSearchAliases,
 	getModelThinkingLevels,
 	getModelVirtualIdentity,
 	injectExperimentalProvider,
@@ -1788,43 +1787,38 @@ describe("model thinking levels registry (/model table THINKING column)", () => 
 		expect(byId("gpt-5.1")?.thinkingLevelMap).toMatchObject({ off: null })
 	})
 
-	it("round-trips Effort search aliases and other-virtual identity through discovery and the cache", async () => {
+	it("round-trips other-virtual identity through discovery and the cache", async () => {
 		const family = {
 			...(KIMI as Record<string, unknown>),
 			slug: "family",
 			display_name: "Family alias",
-			search_aliases: ["family", "router"],
 			virtual: "other",
 		}
 		fetchOnce([family])
 		await updateModelsConfig(modelsJsonPath, "test-key")
 
 		const cached = JSON.parse(readFileSync(modelsJsonPath, "utf-8")).providers["kimchi-dev"].models[0]
-		expect(cached).toMatchObject({ id: "family", searchAliases: ["family", "router"], virtual: "other" })
+		expect(cached).toMatchObject({ id: "family", virtual: "other" })
+		expect(cached).not.toHaveProperty("searchAliases")
 		vi.restoreAllMocks()
 
 		const result = await updateModelsConfig(modelsJsonPath, "")
-		expect(result.models[0]).toMatchObject({
-			slug: "family",
-			search_aliases: ["family", "router"],
-			virtual: "other",
-		})
+		expect(result.models[0]).toMatchObject({ slug: "family", virtual: "other" })
+		expect(result.models[0]).not.toHaveProperty("search_aliases")
 	})
 
-	it("clears Effort search aliases and other-virtual identity when a refresh withdraws them", () => {
+	it("clears other-virtual identity when a refresh withdraws it", () => {
 		const provider = "metadata-withdrawal-test"
 		const ref = `${provider}/family`
 		registerModelInfoFromProviders({
 			[provider]: {
-				models: [{ id: "family", searchAliases: ["family", "router"], virtual: "other" }],
+				models: [{ id: "family", virtual: "other" }],
 			},
 		})
-		expect(getModelSearchAliases(ref)).toEqual(["family", "router"])
 		expect(getModelVirtualIdentity(ref)).toBe("other")
 
 		registerModelInfoFromProviders({ [provider]: { models: [{ id: "family" }] } })
 
-		expect(getModelSearchAliases(ref)).toBeUndefined()
 		expect(getModelVirtualIdentity(ref)).toBeUndefined()
 	})
 

@@ -24,44 +24,67 @@ afterEach(() => {
 })
 
 describe("Model effort defaults", () => {
-	it("persists concrete-model values independently per App-mode without replacing other config", () => {
+	it("persists one default per concrete model without replacing other config", () => {
 		const configPath = makeConfig()
 
-		writeModelEffortDefault("chat", "test/reasoner", "high", configPath)
-		writeModelEffortDefault("design", "test/reasoner", "low", configPath)
-		writeModelEffortDefault("code", "test/reasoner", "max", configPath)
+		writeModelEffortDefault("test/reasoner", "high", configPath)
+		writeModelEffortDefault("test/other", "low", configPath)
+		writeModelEffortDefault("test/reasoner", "max", configPath)
 
-		expect(getModelEffortDefault("chat", "test/reasoner", configPath)).toBe("high")
-		expect(getModelEffortDefault("design", "test/reasoner", configPath)).toBe("low")
-		expect(getModelEffortDefault("code", "test/reasoner", configPath)).toBe("max")
-		expect(getModelEffortDefault("chat", "test/other", configPath)).toBeUndefined()
-		expect(JSON.parse(readFileSync(configPath, "utf-8"))).toMatchObject({ apiKey: "keep-me" })
+		expect(getModelEffortDefault("test/reasoner", configPath)).toBe("max")
+		expect(getModelEffortDefault("test/other", configPath)).toBe("low")
+		expect(getModelEffortDefault("test/missing", configPath)).toBeUndefined()
+		expect(JSON.parse(readFileSync(configPath, "utf-8"))).toMatchObject({
+			apiKey: "keep-me",
+			modelEffortDefaults: { "test/reasoner": "max", "test/other": "low" },
+		})
 	})
 
-	it("ignores malformed modes, models, and unknown levels when reading", () => {
+	it("clears legacy mode buckets without a winner while preserving flat defaults and unrelated config", () => {
 		const configPath = makeConfig({
 			modelEffortDefaults: {
-				chat: { "test/reasoner": "medium", "test/invalid": "ultra", "test/nonstring": 4 },
+				chat: { "test/reasoner": "max" },
+				design: { "test/reasoner": "high" },
+				code: { "test/reasoner": "low" },
+				"test/flat": "medium",
+			},
+			sessionSelections: { test: "keep-session-settings" },
+		})
+
+		expect(readModelEffortDefaults(configPath)).toEqual({ "test/flat": "medium" })
+		expect(JSON.parse(readFileSync(configPath, "utf-8"))).toEqual({
+			apiKey: "keep-me",
+			sessionSelections: { test: "keep-session-settings" },
+			modelEffortDefaults: { "test/flat": "medium" },
+		})
+	})
+
+	it("ignores malformed models, unknown levels, and legacy buckets when reading", () => {
+		const configPath = makeConfig({
+			modelEffortDefaults: {
+				"test/reasoner": "medium",
+				"test/invalid": "ultra",
+				"test/nonstring": 4,
+				chat: { "test/reasoner": "high" },
 				code: ["high"],
-				unknown: { "test/reasoner": "high" },
 			},
 		})
 
-		expect(getModelEffortDefault("chat", "test/reasoner", configPath)).toBe("medium")
-		expect(getModelEffortDefault("chat", "test/invalid", configPath)).toBeUndefined()
-		expect(getModelEffortDefault("chat", "test/nonstring", configPath)).toBeUndefined()
-		expect(getModelEffortDefault("code", "test/reasoner", configPath)).toBeUndefined()
+		expect(getModelEffortDefault("test/reasoner", configPath)).toBe("medium")
+		expect(getModelEffortDefault("test/invalid", configPath)).toBeUndefined()
+		expect(getModelEffortDefault("test/nonstring", configPath)).toBeUndefined()
+		expect(getModelEffortDefault("chat", configPath)).toBeUndefined()
 	})
 
-	it("does not resolve App-mode defaults through a __proto__ config key", () => {
+	it("does not resolve model defaults through a __proto__ config key", () => {
 		const configPath = makeConfig({
 			modelEffortDefaults: JSON.parse('{"__proto__":{"chat":"max"}}'),
 		})
 
-		expect(readModelEffortDefaults(configPath).chat).toBeUndefined()
+		expect(Object.hasOwn(readModelEffortDefaults(configPath), "__proto__")).toBe(false)
 
-		writeModelEffortDefault("chat", "test/reasoner", "high", configPath)
-		expect(getModelEffortDefault("chat", "test/reasoner", configPath)).toBe("high")
+		writeModelEffortDefault("test/reasoner", "high", configPath)
+		expect(getModelEffortDefault("test/reasoner", configPath)).toBe("high")
 	})
 })
 

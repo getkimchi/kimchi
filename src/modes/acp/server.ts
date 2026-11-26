@@ -172,9 +172,7 @@ import {
 	getModelEffortDefault,
 	MODEL_EFFORT_SELECTION_ENTRY_TYPE,
 	parseModelThinkingLevel,
-	parseSessionAppMode,
 	readSessionEffortSelections,
-	sessionAppModeFromMeta,
 } from "../../model-effort.js"
 import { applyOrganizationHeader, getModelDescription, updateModelsConfig } from "../../models.js"
 import { oauthConfigForRegion, ssoAvailableRegions } from "../../oauth-config.js"
@@ -980,7 +978,6 @@ export class KimchiAcpAgent {
 			// extension events are dropped before this.sessions is populated.
 			const record: SessionRecord = {
 				session,
-				appMode: sessionAppModeFromMeta(params._meta),
 				effortByModel: readSessionEffortSelections(session.sessionManager.getEntries()),
 				unsubscribe: () => {},
 				cwd: session.sessionManager.getCwd(),
@@ -1175,10 +1172,6 @@ export class KimchiAcpAgent {
 	private async setModelEffort(params: Record<string, unknown>): Promise<Record<string, unknown>> {
 		const record = this.sessions.get(typeof params.sessionId === "string" ? params.sessionId : "")
 		if (!record) throw RequestError.invalidParams(undefined, "sessionId must identify a current session")
-		const appMode = parseSessionAppMode(params.appMode)
-		if (!appMode || record.appMode !== appMode) {
-			throw RequestError.invalidParams(undefined, "appMode must match the session setup metadata")
-		}
 		if (typeof params.modelId !== "string" || !splitModelRef(params.modelId)) {
 			throw RequestError.invalidParams(undefined, "modelId must be a concrete provider/modelId reference")
 		}
@@ -1218,12 +1211,9 @@ export class KimchiAcpAgent {
 				getClientOptedIntoModelEffort(this.clientCapabilities),
 			)
 		try {
-			writeModelEffortDefault(appMode, params.modelId, effort)
+			writeModelEffortDefault(params.modelId, effort)
 		} catch (error) {
-			console.error(
-				`[model-effort] failed to persist ${appMode}/${params.modelId} default after applying session Effort:`,
-				error,
-			)
+			console.error(`[model-effort] failed to persist ${params.modelId} default after applying session Effort:`, error)
 			// Retain the applied state, but let the client distinguish partial persistence failure.
 			return { configOptions: configOptions(), persistenceFailed: true }
 		}
@@ -1252,21 +1242,17 @@ export class KimchiAcpAgent {
 			)
 		}
 		session.setThinkingLevel(value)
-		if (
-			record.appMode &&
-			getClientOptedIntoModelEffort(this.clientCapabilities) &&
-			!modelVirtualIdentity(session.model)
-		) {
+		if (getClientOptedIntoModelEffort(this.clientCapabilities) && !modelVirtualIdentity(session.model)) {
 			const modelId = refFromModel(session.model)
 			record.effortByModel.set(modelId, value)
 			session.sessionManager.appendCustomEntry(MODEL_EFFORT_SELECTION_ENTRY_TYPE, { modelId, value })
 		}
 	}
 
-	/** Resolve the current concrete model through session memory, then the
-	 * App-mode default, then the session's existing harness level. */
+	/** Resolve the current concrete model through session memory, then its
+	 * concrete-model default, then the session's existing harness level. */
 	private restoreModelEffort(record: SessionRecord): void {
-		if (!record.appMode || !getClientOptedIntoModelEffort(this.clientCapabilities)) return
+		if (!getClientOptedIntoModelEffort(this.clientCapabilities)) return
 		const { session } = record
 		const model = session.model
 		if (!model || modelVirtualIdentity(model)) return
@@ -1275,7 +1261,7 @@ export class KimchiAcpAgent {
 
 		const modelId = refFromModel(model)
 		const remembered = record.effortByModel.get(modelId)
-		const stored = remembered ?? getModelEffortDefault(record.appMode, modelId)
+		const stored = remembered ?? getModelEffortDefault(modelId)
 		const clamped = clampToSelection(stored ?? session.thinkingLevel, selection)
 		const effort = parseModelThinkingLevel(clamped)
 		if (!effort) return
@@ -1283,7 +1269,6 @@ export class KimchiAcpAgent {
 		record.effortByModel.set(modelId, effort)
 		if (remembered !== effort) {
 			// Pin the baseline too: later defaults must not rewrite this existing session.
-			// Selections are session-scoped and intentionally survive App-mode metadata changes.
 			session.sessionManager.appendCustomEntry(MODEL_EFFORT_SELECTION_ENTRY_TYPE, { modelId, value: effort })
 		}
 	}
@@ -1460,7 +1445,6 @@ export class KimchiAcpAgent {
 			// extension events are dropped before this.sessions is populated.
 			const record: SessionRecord = {
 				session,
-				appMode: sessionAppModeFromMeta(params._meta),
 				effortByModel: readSessionEffortSelections(session.sessionManager.getEntries()),
 				unsubscribe: () => {},
 				// The session header cwd was validated against params.cwd above, so
@@ -4179,8 +4163,7 @@ function buildConfigOptions(
 	const mode = getPermissionMode(session.sessionId)?.mode ?? defaultMode
 	const modelThinking = includeModelThinking
 		? {
-				appMode: record.appMode,
-				thinkingDefaults: record.appMode ? readModelEffortDefaults() : {},
+				thinkingDefaults: readModelEffortDefaults(),
 				thinkingByModel: record.effortByModel,
 				currentModel: session.model,
 				currentThinkingLevel: session.thinkingLevel,

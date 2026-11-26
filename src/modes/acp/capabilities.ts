@@ -186,13 +186,12 @@ export function getClientOptedIntoPRMonitoring(capabilities: ClientCapabilities 
 }
 
 /**
- * Versioned opt-in for App-mode-scoped model Effort persistence and ACP v1
- * per-model-row Effort metadata under `_meta["kimchi.dev"].modelEffort`.
+ * Versioned opt-in for concrete-model Effort persistence and ACP v1
+ * per-model-row metadata under `_meta["kimchi.dev"].modelEffort`.
  * ACP's completed Model Config Option Category RFD covers `model_config`
  * placement only. The vendor default-write operation and row schema
- * (availability, ordered levels, session/default values, search aliases,
- * and virtual identity) are own design, no spec track: no ACP v2 RFD covers
- * these preference operations or metadata fields.
+ * (availability, ordered levels, session values, and virtual identity)
+ * are own design, no spec track; saved defaults stay inside the CLI.
  */
 export const MODEL_EFFORT_CAPABILITY = "modelEffort"
 export const MODEL_EFFORT_VERSION = 1
