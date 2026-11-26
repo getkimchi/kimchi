@@ -26,13 +26,20 @@ it("adds the official Allure setup and preserves existing Vitest setup when requ
 })
 
 it.each([
-	{ workflow: "ci.yml", job: "master-checks", resultsDir: "allure-results/vitest", launchName: "Vitest" },
-	{ workflow: "acp-e2e.yml", job: "acp-e2e", resultsDir: "allure-results/acp", launchName: "ACP E2E" },
+	{
+		workflow: "ci.yml",
+		job: "master-checks",
+		resultsDir: "allure-results/vitest",
+		launchName: "Vitest",
+		jobUid: "vitest",
+	},
+	{ workflow: "acp-e2e.yml", job: "acp-e2e", resultsDir: "allure-results/acp", launchName: "ACP E2E", jobUid: "acp" },
 ])("reports trusted Vitest runs from $workflow / $job with event and iteration tags", ({
 	workflow,
 	job,
 	resultsDir,
 	launchName,
+	jobUid,
 }) => {
 	const config = parseYaml(readFileSync(join(repoRoot, ".github", "workflows", workflow), "utf8"))
 	const target = config.jobs[job]
@@ -63,6 +70,9 @@ it.each([
 		"continue-on-error": true,
 	})
 	expect(upload.run).toContain(`--launch-name "${launchName} $ALLURE_RUN_KIND"`)
-	expect(upload.run).toContain('--launch-tags "commit=$GITHUB_SHA,event=$ALLURE_RUN_KIND,iteration=1"')
+	expect(upload.run).toContain(`--job-run-uid "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${jobUid}"`)
+	expect(upload.run).toContain(
+		'--launch-tags "commit=$GITHUB_SHA,event=$ALLURE_RUN_KIND,iteration=1,run_id=$GITHUB_RUN_ID,run_attempt=$GITHUB_RUN_ATTEMPT"',
+	)
 	expect(upload.run).toContain('"$ALLURE_RESULTS"')
 })
