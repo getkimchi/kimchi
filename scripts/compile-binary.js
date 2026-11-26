@@ -12,7 +12,6 @@
 // always travel together, even if someone copies or replaces just the executable.
 
 import { readFile } from "node:fs/promises"
-import { fileURLToPath } from "node:url"
 import { parseArgs } from "node:util"
 
 // Local builds must embed a Bun that satisfies the declared engine: older
@@ -60,8 +59,6 @@ if (!values.outfile) throw new Error("--outfile is required")
 
 const result = await Bun.build({
 	entrypoints: positionals,
-	// Preserve source-relative paths used by Worker() in the compiled executable.
-	root: fileURLToPath(new URL("../", import.meta.url)),
 	target: "bun",
 	external: values.external ?? [],
 	plugins: [embedPhotonWasm],

@@ -15,7 +15,7 @@ it("loads the embedded worker and executes a script in the compiled binary", { t
 		"bun",
 		[
 			"scripts/compile-binary.js",
-			"./src/codemode-worker-entrypoint.harness.ts",
+			"src/codemode-worker-entrypoint.harness.ts",
 			"./src/extensions/codemode/worker.ts",
 			"--outfile",
 			binary,
@@ -23,7 +23,9 @@ it("loads the embedded worker and executes a script in the compiled binary", { t
 		{ cwd: ROOT, encoding: "utf8", timeout: 60_000 },
 	)
 	const output = execFileSync(binary, [], { cwd: outputDir, encoding: "utf8", timeout: 25_000 })
-	const result = JSON.parse(output.trim().split("\n").at(-1)!) as {
+	const lastLine = output.trim().split("\n").at(-1)
+	if (lastLine === undefined) throw new Error("Compiled worker harness produced no output")
+	const result = JSON.parse(lastLine) as {
 		workerUrl: string
 		result: { ok: boolean; value?: unknown }
 	}
