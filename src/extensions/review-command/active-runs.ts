@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto"
 import { link, mkdir, open, readFile, rename, rm, unlink } from "node:fs/promises"
-import { dirname } from "node:path"
+import { dirname, join } from "node:path"
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui"
-import { lock as acquireDirectoryLock } from "proper-lockfile"
+import { withSQLiteWriterLock } from "../review-submit/sqlite-lock.js"
 import { ReviewTargetError } from "../review-targets/types.js"
 import { currentReviewHost, currentReviewOwnerIdentity, reviewProcessStartIdentity } from "./owner-identity.js"
 import type { LocalReviewRunDirectory } from "./run-directory.js"
@@ -110,19 +110,60 @@ async function processAlive(pid: number): Promise<boolean> {
 	}
 }
 
-/** Serialize the whole stale-read/reclaim/publish transaction. No acquirer can
- * quarantine another acquirer's freshly published lock while it is delayed. */
-async function withReclaimGuard<T>(path: string, operation: () => Promise<T>): Promise<T> {
-	const release = await acquireDirectoryLock(`${path}.reclaim`, {
-		realpath: false,
-		stale: 2_000,
-		update: 1_000,
-		retries: { retries: 200, factor: 1, minTimeout: 25, maxTimeout: 50 },
-	})
+export interface ReviewAcquisitionHooks {
+	/** @internal Test-only checkpoint after the advisory read and before SQLite acquisition. */
+	beforeStaleRename?: () => void | Promise<void>
+	/** @internal Test-only checkpoint after the decisive read inside SQLite. */
+	afterGuardedRead?: () => void | Promise<void>
+	/** @internal Test-only injected failure after publishing and before SQLite release. */
+	beforeRelease?: () => void | Promise<void>
+}
+
+async function readLockText(path: string): Promise<string | undefined> {
 	try {
-		return await operation()
-	} finally {
-		await release()
+		return await readFile(path, "utf8")
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+		throw error
+	}
+}
+
+async function assertReclaimable(serialized: string, path: string, checkoutPath: string): Promise<void> {
+	try {
+		const lock = JSON.parse(serialized) as {
+			pid?: unknown
+			owner_host?: unknown
+			owner_start?: unknown
+		}
+		if (
+			typeof lock.pid !== "number" ||
+			!Number.isSafeInteger(lock.pid) ||
+			lock.pid < 1 ||
+			typeof lock.owner_host !== "string" ||
+			typeof lock.owner_start !== "string"
+		) {
+			throw new ReviewTargetError(
+				"review_lock_invalid",
+				`Review lock ${path} is malformed; remove only this file after verifying the owner.`,
+			)
+		}
+		if (lock.owner_host !== currentReviewHost()) {
+			throw new ReviewTargetError(
+				"review_lock_untrusted",
+				`Review lock ${path} belongs to another host; it is preserved. Inspect the owner and remove only this file after confirmation.`,
+			)
+		}
+		if (await processAlive(lock.pid)) {
+			const currentStart = await reviewProcessStartIdentity(lock.pid)
+			if (currentStart === lock.owner_start) throw activeError(checkoutPath)
+			// This is PID reuse, not the original owner.
+		}
+	} catch (error) {
+		if (error instanceof ReviewTargetError) throw error
+		throw new ReviewTargetError(
+			"review_lock_unreadable",
+			`Cannot safely reclaim review lock ${path}: ${error instanceof Error ? error.message : String(error)}`,
+		)
 	}
 }
 
@@ -130,100 +171,65 @@ async function acquirePersistentLock(
 	checkoutPath: string,
 	run: LocalReviewRunDirectory,
 	ownerIdentity: typeof currentReviewOwnerIdentity,
+	hooks?: ReviewAcquisitionHooks,
 ): Promise<{ path: string; token: string } | undefined> {
 	const path = run.lockPath
-	// Identity can require an external process. Never create even an empty lock
-	// until that lookup has succeeded.
 	const owner = await ownerIdentity()
-	return withReclaimGuard(path, async () => {
-		for (let attempt = 0; attempt < 2; attempt += 1) {
-			const token = randomUUID()
-			const temporary = `${path}.${process.pid}.${token}.tmp`
-			try {
-				await mkdir(dirname(path), { recursive: true })
-				const handle = await open(temporary, "wx", 0o600)
+	// A preliminary read can only reject or reach the test checkpoint. Every
+	// actionable decision is repeated inside SQLite's IMMEDIATE transaction.
+	const preliminary = await readLockText(path)
+	if (preliminary !== undefined) await assertReclaimable(preliminary, path, checkoutPath)
+	await hooks?.beforeStaleRename?.()
+	await mkdir(dirname(path), { recursive: true })
+	const databasePath = join(dirname(path), ".active-review.lock.sqlite")
+	let published: { path: string; token: string } | undefined
+	try {
+		return await withSQLiteWriterLock(
+			databasePath,
+			async () => {
+				const token = randomUUID()
+				const temporary = `${path}.${process.pid}.${token}.tmp`
 				try {
-					await handle.writeFile(
-						`${JSON.stringify({ token, pid: process.pid, checkoutPath, runDir: run.runDir, owner_host: owner.hostname, owner_start: owner.startIdentity })}\n`,
-						"utf8",
-					)
-					await handle.sync()
-				} finally {
-					await handle.close()
-				}
-				// A hard link publishes only complete contents and atomically loses to
-				// any existing owner without truncating or replacing its lock.
-				await link(temporary, path)
-				return { path, token }
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-				try {
-					let serialized: string
-					try {
-						serialized = await readFile(path, "utf8")
-					} catch (error) {
-						if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
-						throw error
-					}
-					const lock = JSON.parse(serialized) as {
-						pid?: unknown
-						owner_host?: unknown
-						owner_start?: unknown
-					}
-					if (
-						typeof lock.pid !== "number" ||
-						!Number.isSafeInteger(lock.pid) ||
-						lock.pid < 1 ||
-						typeof lock.owner_host !== "string" ||
-						typeof lock.owner_start !== "string"
-					) {
-						throw new ReviewTargetError(
-							"review_lock_invalid",
-							`Review lock ${path} is malformed; remove only this file after verifying the owner.`,
-						)
-					}
-					if (lock.owner_host !== currentReviewHost()) {
-						throw new ReviewTargetError(
-							"review_lock_untrusted",
-							`Review lock ${path} belongs to another host; it is preserved. Inspect the owner and remove only this file after confirmation.`,
-						)
-					}
-					if (await processAlive(lock.pid)) {
-						const currentStart = await reviewProcessStartIdentity(lock.pid)
-						if (currentStart === lock.owner_start) throw activeError(checkoutPath)
-						// This is PID reuse, not the original owner.
-					}
-					// Atomically move the stale candidate out of the acquisition path.
-					// A competing reclaimer sees ENOENT and retries against the new owner.
-					const stale = `${path}.${process.pid}.${token}.stale`
-					try {
+					const serialized = await readLockText(path)
+					await hooks?.afterGuardedRead?.()
+					if (serialized !== undefined) {
+						await assertReclaimable(serialized, path, checkoutPath)
+						const stale = `${path}.${process.pid}.${token}.stale`
+						// The immutable stale lock may be quarantined only after its
+						// current contents and owner are checked inside the SQLite lock.
 						await rename(path, stale)
-					} catch (error) {
-						if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
-						throw error
+						await unlink(stale)
 					}
-					const renamed = await readFile(stale, "utf8")
-					if (renamed !== serialized) {
-						throw new ReviewTargetError(
-							"review_lock_changed",
-							`Review lock ${path} changed during stale-owner verification; preserved as ${stale}.`,
+					const handle = await open(temporary, "wx", 0o600)
+					try {
+						await handle.writeFile(
+							`${JSON.stringify({ token, pid: process.pid, checkoutPath, runDir: run.runDir, owner_host: owner.hostname, owner_start: owner.startIdentity })}\n`,
+							"utf8",
 						)
+						await handle.sync()
+					} finally {
+						await handle.close()
 					}
-					// Complete review artifacts are never deleted by this mechanism.
-					await unlink(stale)
-				} catch (error) {
-					if (error instanceof ReviewTargetError) throw error
-					throw new ReviewTargetError(
-						"review_lock_unreadable",
-						`Cannot safely reclaim review lock ${path}: ${error instanceof Error ? error.message : String(error)}`,
-					)
+					await link(temporary, path)
+					published = { path, token }
+					return published
+				} finally {
+					await rm(temporary, { force: true }).catch(() => {})
 				}
-			} finally {
-				await rm(temporary, { force: true }).catch(() => {})
+			},
+			hooks?.beforeRelease,
+		)
+	} catch (error) {
+		if (published) {
+			try {
+				const current = JSON.parse(await readFile(path, "utf8")) as { token?: unknown }
+				if (current.token === published.token) await rm(path, { force: true })
+			} catch {
+				// Never remove a different owner's lock after a failed release.
 			}
 		}
-		return undefined
-	})
+		throw error
+	}
 }
 
 export async function acquireReviewOperation(
@@ -232,6 +238,7 @@ export async function acquireReviewOperation(
 	run: LocalReviewRunDirectory,
 	ownerIdentity: typeof currentReviewOwnerIdentity = currentReviewOwnerIdentity,
 	pendingSignal?: AbortSignal,
+	hooks?: ReviewAcquisitionHooks,
 ): Promise<ReviewOperation> {
 	const sessionId = ctx.sessionManager.getSessionId()
 	if (activeBySession.has(sessionId) || activeByCheckout.has(checkoutPath)) throw activeError(checkoutPath)
@@ -242,7 +249,7 @@ export async function acquireReviewOperation(
 	const controller = new AbortController()
 	const active: ActiveReview = { checkoutPath, controller, completion, complete: resolveCompletion }
 	try {
-		const lock = await acquirePersistentLock(checkoutPath, run, ownerIdentity)
+		const lock = await acquirePersistentLock(checkoutPath, run, ownerIdentity, hooks)
 		if (!lock)
 			throw new ReviewTargetError("review_lock_failed", `Could not acquire the active-review lock for ${checkoutPath}.`)
 		active.lockPath = lock.path

@@ -1,10 +1,13 @@
+import { type ChildProcess, fork } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createCommandContext, sendTerminalInput } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { stripExpectedNodeSqliteWarning } from "../review-submit/process-test-utils.js"
 import {
 	acquireReviewOperation,
 	cancelActiveReview,
@@ -15,6 +18,43 @@ import { runReviewCommand } from "./command.js"
 import reviewCommandExtension from "./index.js"
 import { currentReviewHost, currentReviewOwnerIdentity } from "./owner-identity.js"
 import { createLocalReviewRunDirectory } from "./run-directory.js"
+
+const activeRunsProcess = fileURLToPath(new URL("./active-runs-process.ts", import.meta.url))
+
+type ProcessMessage = { id?: string; type?: string; code?: string; token?: string }
+
+function startActiveRunsProcess(root: string, id: string, mode: "stall" | "normal") {
+	const child = fork(activeRunsProcess, [root, id, mode], {
+		execArgv: ["--import", "tsx"],
+		silent: true,
+		env: {
+			PATH: process.env.PATH,
+			HOME: root,
+			SystemRoot: process.env.SystemRoot,
+			TEMP: process.env.TEMP,
+			TMP: process.env.TMP,
+		},
+	})
+	const messages: ProcessMessage[] = []
+	child.on("message", (message: ProcessMessage) => messages.push(message))
+	let stderr = ""
+	child.stderr?.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk))
+	const completed = new Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }>((resolve) => {
+		child.once("close", (code, signal) => resolve({ code, signal, stderr }))
+	})
+	return { child, messages, completed }
+}
+
+function stopChildren(children: ChildProcess[]): void {
+	for (const child of children) {
+		try {
+			child.kill("SIGCONT")
+		} catch {
+			// Already running or exited.
+		}
+		child.kill("SIGKILL")
+	}
+}
 
 const temporaryDirectories: string[] = []
 
@@ -249,7 +289,7 @@ describe("active local review runs", () => {
 			expect(results.sort()).toEqual(["ok", "review_in_progress"].sort())
 			expect(operations).toHaveLength(1)
 			await Promise.all(operations.map((operation) => operation.finish()))
-			expect(readdirSync(outputRoot).sort()).toEqual(["runs"])
+			expect(readdirSync(outputRoot).sort()).toEqual([".active-review.lock.sqlite", "runs"])
 		}
 	})
 
@@ -269,20 +309,34 @@ describe("active local review runs", () => {
 		)
 		const owner = await currentReviewOwnerIdentity()
 		const ownerIdentity = async () => owner
-		const acquire = (id: string, identity = ownerIdentity) => {
+		const acquire = (id: string, identity = ownerIdentity, hooks?: Parameters<typeof acquireReviewOperation>[5]) => {
 			const ctx = createCommandContext()
 			ctx.sessionManager.getSessionId = () => `delayed-${id}`
-			return acquireReviewOperation(ctx, join(root, id), { runDir: join(outputRoot, "runs", id), lockPath }, identity)
+			return acquireReviewOperation(
+				ctx,
+				join(root, id),
+				{ runDir: join(outputRoot, "runs", id), lockPath },
+				identity,
+				undefined,
+				hooks,
+			)
 		}
 		let releaseB!: () => void
 		const bGate = new Promise<void>((resolve) => {
 			releaseB = resolve
 		})
-
-		const b = acquire("b", async () => {
-			await bGate
-			return owner
+		let markBRead!: () => void
+		const bRead = new Promise<void>((resolve) => {
+			markBRead = resolve
 		})
+
+		const b = acquire("b", ownerIdentity, {
+			beforeStaleRename: async () => {
+				markBRead()
+				await bGate
+			},
+		})
+		await bRead
 		const a = await acquire("a")
 		const published = JSON.parse(readFileSync(lockPath, "utf8")) as { token: string }
 		expect(published.token).not.toBe("dead-owner")
@@ -295,8 +349,81 @@ describe("active local review runs", () => {
 
 		await a.finish()
 		expect(existsSync(lockPath)).toBe(false)
-		expect(readdirSync(outputRoot).sort()).toEqual(["runs"])
+		expect(readdirSync(outputRoot).sort()).toEqual([".active-review.lock.sqlite", "runs"])
 	})
+
+	it("cleans a published primary lock when SQLite release fails", async () => {
+		const ctx = createCommandContext()
+		const { outputRoot, checkoutPath } = sandbox()
+		const runDir = await createLocalReviewRunDirectory(outputRoot)
+
+		await expect(
+			acquireReviewOperation(ctx, checkoutPath, runDir, undefined, undefined, {
+				beforeRelease: async () => {
+					throw new Error("injected SQLite release failure")
+				},
+			}),
+		).rejects.toThrow("injected SQLite release failure")
+		expect(existsSync(runDir.lockPath)).toBe(false)
+
+		const retry = await acquireReviewOperation(ctx, checkoutPath, runDir)
+		await retry.finish()
+	})
+
+	it.skipIf(process.platform === "win32")(
+		"keeps a SIGSTOPped holder exclusive without a crash",
+		{ timeout: 30_000 },
+		async () => {
+			const { root } = sandbox()
+			const outputRoot = join(root, "out")
+			const lockPath = join(outputRoot, "active-review.json")
+			mkdirSync(join(outputRoot, "runs"), { recursive: true })
+			writeFileSync(
+				lockPath,
+				JSON.stringify({
+					token: "dead-owner",
+					pid: 999_999,
+					owner_host: currentReviewHost(),
+					owner_start: "dead-process-start",
+				}),
+			)
+			const holder = startActiveRunsProcess(outputRoot, "holder", "stall")
+			const children = [holder.child]
+			let waiter: ReturnType<typeof startActiveRunsProcess> | undefined
+			try {
+				await vi.waitFor(() =>
+					expect(holder.messages.some((message) => message.type === "before_stale_rename")).toBe(true),
+				)
+				process.kill(holder.child.pid as number, "SIGSTOP")
+				waiter = startActiveRunsProcess(outputRoot, "waiter", "normal")
+				children.push(waiter.child)
+
+				await new Promise((resolve) => setTimeout(resolve, 2_500))
+				expect(waiter.messages.some((message) => message.type === "acquired")).toBe(false)
+				expect(JSON.parse(readFileSync(lockPath, "utf8")).token).toBe("dead-owner")
+
+				process.kill(holder.child.pid as number, "SIGCONT")
+				holder.child.send("continue")
+				await vi.waitFor(() => expect(holder.messages.some((message) => message.type === "acquired")).toBe(true))
+				await vi.waitFor(() =>
+					expect(
+						waiter?.messages.some((message) => message.type === "error" && message.code === "review_in_progress"),
+					).toBe(true),
+				)
+				const holderToken = holder.messages.find((message) => message.type === "acquired")?.token
+				expect(JSON.parse(readFileSync(lockPath, "utf8")).token).toBe(holderToken)
+				holder.child.send("finish")
+
+				const [holderResult, waiterResult] = await Promise.all([holder.completed, waiter.completed])
+				expect(holderResult.code).toBe(0)
+				expect(waiterResult.code).toBe(0)
+				expect(stripExpectedNodeSqliteWarning(holderResult.stderr)).toBe("")
+				expect(stripExpectedNodeSqliteWarning(waiterResult.stderr)).toBe("")
+			} finally {
+				stopChildren(children)
+			}
+		},
+	)
 
 	it("honors cancellation that arrives while the target is still resolving", async () => {
 		const { root } = sandbox()
