@@ -232,10 +232,10 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 }
 
 /**
- * Collect all known tips — both static definitions and dynamically registered
- * third-party providers. Static tip arrays (GENERAL_TIPS, FERMENT_TIPS) are
- * always included regardless of runtime state, so the /tips panel shows the
- * full catalog.
+ * Collect the tips for the /tips panel: static definitions and registered
+ * third-party providers. GENERAL_TIPS are always included. FERMENT_TIPS are
+ * included only when the legacy Ferment loaded at startup and is still on,
+ * because they name /ferment-legacy commands.
  */
 function collectAllTips(registry: TipRegistry): TipCandidate[] {
 	const seen = new Set<string>()

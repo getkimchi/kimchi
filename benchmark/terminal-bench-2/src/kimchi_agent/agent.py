@@ -84,6 +84,8 @@ KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
 FERMENT_SLASH_COMMAND = "/ferment"
 # --ferment-oneshot is V1-only; kimchi exits 2 unless the legacy resource is on.
 FERMENT_LEGACY_RESOURCE_ID = "extensions.ferment-legacy"
+# The one-shot arm runs V1, so the new Ferment (which owns /ferment) is turned off.
+FERMENT_RESOURCE_ID = "extensions.ferment"
 KIMCHI_ENABLE_RESOURCES_ENV = "KIMCHI_ENABLE_RESOURCES"
 KIMCHI_ERROR_CLASSIFICATION_TYPE = "kimchi_error_classification"
 KIMCHI_INFRA_ERROR_EXIT_CODE = 74
@@ -838,6 +840,10 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             # Read by kimchi through pi's SettingsManager: disables upstream
             # threshold auto-compaction and both ferment compaction paths.
             settings["compaction"] = {"enabled": False}
+        if self._resolved_flags.get("ferment-oneshot"):
+            # A settings override beats KIMCHI_ENABLE_RESOURCES, so the V1 arm
+            # does not run with the new Ferment on.
+            settings["resources"] = {FERMENT_RESOURCE_ID: False}
 
         settings_json = json.dumps(settings, separators=(",", ":"))
         return (

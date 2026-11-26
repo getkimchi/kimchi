@@ -1793,14 +1793,14 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 			} else if (payload.decision === "start_ferment") {
 				// Legacy-off gate: V1 "Start as ferment" is inert unless the legacy
 				// Ferment was loaded at startup and is still on. The review is already
-				// consumed, so no menu is left: tell the user to submit the plan again,
-				// and release the slug so the next submission starts a fresh review.
+				// consumed, so no menu is left: tell the user to ask the agent to submit
+				// the plan again and choose Execute, and release the slug so the next submission starts a fresh review.
 				// Plan mode stays on, like "rework", so the user can resubmit.
 				if (!isFermentLegacyLoadedAndEnabled()) {
 					activePlanSlug = undefined
 					notifyUser(
 						ctx,
-						"Start as ferment needs the legacy Ferment, which is off. Submit the plan again to execute it.",
+						"Start as ferment needs the legacy Ferment, which is off. Ask the agent to submit the plan again, then choose Execute.",
 						"warning",
 					)
 					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())

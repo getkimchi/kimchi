@@ -251,6 +251,10 @@ V2 runtime accounting describes the working assistant turns and excludes accepte
 
 Ferment V1 is legacy under `extensions.ferment-legacy` and `/ferment-legacy`, off by default, and will be removed. It is the cross-session project mode. It persists JSON files under `.kimchi/ferments/`, tracks phases and steps, and owns workers, worktree metadata, and its own lifecycle runtime. See [docs/ferment.md](ferment.md) and [the V1 schema](ferment-storage-schema.md). Ferment V2 is a separate `extensions.ferment` resource and does not migrate or replace V1 state.
 
+## Upgrade note
+
+If you turned Ferment V2 on and the old Ferment off (`extensions.ferment-v2: true` and `extensions.ferment: false`), Ferment is now off for you, because `extensions.ferment` now names the new Ferment. Turn it back on with: `kimchi resources enable extensions.ferment`.
+
 ## Implementation references
 
 - [V2 extension](../src/extensions/ferment-v2/index.ts), [reducer](../src/extensions/ferment-v2/reducer.ts), [prompt](../src/extensions/ferment-v2/prompt.ts), [evaluator (verifier core)](../src/extensions/ferment-v2/evaluator.ts), [verifier report tools](../src/extensions/ferment-v2/verifier-report.ts), [verifier guard](../src/extensions/ferment-v2/verifier-guard.ts), [verifier prompt](../src/extensions/ferment-v2/verifier-prompt.ts), [workspace (baseline, facts, worktree)](../src/extensions/ferment-v2/workspace.ts), and [types](../src/extensions/ferment-v2/types.ts)

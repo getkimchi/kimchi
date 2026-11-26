@@ -389,7 +389,7 @@ async function submitPlan(
 }
 
 const START_FERMENT_LEGACY_OFF_NOTICE =
-	"Start as ferment needs the legacy Ferment, which is off. Submit the plan again to execute it."
+	"Start as ferment needs the legacy Ferment, which is off. Ask the agent to submit the plan again, then choose Execute."
 
 describe("auto MCP read-only approval", () => {
 	const toolCall = (toolName: string, input: Record<string, unknown>, toolCallId = "tc-mcp") => ({

@@ -110,6 +110,8 @@ Ferment (formerly Ferment V2) is the branch-scoped objective controller behind `
 
 Ferment is on by default. Its resource is `extensions.ferment`; turn it off under `/resources` if you do not want it. The previous Ferment (V1) is now the legacy Ferment under `/ferment-legacy` (see below).
 
+If you turned Ferment V2 on and the old Ferment off (`extensions.ferment-v2: true` and `extensions.ferment: false`), Ferment is now off for you, because `extensions.ferment` now names the new Ferment. Turn it back on with: `kimchi resources enable extensions.ferment`.
+
 > **Old V1 commands.** `/ferment` no longer runs V1 subcommands. A V1 command such as `/ferment list` or `/ferment delete <name>` shows a hint and starts nothing. Any other text is a new objective and starts an autonomous run. To use V1, enable `extensions.ferment-legacy`, restart, and use `/ferment-legacy`.
 
 | Command | Description |
