@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
-import { gitText } from "../review-targets/git.js"
+import { gitBytes } from "../review-targets/git.js"
 import type { ReviewWorktree } from "./types.js"
 
 function canonicalOwnedGitAdminDirectory(
@@ -23,17 +23,29 @@ function canonicalOwnedGitAdminDirectory(
 	return adminDir
 }
 
+async function absoluteGitPath(
+	worktreePath: string,
+	query: "--git-dir" | "--git-common-dir",
+	signal?: AbortSignal,
+): Promise<string> {
+	const result = await gitBytes(worktreePath, ["rev-parse", "--path-format=absolute", query], { signal })
+	const output = result.stdout.toString("utf8")
+	return output.endsWith("\n") ? output.slice(0, -1) : output
+}
+
 /** Capture the assigned admin directory immediately after trusted `git worktree add`,
  * before any reviewer-controlled command can change the checkout. */
 export async function captureReviewWorktreeGitAdmin(worktreePath: string, signal?: AbortSignal): Promise<string> {
-	const output = await gitText(worktreePath, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], {
-		signal,
-	})
-	const paths = output.trim().split("\n")
-	if (paths.length !== 2 || !paths[0] || !paths[1]) {
+	const adminPath = await absoluteGitPath(worktreePath, "--git-dir", signal)
+	const commonPath = await absoluteGitPath(worktreePath, "--git-common-dir", signal)
+	if (!adminPath || !commonPath) {
 		throw new Error(`Could not determine the assigned Git admin directory for reviewer checkout ${worktreePath}.`)
 	}
-	return canonicalOwnedGitAdminDirectory(worktreePath, resolve(worktreePath, paths[0]), resolve(worktreePath, paths[1]))
+	return canonicalOwnedGitAdminDirectory(
+		worktreePath,
+		resolve(worktreePath, adminPath),
+		resolve(worktreePath, commonPath),
+	)
 }
 
 /** Revalidate only the immutable creation-time assignment. A missing or mismatched

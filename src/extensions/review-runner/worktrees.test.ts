@@ -6,6 +6,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	utimesSync,
 	writeFileSync,
@@ -149,6 +150,18 @@ describe("review worktree lifecycle", () => {
 		expect(checkoutState(repo)).toEqual(before)
 		await pool.cleanup()
 		expect(checkoutState(repo)).toEqual(before)
+	})
+
+	it("captures git admin paths when the repository path contains a newline", async () => {
+		const newlineRepo = join(sandbox, "repo\nwith-newline")
+		renameSync(repo, newlineRepo)
+		repo = newlineRepo
+		const pool = await createReviewWorktreePool({ target: await branchTarget(), outputDir, rootDir })
+		const worktree = await pool.getWorktree("newline-repository")
+		const expectedAdminDir = git(worktree.path, "rev-parse", "--path-format=absolute", "--git-dir")
+		expect(worktree.gitAdminDir).toBe(realpathSync(expectedAdminDir))
+		expect(worktree.gitAdminDir).toContain("\n")
+		await pool.cleanup()
 	})
 
 	it("removes worktrees before the snapshot ref and makes cleanup idempotent", async () => {
