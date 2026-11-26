@@ -1,9 +1,17 @@
 name: Setup
-description: Checkout, enable corepack, setup Node.js 22, install dependencies, and optionally install Playwright
+description: Enable corepack, set up Node.js 22, install dependencies, and optionally install Bun, Go, ripgrep/fd and Playwright
 
 inputs:
   bun:
     description: "Install Bun runtime"
+    required: false
+    default: "false"
+  go:
+    description: "Install Go for tools/proxy-helper"
+    required: false
+    default: "false"
+  search-tools:
+    description: "Put pinned ripgrep and fd binaries on PATH (Linux only)"
     required: false
     default: "false"
   playwright:
@@ -14,6 +22,38 @@ inputs:
 runs:
   using: composite
   steps:
+    # The find/grep tools download fd/rg on first use. Having them on PATH keeps
+    # tests off the network: a slow download used to blow the test budget, and a
+    # failed one failed the test. Release binaries in a cache replace apt-get,
+    # which took 21 s on a median run and up to 93 s on a slow mirror.
+    - name: Cache search tools
+      if: inputs.search-tools == 'true'
+      id: search-tools-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/kimchi-ci/search-tools
+        key: search-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/setup/install-search-tools.sh') }}
+
+    - name: Install search tools
+      if: inputs.search-tools == 'true' && steps.search-tools-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/install-search-tools.sh" "$HOME/.cache/kimchi-ci/search-tools"
+
+    - name: Add search tools to PATH
+      if: inputs.search-tools == 'true'
+      shell: bash
+      run: |
+        echo "$HOME/.cache/kimchi-ci/search-tools" >> "$GITHUB_PATH"
+        "$HOME/.cache/kimchi-ci/search-tools/rg" --version | head -1
+        "$HOME/.cache/kimchi-ci/search-tools/fd" --version
+
+    - name: Setup Go
+      if: inputs.go == 'true'
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: tools/proxy-helper/go.mod
+        cache-dependency-path: tools/proxy-helper/go.sum
+
     - name: Enable corepack
       shell: bash
       run: corepack enable
