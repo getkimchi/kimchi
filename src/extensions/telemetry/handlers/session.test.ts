@@ -2,9 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getMe } from "../../../api/me.js"
 import type { TelemetryConfig } from "../../../config.js"
 import { createContext } from "../../__mocks__/context.js"
+import { createSideChatHost } from "../../__mocks__/side-chat-host.js"
 import { getActiveFerment } from "../../ferment/index.js"
 import { _resetSharedAccumulators, TelemetryContext } from "../session-context.js"
 import { emitSessionStartEvent, handleSessionShutdown, handleSessionStart } from "./session.js"
+
+/** The fake side-chat host the mocked getSideChatHost returns; undefined = host unavailable. */
+const sideChatHostRef = vi.hoisted(() => ({ host: undefined as unknown }))
+
+vi.mock("../../side-chat/harness.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../side-chat/harness.js")>()
+	return {
+		...actual,
+		getSideChatHost: () => sideChatHostRef.host,
+	}
+})
 
 vi.mock("../../ferment/index.js", () => ({
 	getActiveFerment: vi.fn(),
@@ -17,6 +29,7 @@ vi.mock("../../../api/me.js", () => ({
 beforeEach(() => {
 	vi.mocked(getActiveFerment).mockReset().mockReturnValue(undefined)
 	vi.mocked(getMe).mockReset().mockResolvedValue({ id: "test-user", email: "test@example.com" })
+	sideChatHostRef.host = undefined
 })
 
 function makeConfig(overrides: Partial<TelemetryConfig> = {}): TelemetryConfig {
@@ -210,5 +223,142 @@ describe("emitSessionStartEvent", () => {
 		expect(attrs.model).toBe("claude-opus-4-6")
 		expect(attrs.source).toBe("cli")
 		expect(attrs.ferment_id).toBe("")
+	})
+})
+
+describe("session.start tui_startup_mode", () => {
+	let originalFetch: typeof globalThis.fetch
+	let ctx: TelemetryContext
+
+	/** Flush and parse the first emitted session.start record's attributes. */
+	async function flushSessionStartAttrs(): Promise<Record<string, string>> {
+		ctx.flushLogBuffer()
+		await Promise.allSettled([...ctx.inFlight])
+		ctx.stopFlushTimer()
+		expect(globalThis.fetch).toHaveBeenCalled()
+		const [, options] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
+		const body = JSON.parse(options.body)
+		const logRecord = body.resourceLogs[0].scopeLogs[0].logRecords[0]
+		expect(logRecord.eventName).toBe("session.start")
+		return Object.fromEntries(
+			logRecord.attributes.map((a: { key: string; value: { stringValue: string } }) => [a.key, a.value.stringValue]),
+		)
+	}
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			text: vi.fn().mockResolvedValue(""),
+		} as unknown as Response)
+		ctx = new TelemetryContext(makeConfig())
+	})
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch
+		_resetSharedAccumulators()
+		vi.restoreAllMocks()
+	})
+
+	it("captures and emits fullscreen for a fullscreen interactive TUI", async () => {
+		const { host } = createSideChatHost()
+		sideChatHostRef.host = host
+		vi.mocked(host.isFullscreen).mockReturnValue(true)
+		const piCtx = createContext()
+		handleSessionStart(ctx, piCtx)
+		emitSessionStartEvent(ctx, piCtx)
+
+		expect(vi.mocked(host.isFullscreen)).toHaveBeenCalled()
+		const attrs = await flushSessionStartAttrs()
+		expect(attrs.tui_startup_mode).toBe("fullscreen")
+	})
+
+	it("captures and emits regular for a regular interactive TUI", async () => {
+		const { host } = createSideChatHost()
+		sideChatHostRef.host = host
+		vi.mocked(host.isFullscreen).mockReturnValue(false)
+		const piCtx = createContext()
+		handleSessionStart(ctx, piCtx)
+		emitSessionStartEvent(ctx, piCtx)
+
+		const attrs = await flushSessionStartAttrs()
+		expect(attrs.tui_startup_mode).toBe("regular")
+	})
+
+	it("omits the attribute for non-TUI run modes even when a fullscreen host exists", async () => {
+		const { host } = createSideChatHost()
+		sideChatHostRef.host = host
+		vi.mocked(host.isFullscreen).mockReturnValue(true)
+		for (const mode of ["rpc", "json", "print"] as const) {
+			const piCtx = createContext({ mode })
+			handleSessionStart(ctx, piCtx)
+			emitSessionStartEvent(ctx, piCtx)
+
+			const attrs = await flushSessionStartAttrs()
+			expect(attrs.tui_startup_mode).toBeUndefined()
+			;(globalThis.fetch as ReturnType<typeof vi.fn>).mockClear()
+		}
+	})
+
+	it("omits the attribute when the TUI host/renderer is unavailable", async () => {
+		sideChatHostRef.host = undefined
+		const piCtx = createContext()
+		handleSessionStart(ctx, piCtx)
+		emitSessionStartEvent(ctx, piCtx)
+
+		const attrs = await flushSessionStartAttrs()
+		expect(attrs.tui_startup_mode).toBeUndefined()
+	})
+
+	it("samples the renderer at session_start, not when session.start is emitted", async () => {
+		const piCtx = createContext()
+		handleSessionStart(ctx, piCtx)
+		// The host only becomes available after session_start (e.g. late init):
+		// the snapshot must stay empty rather than being sampled at emit time.
+		const { host } = createSideChatHost()
+		sideChatHostRef.host = host
+		emitSessionStartEvent(ctx, piCtx)
+
+		const attrs = await flushSessionStartAttrs()
+		expect(attrs.tui_startup_mode).toBeUndefined()
+	})
+
+	it("keeps the captured startup value when the renderer switches later", async () => {
+		const { host } = createSideChatHost()
+		sideChatHostRef.host = host
+		vi.mocked(host.isFullscreen).mockReturnValue(true)
+		const piCtx = createContext()
+		handleSessionStart(ctx, piCtx)
+		// The user switches to the regular renderer after startup.
+		vi.mocked(host.isFullscreen).mockReturnValue(false)
+		emitSessionStartEvent(ctx, piCtx)
+
+		const attrs = await flushSessionStartAttrs()
+		expect(attrs.tui_startup_mode).toBe("fullscreen")
+	})
+
+	it("resets and recaptures per session — no leak into a later session", async () => {
+		const { host } = createSideChatHost()
+		sideChatHostRef.host = host
+		vi.mocked(host.isFullscreen).mockReturnValue(true)
+		const piCtx = createContext()
+		handleSessionStart(ctx, piCtx)
+		emitSessionStartEvent(ctx, piCtx)
+		expect((await flushSessionStartAttrs()).tui_startup_mode).toBe("fullscreen")
+
+		;(globalThis.fetch as ReturnType<typeof vi.fn>).mockClear()
+		// Same instance, later harness session — now a non-TUI run.
+		const nextCtx = createContext({ mode: "print" })
+		handleSessionStart(ctx, nextCtx)
+		emitSessionStartEvent(ctx, nextCtx)
+		expect((await flushSessionStartAttrs()).tui_startup_mode).toBeUndefined()
+
+		;(globalThis.fetch as ReturnType<typeof vi.fn>).mockClear()
+		// And a fresh TUI session recaptures the now-current renderer.
+		vi.mocked(host.isFullscreen).mockReturnValue(false)
+		handleSessionStart(ctx, piCtx)
+		emitSessionStartEvent(ctx, piCtx)
+		expect((await flushSessionStartAttrs()).tui_startup_mode).toBe("regular")
 	})
 })

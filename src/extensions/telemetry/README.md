@@ -118,7 +118,7 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 
 | Event | When | Attributes |
 |-------|------|------------|
-| `session.start` | Session begins | `model` |
+| `session.start` | Session begins | `model`, `tui_startup_mode` *(interactive TUI mode at startup: `fullscreen` / `regular`. Captured once from the live renderer at `session_start` — the value is a snapshot, so a later fullscreen/regular switch does not change it, and a reinitialized session resets and recaptures it. Omitted for non-TUI run modes (`rpc` / `json` / `print` — the ACP host among them) and when the live renderer cannot be resolved: never guessed, never defaulted to `regular`. PostHog-only mapping — `session_start.tui_startup_mode`; not in the ClickHouse allowlist)* |
 | `session.end` | Session ends | `model`, `duration_ms`, `ended_by`, `source`, `mode` |
 | `user_message` | User sends a message | `model`, `message_length`, `turn_index` *(the 1-based session turn this prompt's run starts in)* |
 | `api_request` | Assistant response completes | `model`, `provider`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `cost_usd`, `duration_ms`, `request.trace_id`, `request.span_id` *(trace of the request that produced it — present when a provider request has been issued)* |
