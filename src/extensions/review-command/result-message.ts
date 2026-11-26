@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import type { MessageRenderer, Theme } from "@earendil-works/pi-coding-agent"
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
+import { sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui"
 import type { ReviewFindingRecord, ReviewPanelResult } from "../review-panel/types.js"
 import { sanitizeReviewDisplayText } from "../review-targets/provider-url.js"
 import type { ResolvedReviewScope } from "../review-targets/types.js"
@@ -87,13 +87,9 @@ function wrap(value: string, width: number): string[] {
 }
 
 function trailing(value: string, width: number): string {
-	let result = ""
-	for (const char of [...value].reverse()) {
-		const candidate = char + result
-		if (visibleWidth(candidate) > width) break
-		result = candidate
-	}
-	return result
+	const valueWidth = visibleWidth(value)
+	if (valueWidth <= width) return value
+	return sliceByColumn(value, valueWidth - width, width, true)
 }
 
 function middleTruncate(value: string, width: number, keepSuffix?: string): string {
@@ -168,20 +164,33 @@ function collapsedDescription(finding: ReviewFindingRecord, theme: Theme | undef
 	return [rows[0] ?? "", fitVisibleLine(`${rows[1] ?? ""}…`, width)]
 }
 
+const MIN_INLINE_FIELD_CONTENT_WIDTH = 10
+const EXPANDED_REFLOW_MAX_WIDTH = 60
+const TINY_RESULT_WIDTH = 10
+
 function expandedField(value: string, label: string | undefined, theme: Theme | undefined, width: number): string[] {
 	const prefix = label ? `${label} ` : ""
-	const continuation = " ".repeat(visibleWidth(prefix))
+	const prefixWidth = visibleWidth(prefix)
+	const inlineLabel = Boolean(label) && width - prefixWidth >= MIN_INLINE_FIELD_CONTENT_WIDTH
+	const continuation = inlineLabel ? " ".repeat(prefixWidth) : ""
+	const styledPrefix = theme ? theme.fg("dim", prefix) : prefix
 	const paragraphs = value.split(/\r?\n\s*\r?\n/).filter((paragraph) => paragraph.trim())
 	const rows: string[] = []
+	if (label && !inlineLabel) {
+		const standaloneLabel = theme ? theme.fg("dim", prefix.trimEnd()) : prefix.trimEnd()
+		for (const row of wrap(standaloneLabel, width)) rows.push(fitVisibleLine(row, width))
+	}
+	let contentRow = 0
 	for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
 		if (paragraphIndex > 0) rows.push("")
-		rows.push(...wrap(inlineText(prose(paragraph), theme), Math.max(1, width - visibleWidth(prefix))))
+		const contentWidth = inlineLabel ? width - prefixWidth : width
+		for (const row of wrap(inlineText(prose(paragraph), theme), contentWidth)) {
+			const rowPrefix = inlineLabel ? (contentRow === 0 ? styledPrefix : continuation) : ""
+			rows.push(fitVisibleLine(`${rowPrefix}${row}`, width))
+			contentRow++
+		}
 	}
-	return rows.map((row, index) => {
-		if (!row) return ""
-		if (index === 0 && label) return `${theme ? theme.fg("dim", prefix) : prefix}${row}`
-		return `${index === 0 ? "" : continuation}${row}`
-	})
+	return rows
 }
 
 /** Compact or expanded presentation used only by the live TUI. */
@@ -192,8 +201,13 @@ export function renderReviewResultLines(
 	expanded = true,
 	outputPad = 0,
 ): string[] {
-	const safeWidth = Math.max(1, width - Math.max(0, outputPad))
-	const line = (value: string) => (value ? `${" ".repeat(Math.max(0, outputPad))}${value}` : "")
+	const renderWidth = Math.max(1, width)
+	const padding = renderWidth < TINY_RESULT_WIDTH ? 0 : Math.min(Math.max(0, outputPad), renderWidth - 1)
+	const safeWidth = Math.max(1, renderWidth - padding)
+	const line = (value: string) => (value ? fitVisibleLine(`${" ".repeat(padding)}${value}`, renderWidth) : "")
+	const narrowExpanded = expanded && renderWidth < EXPANDED_REFLOW_MAX_WIDTH
+	const bodyIndent = expanded && safeWidth < TINY_RESULT_WIDTH ? "" : "  "
+	const bodyWidth = Math.max(1, safeWidth - visibleWidth(bodyIndent))
 	const lines: string[] = []
 	if (details.findings.length === 0) {
 		lines.push(line(theme ? theme.fg(headlineColor(details), "No issues found") : "No issues found"))
@@ -220,8 +234,22 @@ export function renderReviewResultLines(
 			renderedFindings++
 			continue
 		}
-		lines.push(line(findingTitle(finding, theme, safeWidth)))
-		lines.push(line(`  ${fileLocation(finding, Math.max(1, safeWidth - 2))}`))
+		if (narrowExpanded) {
+			const titleRows = expandedField(
+				oneLine(finding.title),
+				`${finding.priority} · ${finding.type} ·`,
+				theme,
+				bodyWidth,
+			)
+			for (const row of titleRows) lines.push(line(row ? `${bodyIndent}${row}` : ""))
+			const location = `${finding.path.replace(/^\.\//, "")}:${finding.line}`
+			for (const row of expandedField(location, undefined, theme, bodyWidth)) {
+				lines.push(line(row ? `${bodyIndent}${row}` : ""))
+			}
+		} else {
+			lines.push(line(findingTitle(finding, theme, safeWidth)))
+			lines.push(line(`  ${fileLocation(finding, Math.max(1, safeWidth - 2))}`))
+		}
 		if (!expanded) {
 			for (const row of collapsedDescription(finding, theme, Math.max(1, safeWidth - 2))) {
 				lines.push(line(`  ${row}`))
@@ -233,8 +261,8 @@ export function renderReviewResultLines(
 				{ value: finding.suggestion, label: "Suggestion:" },
 			]) {
 				if (!field.value) continue
-				for (const row of expandedField(field.value, field.label, theme, Math.max(1, safeWidth - 2))) {
-					lines.push(line(row ? `  ${row}` : ""))
+				for (const row of expandedField(field.value, field.label, theme, bodyWidth)) {
+					lines.push(line(row ? `${bodyIndent}${row}` : ""))
 				}
 			}
 		}

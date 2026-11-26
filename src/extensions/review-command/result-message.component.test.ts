@@ -1,5 +1,5 @@
 import { CustomMessageComponent } from "@earendil-works/pi-coding-agent"
-import { visibleWidth } from "@earendil-works/pi-tui"
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it } from "vitest"
 import type { CustomMessage } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/core/messages.js"
 import { initTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js"
@@ -34,21 +34,28 @@ const message: CustomMessage<ReviewResultDetails> = {
 				writer: "final",
 				seq: 1,
 				created_at: "2026-11-25T12:00:00Z",
-				path: "value.ts",
-				line: 2,
-				title: "Additional exported flag bypasses authorization",
+				path: "very/long/directory/éxxxxx.ts",
+				line: 1,
+				title: "Flag bypasses authorization 🚨 認可",
 				description:
-					"The additional exported flag creates a critical authorization bypass because every caller now enables the privileged path without checking the current principal or preserving the previous deny-by-default behavior.",
+					"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 長い説明文 🚨🚀 gives é combining marks and an unbroken word that must wrap safely at every width.",
 				explanation:
-					"Static inspection of the head revision confirmed that every caller enables the privileged path without an authorization check.",
+					"Static inspection abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ confirms 長い説明文 and 🚨🚀 without losing full content where it fits.",
 				priority: "P0",
 				type: "security",
 				suggestion:
-					"Remove the unsafe export, restore deny-by-default authorization, and add a regression test proving an unauthenticated principal cannot enter the privileged path.",
+					"Remove the unsafe export supercalifragilisticexpialidocious and retain é, é, 認可, and 🚨🚀 in the full suggestion.",
 			},
 		],
 		summaryPath: "/private/var/folders/a-very-long-path/review/summary/final.json",
 	},
+}
+
+const RENDER_WIDTHS = [...Array.from({ length: 40 }, (_, index) => index + 1), 60, 80, 120]
+const FULL_CONTENT_WIDTHS = RENDER_WIDTHS.filter((width) => width > 1)
+
+function compactText(value: string): string {
+	return stripTerminalSequences(value).replace(/\s+/g, "")
 }
 
 describe("review result CustomMessageComponent", () => {
@@ -66,5 +73,41 @@ describe("review result CustomMessageComponent", () => {
 			).toBe(true)
 			expect(rows.map(visibleWidth).every((lineWidth) => lineWidth <= width)).toBe(true)
 		}
+	})
+
+	it.each(RENDER_WIDTHS)("keeps ANSI, Unicode, and indented rows within width %i", (width) => {
+		initTheme("kimchi")
+		const component = new CustomMessageComponent(message, (_message, options, theme) =>
+			reviewResultRenderer(message, options, theme),
+		)
+		for (const expanded of [false, true]) {
+			component.setExpanded(expanded)
+			const rows = component.render(width)
+			const overflow = rows
+				.map((row, index) => ({ index, width: visibleWidth(row), row }))
+				.filter((row) => row.width > width)
+			expect(overflow, `${expanded ? "expanded" : "collapsed"}: ${JSON.stringify(overflow.slice(0, 3))}`).toEqual([])
+		}
+	})
+
+	it.each(FULL_CONTENT_WIDTHS)("retains every complete expanded field at width %i", (width) => {
+		initTheme("kimchi")
+		const component = new CustomMessageComponent(message, (_message, options, theme) =>
+			reviewResultRenderer(message, options, theme),
+		)
+		component.setExpanded(true)
+		const output = compactText(component.render(width).join(""))
+		const details = message.details
+		if (!details) throw new Error("Expected the test result details")
+		const finding = details.findings[0]
+		if (!finding) throw new Error("Expected the test finding")
+		const fields = [
+			finding.title,
+			`${finding.path}:${finding.line}`,
+			finding.description,
+			finding.explanation,
+			finding.suggestion,
+		]
+		for (const field of fields) expect(output).toContain(compactText(field))
 	})
 })

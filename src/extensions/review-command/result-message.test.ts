@@ -363,4 +363,24 @@ describe("result width and Unicode safety", () => {
 			}
 		}
 	})
+
+	it("moves an expanded field label to its own row when its hanging indent does not fit", () => {
+		const rows = renderReviewResultLines(details({ findings: [finding("value.ts", 2, "P2")] }), testTheme, 16, true, 1)
+		const displayRows = rows.map(sanitizeReviewDisplayText)
+		const labelIndex = displayRows.indexOf("Explanation:")
+		expect(labelIndex).toBeGreaterThan(0)
+		expect(rows[labelIndex + 1]?.startsWith("              ")).toBe(false)
+	})
+
+	it("does not detach a combining accent while shortening a path", () => {
+		const rows = renderReviewResultLines(
+			details({ findings: [finding("very/long/directory/éxxxxx.ts", 1, "P2")] }),
+			testTheme,
+			22,
+			false,
+		)
+		const pathRow = rows.find((row) => row.includes("xxxxx.ts:1"))
+		expect(pathRow).toBeDefined()
+		expect(pathRow).not.toContain("…́")
+	})
 })
