@@ -60,6 +60,10 @@ def test_root(generation):
     return root, path
 
 
+def measurement_environment():
+    return {"KIMCHI_PERF_SOURCE_SHA": "source-fixture", "KIMCHI_PERF_HARNESS_SHA": "harness-fixture"}
+
+
 def invoke(binary, budget_path, records, reps=2, scenarios=None):
     groups = {}
     for record in records:
@@ -67,7 +71,8 @@ def invoke(binary, budget_path, records, reps=2, scenarios=None):
     if scenarios is not None:
         groups = {scenarios: groups[scenarios]}
     for_scenario = ["--scenarios", scenarios] if scenarios is not None else []
-    with unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", binary, "--calibrate", "--budgets", budget_path,
+    with unittest.mock.patch.dict(os.environ, measurement_environment()), \
+            unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", binary, "--calibrate", "--budgets", budget_path,
                                                "--reps", str(reps), *for_scenario]), \
             unittest.mock.patch.object(gate, "run_scenarios", return_value=(groups, set())):
         gate.main()
@@ -105,9 +110,21 @@ def check_cases():
     shutil.rmtree(root, ignore_errors=True)
 
     root, budget_path = test_root(fixtures.LEDGER_GENERATION)
+    with unittest.mock.patch.dict(os.environ, {"KIMCHI_PERF_SOURCE_SHA": "", "KIMCHI_PERF_HARNESS_SHA": ""}), \
+            unittest.mock.patch.object(gate, "run_scenarios", return_value=({"ledger": [base_record("ledger")]}, set())) as run, \
+            unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", sys.executable, "--scenarios", "ledger",
+                                                    "--budgets", budget_path, "--out", os.path.join(root, "preflight-runs")]):
+        expect_rejection_without_write(lambda: gate.main(), budget_path,
+                                       "KIMCHI_PERF_SOURCE_SHA, KIMCHI_PERF_HARNESS_SHA")
+        if run.called:
+            raise AssertionError("missing measurement identity reached scenario execution")
+    shutil.rmtree(root, ignore_errors=True)
+
+    root, budget_path = test_root(fixtures.LEDGER_GENERATION)
     scaled = base_record("ledger")
     scaled["fixture_generation"] = "ledger-heavy-scaled:2400:2:1440"
-    with unittest.mock.patch.object(gate, "run_scenarios", return_value=({"ledger": [scaled]}, set())), \
+    with unittest.mock.patch.dict(os.environ, measurement_environment()), \
+            unittest.mock.patch.object(gate, "run_scenarios", return_value=({"ledger": [scaled]}, set())), \
             unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", sys.executable,
                                                     "--scenarios", "ledger", "--budgets", budget_path]):
         expect_rejection_without_write(lambda: gate.main(), budget_path, "ledger generation mismatch")

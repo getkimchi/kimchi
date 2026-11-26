@@ -102,7 +102,7 @@ def check_no_rescan_of_reaped_root():
 
 def check_gate_cancellation_before_owned():
     import gate
-    from calibration_checks import test_root
+    from calibration_checks import measurement_environment, test_root
     class Driver:
         def __init__(self):
             self.signaled = False
@@ -123,7 +123,8 @@ def check_gate_cancellation_before_owned():
     def fake_popen(argv, **kwargs):
         return real_popen(argv, **kwargs) if argv[0] == "ps" else driver
     try:
-        with unittest.mock.patch.object(gate.subprocess, "Popen", side_effect=fake_popen), \
+        with unittest.mock.patch.dict(os.environ, measurement_environment()), \
+                unittest.mock.patch.object(gate.subprocess, "Popen", side_effect=fake_popen), \
                 unittest.mock.patch.object(gate, "reap_process_tree", side_effect=fake_reaper), \
                 unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", sys.executable,
                                                         "--scenarios", "ledger", "--budgets", budget_path]):
@@ -141,7 +142,7 @@ def check_gate_cancellation_before_owned():
 
 def check_gate_cancellation():
     import gate
-    from calibration_checks import test_root
+    from calibration_checks import measurement_environment, test_root
     class Driver:
         pid = 99999999
         def poll(self):
@@ -160,7 +161,8 @@ def check_gate_cancellation():
     def fake_popen(argv, **kwargs):
         return real_popen(argv, **kwargs) if argv[0] == "ps" else Driver()
     try:
-        with unittest.mock.patch.object(gate.subprocess, "Popen", side_effect=fake_popen), \
+        with unittest.mock.patch.dict(os.environ, measurement_environment()), \
+                unittest.mock.patch.object(gate.subprocess, "Popen", side_effect=fake_popen), \
                 unittest.mock.patch.object(gate, "reap_process_tree", side_effect=fake_reaper), \
                 unittest.mock.patch.object(sys, "argv", ["gate.py", "--binary", sys.executable,
                                                         "--scenarios", "ledger", "--budgets", budget_path]):

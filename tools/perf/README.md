@@ -89,9 +89,9 @@ with no completed records, any failed rep (a crash cannot hide behind a
 green median of the surviving reps), a zero-reading counter, a
 work-counter tier different from the budgets' calibration tier, or a
 binary whose self-reported version differs from what CI built
-(`--expect-version`) all fail the run. Unknown budget keys warn (rename drift in the other
+(`--expect-version`) all fail the run. Unknown budget keys fail (rename drift in the other
 direction); PR-controlled strings are sanitized before they reach the CI
-step summary. Unknown budget keys also fail.
+step summary.
 
 The current limits live in [budgets.json](budgets.json); its `_meta`
 records the arch/commit/runner/counter tier they were calibrated on.
@@ -101,9 +101,18 @@ do not require the measured commit to equal that historical calibration commit.
 
 The ordinary gate covers `session`, `resume`, and `idle`. The `ledger`
 comparison is opt-in until its new generation has budgets from exactly two
-complete, passing repetitions of the actual source PR. Request it with
-`--scenarios ledger`; never repurpose legacy-run limits as a new-generation
-calibration. The 100 ms keystroke guard is always preserved.
+complete, passing repetitions of the actual source PR. For a local same-tree
+comparison, provide its measurement identities explicitly:
+
+```sh
+KIMCHI_PERF_SOURCE_SHA="$(git rev-parse HEAD)" \
+KIMCHI_PERF_HARNESS_SHA="$(git rev-parse HEAD)" \
+python3 tools/perf/gate.py --scenarios ledger
+```
+
+Backtests keep their distinct measured-source and harness SHAs. Never
+repurpose legacy-run limits as a new-generation calibration. The 100 ms
+keystroke guard is always preserved.
 
 ## Usage
 

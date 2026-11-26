@@ -264,6 +264,9 @@ def run_selfcheck():
 
     problems = []
     committed = json.load(open(os.path.join(HERE, "budgets.json")))
+    committed_generation = generation_mismatch([rec_tpl["ledger"]], committed)
+    if committed_generation is not None:
+        problems.append(f"committed budgets: {committed_generation}")
     for scenario, metrics in EXTRACTORS.items():
         if set(metrics) != set(committed.get(scenario, {})):
             missing = sorted(set(metrics) - set(committed.get(scenario, {})))
@@ -642,6 +645,12 @@ def main():
         mismatch = generation_mismatch([], json.load(open(args.budgets)))
         if mismatch is not None:
             raise SystemExit(mismatch)
+    if "ledger" in scenarios:
+        missing_identity = [key for key in ("KIMCHI_PERF_SOURCE_SHA", "KIMCHI_PERF_HARNESS_SHA")
+                            if not os.environ.get(key)]
+        if missing_identity:
+            raise SystemExit(f"missing measurement identity environment: {', '.join(missing_identity)}; "
+                             "set these before running the ledger scenario")
     by_scenario, failed_scenarios = run_scenarios(binary, scenarios, args, out_dir)
     if "ledger" in scenarios and not args.calibrate and by_scenario.get("ledger"):
         with open(args.budgets) as f:

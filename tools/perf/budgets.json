@@ -1,13 +1,13 @@
 {
  "_meta": {
-  "ledger_generation": "ledger-heavy-v2; limits derived from the ledger-heavy-v1-shaped master-heavy run 44729613634 (v2 calibration refused: keystroke p95 above the 100 ms guard)",
+  "ledger_generation": "ledger-heavy-v2",
   "headroom": "per-metric, from measured run-to-run spread (see gate.py)",
   "calibrated": "master-heavy run 44729613634 (2026-11-20, canonical ubuntu-24.04-arm)",
   "git": "git version 2.56.1",
   "reps": 1,
   "arch": "aarch64",
   "macos": "",
-  "note": "ledger-heavy-v1 limits derived from master-heavy cgroup measurements; other scenarios retain previous calibration",
+  "note": "ledger-heavy-v1 limits derived from master-heavy cgroup measurements; ledger-heavy-v2 calibration refused because keystroke p95 exceeded the 100 ms guard; other scenarios retain previous calibration",
   "commit": "3d0dfbba32fb69398fac1504641c7b04adced829",
   "runner_name": "GitHub Actions 1000044387",
   "imageos": "ubuntu24-arm64",
