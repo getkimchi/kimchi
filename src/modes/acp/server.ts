@@ -250,11 +250,11 @@ import { handleSsoCredential } from "./ext-methods/sso-credential.js"
 import { handleSteering } from "./ext-methods/steering.js"
 import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelMeta } from "./model-attribution.js"
 import {
-	buildModelEffortMeta,
+	buildModelThinkingMeta,
 	configuredModelDescription,
-	type ModelEffortMetadataContext,
+	type ModelThinkingMetadataContext,
 	modelVirtualIdentity,
-} from "./model-effort-metadata.js"
+} from "./model-thinking-metadata.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
@@ -4069,10 +4069,10 @@ function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSel
 
 export function buildModelConfigOption(
 	session: AgentSessionModelConfig,
-	modelEffort?: ModelEffortMetadataContext,
+	modelThinking?: ModelThinkingMetadataContext,
 ): SessionConfigOption {
 	const modelRegistry = getSessionModelRegistry(session)
-	// Registry descriptions join ACP rows only for the negotiated Effort view.
+	// Registry descriptions join ACP rows only for the negotiated Thinking view.
 	// Legacy rows keep their previous marker-only presentation byte-for-byte.
 	const deprecationMarkers = collectDeprecationMarkers(join(loadKimchiConfig().agentConfigDir, "models.json"))
 	const options: SessionConfigSelectOption[] = modelRegistry.getAvailable().map((m) => {
@@ -4082,13 +4082,13 @@ export function buildModelConfigOption(
 		} else {
 			const modelId = refFromModel(m)
 			const marker = deprecationMarkers.get(m.id)
-			const configured = modelEffort ? configuredModelDescription(m) : undefined
-			const description = modelEffort
+			const configured = modelThinking ? configuredModelDescription(m) : undefined
+			const description = modelThinking
 				? (getModelDescription(modelId) ?? ([marker, configured].filter(Boolean).join(" ") || undefined))
 				: marker
 			option = { value: modelId, name: m.name, ...(description ? { description } : {}) }
 		}
-		return modelEffort ? { ...option, _meta: buildModelEffortMeta(m, modelEffort) } : option
+		return modelThinking ? { ...option, _meta: buildModelThinkingMeta(m, modelThinking) } : option
 	})
 	options.sort((a, b) => a.value.localeCompare(b.value))
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
@@ -4173,22 +4173,22 @@ function autoOptionName(configOptions: SessionConfigOption[]): string | undefine
 function buildConfigOptions(
 	record: SessionRecord,
 	defaultMode: PermissionMode,
-	includeModelEffort: boolean,
+	includeModelThinking: boolean,
 ): SessionConfigOption[] {
 	const { session } = record
 	const mode = getPermissionMode(session.sessionId)?.mode ?? defaultMode
-	const modelEffort = includeModelEffort
+	const modelThinking = includeModelThinking
 		? {
 				appMode: record.appMode,
-				effortDefaults: record.appMode ? readModelEffortDefaults() : {},
-				effortByModel: record.effortByModel,
+				thinkingDefaults: record.appMode ? readModelEffortDefaults() : {},
+				thinkingByModel: record.effortByModel,
 				currentModel: session.model,
 				currentThinkingLevel: session.thinkingLevel,
 				settingsManager: session.settingsManager,
 			}
 		: undefined
-	const options = [buildPermissionsConfigOption(mode), buildModelConfigOption(session, modelEffort)]
-	const thinking = buildThinkingConfigOption(session, includeModelEffort ? "model_config" : "thought_level")
+	const options = [buildPermissionsConfigOption(mode), buildModelConfigOption(session, modelThinking)]
+	const thinking = buildThinkingConfigOption(session, includeModelThinking ? "model_config" : "thought_level")
 	if (thinking) options.push(thinking)
 	return options
 }

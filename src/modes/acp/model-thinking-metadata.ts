@@ -8,10 +8,10 @@ import { refFromModel } from "../../shared/model-ref.js"
 import { clampToSelection, thinkingSelection } from "../../thinking-selection.js"
 import { type KimchiDevMeta, kimchiDevMetaOf } from "./capabilities.js"
 
-export type ModelEffortAvailability = "multiple" | "fixed" | "provider-controlled" | "unsupported" | "routed"
+export type ModelThinkingAvailability = "multiple" | "fixed" | "provider-controlled" | "unsupported" | "routed"
 
-export interface ModelEffortMetadata {
-	availability: ModelEffortAvailability
+export interface ModelThinkingMetadata {
+	availability: ModelThinkingAvailability
 	levels?: ModelThinkingLevel[]
 	currentValue: ModelThinkingLevel | null
 	defaultValue: ModelThinkingLevel | null
@@ -46,15 +46,15 @@ function modelSearchAliases(model: Model<Api>): string[] | undefined {
 	return aliases.length > 0 ? aliases : undefined
 }
 
-function withSearchAliases(metadata: ModelEffortMetadata, model: Model<Api>): ModelEffortMetadata {
+function withSearchAliases(metadata: ModelThinkingMetadata, model: Model<Api>): ModelThinkingMetadata {
 	const searchAliases = modelSearchAliases(model)
 	return searchAliases ? { ...metadata, searchAliases } : metadata
 }
 
-export interface ModelEffortMetadataContext {
+export interface ModelThinkingMetadataContext {
 	appMode?: SessionAppMode
-	effortDefaults: ReturnType<typeof readModelEffortDefaults>
-	effortByModel: ReadonlyMap<string, ModelThinkingLevel>
+	thinkingDefaults: ReturnType<typeof readModelEffortDefaults>
+	thinkingByModel: ReadonlyMap<string, ModelThinkingLevel>
 	currentModel: AgentSession["model"]
 	currentThinkingLevel: AgentSession["thinkingLevel"]
 	settingsManager: AgentSession["settingsManager"]
@@ -67,12 +67,12 @@ function availableDefault(
 	return stored ? (parseModelThinkingLevel(clampToSelection(stored, selection)) ?? null) : null
 }
 
-/** Build one model row's negotiated Effort data from the same selection and
- * fallback authorities used when that model becomes active in this session. */
-export function buildModelEffortMeta(
+/** Build one model row's Thinking metadata for the versioned modelEffort wire
+ * slot, using the same authorities as when that model becomes active. */
+export function buildModelThinkingMeta(
 	model: Model<Api>,
-	context: ModelEffortMetadataContext,
-): KimchiDevMeta<{ modelEffort: ModelEffortMetadata }> {
+	context: ModelThinkingMetadataContext,
+): KimchiDevMeta<{ modelEffort: ModelThinkingMetadata }> {
 	const virtual = modelVirtualIdentity(model)
 	if (virtual) {
 		return kimchiDevMetaOf({
@@ -99,9 +99,9 @@ export function buildModelEffortMeta(
 		})
 	}
 
-	const remembered = context.effortByModel.get(modelId)
-	const storedDefault = context.appMode
-		? parseModelThinkingLevel(context.effortDefaults[context.appMode]?.[modelId])
+	const remembered = context.thinkingByModel.get(modelId)
+	const storedThinkingDefault = context.appMode
+		? parseModelThinkingLevel(context.thinkingDefaults[context.appMode]?.[modelId])
 		: undefined
 	const harnessFallback = isCurrent
 		? context.currentThinkingLevel
@@ -109,7 +109,7 @@ export function buildModelEffortMeta(
 			context.settingsManager.getDefaultThinkingLevel() ??
 			context.currentThinkingLevel)
 	const currentValue = parseModelThinkingLevel(
-		clampToSelection(remembered ?? storedDefault ?? harnessFallback, selection),
+		clampToSelection(remembered ?? storedThinkingDefault ?? harnessFallback, selection),
 	)
 	return kimchiDevMetaOf({
 		modelEffort: withSearchAliases(
@@ -117,7 +117,7 @@ export function buildModelEffortMeta(
 				availability: selection.selectable.length === 1 ? "fixed" : "multiple",
 				levels: selection.selectable,
 				currentValue: currentValue ?? null,
-				defaultValue: availableDefault(storedDefault, selection),
+				defaultValue: availableDefault(storedThinkingDefault, selection),
 			},
 			model,
 		),
