@@ -164,31 +164,43 @@ fails closed. Automatic `headless` selection occurs only through
 for a sandboxed invocation; tests may inject mode, command authorization, and a
 network boundary through `ReviewExecutionPolicyOptions`.
 
-### Actual network containment
+### Actual network and write containment
 
 Every local offline command is enclosed before execution:
 
-- **macOS:** `sandbox-exec` with `(allow default)` for ordinary process/file
-  operations plus `(deny network-outbound)`. This denies remote and loopback
+- **macOS:** `sandbox-exec` with `(allow default)` for ordinary process and
+  read operations, `(deny network-outbound)`, and `(deny file-write*)` except
+  for selected writable subpaths. The network rule denies remote and loopback
   TCP and outbound Unix-domain socket `connect()` calls, including package
   downloads from a local HTTP server and local daemon connections.
-- **Linux:** `unshare --net --map-root-user` where usable without root, or
-  `bwrap --unshare-net` when `unshare` is unavailable. The new network namespace
-  has no usable external network interfaces.
+- **Linux:** `bwrap --unshare-net` with a read-only root mount and selected
+  writable binds. The new network namespace has no usable external network
+  interfaces. `unshare --net` alone is not a fallback because it cannot confine
+  filesystem writes.
+
+The writable locations are the linked checkout and its canonical private
+scratch/build/cache/home directories. One additional exception supports Git
+index operations: the boundary derives the linked worktree's admin directory
+with `git rev-parse --git-dir`, canonicalizes it, and verifies that it is inside
+`<common-dir>/worktrees/`. Only that per-worktree admin directory is writable;
+the main `.git` directory, shared object storage and refs, and the main working
+tree remain read-only. `git update-index` can therefore refresh its index and
+lock files. Commands that write objects or shared refs—including `git add`,
+`git commit`, and `git stash`—are unsupported inside review worktrees.
 
 A check that needs local IPC—such as a Docker socket, a local database, or a
 loopback HTTP server—cannot use the offline boundary and must request an
 approved online run. Containers commonly used for CI and development do not
-permit unprivileged user namespaces; when neither Linux mechanism is available
-(or `sandbox-exec` is unavailable on macOS), no boundary is available.
+permit unprivileged user namespaces; when `bwrap` is unavailable on Linux (or
+`sandbox-exec` is unavailable on macOS), no boundary is available.
 
 Availability is probed once. If no boundary works, an ordinary local command is
 **not** run under an unenforced label. It instead needs the same online approval
 as an install. That approval explicitly says offline access cannot be enforced.
 Declined/unavailable approval yields `status: "blocked"`, `network:
 "unenforced"`, and zero command execution. `network: "offline"` is recorded only
-when the command really ran inside a named boundary (`sandbox-exec`,
-`unshare-net`, or `bwrap`).
+when the command really ran inside a named boundary (`sandbox-exec` or
+`bwrap`).
 
 ### Narrow environment allowlist
 

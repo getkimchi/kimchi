@@ -1,9 +1,18 @@
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
 import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	createReviewExecutionController,
@@ -11,11 +20,44 @@ import {
 	type ReviewApprovalStatus,
 	type ReviewExecutionEvent,
 } from "./execution.js"
-import { detectReviewNetworkBoundary, type ReviewNetworkBoundary } from "./network-boundary.js"
+import {
+	detectReviewNetworkBoundary,
+	REVIEW_NETWORK_BOUNDARY_TESTING,
+	type ReviewNetworkBoundary,
+} from "./network-boundary.js"
 import type { ReviewWorktree } from "./types.js"
 
 // Assembled from parts so log redaction never rewrites the fixture.
 const credentialUrl = ["http://", "user", ":", "secret", "@example.test/"].join("")
+
+function git(cwd: string, ...args: string[]): string {
+	return execFileSync("git", ["-C", cwd, ...args], {
+		encoding: "utf8",
+		env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", LC_ALL: "C" },
+		stdio: ["ignore", "pipe", "pipe"],
+	}).trim()
+}
+
+function linkedWorktree(root: string): {
+	worktree: ReviewWorktree
+	repository: string
+	gitAdminDir: string
+	commonDir: string
+} {
+	const repository = join(root, "repository")
+	const checkout = join(root, "checkout")
+	mkdirSync(repository)
+	git(repository, "init", "--initial-branch=main")
+	git(repository, "config", "user.name", "Reviewer Test")
+	git(repository, "config", "user.email", "review@localhost")
+	writeFileSync(join(repository, "tracked.txt"), "tracked\n")
+	git(repository, "add", "tracked.txt")
+	git(repository, "commit", "-m", "base")
+	git(repository, "worktree", "add", "--detach", checkout, "HEAD")
+	const gitAdminDir = realpathSync(resolve(checkout, git(checkout, "rev-parse", "--git-dir")))
+	const commonDir = realpathSync(resolve(checkout, git(checkout, "rev-parse", "--git-common-dir")))
+	return { worktree: fixtureWorktree(checkout), repository, gitAdminDir, commonDir }
+}
 
 function fixtureWorktree(root: string): ReviewWorktree {
 	const homeDir = join(root, "home")
@@ -192,4 +234,51 @@ describe("real OS offline network boundary", () => {
 			// pnpm is optional on development machines; npm exercised the required path above.
 		}
 	}, 30_000)
+
+	it("allows linked-worktree index refreshes but not main repository or object writes", async (ctx) => {
+		if (!boundary) {
+			ctx.skip("No OS execution boundary is available on this host")
+			return
+		}
+		const linked = linkedWorktree(root)
+		worktree = linked.worktree
+		const controller = createReviewExecutionController({ mode: "local", worktree, networkBoundary: boundary })
+		const execute = (command: string) =>
+			controller.execute({ command, cwd: worktree.path, intendedCheck: "linked Git metadata boundary" })
+
+		const refreshed = await execute("git update-index --refresh")
+		expect(refreshed, JSON.stringify(refreshed)).toMatchObject({ status: "passed", network: "offline" })
+
+		const objectWrite = join(linked.commonDir, "objects", "review-write.txt")
+		const deniedObjects = await execute(`printf denied > ${objectWrite}`)
+		expect(deniedObjects).toMatchObject({ status: "failed", network: "offline" })
+		expect(existsSync(objectWrite)).toBe(false)
+
+		const mainWorktreeWrite = join(linked.repository, "review-write.txt")
+		const deniedMainWorktree = await execute(`printf denied > ${mainWorktreeWrite}`)
+		expect(deniedMainWorktree).toMatchObject({ status: "failed", network: "offline" })
+		expect(existsSync(mainWorktreeWrite)).toBe(false)
+	}, 30_000)
+
+	it("binds only the verified Git admin exception in static Linux arguments", () => {
+		const linked = linkedWorktree(root)
+		worktree = linked.worktree
+		const command = "git update-index --refresh"
+		const args = REVIEW_NETWORK_BOUNDARY_TESTING.linuxBoundaryArguments(worktree, command)
+		const writableBinds: string[][] = []
+		for (let index = 0; index < args.length; index++) {
+			if (args[index] === "--bind") writableBinds.push(args.slice(index, index + 3))
+		}
+
+		expect(args.slice(0, 5)).toEqual(["bwrap", "--unshare-net", "--ro-bind", "/", "/"])
+		expect(writableBinds).toContainEqual(["--bind", linked.gitAdminDir, linked.gitAdminDir])
+		expect(writableBinds).not.toContainEqual(["--bind", linked.commonDir, linked.commonDir])
+		expect(writableBinds).not.toContainEqual([
+			"--bind",
+			join(linked.commonDir, "objects"),
+			join(linked.commonDir, "objects"),
+		])
+		expect(writableBinds).not.toContainEqual(["--bind", linked.repository, linked.repository])
+		expect(args.slice(-3)).toEqual(["/bin/sh", "-c", command])
+	})
 })
