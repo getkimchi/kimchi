@@ -132,6 +132,8 @@ it(
 			const marker = "PLANMODE_MARKER_X7F391"
 			const fixture = await startAcpFixture({
 				artifactName: "doc-cli-plan-read",
+				// The read runs the binary and parses a PDF: keep it inside the tool call.
+				bashHandoffSeconds: 15,
 				responses: [
 					{
 						toolCalls: [

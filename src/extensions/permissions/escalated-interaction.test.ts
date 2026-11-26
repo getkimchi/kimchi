@@ -91,11 +91,17 @@ describe("escalated TUI input coordination", () => {
 		const clock = vi.spyOn(Date, "now").mockImplementation(() => now)
 		const stop = watchEscalatedDialog(ctx, withdraw, isRawInputCaptureActive, controller.signal, timing)
 		const inputHandler = vi.mocked(ctx.ui.onTerminalInput).mock.calls[0]?.[0]
-		if (!inputHandler) throw new Error("expected an input guard listener")
-		expect(inputHandler("2")).toEqual({ consume: true })
-		now = timing.openingGuardMs
-		expect(inputHandler("2")).toBeUndefined()
-		clock.mockRestore()
+		try {
+			if (!inputHandler) throw new Error("expected an input guard listener")
+			expect(inputHandler("2")).toEqual({ consume: true })
+			now = timing.openingGuardMs
+			expect(inputHandler("2")).toBeUndefined()
+		} catch (error) {
+			stop()
+			throw error
+		} finally {
+			clock.mockRestore()
+		}
 		sendTerminalInput(ctx, "2")
 		expect(withdraw).not.toHaveBeenCalled()
 		const release = claimRawInputCapture()

@@ -822,7 +822,7 @@ describe("runRemoteAgent", () => {
 				.mockResolvedValue(undefined) // second reattach init succeeds
 			vi.mocked(getSession).mockImplementation(quietRunningFor(2))
 
-			const result = await runUntilTurnEnd(makeRecoveryOptions())
+			const result = await runUntilTurnEnd(makeRecoveryOptions(), 3)
 
 			expect(result.stopReason).toBe("recovered")
 			// Two reattach initializations happened (retry after the in-flight
@@ -920,7 +920,7 @@ describe("runRemoteAgent", () => {
 				.mockResolvedValue(undefined) // next reattach succeeds
 			vi.mocked(getSession).mockImplementation(quietRunningFor(2))
 
-			const result = await runUntilTurnEnd(makeRecoveryOptions())
+			const result = await runUntilTurnEnd(makeRecoveryOptions(), 3)
 
 			expect(result.stopReason).toBe("recovered")
 			// Recovery NEVER cancels a turn — it might still be doing real work

@@ -163,10 +163,7 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<SpawnDaemon
 	})
 	// Ends the crash-grace wait early: a command that dies at startup is
 	// reported at once, not after the full grace.
-	const ended = new Promise<void>((resolve) => {
-		child.once("exit", () => resolve())
-		child.once("error", () => resolve())
-	})
+	const ended = new Promise<void>((resolve) => child.once("exit", () => resolve()))
 	child.unref()
 
 	if (child.pid === undefined) {

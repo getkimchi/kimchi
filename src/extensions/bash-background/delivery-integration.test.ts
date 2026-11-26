@@ -377,7 +377,7 @@ async function setupIntegration(script: ScriptedResponse[]): Promise<Integration
  */
 async function exitQueued(harness: IntegrationHarness): Promise<void> {
 	await vi.waitFor(() => expect(harness.state.delivery.hasQueuedAutomatic()).toBe(true), {
-		timeout: 10_000,
+		timeout: 4_000,
 		interval: 5,
 	})
 }
@@ -683,7 +683,7 @@ describe("background bash exit delivery (real installed agent loop)", () => {
 			)
 		// Wait for the append, not a fixed time: delivery closes the output
 		// file first, which a busy runner can slow down.
-		await vi.waitFor(() => expect(appended()).toHaveLength(1), { timeout: 10_000, interval: 5 })
+		await vi.waitFor(() => expect(appended()).toHaveLength(1), { timeout: 4_000, interval: 5 })
 		// Then give a wrongly woken inference time to show up.
 		await new Promise((resolve) => setTimeout(resolve, 150))
 

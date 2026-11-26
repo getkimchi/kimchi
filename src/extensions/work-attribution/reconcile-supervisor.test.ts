@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import * as locks from "proper-lockfile"
@@ -47,6 +47,17 @@ function subscribePr() {
 	const stop = subscribePullRequestReconciliation({ onPullRequest: () => {} })
 	stops.push(stop)
 	return stop
+}
+/**
+ * A pass keeps the supervisor busy until its lock release has finished, and a
+ * tick in that time is skipped. The lock directory goes away first; the code
+ * that ends the pass runs later in the same loop turn, before setImmediate.
+ */
+async function passFinished() {
+	await vi.waitFor(() => expect(existsSync(join(directory, "work-attribution.lock"))).toBe(false), {
+		timeout: 4_000,
+	})
+	await new Promise((resolve) => setImmediate(resolve))
 }
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "kimchi-reconcile-"))
@@ -148,7 +159,7 @@ describe("KIMCHI_E2E_FIRST_TICK_DELAY_MS seam", () => {
 		requestWorkReconciliation()
 		await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
 		// Let that pass finish before a second view mounts.
-		await new Promise((resolve) => setTimeout(resolve, 30))
+		await passFinished()
 		// The joiner ticks at once — the startup window is over in substance once a pass has run —
 		// and the fresh pass serves the reporting channel again instead of waiting for the interval.
 		stops.push(subscribeCostReconciliation())
@@ -202,10 +213,11 @@ describe("KIMCHI_E2E_FIRST_TICK_DELAY_MS seam", () => {
 		stops.push(subscribeReportingReconciliation(report))
 		// Wait for the pass, not a fixed time: after a stall the test timer can
 		// run before the pass's first disk call has finished.
-		await vi.waitFor(() => expect(report).toHaveBeenCalled(), { timeout: 10_000 })
+		await vi.waitFor(() => expect(report).toHaveBeenCalled(), { timeout: 4_000 })
+		await passFinished()
 		vi.clearAllMocks()
 		stops.push(subscribeReportingReconciliation(report))
-		await vi.waitFor(() => expect(report).toHaveBeenCalled(), { timeout: 10_000 })
+		await vi.waitFor(() => expect(report).toHaveBeenCalled(), { timeout: 4_000 })
 	})
 })
 

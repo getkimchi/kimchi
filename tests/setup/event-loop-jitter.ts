@@ -7,7 +7,7 @@
 //   KIMCHI_TEST_JITTER=1 pnpm run test
 //
 // Optional knobs:
-//   KIMCHI_TEST_JITTER_SEED      seed, so a failing run can be repeated (default 1)
+//   KIMCHI_TEST_JITTER_SEED      seed (default 1); repeats a single-file run, not a full suite
 //   KIMCHI_TEST_JITTER_BLOCK_MS  block length range "min-max" (default "60-120")
 //   KIMCHI_TEST_JITTER_GAP_MS    pause between blocks "min-max" (default "5-30")
 
@@ -41,7 +41,8 @@ if (process.env.KIMCHI_TEST_JITTER === "1" && !globals[STARTED]) {
 	const realSetTimeout = globalThis.setTimeout
 	const block = range(process.env.KIMCHI_TEST_JITTER_BLOCK_MS, [60, 120])
 	const gap = range(process.env.KIMCHI_TEST_JITTER_GAP_MS, [5, 30])
-	// Mix in the worker id so workers differ, but the same seed repeats a run.
+	// Mix in the worker id so workers differ. Which worker runs a file depends
+	// on scheduling, so a seed repeats a single-file run, not a full suite.
 	const seed = Number(process.env.KIMCHI_TEST_JITTER_SEED ?? "1") * 1000 + Number(process.env.VITEST_POOL_ID ?? "0")
 	const random = prng(Number.isFinite(seed) ? seed : 1)
 	const between = ([min, max]: [number, number]) => min + Math.floor(random() * (max - min + 1))

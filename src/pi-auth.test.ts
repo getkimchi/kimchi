@@ -194,6 +194,9 @@ process.stdout.write(JSON.stringify({ reads, bad }));`,
 			})
 			reader.on("error", reject)
 		})
+		// Handled now; the await below still throws. A reader error during the
+		// writes would otherwise be an unhandled rejection for the whole run.
+		result.catch(() => {})
 
 		for (let i = 0; i < 60; i++) {
 			await syncPiAuth(authPath, modelsPath, `key-${i}`)

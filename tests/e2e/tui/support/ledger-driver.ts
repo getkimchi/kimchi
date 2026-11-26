@@ -1938,6 +1938,9 @@ async function summaryWriter(agent: string, json: string): Promise<void> {
 			} catch (error) {
 				const busy = String((error as { code?: unknown } | null)?.code ?? "").startsWith("SQLITE_BUSY")
 				if (!busy || published) throw error
+				// Silent while waiting: if the test's watchdog kills this writer,
+				// its error then says why.
+				process.stderr.write("still waiting for the ledger lock (SQLITE_BUSY), retrying\n")
 			}
 		}
 	}
