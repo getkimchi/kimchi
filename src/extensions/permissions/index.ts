@@ -1035,12 +1035,11 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		// the approved plan is now executing — pre-approval planning todos must
 		// not be reported as plan progress.
 		pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
-		if (isResourceEnabled(FERMENT_V2_RESOURCE_ID)) {
-			const executor = getFermentV2PlanExecutor(pi)
-			if (!executor) {
-				ctx.ui.notify("Could not start the approved plan automatically.", "error")
-				return
-			}
+		// The setting is read live, so a V2 enable after startup finds no
+		// executor. V2 loads only at startup, so fall through to the plain path
+		// instead of dropping the approved plan.
+		const executor = isResourceEnabled(FERMENT_V2_RESOURCE_ID) ? getFermentV2PlanExecutor(pi) : undefined
+		if (executor) {
 			try {
 				await executor(
 					{
@@ -1052,7 +1051,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					ctx,
 				)
 			} catch {
-				ctx.ui.notify("Could not start the approved plan automatically.", "error")
+				notifyUser(ctx, "Could not start the approved plan automatically.", "error")
 			}
 			return
 		}

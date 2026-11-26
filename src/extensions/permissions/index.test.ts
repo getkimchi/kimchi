@@ -3573,20 +3573,73 @@ describe("plan mode assumption detection", () => {
 			}
 		})
 
-		it("Execute fails closed when the experiment is enabled but the Ferment V2 executor is absent", async () => {
+		// Issue 04: Ferment was enabled after startup, so V2 never loaded and no
+		// executor is registered. The approved plan must still run.
+		it("Execute falls back to the plain plan path when Ferment is enabled but the V2 executor is absent", async () => {
 			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID || id === COST_PER_PR_RESOURCE_ID)
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			const approved = vi.fn()
+			harness.pi.events.on(PERMISSION_EVENTS.PLAN_APPROVED, approved)
 			await harness.fire("session_start", {}, createMockContext([]))
 			const ctx = createMockContext(["Execute the plan locally"])
 
 			await submitPlan(harness, PLAN_V1, ctx)
 
-			expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
-				expect.objectContaining({ customType: "plan-execute" }),
-				expect.anything(),
+			expect(approved).toHaveBeenCalledTimes(1)
+			expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN_V1) }),
+				{ triggerTurn: true },
 			)
-			expect(ctx.ui.notify).toHaveBeenCalledWith("Could not start the approved plan automatically.", "error")
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith("Could not start the approved plan automatically.", "error")
 			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "runtime", initiatedBy: "user" })
+		})
+
+		it("Execute takes the plain plan path and skips a registered V2 executor when Ferment is off", async () => {
+			isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			const executor = vi.fn(async () => "started" as const)
+			registerFermentV2PlanExecutor(harness.pi, executor)
+			await harness.fire("session_start", {}, createMockContext([]))
+			const ctx = createMockContext(["Execute the plan locally"])
+
+			await submitPlan(harness, PLAN_V1, ctx)
+
+			expect(executor).not.toHaveBeenCalled()
+			expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN_V1) }),
+				{ triggerTurn: true },
+			)
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith("Could not start the approved plan automatically.", "error")
+		})
+
+		it("Execute reports a V2 executor failure on the console when no UI is attached", async () => {
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID || id === COST_PER_PR_RESOURCE_ID)
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			registerFermentV2PlanExecutor(harness.pi, async () => {
+				throw new Error("boom")
+			})
+			await harness.fire("session_start", {}, createMockContext([]))
+			const ctx = createMockContext(["Execute the plan locally"])
+			// Drop the UI after the menu answers, so the failure path runs headless.
+			const select = ctx.ui.select
+			ctx.ui.select = vi.fn(async (...args: Parameters<typeof select>) => {
+				const choice = await select(...args)
+				Object.assign(ctx, { hasUI: false })
+				return choice
+			})
+			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+			try {
+				await submitPlan(harness, PLAN_V1, ctx)
+
+				expect(consoleError).toHaveBeenCalledWith("Could not start the approved plan automatically.")
+				expect(ctx.ui.notify).not.toHaveBeenCalledWith("Could not start the approved plan automatically.", "error")
+				expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute" }),
+					expect.anything(),
+				)
+			} finally {
+				consoleError.mockRestore()
+			}
 		})
 
 		it("Execute uses inline approved Markdown when the plan file is unavailable", async () => {
