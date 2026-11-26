@@ -9,6 +9,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { buildSessionContext } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
+import { withCommandReplyScope } from "../../shared/command-reply-scope.js"
 import { notifyUser } from "../../utils/notify-user.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { formatCount, formatDuration } from "../format.js"
@@ -1716,27 +1717,31 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				label: value,
 				description: `/${FERMENT_V2_COMMAND_NAME} ${value}`,
 			})),
-		handler: async (args, ctx) => {
-			try {
-				const command = parseFermentV2Command(args)
-				if (command.action === "show") {
-					bindSession(ctx)
-					ctx.ui.notify(formatFermentV2Summary(currentFermentV2, liveElapsedMs()), "info")
-					return
+		// The reply scope lets ACP show these notifies to plain clients. It ends
+		// when the handler returns, so notifies from a turn it queued are not
+		// mirrored.
+		handler: (args, ctx) =>
+			withCommandReplyScope(ctx.sessionManager.getSessionId(), async () => {
+				try {
+					const command = parseFermentV2Command(args)
+					if (command.action === "show") {
+						bindSession(ctx)
+						ctx.ui.notify(formatFermentV2Summary(currentFermentV2, liveElapsedMs()), "info")
+						return
+					}
+					if (command.action === "legacy-hint") {
+						notifyUser(ctx, formatFermentLegacyWordHint(command.word, command.args), "warning")
+						return
+					}
+					if (command.action === "set") await handleSetFermentV2(command.objective, command.tokenBudget, ctx)
+					else if (command.action === "edit") await handleEditFermentV2(command.objective, ctx)
+					else if (command.action === "pause") await handlePauseFermentV2(ctx)
+					else if (command.action === "resume") await handleResumeFermentV2(ctx)
+					else await handleClearFermentV2(ctx)
+				} catch (error) {
+					ctx.ui.notify(errorMessage(error), "warning")
 				}
-				if (command.action === "legacy-hint") {
-					notifyUser(ctx, formatFermentLegacyWordHint(command.word, command.args), "warning")
-					return
-				}
-				if (command.action === "set") await handleSetFermentV2(command.objective, command.tokenBudget, ctx)
-				else if (command.action === "edit") await handleEditFermentV2(command.objective, ctx)
-				else if (command.action === "pause") await handlePauseFermentV2(ctx)
-				else if (command.action === "resume") await handleResumeFermentV2(ctx)
-				else await handleClearFermentV2(ctx)
-			} catch (error) {
-				ctx.ui.notify(errorMessage(error), "warning")
-			}
-		},
+			}),
 	})
 
 	pi.on("session_start", (_event, ctx) => {

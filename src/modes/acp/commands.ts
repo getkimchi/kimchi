@@ -63,8 +63,10 @@ export const FERMENT_AVAILABLE_COMMAND: AvailableCommand = {
 /**
  * `/ferment-legacy` is kept out of /help (SLASH_COMMANDS), so it is not in
  * AVAILABLE_COMMANDS. It is listed only when V1 loaded at startup. The stub
- * warns through pi_notify, which plain ACP clients do not show, so listing
- * the stub would add an entry that seems to do nothing.
+ * warns only through pi_notify, which plain ACP clients do not show, so
+ * listing the stub would add an entry that seems to do nothing. `/ferment`
+ * replies are different: they are also sent as agent text (see
+ * shared/command-reply-scope.ts).
  */
 export const FERMENT_LEGACY_AVAILABLE_COMMAND: AvailableCommand = {
 	name: FERMENT_LEGACY_COMMAND_NAME,

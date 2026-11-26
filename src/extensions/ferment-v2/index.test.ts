@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
+import { isInCommandReplyScope } from "../../shared/command-reply-scope.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
@@ -223,6 +224,26 @@ describe("Ferment V2 extension", () => {
 			expect.stringContaining("/ferment list is a legacy Ferment command. Use /ferment-legacy list."),
 			"warning",
 		)
+	})
+
+	it("sends command replies inside a reply scope for its own session only", async () => {
+		const sessionId = harness.ctx.sessionManager.getSessionId()
+		const scopes: Array<{ own: boolean; other: boolean }> = []
+		harness.ui.notify.mockImplementation(() => {
+			scopes.push({ own: isInCommandReplyScope(sessionId), other: isInCommandReplyScope("other-session") })
+		})
+
+		await harness.command("")
+		await harness.command("pause")
+		await harness.command("list")
+		await harness.command("do it --tokens")
+
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(
+			"Token budget must be a positive number, optionally suffixed with k or m.",
+			"warning",
+		)
+		expect(scopes).toEqual(Array.from({ length: 4 }, () => ({ own: true, other: false })))
+		expect(isInCommandReplyScope(sessionId)).toBe(false)
 	})
 
 	it("prints the legacy hint in print mode", async () => {
