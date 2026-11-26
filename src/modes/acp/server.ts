@@ -1190,6 +1190,7 @@ export class KimchiAcpAgent {
 			)
 		}
 		this.doSetThinkingLevel(record, effort)
+		const configOptions = buildConfigOptions(record.session, this.getInitialPermissionMode(record.session).mode)
 		try {
 			writeModelEffortDefault(appMode, params.modelId, effort)
 		} catch (error) {
@@ -1197,10 +1198,10 @@ export class KimchiAcpAgent {
 				`[model-effort] failed to persist ${appMode}/${params.modelId} default after applying session Effort:`,
 				error,
 			)
+			// Retain the applied state, but let the client distinguish partial persistence failure.
+			return { configOptions, persistenceFailed: true }
 		}
-		return {
-			configOptions: buildConfigOptions(record.session, this.getInitialPermissionMode(record.session).mode),
-		}
+		return { configOptions }
 	}
 
 	/** Apply a reasoning_effort set request; the value must be one of the

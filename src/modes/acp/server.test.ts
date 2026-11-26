@@ -11086,6 +11086,7 @@ describe("setSessionConfigOption", () => {
 
 			expect(fake.thinkingLevel).toBe("max")
 			expect(result).toMatchObject({
+				persistenceFailed: true,
 				configOptions: expect.arrayContaining([
 					expect.objectContaining({ id: "reasoning_effort", currentValue: "max" }),
 				]),
