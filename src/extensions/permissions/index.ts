@@ -84,6 +84,7 @@ import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js
 import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import {
 	isReviewResultSubmissionTool,
+	REVIEW_CHECK_TOOL,
 	type ReviewAuthorizationResult,
 	type ReviewPermissionPolicy,
 	reviewApprovalPresentation,
@@ -645,9 +646,14 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	function getRuntimePermissionMode(toolName?: string): PermissionModeState {
 		if (isWorker) {
 			const inherited = workerMode ?? resolveMode({ env: permissionsEnvFlag, config: loaded.config.defaultMode })
-			if (toolName && options.reviewExecution?.preApproved(toolName) && inherited.mode === "plan") {
-				// Review children have their own review-gated approvals. Parent plan
-				// mode must not block already-approved checks in isolated worktrees.
+			if (
+				toolName === REVIEW_CHECK_TOOL &&
+				options.reviewExecution?.preApproved(toolName) &&
+				inherited.mode === "plan"
+			) {
+				// Review children run configured routine checks in isolated worktrees.
+				// Parent plan mode must not block those checks, but reviewer-authored
+				// commands remain behind the ordinary plan gate.
 				return { ...inherited, mode: "auto" }
 			}
 			return inherited

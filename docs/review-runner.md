@@ -85,7 +85,9 @@ resource loader:
 
 The worker permission gate re-reads the invoking session's effective mode,
 rules, trusted configuration, and organization policy on every ordinary call.
-Deny rules and plan/read-only mode precede review pre-approvals.
+Deny rules precede review pre-approvals. Plan/read-only mode does too, except
+that a fenced worker may run configured routine checks through `run_review_check`;
+`run_review_command` and reviewer-authored scripts remain plan-gated.
 
 ## Routine check definitions
 
@@ -128,8 +130,10 @@ failures and cancelled/blocked runs, are reused without automatic retry.
 
 Each caller's **actual command string** passes the inherited Bash policy helper
 before execution, before online approval, and before reading saved evidence.
-This covers deny rules, compound-command rules, hard blocks, and plan/read-only
-mode. Wrapper pre-approval never substitutes for this check.
+This covers deny rules, compound-command rules, and hard blocks. Ordinary
+reviewer-authored commands also remain subject to plan/read-only mode; only a
+fenced worker's configured `run_review_check` requests may proceed under the
+parent Plan exception. Wrapper pre-approval never substitutes for this check.
 
 Result keys contain:
 

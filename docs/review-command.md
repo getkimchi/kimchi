@@ -55,9 +55,12 @@ partial result before returning control.
 Plan/read-only sessions retain full in-context review capability. The three
 submit tools and `submit_reconciliation` write coordinator-owned output (or returns
 structured results) and are accepted specially by the worker permission gate;
-they do not create or modify worktree source files or run scripts. `run_review_*`,
-`bash`, and ordinary `write`/`edit` remain denied in Plan mode. In particular,
-Plan does not suppress findings or summaries behind ordinary approval prompts.
+they do not create or modify worktree source files or run scripts. A fenced
+review worker may run configured routine checks through `run_review_check`;
+inherited deny rules, hard blocks, and review execution controls still apply.
+`run_review_command`, `bash`, and ordinary `write`/`edit` remain denied in Plan
+mode. In particular, Plan does not suppress findings or summaries behind ordinary
+approval prompts.
 
 ## Trusted settings
 

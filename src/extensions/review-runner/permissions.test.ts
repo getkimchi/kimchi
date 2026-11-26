@@ -8,6 +8,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { DEFAULT_CONFIG } from "../permissions/constants.js"
 import { createWorkerPermissionsExtension } from "../permissions/index.js"
 import { registerParentSurface, unregisterParentSurface } from "../permissions/parent-surface-registry.js"
+import { PERMISSION_EVENTS } from "../permissions/permissions-events.js"
 import { registerPermissionPolicySource } from "../permissions/policy-source-registry.js"
 import type { PermissionRequest } from "../permissions/prompter.js"
 import type { ApprovalOutcome } from "../permissions/prompts.js"
@@ -305,6 +306,18 @@ describe("review worker permission integration", () => {
 		abort.abort()
 		const result = await call(stopped.child, stopped.ctx, "bash", { command: "npm install" })
 		expect(result).toMatchObject({ block: true, reason: expect.stringContaining("stopped") })
+	})
+
+	it("keeps a fenced reviewer's commands behind plan_gate in plan mode", async () => {
+		const planned = gate("plan", { kind: "allow-once" }, "plan-review-command")
+		const decisions = vi.fn()
+		planned.child.api.events.on(PERMISSION_EVENTS.TOOL_DECISION, decisions)
+
+		await expect(
+			call(planned.child, planned.ctx, "run_review_command", { command: "printf focused" }),
+		).resolves.toMatchObject({ block: true })
+		expect(decisions).toHaveBeenCalledWith(expect.objectContaining({ decision: "reject", sourceDetail: "plan_gate" }))
+		expect(planned.requestPermission).not.toHaveBeenCalled()
 	})
 
 	it("lets a fenced reviewer run an approved check when the parent session is in plan mode", async () => {
