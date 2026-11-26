@@ -25,10 +25,12 @@ const validSummary = {
 const validFinding = {
 	path: "main.go",
 	line: 999,
-	severity: "warning",
-	type: "bug",
+	title: "Context traversal test finding",
 	description: "Context traversal test finding.",
+	explanation: "Static inspection supports this context traversal fixture.",
 	suggestion: "Do not read or write through the symlink.",
+	priority: "P2" as const,
+	type: "bug" as const,
 }
 
 const REVIEW_FLAG_NAMES = ["review", "review-writer", "review-writer-limit", "review-context-dir", "review-output-dir"]

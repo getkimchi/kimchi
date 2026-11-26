@@ -17,6 +17,7 @@ import {
 	type FinalizeReviewPanelOptions,
 	finalizeReviewPanel,
 } from "./finalize.js"
+import { REVIEW_FINDING_CONTRACT_PROMPT } from "./finding-contract.js"
 import {
 	DEFAULT_REVIEW_CONCURRENCY,
 	type ReviewLensId,
@@ -145,7 +146,9 @@ function reviewerPrompt(target: ResolvedReviewTarget, lens: { id: ReviewLensId; 
 	return `REVIEW_LENS ${lens.id}
 Review only the pinned comparison ${scope.pinned.baseSha}..${scope.pinned.headSha}; your checkout is the pinned head. Focus: ${lens.focus}
 Read review context and its original commentable-lines map from ${scope.contextDir}. Your private worktree may contain temporary tests when the inherited effective session permissions allow them; never elevate permissions. Read-only session restrictions apply to every write and command. Use run_review_check for routine repository checks and run_review_command for focused tests or base/head comparisons.
-For every material claim, record the revision, exact command when applicable, and observed outcome in the submitted description. Compare the same test against base and head when that distinguishes a regression. Reviewer-created lines and temporary tests are never valid anchors.
+For every material claim, record the revision, exact command when applicable, and observed outcome in explanation. Compare the same test against base and head when that distinguishes a regression. Reviewer-created lines and temporary tests are never valid anchors.
+Write the whole finding yourself, including its title, impact, reasoning, fix, priority, and type. In explanation, state the commands, probes, or tests you ran and their results, or state that the finding comes from reading code.
+${REVIEW_FINDING_CONTRACT_PROMPT}
 Submit each valid material finding promptly with submit_finding. Finish with submit_summary, including missing tools or blocked dependencies in environment_gaps. Do not submit thread replies; the reconciler handles prior threads. Do not edit review output outside the submit tools.`
 }
 
@@ -351,7 +354,10 @@ async function rescanAllWriters(store: ReviewPanelStateStore, outputDir: string)
 async function finalizeWithWriterRescan(
 	store: ReviewPanelStateStore,
 	outputDir: string,
-	options: Pick<FinalizeReviewPanelOptions, "hasVerifier" | "reconcile" | "environmentGaps">,
+	options: Pick<
+		FinalizeReviewPanelOptions,
+		"hasVerifier" | "reconcile" | "environmentGaps" | "beforeReport" | "beforeStaleCandidateCheck"
+	>,
 ): Promise<ReviewPanelResult> {
 	for (let attempt = 0; attempt < 4; attempt += 1) {
 		const inputDigest = candidateInputDigest(store.state.candidates)
@@ -363,6 +369,7 @@ async function finalizeWithWriterRescan(
 				...options,
 				beforePublish: async () => {
 					await rescanAllWriters(store, outputDir)
+					await options.beforeStaleCandidateCheck?.()
 					if (candidateInputDigest(store.state.candidates) !== inputDigest) {
 						throw new StaleCandidateInputError()
 					}
@@ -380,8 +387,12 @@ async function finalizeWithWriterRescan(
 		contextDir: store.state.contextDir,
 		hasVerifier: false,
 		environmentGaps: options.environmentGaps,
+		beforeReport: options.beforeReport,
 	})
 }
+
+/** @internal Test seam for the last exhausted-rescan fallback phase boundary. */
+export const finalizeReviewPanelWithWriterRescan = finalizeWithWriterRescan
 
 /** Run a fresh panel. Stage 5 passes parser panel fields directly plus trusted
  * requiredLenses; a manifest deadline is converted to epoch milliseconds. */
@@ -605,6 +616,11 @@ export async function runReviewPanel(options: RunReviewPanelOptions): Promise<Re
 		const result = await finalizeWithWriterRescan(store, outputDir, {
 			...verifier,
 			environmentGaps: options.environmentGaps,
+			beforeReport: () => {
+				if (options.ctx.mode !== "tui") return
+				phase = "finalizing"
+				options.onProgress?.(progressFor(store.state, phase))
+			},
 		})
 		await usage.flush()
 		options.onProgress?.(result.progress)
@@ -680,6 +696,11 @@ export async function wrapUpReviewPanel(options: WrapUpReviewPanelOptions): Prom
 		const result = await finalizeWithWriterRescan(store, outputDir, {
 			...verifier,
 			environmentGaps: options.environmentGaps,
+			beforeReport: () => {
+				if (options.ctx.mode !== "tui") return
+				phase = "finalizing"
+				options.onProgress?.(progressFor(store.state, phase))
+			},
 		})
 		await usage.flush()
 		options.onProgress?.(result.progress)

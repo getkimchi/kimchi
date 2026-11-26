@@ -1,6 +1,24 @@
 import { assertReviewLensId, DEFAULT_REVIEW_CONCURRENCY, type ReviewLensId } from "../review-panel/lenses.js"
-import type { ParsedReviewRequest, ReviewPanelParseResult } from "./types.js"
+import { parseProviderReviewUrl } from "./provider-url.js"
+import type { ParsedReviewRequest, ReviewBranchPreference, ReviewPanelParseResult } from "./types.js"
 import { ReviewTargetError } from "./types.js"
+
+export type ReviewOptionTarget = "working-tree" | "branch" | "pull-request"
+
+const COMMON_REVIEW_OPTIONS = ["--fetch", "--lens", "--all", "--concurrency"] as const
+const REVIEW_OPTIONS: Record<ReviewOptionTarget, readonly string[]> = {
+	"working-tree": COMMON_REVIEW_OPTIONS,
+	branch: [...COMMON_REVIEW_OPTIONS, "--base", "--prefer", "--include-working-tree"],
+	"pull-request": [...COMMON_REVIEW_OPTIONS, "--base"],
+}
+
+export function reviewTargetOptions(target: ReviewOptionTarget): readonly string[] {
+	return REVIEW_OPTIONS[target]
+}
+
+export function allowsReviewTargetOption(target: ReviewOptionTarget, option: string): boolean {
+	return REVIEW_OPTIONS[target].includes(option)
+}
 
 function argumentError(message: string): ReviewTargetError {
 	return new ReviewTargetError("invalid_arguments", message)
@@ -10,16 +28,21 @@ function rejectUnknownOption(argument: string): never {
 	throw argumentError(`Unknown review target option "${argument}".`)
 }
 
-function optionValue(args: readonly string[], index: number, option: string): { value: string; nextIndex: number } {
+function optionValue(
+	args: readonly string[],
+	index: number,
+	option: string,
+	requirement = "a value",
+): { value: string; nextIndex: number } {
 	const argument = args[index]
 	const equals = argument.indexOf("=")
 	if (equals >= 0) {
 		const value = argument.slice(equals + 1)
-		if (!value) throw argumentError(`${option} requires a value.`)
+		if (!value) throw argumentError(`${option} requires ${requirement}.`)
 		return { value, nextIndex: index }
 	}
 	const value = args[index + 1]
-	if (!value || value.startsWith("-")) throw argumentError(`${option} requires a value.`)
+	if (!value || value.startsWith("-")) throw argumentError(`${option} requires ${requirement}.`)
 	return { value, nextIndex: index + 1 }
 }
 
@@ -67,6 +90,26 @@ function extractPanelOptions(args: readonly string[]): {
 	return { targetArgs, panel: { lenses, all, concurrency } }
 }
 
+export interface ReviewTargetGrammar {
+	kind: ReviewOptionTarget
+	targetArgs: string[]
+	bareBranchName?: string
+	explicitBranchForm: boolean
+}
+
+/** Classify the target after removing the same panel options the parser removes. */
+export function reviewTargetGrammar(args: readonly string[]): ReviewTargetGrammar {
+	const { targetArgs } = extractPanelOptions(args)
+	const first = targetArgs[0]
+	const branch = first === "branch" ? targetArgs[1] : first
+	return {
+		kind: first === "working-tree" ? "working-tree" : /^https?:\/\//i.test(branch ?? "") ? "pull-request" : "branch",
+		targetArgs,
+		bareBranchName: first === "branch" ? undefined : branch,
+		explicitBranchForm: first === "branch",
+	}
+}
+
 function bareRequest(fetch: boolean): ParsedReviewRequest {
 	return { kind: "bare", fetch, panel: { lenses: [], all: false, concurrency: DEFAULT_REVIEW_CONCURRENCY } }
 }
@@ -74,27 +117,33 @@ function bareRequest(fetch: boolean): ParsedReviewRequest {
 function parseTargetOnlyArgs(args: readonly string[]): ParsedReviewRequest {
 	if (args.length === 0) return bareRequest(false)
 	const target = args[0]
-	if (target !== "working-tree" && target !== "branch") {
-		if (args.length === 1 && target === "--fetch") return bareRequest(true)
-		if (target.startsWith("--")) {
-			if (target === "--base" || target === "--include-working-tree") {
-				throw argumentError(`${target} requires an explicit working-tree or branch target.`)
-			}
-			if (target === "--fetch") throw argumentError("--fetch does not take a value.")
-			rejectUnknownOption(target)
+	if (target === "--fetch") {
+		if (args.length === 1) return bareRequest(true)
+		throw argumentError("--fetch requires an explicit working-tree, branch, or PR/MR target.")
+	}
+	if (target.startsWith("--")) {
+		if (["--base", "--include-working-tree", "--prefer"].includes(target)) {
+			throw argumentError(`${target} requires an explicit working-tree or branch target.`)
 		}
-		throw argumentError(`Unknown review target "${target}". Use working-tree or branch <ref>.`)
+		rejectUnknownOption(target)
 	}
 
 	if (target === "working-tree") {
 		let fetch = false
 		for (const argument of args.slice(1)) {
+			const option = argument.split("=", 1)[0]
+			if (argument.startsWith("--") && !allowsReviewTargetOption("working-tree", option)) {
+				if (["--base", "--include-working-tree", "--prefer"].includes(option)) {
+					throw argumentError(`${option} can only be used with a branch target.`)
+				}
+				rejectUnknownOption(argument)
+			}
 			if (argument === "--fetch") {
 				if (fetch) throw argumentError("--fetch was provided more than once.")
 				fetch = true
 				continue
 			}
-			if (argument === "--base" || argument === "--include-working-tree") {
+			if (argument === "--base" || argument === "--include-working-tree" || argument === "--prefer") {
 				throw argumentError(`${argument} can only be used with a branch target.`)
 			}
 			if (argument.startsWith("--")) rejectUnknownOption(argument)
@@ -103,24 +152,48 @@ function parseTargetOnlyArgs(args: readonly string[]): ParsedReviewRequest {
 		return { kind: "working-tree", fetch }
 	}
 
-	const branch = args[1]
+	const explicitBranch = target === "branch"
+	const branch = explicitBranch ? args[1] : target
 	if (!branch || branch.startsWith("-")) {
 		throw argumentError("branch requires a ref before its options, for example branch feature --base main.")
+	}
+	const provider = explicitBranch || !/^https?:\/\//i.test(branch) ? undefined : parseProviderReviewUrl(branch)
+	if (!explicitBranch && /^https?:\/\//i.test(branch) && !provider) {
+		throw argumentError(
+			"Invalid PR/MR URL. Use https://github.com/<owner>/<repo>/pull/<n> or a GitLab <project>/-/merge_requests/<n> URL.",
+		)
 	}
 	let base: string | undefined
 	let includeWorkingTree = false
 	let fetch = false
-	for (let index = 2; index < args.length; index += 1) {
+	let prefer: ReviewBranchPreference | undefined
+	for (let index = explicitBranch ? 2 : 1; index < args.length; index += 1) {
 		const argument = args[index]
-		if (argument === "--base") {
+		const option = argument.split("=", 1)[0]
+		if (argument.startsWith("--") && !allowsReviewTargetOption(provider ? "pull-request" : "branch", option)) {
+			if (["--base", "--include-working-tree", "--prefer"].includes(option)) {
+				throw argumentError(`${option} can only be used with a branch target.`)
+			}
+			rejectUnknownOption(argument)
+		}
+		if (option === "--base") {
 			if (base !== undefined) throw argumentError("--base was provided more than once.")
-			const value = args[index + 1]
-			if (!value || value.startsWith("-")) throw argumentError("--base requires a ref value.")
+			const { value, nextIndex } = optionValue(args, index, "--base", "a ref value")
 			base = value
-			index += 1
+			index = nextIndex
+			continue
+		}
+		if (option === "--prefer") {
+			if (provider) throw argumentError("--prefer can only be used with a branch target.")
+			if (prefer !== undefined) throw argumentError("--prefer was provided more than once.")
+			const { value, nextIndex } = optionValue(args, index, "--prefer")
+			if (value !== "local" && value !== "remote") throw argumentError("--prefer must be local or remote.")
+			prefer = value
+			index = nextIndex
 			continue
 		}
 		if (argument === "--include-working-tree") {
+			if (provider) throw argumentError("--include-working-tree can only be used with a branch target.")
 			if (includeWorkingTree) throw argumentError("--include-working-tree was provided more than once.")
 			includeWorkingTree = true
 			continue
@@ -131,9 +204,10 @@ function parseTargetOnlyArgs(args: readonly string[]): ParsedReviewRequest {
 			continue
 		}
 		if (argument.startsWith("--")) rejectUnknownOption(argument)
-		throw argumentError(`Unexpected positional argument "${argument}" for branch ${branch}.`)
+		throw argumentError(`Unexpected positional argument "${argument}" for ${provider ? "PR/MR" : "branch"} ${branch}.`)
 	}
-	return { kind: "branch", branch, base, includeWorkingTree, fetch }
+	if (provider) return { kind: "pull-request", ...provider, base, fetch }
+	return { kind: "branch", branch, base, includeWorkingTree, fetch, ...(prefer ? { prefer } : {}) }
 }
 
 /** Parse the tokens following /review. Shell tokenization and UI dispatch belong to the surface adapter. */

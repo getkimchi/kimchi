@@ -21,10 +21,18 @@ import {
 	getReviewTargetChoices,
 	parseReviewTargetArgs,
 	type ResolvedReviewTarget,
+	type ReviewBaseSuggestion,
+	type ReviewBranchRevisionChoice,
+	type ReviewTargetInteractions,
 	resolveReviewTarget,
 } from "../review-targets/index.js"
 import { ReviewTargetError } from "../review-targets/types.js"
-import { acquireReviewOperation, type ReviewOperation, registerPendingReview } from "./active-runs.js"
+import {
+	acquireReviewOperation,
+	cancelActiveReview,
+	type ReviewOperation,
+	registerPendingReview,
+} from "./active-runs.js"
 import { headlessEnvironmentGaps } from "./environment-gaps.js"
 import {
 	loadPreparedReviewManifest,
@@ -33,6 +41,12 @@ import {
 	REVIEW_MANIFEST_FILENAME,
 	readReviewManifest,
 } from "./manifest.js"
+import {
+	mountReviewProgressComponent,
+	type ReviewProgressModel,
+	stopReviewProgressAnimation,
+} from "./progress-widget.js"
+import { REVIEW_RESULT_CUSTOM_TYPE, renderReviewResult, reviewResultDetails } from "./result-message.js"
 import { createLocalReviewRunDirectory, reviewOwnedDirectories } from "./run-directory.js"
 import { readTrustedReviewSettings } from "./settings.js"
 import {
@@ -121,22 +135,21 @@ interface Reporter {
 	error: (error: unknown) => void
 }
 
-function notify(ctx: ExtensionCommandContext, message: string, severity: "info" | "error" = "info"): void {
+function notify(ctx: ExtensionCommandContext, message: string, severity: "info" | "warning" | "error" = "info"): void {
 	if (ctx.hasUI) ctx.ui.notify(message, severity)
 }
 
-// The widget API exposes no terminal width. Fifty-two columns plus Text's
-// padding stays on one row at the minimum sixty-column width we support here.
-function widgetLine(value: string): string {
-	return truncateToWidth(value, 52, "…")
+const REVIEW_WIDGET_OPTIONS = { placement: "aboveEditor" } as const
+
+function clearReviewWidget(ctx: ExtensionCommandContext): void {
+	stopReviewProgressAnimation(ctx)
+	if (ctx.hasUI && ctx.mode === "tui") ctx.ui.setWidget("review-panel", undefined, REVIEW_WIDGET_OPTIONS)
 }
 
-function showDetails(ctx: ExtensionCommandContext, pi: ExtensionAPI, message: string): void {
-	if (ctx.mode === "tui") {
-		pi.sendMessage({ customType: "review-details", content: message, display: true })
-		return
-	}
-	notify(ctx, message)
+// Matches the original ACP string-array widget lifecycle; component factories
+// and the custom result-message renderer remain local to the real TUI.
+function nonTuiWidgetLine(value: string): string {
+	return truncateToWidth(value, 52, "…")
 }
 
 function reviewResultSummary(result: Pick<ReviewPanelResult, "progress" | "findings" | "summaryPath">): string[] {
@@ -149,27 +162,25 @@ function reviewResultSummary(result: Pick<ReviewPanelResult, "progress" | "findi
 	]
 }
 
-export function reporter(ctx: ExtensionCommandContext, visible: boolean, pi: ExtensionAPI): Reporter {
+function nonTuiReporter(ctx: ExtensionCommandContext, visible: boolean): Reporter {
 	let scopeLines: string[] = []
 	let selectionLines: string[] = []
 	let progressLines: string[] = []
 	const paint = (resultLines: string[] = []) => {
-		if (visible) {
-			ctx.ui.setWidget(
-				"review-panel",
-				[...scopeLines, ...selectionLines, ...progressLines, ...resultLines].map(widgetLine),
-				{ placement: "aboveEditor" },
-			)
-		}
+		if (!visible) return
+		ctx.ui.setWidget(
+			"review-panel",
+			[...scopeLines, ...selectionLines, ...progressLines, ...resultLines].map(nonTuiWidgetLine),
+			{ placement: "aboveEditor" },
+		)
 	}
 	return {
 		scope(target, runDirectory) {
 			if (!visible) return
 			const scope = target.scope
 			scopeLines = [`Review ${scope.kind}; ${scope.files.changed} changed files`]
-			showDetails(
+			notify(
 				ctx,
-				pi,
 				[
 					"Review scope pinned:",
 					`${scope.pinned.baseSha}..${scope.pinned.headSha}`,
@@ -182,9 +193,8 @@ export function reporter(ctx: ExtensionCommandContext, visible: boolean, pi: Ext
 		selection(selection) {
 			if (!visible) return
 			selectionLines = [`Lenses: ${selection.lenses.length}; concurrency ${selection.slotCount}`]
-			showDetails(
+			notify(
 				ctx,
-				pi,
 				[
 					"Review lenses:",
 					...selection.lenses.map((lens) => `${lens.id} (${lens.reasons.join("; ")})`),
@@ -194,6 +204,7 @@ export function reporter(ctx: ExtensionCommandContext, visible: boolean, pi: Ext
 			paint()
 		},
 		progress(progress) {
+			if (progress.phase === "finalizing") return
 			progressLines = [
 				`Review ${progress.phase}; ${progress.counts.candidates} candidates; recon ${progress.reconciliation.status}`,
 				...progress.lenses.map(
@@ -206,9 +217,7 @@ export function reporter(ctx: ExtensionCommandContext, visible: boolean, pi: Ext
 		result(result) {
 			if (!visible) return
 			const findings = result.findings.length
-				? result.findings.map(
-						(finding) => `${finding.severity.toUpperCase()} ${finding.path}:${finding.line} ${finding.description}`,
-					)
+				? result.findings.map((finding) => `${finding.priority} ${finding.path}:${finding.line} ${finding.title}`)
 				: ["No findings."]
 			const summary = reviewResultSummary(result)
 			// Keep complete findings in scrollback; the live widget shrinks to a summary.
@@ -226,6 +235,130 @@ export function reporter(ctx: ExtensionCommandContext, visible: boolean, pi: Ext
 			notify(ctx, message, "error")
 		},
 	}
+}
+
+export function reporter(ctx: ExtensionCommandContext, visible: boolean, pi: ExtensionAPI): Reporter {
+	if (ctx.mode !== "tui") return nonTuiReporter(ctx, visible)
+	return tuiReporter(ctx, visible, pi)
+}
+
+function tuiReporter(ctx: ExtensionCommandContext, visible: boolean, pi: ExtensionAPI): Reporter {
+	let target: ResolvedReviewTarget | undefined
+	let model: ReviewProgressModel | undefined
+	const showWidget = visible && ctx.hasUI && ctx.mode === "tui"
+	const paint = () => {
+		if (!showWidget || !model) return
+		ctx.ui.setWidget(
+			"review-panel",
+			(tui, theme) => mountReviewProgressComponent(ctx, tui, theme, () => model as ReviewProgressModel),
+			REVIEW_WIDGET_OPTIONS,
+		)
+	}
+	return {
+		scope(nextTarget) {
+			if (!visible) return
+			target = nextTarget
+			model = { target: nextTarget }
+			paint()
+		},
+		selection(selection) {
+			if (!visible || !model) return
+			model = { ...model, selection }
+			paint()
+		},
+		progress(progress) {
+			if (!visible || !model) return
+			model = { ...model, progress }
+			paint()
+		},
+		result(result) {
+			if (!visible) return
+			if (showWidget) clearReviewWidget(ctx)
+			if (!target) return
+			const details = reviewResultDetails(target.scope, result, target.baseDisplayRef)
+			// The registered renderer adds theme colors; content remains a complete
+			// plain-text fallback for persistence and non-TUI consumers.
+			pi.sendMessage({
+				customType: REVIEW_RESULT_CUSTOM_TYPE,
+				content: renderReviewResult(details),
+				display: true,
+				details,
+			})
+		},
+		error(error) {
+			if (!visible) return
+			const message = `Review failed: ${error instanceof Error ? error.message : String(error)}`
+			if (model) {
+				model = { ...model, error: message }
+				paint()
+			}
+			notify(ctx, message, "error")
+		},
+	}
+}
+
+function friendlyRef(ref: string): string {
+	return ref.replace(/^refs\/(?:heads|remotes)\//, "")
+}
+
+async function chooseDivergedBranch(
+	ctx: ExtensionCommandContext,
+	choice: ReviewBranchRevisionChoice,
+	signal: AbortSignal,
+): Promise<"local" | "remote" | undefined> {
+	const counts = `${choice.local.ahead} ahead, ${choice.local.behind} behind`
+	const local = `Review local ${choice.branch} (${counts}; ${choice.local.sha.slice(0, 7)})`
+	const remote = `Review ${choice.remote}/${choice.branch} (${choice.remoteRevision.sha.slice(0, 7)})`
+	const picked = await ctx.ui.select(`Review local ${choice.branch} (${counts})?`, [local, remote], { signal })
+	signal.throwIfAborted()
+	return picked === local ? "local" : picked === remote ? "remote" : undefined
+}
+
+async function chooseReviewBase(
+	ctx: ExtensionCommandContext,
+	choice: { branch: string; candidates: ReviewBaseSuggestion[] },
+	signal: AbortSignal,
+): Promise<string | undefined> {
+	const chooseAnother = "Choose another base"
+	if (choice.candidates.length === 1) {
+		const candidate = choice.candidates[0]
+		const yes = `Yes, use ${friendlyRef(candidate.ref)}`
+		const picked = await ctx.ui.select(
+			`Review ${choice.branch} against ${friendlyRef(candidate.resolvedRef ?? candidate.ref)}?`,
+			[yes, chooseAnother],
+			{ signal },
+		)
+		signal.throwIfAborted()
+		if (picked === yes) return candidate.ref
+		if (picked !== chooseAnother) return undefined
+	}
+	const enterBase = "Enter another base"
+	const labels = [...choice.candidates.map((candidate) => friendlyRef(candidate.ref)), enterBase]
+	const picked = await ctx.ui.select(`Base for ${choice.branch}`, labels, { signal })
+	signal.throwIfAborted()
+	if (!picked) return undefined
+	if (picked !== enterBase) {
+		return choice.candidates.find((candidate) => friendlyRef(candidate.ref) === picked)?.ref
+	}
+	const enteredBase = await ctx.ui.input("Base ref", "main or origin/main", { signal })
+	signal.throwIfAborted()
+	return enteredBase?.trim() || undefined
+}
+
+export function reviewTargetInteractions(
+	ctx: ExtensionCommandContext,
+	signal: AbortSignal,
+): ReviewTargetInteractions | undefined {
+	if (!ctx.hasUI || ctx.mode !== "tui" || isPrintModeEnabled()) return undefined
+	return {
+		chooseBranchRevision: (choice) => chooseDivergedBranch(ctx, choice, signal),
+		chooseBase: (choice) => chooseReviewBase(ctx, choice, signal),
+	}
+}
+
+function surfaceNotice(ctx: ExtensionCommandContext, message: string, warning = false): void {
+	if (isPrintModeEnabled() && !jsonPrintEnabled()) console.error(message)
+	else notify(ctx, message, warning ? "warning" : "info")
 }
 
 async function staleSweep(root: string, deps: ReviewCommandDependencies, signal?: AbortSignal): Promise<void> {
@@ -452,7 +585,13 @@ async function runLocal(
 	const pending = registerPendingReview(ctx)
 	if (parsed.kind !== "bare") pending.captureInput()
 	try {
-		await staleSweep(ctx.cwd, deps, pending.signal)
+		let deferredSweep = parsed.kind === "pull-request"
+		try {
+			await staleSweep(ctx.cwd, deps, pending.signal)
+			deferredSweep = false
+		} catch (error) {
+			if (!deferredSweep || !(error instanceof ReviewTargetError) || error.code !== "not_a_worktree") throw error
+		}
 		let request: ExplicitReviewRequest
 		if (parsed.kind === "bare") {
 			const selected = await selectBareTarget(parsed, ctx, deps, pending.signal)
@@ -475,7 +614,13 @@ async function runLocal(
 			root: ctx.cwd,
 			contextDir: directories.contextDir,
 			excludedDirectories: reviewOwnedDirectories(directories),
+			interactions: reviewTargetInteractions(ctx, pending.signal),
 			signal: pending.signal,
+			onCacheCompromised: (error) => {
+				void cancelActiveReview(ctx.sessionManager.getSessionId(), error.message)
+			},
+			onBaseSelected: (suggestion) => surfaceNotice(ctx, `Using base ${friendlyRef(suggestion.ref)}.`),
+			onWarning: (message) => surfaceNotice(ctx, message, true),
 		})
 		const report = reporter(ctx, !isPrintModeEnabled(), pi)
 		let operation: ReviewOperation | undefined
@@ -487,6 +632,7 @@ async function runLocal(
 			// the key and the panel's distinct active controller never aborts.
 			pending.releaseInput()
 			operation.signal.throwIfAborted()
+			if (deferredSweep) await staleSweep(target.scope.checkoutPath, deps, operation.signal)
 			report.scope(target, run.runDir)
 			const selection = deps.resolvePanel({ ...request.panel, requiredLenses: settings.requiredLenses })
 			report.selection(selection)
@@ -536,7 +682,7 @@ export async function runReviewCommand(
 			throw invalid("Local /review targets require --enable-experimental-features; use --manifest or wrap-up.")
 		} else await runLocal(args, ctx, pi, deps)
 	} catch (error) {
-		if (isPrintModeEnabled()) {
+		if (isPrintModeEnabled() || !ctx.hasUI || ctx.mode === "print" || ctx.mode === "json") {
 			printReviewError(error)
 			if (reviewCliEnabled() && jsonPrintEnabled()) {
 				emitReviewAgentSettled()
@@ -546,6 +692,8 @@ export async function runReviewCommand(
 		} else {
 			reporter(ctx, true, pi).error(error)
 		}
+	} finally {
+		clearReviewWidget(ctx)
 	}
 }
 

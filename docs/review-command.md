@@ -20,7 +20,11 @@ are hidden from `--help` but continue to parse normally.
 
 The adapter shows the immutable base/head, selected lenses and policy reasons,
 effective slot count, per-lens progress, final findings, and complete or partial
-coverage. Report and contract artifacts use `.kimchi/review-context` and
+coverage. Live results group findings by priority, with a real title, type,
+separate path and line, and at most two description rows; P4 findings use one
+compact row. The expanded view includes the full description, explanation, and
+suggestion. Structured result artifacts retain the complete fields and
+capped-priority counts, and non-TUI payload formatting is unchanged. Report and contract artifacts use `.kimchi/review-context` and
 `.kimchi/review-output` by default, outside reviewer worktrees. Startup sweeps
 reclaim private snapshot refs and worktree runs older than 24 hours; normal
 cleanup uses the owning runner's finalization path.
@@ -53,9 +57,12 @@ partial result before returning control.
 Plan/read-only sessions retain full in-context review capability. The three
 submit tools and `submit_reconciliation` write coordinator-owned output (or returns
 structured results) and are accepted specially by the worker permission gate;
-they do not create or modify worktree source files or run scripts. `run_review_*`,
-`bash`, and ordinary `write`/`edit` remain denied in Plan mode. In particular,
-Plan does not suppress findings or summaries behind ordinary approval prompts.
+they do not create or modify worktree source files or run scripts. A fenced
+review worker may run configured routine checks through `run_review_check`;
+inherited deny rules, hard blocks, and review execution controls still apply.
+`run_review_command`, `bash`, and ordinary `write`/`edit` remain denied in Plan
+mode. In particular, Plan does not suppress findings or summaries behind ordinary
+approval prompts.
 
 ## Trusted settings
 

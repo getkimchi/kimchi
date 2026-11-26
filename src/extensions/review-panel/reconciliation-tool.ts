@@ -4,7 +4,22 @@ import { REVIEW_RECONCILIATION_VERSION, type SemanticReconciliation } from "./ty
 
 export const REVIEW_RECONCILIATION_TOOL = "submit_reconciliation"
 
-const severity = Type.Union([Type.Literal("critical"), Type.Literal("warning"), Type.Literal("info")])
+const priority = Type.Union([
+	Type.Literal("P0"),
+	Type.Literal("P1"),
+	Type.Literal("P2"),
+	Type.Literal("P3"),
+	Type.Literal("P4"),
+])
+const findingType = Type.Union([
+	Type.Literal("bug"),
+	Type.Literal("security"),
+	Type.Literal("reliability"),
+	Type.Literal("performance"),
+	Type.Literal("convention"),
+	Type.Literal("test-gap"),
+	Type.Literal("docs"),
+])
 const verdict = Type.Union([
 	Type.Literal("fixed"),
 	Type.Literal("not_fixed"),
@@ -44,10 +59,12 @@ export function createReconciliationSubmissionExtension(
 								id: Type.String(),
 								path: Type.String(),
 								line: Type.Integer({ minimum: 1 }),
-								severity,
-								type: Type.String(),
+								title: Type.String(),
 								description: Type.String(),
+								explanation: Type.String(),
 								suggestion: Type.String(),
+								priority,
+								type: findingType,
 								candidate_ids: Type.Array(Type.String(), { minItems: 1 }),
 							},
 							{ additionalProperties: false },

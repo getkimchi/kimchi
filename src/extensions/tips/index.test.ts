@@ -2,6 +2,10 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createContext } from "../__mocks__/context.js"
+import { testTheme } from "../__mocks__/theme.js"
+import { mountReviewProgressComponent, stopReviewProgressAnimation } from "../review-command/progress-widget.js"
+import type { ResolvedReviewTarget } from "../review-targets/types.js"
 import tipsExtension, { setTipWidgetLocation, TIPS_WIDGET_KEY } from "./index.js"
 import { TipRegistry } from "./registry.js"
 
@@ -37,19 +41,19 @@ function createHarness(options: { hasUI: boolean }) {
 	let component: { render(width: number): string[] } | undefined
 	const requestRender = vi.fn()
 	const tui = { requestRender } as unknown as TUI
-	const notifications: Array<{ message: string; level: string }> = []
+	const notifications: Array<{ message: string; level: "info" | "warning" | "error" }> = []
 	const ui = {
 		setWidget: vi.fn((_key: string, content: unknown) => {
 			if (typeof content === "function") {
 				component = content(tui, theme()) as { render(width: number): string[] }
 			}
 		}),
-		notify: vi.fn((message: string, level: string) => {
+		notify: vi.fn((message: string, level: "info" | "warning" | "error" = "info") => {
 			notifications.push({ message, level })
 		}),
 		custom: vi.fn(),
 	}
-	const ctx = { hasUI: options.hasUI, ui, cwd: "/test" }
+	const ctx = createContext({ cwd: "/test", hasUI: options.hasUI, ui })
 	const commands = new Map<string, { description: string; handler: (args: string, ctx: unknown) => Promise<unknown> }>()
 	const api = {
 		on: vi.fn((event: string, handler: Handler) => {
@@ -117,6 +121,27 @@ describe("tips extension", () => {
 			placement: "aboveEditor",
 		})
 		expect(harness.requestRender).toHaveBeenCalledTimes(1)
+	})
+
+	it("unmounts the tip widget while a review is mounted and restores it after cleanup", () => {
+		const harness = createHarness({ hasUI: true })
+		harness.start()
+		expect(harness.component()?.render(120)).toHaveLength(1)
+		harness.ui.setWidget.mockClear()
+
+		// Only lifecycle state is needed for this assertion; the review body is not rendered.
+		const model = () => ({ target: {} as ResolvedReviewTarget })
+		mountReviewProgressComponent(harness.ctx, harness.tui, testTheme, model)
+		expect(harness.ui.setWidget).toHaveBeenCalledWith(TIPS_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		})
+		expect(harness.component()?.render(120)).toEqual([])
+
+		stopReviewProgressAnimation(harness.ctx)
+		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(TIPS_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		})
+		expect(harness.component()?.render(120).join("\n")).toContain("Tip:")
 	})
 
 	it("does not render tips when UI is unavailable", () => {

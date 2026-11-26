@@ -84,6 +84,7 @@ import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js
 import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import {
 	isReviewResultSubmissionTool,
+	REVIEW_CHECK_TOOL,
 	type ReviewAuthorizationResult,
 	type ReviewPermissionPolicy,
 	reviewApprovalPresentation,
@@ -642,9 +643,20 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	/**
 	 * Returns the current permission mode flag or falls back to a user default.
 	 */
-	function getRuntimePermissionMode(): PermissionModeState {
+	function getRuntimePermissionMode(toolName?: string): PermissionModeState {
 		if (isWorker) {
-			return workerMode ?? resolveMode({ env: permissionsEnvFlag, config: loaded.config.defaultMode })
+			const inherited = workerMode ?? resolveMode({ env: permissionsEnvFlag, config: loaded.config.defaultMode })
+			if (
+				toolName === REVIEW_CHECK_TOOL &&
+				options.reviewExecution?.preApproved(toolName) &&
+				inherited.mode === "plan"
+			) {
+				// Review children run configured routine checks in isolated worktrees.
+				// Parent plan mode must not block those checks, but reviewer-authored
+				// commands remain behind the ordinary plan gate.
+				return { ...inherited, mode: "auto" }
+			}
+			return inherited
 		}
 		const runtimeMode = currentCtx && getPermissionMode(currentCtx.sessionManager.getSessionId())
 		return resolveMode({
@@ -2028,11 +2040,11 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	}
 
 	async function gateToolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<GateResult> {
+		const toolName = event.toolName.toLowerCase()
 		refreshWorkerPolicy(ctx)
 		if (options.role === "worker") {
-			options.reviewExecution?.captureExecution(event, ctx, getRuntimePermissionMode().mode)
+			options.reviewExecution?.captureExecution(event, ctx, getRuntimePermissionMode(toolName).mode)
 		}
-		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
 
 		if (toolName === "read") {
@@ -2135,7 +2147,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				// A parent mode change cancels escalated prompts. The worker must
 				// refresh the parent's live policy on every pass.
 				refreshWorkerPolicy(ctx)
-				const { mode } = getRuntimePermissionMode()
+				const { mode } = getRuntimePermissionMode(toolName)
 
 				const reviewApproval =
 					options.role === "worker" && mode !== "plan" && !isDangerBypass()

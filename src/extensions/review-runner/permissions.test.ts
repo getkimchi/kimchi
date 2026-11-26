@@ -8,6 +8,7 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { DEFAULT_CONFIG } from "../permissions/constants.js"
 import { createWorkerPermissionsExtension } from "../permissions/index.js"
 import { registerParentSurface, unregisterParentSurface } from "../permissions/parent-surface-registry.js"
+import { PERMISSION_EVENTS } from "../permissions/permissions-events.js"
 import { registerPermissionPolicySource } from "../permissions/policy-source-registry.js"
 import type { PermissionRequest } from "../permissions/prompter.js"
 import type { ApprovalOutcome } from "../permissions/prompts.js"
@@ -286,15 +287,13 @@ describe("review worker permission integration", () => {
 		await expect(allowed.controller.authorizeCommand("shutdown now", { mode })).resolves.toBeUndefined()
 	})
 
-	it("prevents every reviewer from writing or running scripts in read-only mode", async () => {
+	it("prevents reviewers from writing or running scripts directly in read-only mode", async () => {
 		for (const id of ["one", "two"]) {
 			const planned = gate("plan", { kind: "allow-once" }, id)
 			const write = await call(planned.child, planned.ctx, "write", { path: "focused.test", content: "test" })
 			expect(write).toMatchObject({ block: true, reason: expect.stringContaining("plan mode") })
 			const script = await call(planned.child, planned.ctx, "bash", { command: "node focused.test" })
 			expect(script).toMatchObject({ block: true, reason: expect.stringContaining("plan mode") })
-			const routine = await call(planned.child, planned.ctx, "run_review_check", { id: "test" })
-			expect(routine).toMatchObject({ block: true, reason: expect.stringContaining("plan mode") })
 			expect(planned.requestPermission).not.toHaveBeenCalled()
 		}
 	})
@@ -307,6 +306,43 @@ describe("review worker permission integration", () => {
 		abort.abort()
 		const result = await call(stopped.child, stopped.ctx, "bash", { command: "npm install" })
 		expect(result).toMatchObject({ block: true, reason: expect.stringContaining("stopped") })
+	})
+
+	it("keeps a fenced reviewer's commands behind plan_gate in plan mode", async () => {
+		const planned = gate("plan", { kind: "allow-once" }, "plan-review-command")
+		const decisions = vi.fn()
+		planned.child.api.events.on(PERMISSION_EVENTS.TOOL_DECISION, decisions)
+
+		await expect(
+			call(planned.child, planned.ctx, "run_review_command", { command: "printf focused" }),
+		).resolves.toMatchObject({ block: true })
+		expect(decisions).toHaveBeenCalledWith(expect.objectContaining({ decision: "reject", sourceDetail: "plan_gate" }))
+		expect(planned.requestPermission).not.toHaveBeenCalled()
+	})
+
+	it("lets a fenced reviewer run an approved check when the parent session is in plan mode", async () => {
+		const planned = gate("plan", { kind: "allow-once" }, "plan-approved-check")
+		expect(await call(planned.child, planned.ctx, "run_review_check", { id: "approved-check" })).toBeUndefined()
+		for (const path of [
+			planned.controller.worktree.path,
+			planned.controller.worktree.scratchDir,
+			planned.controller.worktree.buildDir,
+			planned.controller.worktree.cacheDir,
+			planned.controller.worktree.homeDir,
+		]) {
+			mkdirSync(path, { recursive: true })
+		}
+		const bash = createReviewBashToolDefinition(planned.controller)
+		const result = await bash.execute(
+			"call-run_review_check",
+			{ command: "printf approved" },
+			undefined,
+			undefined,
+			createToolContext({ cwd: planned.controller.worktree.path }),
+		)
+		expect(result.isError, JSON.stringify(result)).not.toBe(true)
+		expect(planned.controller.executionFor("call-run_review_check")?.mode).toBe("auto")
+		expect(planned.controller.records.at(-1)).toMatchObject({ status: "passed", output: "approved" })
 	})
 
 	it("does not make the routine check tool a new approval path in default mode", async () => {

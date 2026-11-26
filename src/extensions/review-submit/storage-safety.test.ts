@@ -10,10 +10,12 @@ const NOW = () => new Date("2026-11-17T12:00:00Z")
 const finding = {
 	path: "local.ts",
 	line: 1,
-	severity: "warning",
-	type: "bug",
+	title: "A finding",
 	description: "A finding.",
+	explanation: "Static inspection supports this storage fixture finding.",
 	suggestion: "Fix it.",
+	priority: "P2" as const,
+	type: "bug" as const,
 }
 const summary = { body: "Committed summary.", score: 80, estimated_effort_to_review: 3, environment_gaps: [] }
 

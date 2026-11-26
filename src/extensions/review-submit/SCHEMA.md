@@ -1,6 +1,6 @@
-# Review reply schemas (provisional)
+# Review submit-tool schemas
 
-These schemas are **provisional until the consumer-side reply context and ingest implementation lands**. The submit tool intentionally does not inspect comment bodies or bot handles: the producer computes `is_ours` and `mentions_bot` before writing the context.
+The finding and summary schemas below are the current v1 producer contract. The reply context and ingest schemas are **provisional until the consumer-side reply implementation lands**. The submit tool intentionally does not inspect comment bodies or bot handles: the producer computes `is_ours` and `mentions_bot` before writing the context.
 
 ## Directory selection
 
@@ -13,6 +13,45 @@ The examples below use `<review-context>` and `<review-output>` for the selected
 Preventing a concurrent process from swapping an already validated component for a symlink before a later write is a non-goal. Such a process already has the same filesystem access as the agent, and Node has no openat-style no-follow traversal.
 
 The `--review*` switches are intentionally omitted from `kimchi --help`; they remain valid for the platform's headless integration.
+
+## `review-finding/v1`
+
+Accepted findings append one compact JSON object per line to `<review-output>/findings/<writer>.jsonl`. A writer holds at most 50 findings, subject to the configured non-final writer limit, and all files remain within the shared 1 MiB limit.
+
+Every candidate and final record contains:
+
+- `schema_version`: exactly `"review-finding/v1"`.
+- `id`: `<writer>-<seq>`.
+- `writer`: the configured writer ID.
+- `seq`: contiguous positive sequence, starting at 1.
+- `created_at`: RFC 3339 UTC timestamp.
+- `path`: repository-relative path, maximum 4 KiB in UTF-8, no NUL.
+- `line`: new-side line number, a positive signed 32-bit integer validated against the applicable anchor map.
+- `title`: required, 1..80 Unicode code points after trimming. A single plain line saying what is wrong; control characters and line separators are rejected.
+- `description`: required, 1..250 Unicode code points after trimming. The impact: who is affected and how, for quick triage.
+- `explanation`: required, 1..2000 Unicode code points after trimming. Reasoning and evidence, including relevant code paths. State what was run (commands, probes, tests) and the observed results, or state that the finding comes from reading code.
+- `suggestion`: required, 1..500 Unicode code points after trimming. The concrete fix.
+- `priority`: required, one of `P0`, `P1`, `P2`, `P3`, `P4`.
+- `type`: required, one of `bug`, `security`, `reliability`, `performance`, `convention`, `test-gap`, `docs`.
+- `derived_from`: optional array of at most 50 prior or merged finding IDs; each ID is non-empty and at most 256 UTF-8 bytes.
+
+Priority means:
+
+| Value | Meaning | Short example |
+| --- | --- | --- |
+| `P0` | An outage, security hole, or data loss that can happen in production. | A request can delete another tenant's data. |
+| `P1` | A main feature is broken, or a likely bug is on the main path. | The normal export command rejects valid input. |
+| `P2` | A minor feature is broken, or an edge-case bug exists. | Only an empty optional filename is mishandled. |
+| `P3` | Affects a few users, or is a real maintainability risk. | A rare locale fails, or duplicated validation invites drift. |
+| `P4` | Negligible impact; conventions, style, or docs. | A guide names a retired option. |
+
+Text lengths are measured in Unicode code points after trimming; UTF-8 bytes are not substituted. The stored fields are trimmed. Over-limit input is rejected with the field, maximum, and actual length so the caller can rewrite it; the tools never truncate silently. Unknown fields, including the removed `severity` and finding-level `evidence`, are rejected. Stored submission reads and final serialization validate schema, matching writer/sequence/ID, timestamps, and all semantic fields.
+
+Interim candidate checkpoints preserve submitted priorities. Only final wrap-up publication, including reused or recovered fallback, applies caps in code: `convention` and `docs` become `P4`, and `test-gap` becomes at most `P3`. No `priority_capped_from` metadata is emitted. Final ranking and coverage use capped priorities and remapped contiguous final IDs. Reconciliation may change only `title` and `priority`; all other semantic fields must exactly match one best-supported source candidate.
+
+## `review-summary/v1`
+
+`<review-output>/summary/final.json` remains the review summary. Its optional structured `coverage` includes lens completion counts, candidate and final finding counts, `provenance_truncated_count`, and `findings_by_priority`, an object with nonnegative `P0` through `P4` counts whose sum equals `final_finding_count`. The panel summary body includes the same capped-priority counts.
 
 ## `review-comments/v1`
 
@@ -48,4 +87,4 @@ Fields:
 
 A writer file holds at most 30 replies. Counting, sequence assignment, and append happen under the writer lock and survive process restarts.
 
-The local tests include accepted in-scope replies, missing/invalid context, unknown and out-of-scope threads, forbidden actions, missing verification fields, exact artifact content, and a fresh process enforcing the 30-reply cap. Reply cases will join the shared finding/summary fixture when the consumer side supplies `comments.json` and expected reply artifacts; the vendored fixture is not changed locally.
+The local tests include accepted in-scope replies, missing/invalid context, unknown and out-of-scope threads, forbidden actions, missing verification fields, exact artifact content, and a fresh process enforcing the 30-reply cap. Reply cases will join the shared finding/summary fixture when the consumer side supplies `comments.json` and expected reply artifacts.

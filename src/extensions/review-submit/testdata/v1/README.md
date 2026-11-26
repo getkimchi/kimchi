@@ -16,6 +16,12 @@ All data files in this directory must stay byte-identical with the consumer's co
 
 The fixture uses `review-finding/v1` and `review-summary/v1`. Reply validation and exact reply artifacts are covered by co-located local process tests. Reply cases join this shared fixture when the consumer supplies `comments.json` and expected reply output.
 
+## Finding records
+
+Every finding contains `title`, `description`, `explanation`, `suggestion`, `priority`, and `type`, in addition to `path`, `line`, and the existing identity fields. Text is trimmed and limited to 80, 250, 2000, and 500 Unicode code points respectively. `title` is one control-character-free plain line. Priority is `P0` through `P4`; type is `bug`, `security`, `reliability`, `performance`, `convention`, `test-gap`, or `docs`. `explanation` states the commands, probes, or tests run and their results, or that the finding comes from reading code. The removed `severity` and finding-level `evidence` are unknown fields. Fixture boundary strings are ASCII so their generated UTF-8 byte counts also equal their code-point counts.
+
+See `../../SCHEMA.md` for the full field and priority definitions. The deterministic expected records include direct writer submissions; panel-only wrap-up priority caps and merge behavior are covered by the panel tests rather than by rewriting these direct submissions.
+
 ## Panel manifest and stream records
 
 `review-context/manifest.json` is the v1 headless panel manifest. It has exactly `schema_version`, `base_sha`, `head_sha`, `checkout_path`, `context_dir`, `output_dir`, and `deadline`. Its schema is `review-manifest/v1`; base/head match `provider-diff.json`, and deadline is an absolute UTC RFC 3339 timestamp. The paths and synthetic Git IDs document the wire contract; a live checkout test substitutes real temporary paths and revisions. There is no grace field: TERM occurs at `deadline` and KILL 60 seconds later.

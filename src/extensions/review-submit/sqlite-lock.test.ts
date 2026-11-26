@@ -17,10 +17,12 @@ const NOW = () => new Date("2026-11-17T12:00:00Z")
 const baseFinding = {
 	path: "local.ts",
 	line: 1,
-	severity: "warning",
-	type: "bug",
+	title: "Initial finding",
 	description: "Initial finding.",
+	explanation: "Static inspection supports this lock fixture finding.",
 	suggestion: "Fix it.",
+	priority: "P2" as const,
+	type: "bug" as const,
 }
 
 const paths = (root: string) => ({

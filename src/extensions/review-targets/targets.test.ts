@@ -23,6 +23,19 @@ import { cleanupStaleReviewSnapshots, getReviewTargetChoices, resolveReviewTarge
 import { REVIEW_SNAPSHOT_REF_PREFIX } from "./snapshot.js"
 import type { ExplicitReviewRequest, ProviderAnchorMap, ResolveReviewTargetOptions } from "./types.js"
 
+function reviewFinding(path: string, line: number, description: string) {
+	return {
+		path,
+		line,
+		title: description,
+		description,
+		explanation: `Static inspection of ${path}:${line} supports this target fixture finding.`,
+		suggestion: "Fix the reviewed behavior.",
+		priority: "P2" as const,
+		type: "bug" as const,
+	}
+}
+
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", ["-C", cwd, ...args], {
 		encoding: "utf8",
@@ -233,26 +246,12 @@ describe("review target resolution", () => {
 		const outputDir = join(sandbox, "review-output")
 		const storeContext = { contextDir: scope.contextDir, outputDir, writer: "spec" }
 		const accepted = await submitFinding(
-			{
-				path: "both.txt",
-				line: 1,
-				severity: "warning",
-				type: "correctness",
-				description: "The final working-tree content is reviewed.",
-				suggestion: "",
-			},
+			reviewFinding("both.txt", 1, "The final working-tree content is reviewed."),
 			storeContext,
 		)
 		expect(accepted).toMatchObject({ accepted: true, id: "spec-1", seq: 1 })
 		const rejected = await submitFinding(
-			{
-				path: "both.txt",
-				line: 99,
-				severity: "warning",
-				type: "correctness",
-				description: "This line is outside the local hunk.",
-				suggestion: "",
-			},
+			reviewFinding("both.txt", 99, "This line is outside the local hunk."),
 			storeContext,
 		)
 		expect(rejected).toMatchObject({ accepted: false, reason: "line_outside_hunks" })
@@ -304,8 +303,8 @@ describe("review target resolution", () => {
 			["working-tree", false],
 			["branch", true],
 		])
-		expect(choices.choices[1]).toMatchObject({ requiresExplicitBase: true })
-		expect(choices.syntax).toContain("/review branch <ref> --base <ref> --include-working-tree [--fetch]")
+		expect(choices.choices[1]).toMatchObject({ requiresExplicitBase: false })
+		expect(choices.syntax).toContain("/review branch <ref> [--base <ref>] --include-working-tree [--fetch]")
 
 		write(repo, "ignored.txt", "ignored\n")
 		choices = await getReviewTargetChoices({ kind: "bare", fetch: false }, { root: repo })
@@ -429,12 +428,20 @@ describe("review target resolution", () => {
 		expect(explicit.scope.pinned.baseSha).not.toBe(main)
 		await explicit.cleanup()
 
+		const explicitHead = await resolve(
+			parseReviewTargetArgs(["branch", "origin/feature", "--base", "origin/HEAD"]) as ExplicitReviewRequest,
+		)
+		expect(explicitHead.scope.refs.resolvedBase).toBe("refs/remotes/origin/HEAD")
+		expect(explicitHead.baseDisplayRef).toBe("refs/remotes/origin/main")
+		await explicitHead.cleanup()
+
 		const suggested = await resolve(parseReviewTargetArgs(["branch", "origin/feature"]) as ExplicitReviewRequest)
 		expect(suggested.scope).toMatchObject({
 			baseSource: "remote-default",
 			refs: { base: undefined, resolvedBase: "refs/remotes/origin/HEAD" },
 			pinned: { baseSha: base },
 		})
+		expect(suggested.baseDisplayRef).toBe("refs/remotes/origin/main")
 		await suggested.cleanup()
 
 		const provider = await resolve(parseReviewTargetArgs(["branch", "origin/feature"]) as ExplicitReviewRequest, {
@@ -455,16 +462,21 @@ describe("review target resolution", () => {
 		expect(choices.choices[1].requiresExplicitBase).toBe(false)
 	})
 
-	it("requires an explicit base when no local provider metadata or unique remote HEAD exists", async () => {
+	it("infers a local main base and requires a choice when no conventional base exists", async () => {
 		initialize()
 		git(repo, "checkout", "-b", "feature")
 		write(repo, "file.txt", "feature\n")
 		git(repo, "commit", "-am", "feature")
+		const inferred = await resolve(parseReviewTargetArgs(["feature"]) as ExplicitReviewRequest)
+		expect(inferred.scope.refs.resolvedBase).toBe("refs/heads/main")
+		await inferred.cleanup()
+
+		git(repo, "branch", "-m", "main", "trunk")
 		await expect(resolve(parseReviewTargetArgs(["branch", "feature"]) as ExplicitReviewRequest)).rejects.toMatchObject({
 			code: "base_required",
 		})
 		const target = await resolve(
-			parseReviewTargetArgs(["branch", "feature", "--base", "main"]) as ExplicitReviewRequest,
+			parseReviewTargetArgs(["branch", "feature", "--base", "trunk"]) as ExplicitReviewRequest,
 		)
 		expect(target.scope.baseSource).toBe("explicit")
 	})
@@ -537,27 +549,10 @@ describe("review target resolution", () => {
 		const dirtyMap = JSON.parse(readFileSync(dirty.scope.commentableLinesPath, "utf8")) as ProviderAnchorMap
 		expect(dirtyMap.files["file.txt"].ranges).toEqual([{ start_line: 2, end_line: 2 }])
 		const store = { contextDir: dirty.scope.contextDir, outputDir: join(sandbox, "dirty-output"), writer: "spec" }
-		const localLine = await submitFinding(
-			{
-				path: "file.txt",
-				line: 2,
-				severity: "warning",
-				type: "correctness",
-				description: "The snapshot line is valid locally.",
-				suggestion: "",
-			},
-			store,
-		)
+		const localLine = await submitFinding(reviewFinding("file.txt", 2, "The snapshot line is valid locally."), store)
 		expect(localLine.accepted).toBe(true)
 		const providerOnlyLine = await submitFinding(
-			{
-				path: "file.txt",
-				line: 100,
-				severity: "warning",
-				type: "correctness",
-				description: "The provider-only line must not transfer to the snapshot.",
-				suggestion: "",
-			},
+			reviewFinding("file.txt", 100, "The provider-only line must not transfer to the snapshot."),
 			store,
 		)
 		expect(providerOnlyLine).toMatchObject({ accepted: false, reason: "line_outside_hunks" })
@@ -1266,14 +1261,7 @@ describe("review target resolution", () => {
 			expect(map.files[name]).toEqual({ ranges: [{ start_line: 1, end_line: 2 }] })
 		}
 		const accepted = await submitFinding(
-			{
-				path: "__proto__",
-				line: 2,
-				severity: "warning",
-				type: "correctness",
-				description: "A prototype-named path retains its local source anchor.",
-				suggestion: "",
-			},
+			reviewFinding("__proto__", 2, "A prototype-named path retains its local source anchor."),
 			{ contextDir: target.scope.contextDir, outputDir: join(sandbox, "prototype-output"), writer: "spec" },
 		)
 		expect(accepted).toMatchObject({ accepted: true, id: "spec-1" })

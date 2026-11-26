@@ -93,7 +93,20 @@ function lensResponse(lens: string, partial: boolean): FakeResponseScript[] {
 	]
 }
 
-export function reviewResponseScripts(options: { partial?: boolean; finding?: boolean } = {}): FakeResponseScript[] {
+const FIXTURE_FINDING = {
+	path: REVIEW_VALUE_FILE,
+	line: 2,
+	title: "New export changes behavior without a guard",
+	description: "Consumers of the changed export can observe unintended behavior on the main path.",
+	explanation: "Static inspection of value.ts:2 at the head revision confirmed that the new export has no guard.",
+	suggestion: "Guard the changed behavior and add a focused regression test.",
+	priority: "P1",
+	type: "bug",
+} as const
+
+export function reviewResponseScripts(
+	options: { partial?: boolean; finding?: boolean; critical?: boolean } = {},
+): FakeResponseScript[] {
 	const scripts = options.finding ? [] : lensResponse("spec", options.partial === true)
 	if (options.finding) {
 		const usage = { prompt_tokens: 13, completion_tokens: 7 }
@@ -106,14 +119,7 @@ export function reviewResponseScripts(options: { partial?: boolean; finding?: bo
 						id: "call_spec_finding",
 						function: {
 							name: "submit_finding",
-							arguments: JSON.stringify({
-								path: REVIEW_VALUE_FILE,
-								line: 2,
-								severity: "warning",
-								type: "bug",
-								description: "The new export changes behavior without a guard; revision head inspection confirmed it.",
-								suggestion: "Guard the changed behavior and add a focused regression test.",
-							}),
+							arguments: JSON.stringify(FIXTURE_FINDING),
 						},
 					},
 				],
@@ -135,38 +141,92 @@ export function reviewResponseScripts(options: { partial?: boolean; finding?: bo
 			},
 			{ match: (request) => requestText(request).includes("REVIEW_LENS spec"), stream: ["Spec submitted."], usage },
 		)
+		if (options.critical) {
+			scripts.splice(1, 0, {
+				match: (request) =>
+					requestText(request).includes("REVIEW_LENS spec") && requestText(request).includes('"role":"tool"'),
+				toolCalls: [
+					{
+						id: "call_spec_critical",
+						function: {
+							name: "submit_finding",
+							arguments: JSON.stringify({
+								path: REVIEW_VALUE_FILE,
+								line: 2,
+								title: "Additional exported flag bypasses authorization",
+								description:
+									"The additional exported flag creates a critical authorization bypass because every caller now enables the privileged path without checking the current principal or preserving the previous deny-by-default behavior.",
+								explanation:
+									"Static inspection of the head revision confirmed that every caller enables the privileged path without an authorization check.",
+								suggestion:
+									"Remove the unsafe export, restore deny-by-default authorization, and add a regression test proving an unauthenticated principal cannot enter the privileged path.",
+								priority: "P0",
+								type: "security",
+							}),
+						},
+					},
+				],
+				usage,
+			})
+		}
 	}
 	scripts.push({
 		match: (request) => requestText(request).includes("semantic review reconciler"),
-		stream: [JSON.stringify(reconciliation(options.finding === true))],
+		stream: [JSON.stringify(reconciliation(options.finding === true, options.critical === true))],
 		usage: { prompt_tokens: 17, completion_tokens: 3 },
 	})
 	return scripts
 }
 
-function reconciliation(withFinding: boolean): Record<string, unknown> {
+function reconciliation(withFinding: boolean, withCritical = false): Record<string, unknown> {
 	if (!withFinding) return { schema_version: "review-reconciliation/v1", findings: [], decisions: [], threads: [] }
+	const warning = {
+		id: "changed-export",
+		...FIXTURE_FINDING,
+		candidate_ids: ["spec-1"],
+	}
+	const warningDecision = {
+		candidate_id: "spec-1",
+		disposition: "retained",
+		finding: "changed-export",
+		reason: "Independent candidate in the deterministic fixture.",
+	}
+	if (!withCritical) {
+		return {
+			schema_version: "review-reconciliation/v1",
+			findings: [warning],
+			decisions: [warningDecision],
+			threads: [],
+		}
+	}
 	return {
 		schema_version: "review-reconciliation/v1",
 		findings: [
 			{
-				id: "changed-export",
+				id: "critical-export",
 				path: REVIEW_VALUE_FILE,
 				line: 2,
-				severity: "warning",
-				type: "bug",
-				description: "The new export changes behavior without a guard; revision head inspection confirmed it.",
-				suggestion: "Guard the changed behavior and add a focused regression test.",
-				candidate_ids: ["spec-1"],
+				title: "Additional exported flag bypasses authorization",
+				description:
+					"The additional exported flag creates a critical authorization bypass because every caller now enables the privileged path without checking the current principal or preserving the previous deny-by-default behavior.",
+				explanation:
+					"Static inspection of the head revision confirmed that every caller enables the privileged path without an authorization check.",
+				suggestion:
+					"Remove the unsafe export, restore deny-by-default authorization, and add a regression test proving an unauthenticated principal cannot enter the privileged path.",
+				priority: "P0",
+				type: "security",
+				candidate_ids: ["spec-2"],
 			},
+			warning,
 		],
 		decisions: [
 			{
-				candidate_id: "spec-1",
+				candidate_id: "spec-2",
 				disposition: "retained",
-				finding: "changed-export",
-				reason: "Independent candidate in the deterministic fixture.",
+				finding: "critical-export",
+				reason: "Independent critical candidate in the deterministic fixture.",
 			},
+			warningDecision,
 		],
 		threads: [],
 	}

@@ -1,6 +1,13 @@
 import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
-import type { ReviewCoverage } from "../review-submit/store.js"
+import {
+	capReviewFindingPriority,
+	REVIEW_FINDING_PRIORITIES,
+	type ReviewCoverage,
+	type ReviewFindingRecord,
+	validateReviewFindingIdentity,
+	validateStoredReviewFinding,
+} from "../review-submit/store.js"
 import type { ResolvedReviewTarget } from "../review-targets/types.js"
 import {
 	isReviewLensId,
@@ -63,6 +70,7 @@ function assertState(value: unknown): asserts value is ReviewPanelRunState {
 		configured.add(lensId)
 	}
 	const ids = new Set<string>()
+	const nextSeqByLens = new Map<ReviewLensId, number>()
 	for (const candidate of value.candidates) {
 		if (!object(candidate) || typeof candidate.id !== "string" || ids.has(candidate.id)) {
 			throw new Error("Review panel state has an invalid or duplicate candidate ID.")
@@ -74,6 +82,14 @@ function assertState(value: unknown): asserts value is ReviewPanelRunState {
 		if (candidate.finding.id !== candidate.id || candidate.finding.writer !== candidate.lens) {
 			throw new Error(`Review panel candidate ${candidate.id} has an inconsistent writer identity.`)
 		}
+		const expectedSeq = (nextSeqByLens.get(lensId) ?? 0) + 1
+		const invalid =
+			validateStoredReviewFinding(candidate.finding) ??
+			validateReviewFindingIdentity(candidate.finding, lensId, expectedSeq)
+		if (invalid) {
+			throw new Error(`Review panel candidate ${candidate.id} has an invalid stored finding: ${invalid.message}`)
+		}
+		nextSeqByLens.set(lensId, expectedSeq)
 		ids.add(candidate.id)
 	}
 	if (
@@ -107,12 +123,29 @@ function assertCoverage(coverage: ReviewCoverage): void {
 			throw new Error(`Review panel coverage has an invalid ${field}.`)
 		}
 	}
+	if (!object(coverage.findings_by_priority)) throw new Error("Review panel coverage has no priority counts.")
+	let findingTotal = 0
+	for (const priority of REVIEW_FINDING_PRIORITIES) {
+		const count = coverage.findings_by_priority[priority]
+		if (!Number.isSafeInteger(count) || count < 0) {
+			throw new Error(`Review panel coverage has an invalid findings_by_priority.${priority}.`)
+		}
+		findingTotal += count
+	}
+	if (findingTotal !== coverage.final_finding_count) {
+		throw new Error("Review panel priority counts do not match its final finding count.")
+	}
 }
 
-export function coverageFor(state: ReviewPanelRunState, finalFindingCount: number): ReviewCoverage {
+export function coverageFor(state: ReviewPanelRunState, findings: readonly ReviewFindingRecord[]): ReviewCoverage {
 	const count = (status: ReviewPanelRunState["lenses"][number]["status"]) =>
 		state.lenses.filter((lens) => lens.status === status).length
 	const unfinished = state.lenses.filter((lens) => lens.status !== "submitted").map((lens) => lens.id)
+	const findingsByPriority = { P0: 0, P1: 0, P2: 0, P3: 0, P4: 0 }
+	for (const finding of findings) {
+		const priority = capReviewFindingPriority(finding.priority, finding.type)
+		findingsByPriority[priority] += 1
+	}
 	return {
 		status: unfinished.length === 0 ? "complete" : "partial",
 		unfinished_lenses: unfinished,
@@ -121,8 +154,9 @@ export function coverageFor(state: ReviewPanelRunState, finalFindingCount: numbe
 		failed_lenses: count("failed"),
 		cancelled_lenses: count("cancelled"),
 		candidate_count: state.candidates.length,
-		final_finding_count: finalFindingCount,
+		final_finding_count: findings.length,
 		provenance_truncated_count: state.reconciliation.provenanceTruncatedCount ?? 0,
+		findings_by_priority: findingsByPriority,
 	}
 }
 
@@ -195,6 +229,7 @@ export function createInitialPanelState(
 			candidate_count: 0,
 			final_finding_count: 0,
 			provenance_truncated_count: 0,
+			findings_by_priority: { P0: 0, P1: 0, P2: 0, P3: 0, P4: 0 },
 		},
 	}
 }
@@ -246,6 +281,8 @@ export class ReviewPanelStateStore {
 		outputDir: string,
 		onChange?: (state: ReviewPanelRunState) => void,
 	): Promise<ReviewPanelStateStore> {
+		assertState(state)
+		assertCoverage(state.coverage)
 		await writeReviewJson(reviewPanelPaths(outputDir).statePath, state)
 		return new ReviewPanelStateStore(state, reviewPanelPaths(outputDir).statePath, onChange)
 	}

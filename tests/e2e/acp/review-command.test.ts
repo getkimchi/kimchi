@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
@@ -68,10 +68,8 @@ describe("ACP review command", () => {
 				expect(messages).toContain("spec (Selected with --lens.)")
 				expect(messages).toContain("Effective concurrency: 1")
 				if (scenario.finding) {
-					expect(messages).toContain("WARNING value.ts:2")
-					expect(messages).toContain(
-						"The new export changes behavior without a guard; revision head inspection confirmed it.",
-					)
+					expect(messages).toContain("P1 value.ts:2")
+					expect(messages).toContain("New export changes behavior without a guard")
 				} else {
 					expect(messages).toContain("No findings.")
 				}
@@ -105,6 +103,64 @@ describe("ACP review command", () => {
 	)
 
 	it(
+		"preserves the exact original notification sequence and payloads",
+		async () => {
+			fixture = await startAcpFixture({
+				artifactName: "acp-review-notification-contract",
+				responses: reviewResponseScripts({ finding: true }),
+				seedHome: (_homeDir, workDir) => {
+					seedReviewRepository(workDir)
+					writeFileSync(join(workDir, REVIEW_VALUE_FILE), "export const value = 1\nexport const changed = false\n")
+				},
+				extraArgs: ENABLED_REVIEW_ARGS,
+			})
+			const sessionId = await newSession(fixture, fixture.workDir)
+			await waitFor(
+				() => commandNames(fixture as AcpFixture, sessionId),
+				(names) => names.includes("review"),
+			)
+			const before = fixture.client.extNotifications.length
+			await prompt(fixture, sessionId, "/review working-tree --lens spec --concurrency 1")
+			const runsRoot = join(fixture.workDir, ".kimchi", "review-output", "runs")
+			const [run] = readdirSync(runsRoot)
+			if (!run) throw new Error("Missing review run for notification assertions")
+			const runDir = realpathSync(join(runsRoot, run))
+			const state = JSON.parse(readFileSync(join(runDir, "state", "panel.json"), "utf8"))
+			const events = fixture.client.extNotifications.slice(before).flatMap((notification) => {
+				if (notification.method !== "_kimchi.dev/pi_notify") return []
+				const params = notification.params as { method?: unknown; message?: unknown; widgetLines?: unknown }
+				if (params.method === "notify" && typeof params.message === "string") {
+					return [{ kind: "notify", text: params.message }]
+				}
+				if (params.method === "setWidget" && Array.isArray(params.widgetLines)) {
+					return [{ kind: "setWidget", lines: params.widgetLines }]
+				}
+				return []
+			})
+			const baseline = JSON.parse(
+				readFileSync(join("tests/fixtures/review-command/acp-legacy-notifications.json"), "utf8"),
+			) as {
+				source: string
+				events: Array<{ kind: "notify" | "setWidget"; text?: string; lines?: string[] }>
+			}
+			const checkoutDir = realpathSync(fixture.workDir)
+			const normalize = (value: string) =>
+				value
+					.replaceAll(state.scope.pinned.headSha, "{{HEAD_SHA}}")
+					.replaceAll(state.scope.pinned.baseSha, "{{BASE_SHA}}")
+					.replaceAll(runDir, "{{RUN_DIR}}")
+					.replaceAll(checkoutDir, "{{CHECKOUT}}")
+			expect(
+				events.map((event) => {
+					if (event.kind === "setWidget") return { ...event, lines: event.lines?.map(normalize) }
+					return { ...event, text: event.text ? normalize(event.text) : event.text }
+				}),
+			).toEqual(baseline.events)
+		},
+		STARTUP_TIMEOUT_MS + 60_000,
+	)
+
+	it(
 		"returns explicit target syntax for bare input without opening a picker",
 		async () => {
 			fixture = await startAcpFixture({
@@ -115,7 +171,11 @@ describe("ACP review command", () => {
 			})
 			const sessionId = await newSession(fixture, fixture.workDir)
 			await prompt(fixture, sessionId, "/review")
-			expect(JSON.stringify(fixture.client.extNotifications)).toContain("/review working-tree [--fetch]")
+			const messages = await waitFor(
+				() => JSON.stringify(fixture?.client.extNotifications ?? []),
+				(value) => value.includes("/review working-tree [--fetch]"),
+			)
+			expect(messages).toContain("/review working-tree [--fetch]")
 			expect(fixture.client.permissionRequests).toHaveLength(0)
 			expect(fixture.client.elicitationRequests).toHaveLength(0)
 		},

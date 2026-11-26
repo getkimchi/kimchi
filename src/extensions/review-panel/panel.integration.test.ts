@@ -23,9 +23,10 @@ import { submitFinding, submitReply } from "../review-submit/store.js"
 import { parseReviewTargetArgs } from "../review-targets/parser.js"
 import { resolveReviewTarget } from "../review-targets/resolve.js"
 import type { ExplicitReviewRequest, ResolvedReviewTarget } from "../review-targets/types.js"
+import { resolveReviewPanel } from "./lenses.js"
 import { reviewPanelPaths } from "./output.js"
-import { runReviewPanel, wrapUpReviewPanel } from "./panel.js"
-import { ReviewPanelStateStore } from "./state.js"
+import { finalizeReviewPanelWithWriterRescan, runReviewPanel, wrapUpReviewPanel } from "./panel.js"
+import { createInitialPanelState, ReviewPanelStateStore } from "./state.js"
 import type { ReviewPanelDroppedUsage, ReviewPanelProgress, RunReviewPanelOptions } from "./types.js"
 
 // Keep the real child loader/session/tool path; only machine-specific prompt
@@ -196,6 +197,21 @@ function agentName(context: TranscriptContext): string {
 	return match[1]
 }
 
+const SPEC_DESCRIPTION = "spec: revision head; command not needed; code inspection observed a concrete regression."
+
+function panelFinding(description: string, suggestion: string, priority: "P0" | "P2" = "P2") {
+	return {
+		path: "value.ts",
+		line: 2,
+		title: "Scripted review finding",
+		description,
+		explanation: `Static inspection of the pinned value.ts change supports this finding: ${description}`,
+		suggestion,
+		priority,
+		type: "bug" as const,
+	}
+}
+
 function retainedReconciliation(requestPath: string): ScriptTurn {
 	const request = JSON.parse(readFileSync(requestPath, "utf8")) as {
 		candidates: Array<{
@@ -203,10 +219,12 @@ function retainedReconciliation(requestPath: string): ScriptTurn {
 			finding: {
 				path: string
 				line: number
-				severity: string
-				type: string
+				title: string
 				description: string
+				explanation: string
 				suggestion: string
+				priority: "P0" | "P1" | "P2" | "P3" | "P4"
+				type: "bug" | "security" | "reliability" | "performance" | "convention" | "test-gap" | "docs"
 			}
 		}>
 	}
@@ -217,10 +235,12 @@ function retainedReconciliation(requestPath: string): ScriptTurn {
 				id: `finding-${candidate.id}`,
 				path: candidate.finding.path,
 				line: candidate.finding.line,
-				severity: candidate.finding.severity,
-				type: candidate.finding.type,
+				title: candidate.finding.title,
 				description: candidate.finding.description,
+				explanation: candidate.finding.explanation,
 				suggestion: candidate.finding.suggestion,
+				priority: candidate.finding.priority,
+				type: candidate.finding.type,
 				candidate_ids: [candidate.id],
 			})),
 			decisions: request.candidates.map((candidate) => ({
@@ -245,14 +265,10 @@ function defaultScript(call: ScriptCall): ScriptTurn {
 			toolCalls: [
 				{
 					name: "submit_finding",
-					arguments: {
-						path: "value.ts",
-						line: 2,
-						severity: "warning",
-						type: "bug",
-						description: `${call.agent}: revision head; command not needed; code inspection observed a concrete regression.`,
-						suggestion: "Add the missing guard and cover the changed path.",
-					},
+					arguments: panelFinding(
+						`${call.agent}: revision head; command not needed; code inspection observed a concrete regression.`,
+						"Add the missing guard and cover the changed path.",
+					),
 				},
 			],
 		}
@@ -277,12 +293,7 @@ function reconciliationToolArguments(_requestPath: string, alias?: "action" | "d
 		findings: [
 			{
 				id: "changed-export",
-				path: "value.ts",
-				line: 2,
-				severity: "warning",
-				type: "bug",
-				description: "The changed export introduces a concrete correctness regression.",
-				suggestion: "Add the missing guard and cover the changed path.",
+				...panelFinding(SPEC_DESCRIPTION, "Add the missing guard and cover the changed path."),
 				candidate_ids: ["spec-1"],
 			},
 		],
@@ -323,12 +334,7 @@ function validVerifierResponse(candidateId = "spec-1"): string {
 		findings: [
 			{
 				id: "late-semantic-finding",
-				path: "value.ts",
-				line: 2,
-				severity: "warning",
-				type: "bug",
-				description: "A valid semantic result that must not arrive after closure.",
-				suggestion: "Never publish this late change.",
+				...panelFinding(SPEC_DESCRIPTION, "Add the missing guard and cover the changed path."),
 				candidate_ids: [candidateId],
 			},
 		],
@@ -518,6 +524,12 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 			}),
 		)
 		expect(progress.some((update) => update.phase === "reviewing" && update.counts.candidates > 0)).toBe(true)
+		const reconciling = progress.findIndex((update) => update.phase === "reconciling")
+		const finalizing = progress.findIndex((update) => update.phase === "finalizing")
+		const complete = progress.findIndex((update) => update.phase === "complete")
+		expect(reconciling).toBeGreaterThanOrEqual(0)
+		expect(finalizing).toBeGreaterThan(reconciling)
+		expect(complete).toBeGreaterThan(finalizing)
 		const maximumRunning = Math.max(...progress.map((update) => update.counts.running))
 		expect(maximumRunning).toBe(2)
 		expect(result.state.lenses.map((lens) => lens.status)).toEqual(["submitted", "submitted", "submitted", "submitted"])
@@ -534,6 +546,22 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 			new Set(requests.filter((request) => request.agent !== "reconciliation").map((request) => request.agent)),
 		).toEqual(new Set(["spec", "standards", "operational", "adversarial"]))
 		expect(usageWriters).toEqual(new Set(["spec", "standards", "operational", "adversarial", "reconciliation"]))
+	})
+
+	it("preserves the legacy phase during coverage publication outside the TUI", async () => {
+		const { ctx } = await scriptedContext(defaultScript)
+		ctx.mode = "rpc"
+		const phases: string[] = []
+		await runReviewPanel(
+			runOptions(ctx, await target(), {
+				lenses: ["spec"],
+				concurrency: 1,
+				onProgress: (update) => phases.push(update.phase),
+			}),
+		)
+		expect(phases).toContain("reconciling")
+		expect(phases.at(-1)).toBe("complete")
+		expect(phases).not.toContain("finalizing")
 	})
 
 	it("wraps up with expected identity through symlink aliases", async () => {
@@ -680,14 +708,10 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 						}
 					}
 					await submitFinding(
-						{
-							path: "value.ts",
-							line: 2,
-							severity: "warning",
-							type: "bug",
-							description: "A valid candidate forces reconciliation while repair remains impossible.",
-							suggestion: "Preserve the deterministic fallback outside the repair window.",
-						},
+						panelFinding(
+							"A valid candidate forces reconciliation while repair remains impossible.",
+							"Preserve the deterministic fallback outside the repair window.",
+						),
 						{ writer: "spec", contextDir, outputDir },
 					)
 					return completedRunResult()
@@ -712,14 +736,11 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 						toolCalls: [
 							{
 								name: "submit_finding",
-								arguments: {
-									path: "value.ts",
-									line: 2,
-									severity: "critical",
-									type: "bug",
-									description: "Revision head; code inspection observed the submitted reserve finding.",
-									suggestion: "Retain this available finding during wrap-up.",
-								},
+								arguments: panelFinding(
+									"Revision head; code inspection observed the submitted reserve finding.",
+									"Retain this available finding during wrap-up.",
+									"P0",
+								),
 							},
 						],
 					}
@@ -795,10 +816,12 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 				{
 					path: "value.ts",
 					line: 2,
-					severity: "warning",
-					type: "bug",
+					title: `${writer} finding`,
 					description: `${writer} finding`,
-					suggestion: "",
+					explanation: "Fixture-generated finding from static inspection.",
+					suggestion: "Address the fixture finding.",
+					priority: "P2",
+					type: "bug",
 				},
 				{ writer, contextDir, outputDir },
 			)
@@ -968,14 +991,11 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		await waitForDelay(Math.max(0, deadline - Date.now() + 25), undefined)
 		expect(Date.now()).toBeGreaterThan(deadline)
 		const late = await submitFinding(
-			{
-				path: "value.ts",
-				line: 2,
-				severity: "critical",
-				type: "bug",
-				description: "Late reviewer submission after coordinator closure.",
-				suggestion: "Recover this through the next wrap-up.",
-			},
+			panelFinding(
+				"Late reviewer submission after coordinator closure.",
+				"Recover this through the next wrap-up.",
+				"P0",
+			),
 			{ writer: "spec", contextDir, outputDir },
 		)
 		expect(late.accepted).toBe(true)
@@ -1004,7 +1024,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(recovered.findings).toHaveLength(1)
 		expect(recovered.findings[0]).toMatchObject({
 			id: "final-1",
-			severity: "critical",
+			priority: "P0",
 			description: "Late reviewer submission after coordinator closure.",
 		})
 		expect(recovered.summary.coverage?.candidate_count).toBe(1)
@@ -1037,14 +1057,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 							expect(
 								(
 									await submitFinding(
-										{
-											path: "value.ts",
-											line: 2,
-											severity: "critical",
-											type: "bug",
-											description: "Original fallback finding.",
-											suggestion: "Keep the deterministic fallback.",
-										},
+										panelFinding("Original fallback finding.", "Keep the deterministic fallback.", "P0"),
 										{ writer: "spec", contextDir, outputDir },
 									)
 								).accepted,
@@ -1065,7 +1078,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(abortObserved).toBe(true)
 		expect(Date.now()).toBeLessThan(deadline)
 		expect(result.state.reconciliation.status).toBe("fallback")
-		expect(result.findings[0]).toMatchObject({ severity: "critical", description: "Original fallback finding." })
+		expect(result.findings[0]).toMatchObject({ priority: "P0", description: "Original fallback finding." })
 		const paths = reviewPanelPaths(outputDir)
 		const artifacts = [paths.findingsPath, paths.summaryPath, paths.statePath].map((path) => readFileSync(path, "utf8"))
 		const usageCount = usageEvents.length
@@ -1079,6 +1092,60 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 			artifacts,
 		)
 		expect(usageEvents).toHaveLength(usageCount)
+	})
+
+	it("moves the exhausted writer rescan fallback through finalizing before complete", async () => {
+		const resolvedTarget = await target()
+		const selection = resolveReviewPanel({ lenses: ["spec"], all: false, concurrency: 1 })
+		const store = await ReviewPanelStateStore.create(
+			createInitialPanelState(
+				resolvedTarget,
+				selection,
+				{ lenses: ["spec"], all: false, concurrency: 1 },
+				[],
+				outputDir,
+			),
+			outputDir,
+		)
+		const phases = ["reconciling"]
+		let writer = 0
+		try {
+			const result = await finalizeReviewPanelWithWriterRescan(store, outputDir, {
+				hasVerifier: false,
+				beforeReport: () => {
+					phases.push("finalizing")
+				},
+				beforeStaleCandidateCheck: async () => {
+					writer += 1
+					await store.update((state) => {
+						state.candidates.push({
+							id: `spec-${writer}`,
+							lens: "spec",
+							finding: {
+								schema_version: "review-finding/v1",
+								id: `spec-${writer}`,
+								writer: "spec",
+								seq: writer,
+								created_at: new Date().toISOString(),
+								path: "value.ts",
+								line: 2,
+								title: `Writer submission ${writer}`,
+								description: `Writer submission ${writer}`,
+								explanation: "The late-writer fixture submitted this finding from static inspection.",
+								suggestion: "Keep the final fallback fresh.",
+								priority: "P2",
+								type: "bug",
+							},
+						})
+					})
+				},
+			})
+			phases.push(result.progress.phase)
+			expect(writer).toBe(4)
+			expect(phases).toEqual(["reconciling", "finalizing", "complete"])
+		} finally {
+			await store.close()
+		}
 	})
 
 	it("rescans late writers at the publication boundary during wrap-up", async () => {
@@ -1129,14 +1196,11 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(
 			(
 				await submitFinding(
-					{
-						path: "value.ts",
-						line: 2,
-						severity: "critical",
-						type: "bug",
-						description: "Accepted after wrap-up's initial scan but before publication.",
-						suggestion: "Include this in the same wrap-up.",
-					},
+					panelFinding(
+						"Accepted after wrap-up's initial scan but before publication.",
+						"Include this in the same wrap-up.",
+						"P0",
+					),
 					{ writer: "spec", contextDir, outputDir },
 				)
 			).accepted,

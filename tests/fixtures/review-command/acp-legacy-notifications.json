@@ -1,0 +1,104 @@
+{
+	"source": "feat/review-command",
+	"baseSha": "{{BASE_SHA}}",
+	"headSha": "{{HEAD_SHA}}",
+	"runDir": "{{RUN_DIR}}",
+	"events": [
+		{
+			"kind": "notify",
+			"text": "Review scope pinned:\n{{BASE_SHA}}..{{HEAD_SHA}}\nCheckout: {{CHECKOUT}}\nRun directory: {{RUN_DIR}}"
+		},
+		{
+			"kind": "setWidget",
+			"lines": ["Review working-tree; 1 changed files"]
+		},
+		{
+			"kind": "notify",
+			"text": "Review lenses:\nspec (Selected with --lens.)\nEffective concurrency: 1"
+		},
+		{
+			"kind": "setWidget",
+			"lines": ["Review working-tree; 1 changed files", "Lenses: 1; concurrency 1"]
+		},
+		{
+			"kind": "setWidget",
+			"lines": [
+				"Review working-tree; 1 changed files",
+				"Lenses: 1; concurrency 1",
+				"Review reviewing; 0 candidates; recon pending",
+				"▶ spec: running (0)"
+			]
+		},
+		{
+			"kind": "setWidget",
+			"lines": [
+				"Review working-tree; 1 changed files",
+				"Lenses: 1; concurrency 1",
+				"Review reviewing; 1 candidates; recon pending",
+				"▶ spec: running (1)"
+			]
+		},
+		{
+			"kind": "setWidget",
+			"lines": [
+				"Review working-tree; 1 changed files",
+				"Lenses: 1; concurrency 1",
+				"Review reviewing; 1 candidates; recon fallback",
+				"▶ spec: running (1)"
+			]
+		},
+		{
+			"kind": "setWidget",
+			"lines": [
+				"Review working-tree; 1 changed files",
+				"Lenses: 1; concurrency 1",
+				"Review reviewing; 1 candidates; recon fallback",
+				"✓ spec: submitted (1)"
+			]
+		},
+		{
+			"kind": "setWidget",
+			"lines": [
+				"Review working-tree; 1 changed files",
+				"Lenses: 1; concurrency 1",
+				"Review reconciling; 1 candidates; recon fallback",
+				"✓ spec: submitted (1)"
+			]
+		},
+		{
+			"kind": "setWidget",
+			"lines": [
+				"Review working-tree; 1 changed files",
+				"Lenses: 1; concurrency 1",
+				"Review reconciling; 1 candidates; recon reconciled",
+				"✓ spec: submitted (1)"
+			]
+		},
+		{
+			"kind": "setWidget",
+			"lines": [
+				"Review working-tree; 1 changed files",
+				"Lenses: 1; concurrency 1",
+				"Review reconciling; 1 candidates; recon reconciled",
+				"✓ spec: submitted (1)"
+			]
+		},
+		{
+			"kind": "setWidget",
+			"lines": [
+				"Review working-tree; 1 changed files",
+				"Lenses: 1; concurrency 1",
+				"Review complete; 1 candidates; recon reconciled",
+				"✓ spec: submitted (1)"
+			]
+		},
+		{
+			"kind": "setWidget",
+			"lines": ["Review complete: 1 final finding.", "Complete review coverage."]
+		},
+		{
+			"kind": "notify",
+			"text": "Review complete: 1 final finding.\nComplete review coverage.\nP1 value.ts:2 New export changes behavior without a guard\nReport: {{RUN_DIR}}/summary/final.json"
+		}
+	]
+}

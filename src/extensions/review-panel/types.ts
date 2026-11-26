@@ -9,6 +9,7 @@ import type {
 } from "../review-runner/index.js"
 import type {
 	EnvironmentGap,
+	FindingInput,
 	ReviewCoverage,
 	ReviewFindingRecord,
 	ReviewSummaryRecord,
@@ -21,7 +22,7 @@ export const REVIEW_RECONCILIATION_REQUEST_VERSION = "review-reconciliation-requ
 export const REVIEW_RECONCILIATION_VERSION = "review-reconciliation/v1"
 
 export type ReviewLensStatus = "queued" | "running" | "submitted" | "failed" | "cancelled"
-export type ReviewPanelPhase = "reviewing" | "reserve" | "reconciling" | "complete"
+export type ReviewPanelPhase = "reviewing" | "reserve" | "reconciling" | "finalizing" | "complete"
 
 export interface ReviewPanelCandidate {
 	id: string
@@ -48,14 +49,8 @@ export interface ReconciliationDecision {
 	reason: string
 }
 
-export interface ReconciliationFinding {
+export interface ReconciliationFinding extends Omit<FindingInput, "derived_from"> {
 	id: string
-	path: string
-	line: number
-	severity: "critical" | "warning" | "info"
-	type: string
-	description: string
-	suggestion: string
 	candidate_ids: string[]
 }
 
