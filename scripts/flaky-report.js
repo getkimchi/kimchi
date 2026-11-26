@@ -6,15 +6,24 @@ const DEFAULT_EVENTS = "master,merge_queue,nightly"
 const PAGE_SIZE = 100
 const MAX_PAGES = 200
 const DETAIL_CONCURRENCY = 8
+const SKIPPED_TEST_STATUSES = new Set(["skipped", "pending"])
 
 export function classify(records, options = {}) {
 	const grouped = new Map()
-	let skipped = 0
+	let skippedTests = 0
+	let malformed = 0
+	const malformedReasons = new Map()
 	for (const record of records) {
+		if (SKIPPED_TEST_STATUSES.has(record?.status)) {
+			skippedTests += 1
+			continue
+		}
 		try {
 			validateRecord(record)
-		} catch {
-			skipped += 1
+		} catch (error) {
+			malformed += 1
+			const reason = error instanceof Error ? error.message : "Malformed test result record"
+			malformedReasons.set(reason, (malformedReasons.get(reason) ?? 0) + 1)
 			continue
 		}
 		const current = grouped.get(record.testKey) ?? []
@@ -22,7 +31,15 @@ export function classify(records, options = {}) {
 		grouped.set(record.testKey, current)
 	}
 
-	const output = { flaky: [], failing: [], skipped }
+	const output = {
+		flaky: [],
+		failing: [],
+		skippedTests,
+		malformed,
+		malformedReasons: Object.fromEntries(
+			[...malformedReasons.entries()].sort(([left], [right]) => left.localeCompare(right)),
+		),
+	}
 	for (const [testKey, testResults] of grouped) {
 		const commits = new Map()
 		for (const result of testResults) {
@@ -270,7 +287,9 @@ function publicReport(report) {
 		events: report.events,
 		launchCount: report.launchCount,
 		resultCount: report.resultCount,
-		skipped: report.skipped,
+		skippedTests: report.skippedTests,
+		malformed: report.malformed,
+		malformedReasons: report.malformedReasons,
 		flaky: report.flaky.map(publicRow),
 		failing: report.failing.map(publicRow),
 	}
@@ -502,7 +521,7 @@ function renderMarkdown(report) {
 	const lines = [
 		"# Flaky Test Triage",
 		"",
-		`Window: ${report.windowHours}h · Events: ${report.events.join(", ")} · Launches scanned: ${report.launchCount} · Results scanned: ${report.resultCount} · Records skipped: ${report.skipped}`,
+		`Window: ${report.windowHours}h · Events: ${report.events.join(", ")} · Launches scanned: ${report.launchCount} · Results scanned: ${report.resultCount} · Skipped tests: ${report.skippedTests} · Malformed: ${report.malformed}`,
 		"",
 		"## Flaky",
 		"",

@@ -8,7 +8,7 @@ const { apiShape, classify, getAllPages, runReport } = await import(new URL("./f
 interface TestRecord {
 	testKey: string
 	fullName: string
-	status: "passed" | "failed"
+	status: "passed" | "failed" | "skipped" | "pending"
 	flaky: boolean
 	commit: string | null
 	runId: string | null
@@ -126,22 +126,38 @@ describe("classify detected outcomes", () => {
 })
 
 describe("classify edge cases and malformed records", () => {
-	it("returns empty tables for empty input", () => {
-		expect(classify([])).toEqual({ flaky: [], failing: [], skipped: 0 })
+	it("returns empty tables and counters for empty input", () => {
+		expect(classify([])).toEqual({ flaky: [], failing: [], skippedTests: 0, malformed: 0, malformedReasons: {} })
 	})
 
-	it("skips and counts records with missing commit tags", () => {
-		expect(classify([record({ commit: null, status: "failed" })])).toEqual({ flaky: [], failing: [], skipped: 1 })
-		expect(classify([record({ commit: null, flaky: true })])).toEqual({ flaky: [], failing: [], skipped: 1 })
+	it("counts skipped and pending tests separately from malformed records", () => {
+		expect(
+			classify([record({ status: "skipped" }), record({ status: "pending", commit: null }), record({ commit: null })]),
+		).toEqual({
+			flaky: [],
+			failing: [],
+			skippedTests: 2,
+			malformed: 1,
+			malformedReasons: { "Malformed record: commit is required": 1 },
+		})
+	})
+
+	it("counts and explains records with missing commit tags", () => {
+		expect(classify([record({ commit: null, status: "failed" })])).toEqual({
+			flaky: [],
+			failing: [],
+			skippedTests: 0,
+			malformed: 1,
+			malformedReasons: { "Malformed record: commit is required": 1 },
+		})
 	})
 
 	it.each([
 		null,
 		record({ testKey: "" }),
-		record({ status: "skipped" as "passed" }),
 		record({ createdAt: Number.NaN }),
-	])("skips malformed record %# without aborting classification", (malformed) => {
-		expect(classify([malformed])).toEqual({ flaky: [], failing: [], skipped: 1 })
+	])("counts malformed record %# without aborting classification", (malformed) => {
+		expect(classify([malformed])).toMatchObject({ flaky: [], failing: [], skippedTests: 0, malformed: 1 })
 	})
 })
 
@@ -280,6 +296,12 @@ describe("report mode", () => {
 							status: "failed",
 							createdDate: launch.createdDate,
 						},
+						{
+							id: 504,
+							fullName: "tests/setup/skipped.test.ts > skipped on CI",
+							status: "skipped",
+							createdDate: launch.createdDate,
+						},
 					]),
 				)
 			}
@@ -298,6 +320,15 @@ describe("report mode", () => {
 					fullName: "tests/e2e/tui/bash-commands.test.ts",
 					status: "failed",
 					statusDetails: { flaky: false, message: "Expected bash card to render" },
+					createdDate: launch.createdDate,
+				})
+			}
+			if (url.pathname === "/api/rs/testresult/504") {
+				return jsonResponse({
+					id: 504,
+					fullName: "tests/setup/skipped.test.ts > skipped on CI",
+					testCaseId: "skipped-504",
+					status: "skipped",
 					createdDate: launch.createdDate,
 				})
 			}
@@ -321,8 +352,8 @@ describe("report mode", () => {
 			const detailPaths = fetchImpl.mock.calls
 				.map(([input]) => new URL(input instanceof Request ? input.url : String(input)).pathname)
 				.filter((path) => /^\/api\/rs\/testresult\/\d+$/.test(path))
-			expect(detailPaths.sort()).toEqual(["/api/rs/testresult/501", "/api/rs/testresult/502"])
-			expect(progress.mock.calls.flat().join("\n")).toContain("launch 1/1 id=101 results=3 detailRequests=2 elapsed=")
+			expect(detailPaths.sort()).toEqual(["/api/rs/testresult/501", "/api/rs/testresult/502", "/api/rs/testresult/504"])
+			expect(progress.mock.calls.flat().join("\n")).toContain("launch 1/1 id=101 results=4 detailRequests=3 elapsed=")
 
 			const json = JSON.parse(readFileSync(join(root, "out", "flaky-report.json"), "utf8"))
 			expect(json.flaky).toHaveLength(1)
@@ -332,15 +363,18 @@ describe("report mode", () => {
 				windowHours: 48,
 				events: ["experiment"],
 				launchCount: 1,
-				resultCount: 3,
-				skipped: 0,
+				resultCount: 4,
+				skippedTests: 1,
+				malformed: 0,
+				malformedReasons: {},
 			})
 			expect(json.flaky[0].firstSeen).toBeUndefined()
+			expect(json.skipped).toBeUndefined()
 			const markdown = readFileSync(join(root, "out", "flaky-report.md"), "utf8")
 			expect(markdown).toContain("Window: 48h")
 			expect(markdown).toContain("Launches scanned: 1")
-			expect(markdown).toContain("Results scanned: 3")
-			expect(markdown).toContain("Records skipped: 0")
+			expect(markdown).toContain("Results scanned: 4")
+			expect(markdown).toContain("Skipped tests: 1 · Malformed: 0")
 			expect(markdown).not.toContain("First seen")
 			expect(markdown).toContain("## Flaky")
 			expect(markdown).toContain("zz-planted-flaky.test.ts")
