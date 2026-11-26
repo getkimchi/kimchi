@@ -9,7 +9,10 @@ export const FINDING_SCHEMA_VERSION = "review-finding/v1"
 export const SUMMARY_SCHEMA_VERSION = "review-summary/v1"
 export const REPLY_SCHEMA_VERSION = "review-reply/v1"
 export const MAX_OUTPUT_FILE_BYTES = 1 << 20
+export const MAX_FINDING_TEXT_BYTES = 16 * 1024
+export const MAX_SUMMARY_BODY_BYTES = 64 * 1024
 export const DEFAULT_WRITER_LIMIT = 50
+export const MAX_DERIVED_FROM_IDS = 50
 export const REPLY_LIMIT = 30
 
 const COMMENTABLE_LINES_SCHEMA_VERSION = "commentable-lines/v1"
@@ -19,14 +22,25 @@ const WRITER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 const TYPE_PATTERN = /^[a-z][a-z0-9_]*$/
 
 const FINDING_FIELDS = ["path", "line", "severity", "type", "description", "suggestion", "derived_from"]
-const SUMMARY_FIELDS = ["body", "score", "estimated_effort_to_review", "environment_gaps"]
+const SUMMARY_FIELDS = ["body", "score", "estimated_effort_to_review", "environment_gaps", "coverage"]
+const COVERAGE_FIELDS = [
+	"status",
+	"unfinished_lenses",
+	"selected_lenses",
+	"submitted_lenses",
+	"failed_lenses",
+	"cancelled_lenses",
+	"candidate_count",
+	"final_finding_count",
+	"provenance_truncated_count",
+]
 const REPLY_FIELDS = ["thread_id", "body", "action", "verdict", "evidence_kind", "evidence"]
 const SEVERITIES = new Set(["critical", "warning", "info"])
 const ACTIONS = new Set(["resolve", "reopen", "none"])
 const VERDICTS = new Set(["fixed", "not_fixed", "partially_fixed", "no_longer_applicable", "regressed", "unverified"])
 const EVIDENCE_KINDS = new Set(["code_reference", "existing_test", "new_test", "none"])
 
-interface FindingInput {
+export interface FindingInput {
 	path: string
 	line: number
 	severity: string
@@ -36,26 +50,69 @@ interface FindingInput {
 	derived_from?: string[]
 }
 
-interface EnvironmentGap {
+export interface ReviewFindingRecord extends FindingInput {
+	schema_version: typeof FINDING_SCHEMA_VERSION
+	id: string
+	writer: string
+	seq: number
+	created_at: string
+}
+
+export interface EnvironmentGap {
 	kind: string
 	name: string
 	note: string
 }
 
-interface SummaryInput {
+/** Optional review-summary/v1 coverage. Counts stay structured so consumers
+ * that predate panel support can safely ignore this object. */
+export interface ReviewCoverage {
+	status: "complete" | "partial"
+	unfinished_lenses: string[]
+	selected_lenses: number
+	submitted_lenses: number
+	failed_lenses: number
+	cancelled_lenses: number
+	candidate_count: number
+	final_finding_count: number
+	/** Number of source IDs omitted from published derived_from arrays; full lists remain in panel state. */
+	provenance_truncated_count: number
+}
+
+export interface SummaryInput {
 	body: string
 	score?: number
 	estimated_effort_to_review?: number
 	environment_gaps?: EnvironmentGap[]
+	coverage?: ReviewCoverage
 }
 
-interface ReplyInput {
+export interface ReviewSummaryRecord {
+	schema_version: typeof SUMMARY_SCHEMA_VERSION
+	writer: string
+	created_at: string
+	body: string
+	score?: number
+	estimated_effort_to_review?: number
+	environment_gaps: EnvironmentGap[]
+	coverage?: ReviewCoverage
+}
+
+export interface ReplyInput {
 	thread_id: string
 	body: string
 	action: string
 	verdict?: string
 	evidence_kind?: string
 	evidence?: string
+}
+
+export interface ReviewReplyRecord extends ReplyInput {
+	schema_version: typeof REPLY_SCHEMA_VERSION
+	id: string
+	writer: string
+	seq: number
+	created_at: string
 }
 
 export interface ReviewSubmitContext extends ReviewDirectories {
@@ -164,6 +221,48 @@ function validateWriter(writer: string): SubmitResult | undefined {
 		return rejected("invalid_writer", "--review-writer must contain only letters, digits, underscores, or hyphens.", {
 			field: "writer",
 		})
+	}
+	return undefined
+}
+
+function validateCoverage(coverage: ReviewCoverage | undefined): SubmitResult | undefined {
+	if (coverage === undefined) return undefined
+	if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)) {
+		return invalidField("coverage", "coverage must be an object.")
+	}
+	const unknown = validateFields(coverage as unknown as Record<string, unknown>, COVERAGE_FIELDS)
+	if (unknown) return unknown
+	if (coverage.status !== "complete" && coverage.status !== "partial") {
+		return invalidField("coverage.status", "coverage.status must be complete or partial.")
+	}
+	for (const field of [
+		"selected_lenses",
+		"submitted_lenses",
+		"failed_lenses",
+		"cancelled_lenses",
+		"candidate_count",
+		"final_finding_count",
+		"provenance_truncated_count",
+	] as const) {
+		const error = validateInteger(coverage[field], `coverage.${field}`, 0)
+		if (error) return error
+	}
+	if (!Array.isArray(coverage.unfinished_lenses))
+		return invalidField("coverage.unfinished_lenses", "Expected an array.")
+	if (
+		coverage.submitted_lenses + coverage.failed_lenses + coverage.cancelled_lenses > coverage.selected_lenses ||
+		(coverage.status === "complete" && coverage.unfinished_lenses.length !== 0) ||
+		(coverage.status === "partial" && coverage.unfinished_lenses.length === 0) ||
+		coverage.unfinished_lenses.length > coverage.selected_lenses
+	) {
+		return invalidField("coverage", "coverage counts and unfinished lenses are inconsistent.")
+	}
+	const unique = new Set<string>()
+	for (const [index, lens] of coverage.unfinished_lenses.entries()) {
+		const error = validateString(lens, `coverage.unfinished_lenses[${index}]`, 64)
+		if (error) return error
+		if (unique.has(lens)) return invalidField("coverage.unfinished_lenses", "Lens IDs must be unique.")
+		unique.add(lens)
 	}
 	return undefined
 }
@@ -473,16 +572,19 @@ function anchorError(filePath: string, line: number, file: CommentableFile): Sub
 	)
 }
 
-export async function submitFinding(input: FindingInput, context: ReviewSubmitContext): Promise<SubmitResult> {
-	const writerError = validateWriter(context.writer)
-	if (writerError) return writerError
+/** Revalidate finding fields and the original snapshot's anchors without
+ * writing output. The panel uses this for writer-file ingest and semantic output. */
+export async function validateReviewFindingInput(
+	input: FindingInput,
+	context: ReviewSubmitContext,
+): Promise<SubmitResult | undefined> {
 	const unknownField = validateFields(input as unknown as Record<string, unknown>, FINDING_FIELDS)
 	if (unknownField) return unknownField
 	for (const [field, limit, allowEmpty] of [
 		["path", 4096, false],
 		["type", 64, false],
-		["description", 16 * 1024, false],
-		["suggestion", 16 * 1024, true],
+		["description", MAX_FINDING_TEXT_BYTES, false],
+		["suggestion", MAX_FINDING_TEXT_BYTES, true],
 	] as const) {
 		const error = validateString(input[field], field, limit, { required: true, allowEmpty })
 		if (error) return error
@@ -492,8 +594,12 @@ export async function submitFinding(input: FindingInput, context: ReviewSubmitCo
 	if (lineError) return lineError
 	if (!SEVERITIES.has(input.severity)) return invalidField("severity", "severity must be critical, warning, or info.")
 	if (input.derived_from !== undefined) {
-		if (!Array.isArray(input.derived_from) || input.derived_from.length > 50) {
-			return invalidField("derived_from", "derived_from accepts at most 50 IDs.", 50)
+		if (!Array.isArray(input.derived_from) || input.derived_from.length > MAX_DERIVED_FROM_IDS) {
+			return invalidField(
+				"derived_from",
+				`derived_from accepts at most ${MAX_DERIVED_FROM_IDS} IDs.`,
+				MAX_DERIVED_FROM_IDS,
+			)
 		}
 		for (const [index, id] of input.derived_from.entries()) {
 			const error = validateString(id, `derived_from[${index}]`, 256, { allowEmpty: false })
@@ -510,6 +616,14 @@ export async function submitFinding(input: FindingInput, context: ReviewSubmitCo
 			return anchorError(input.path, input.line, file)
 		}
 	}
+	return undefined
+}
+
+export async function submitFinding(input: FindingInput, context: ReviewSubmitContext): Promise<SubmitResult> {
+	const writerError = validateWriter(context.writer)
+	if (writerError) return writerError
+	const invalid = await validateReviewFindingInput(input, context)
+	if (invalid) return invalid
 
 	const limit = context.writer === "final" ? DEFAULT_WRITER_LIMIT : (context.writerLimit ?? DEFAULT_WRITER_LIMIT)
 	return appendRecord(
@@ -542,8 +656,10 @@ export async function submitSummary(input: SummaryInput, context: ReviewSubmitCo
 	if (writerError) return writerError
 	const unknownField = validateFields(input as unknown as Record<string, unknown>, SUMMARY_FIELDS)
 	if (unknownField) return unknownField
-	const bodyError = validateString(input.body, "body", 64 * 1024, { allowEmpty: true })
+	const bodyError = validateString(input.body, "body", MAX_SUMMARY_BODY_BYTES, { allowEmpty: true })
 	if (bodyError) return bodyError
+	const coverageError = validateCoverage(input.coverage)
+	if (coverageError) return coverageError
 	for (const [field, minimum, maximum] of [
 		["score", 0, 100],
 		["estimated_effort_to_review", 1, 5],
@@ -578,7 +694,7 @@ export async function submitSummary(input: SummaryInput, context: ReviewSubmitCo
 		const destination = await outputFile(context, "summary")
 		if (destination.error) return destination.error
 		const filePath = destination.path
-		const record = {
+		const record: ReviewSummaryRecord = {
 			schema_version: SUMMARY_SCHEMA_VERSION,
 			writer: context.writer,
 			created_at: createdAt(context),
@@ -588,6 +704,7 @@ export async function submitSummary(input: SummaryInput, context: ReviewSubmitCo
 				? {}
 				: { estimated_effort_to_review: input.estimated_effort_to_review }),
 			environment_gaps: gaps,
+			...(input.coverage === undefined ? {} : { coverage: input.coverage }),
 		}
 		const contents = `${JSON.stringify(record, null, 2)}\n`
 		if (utf8Length(contents) > MAX_OUTPUT_FILE_BYTES) {
@@ -665,9 +782,12 @@ async function loadThreads(context: ReviewSubmitContext): Promise<{ threads?: Re
 	return { threads: document.threads as ReviewThread[] }
 }
 
-export async function submitReply(input: ReplyInput, context: ReviewSubmitContext): Promise<SubmitResult> {
-	const writerError = validateWriter(context.writer)
-	if (writerError) return writerError
+/** Validate reply fields, verdict support, and the producer-supplied thread
+ * scope without creating or changing output. */
+export async function validateReviewReplyInput(
+	input: ReplyInput,
+	context: ReviewSubmitContext,
+): Promise<SubmitResult | undefined> {
 	// Missing context is the decisive failure on a first review: every reply is
 	// rejected before field validation or output creation.
 	const loaded = await loadThreads(context)
@@ -727,6 +847,14 @@ export async function submitReply(input: ReplyInput, context: ReviewSubmitContex
 		}
 	}
 
+	return undefined
+}
+
+export async function submitReply(input: ReplyInput, context: ReviewSubmitContext): Promise<SubmitResult> {
+	const writerError = validateWriter(context.writer)
+	if (writerError) return writerError
+	const invalid = await validateReviewReplyInput(input, context)
+	if (invalid) return invalid
 	return appendRecord(
 		context,
 		"replies",

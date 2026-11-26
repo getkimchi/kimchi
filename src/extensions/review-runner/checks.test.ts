@@ -27,7 +27,7 @@ import { resolveReviewTarget } from "../review-targets/resolve.js"
 import type { ExplicitReviewRequest, ResolvedReviewTarget } from "../review-targets/types.js"
 import type { ReviewCheckDefinition } from "./check-config.js"
 import { ReviewCheckQueue, ReviewCheckStateError } from "./checks.js"
-import { createReviewExecutionController } from "./execution.js"
+import { createReviewExecutionController, type ReviewCommandRecord } from "./execution.js"
 import type { ReviewNetworkBoundary } from "./network-boundary.js"
 import { registerReviewChildTools } from "./tools.js"
 import type { ReviewWorktree, ReviewWorktreePool } from "./types.js"
@@ -752,6 +752,49 @@ module.exports = (async () => {
 		expect(focusedResult.content.map((block) => (block.type === "text" ? block.text : "")).join("\n")).toContain(
 			parsedRules.length ? "Denied by rule" : "Hard-blocked",
 		)
+	})
+
+	it("suppresses routine state written by a check that settles after queue closure", async () => {
+		await setup()
+		const late = controller("late-check", "headless")
+		let start!: () => void
+		let settle!: (record: ReviewCommandRecord) => void
+		const started = new Promise<void>((resolve) => {
+			start = resolve
+		})
+		const pending = new Promise<ReviewCommandRecord>((resolve) => {
+			settle = resolve
+		})
+		queue.dispose()
+		queue = await ReviewCheckQueue.create({
+			scope: target.scope,
+			worktrees: pool,
+			outputDir,
+			definitions,
+			executeCommand: async () => {
+				start()
+				return pending
+			},
+		})
+		const request = queue.request({ id: "test", requestedBy: "late-check", controller: late })
+		await started
+		const closing = queue.close()
+		settle({
+			command: "node check.cjs",
+			cwd: ".",
+			intendedCheck: "test",
+			worktree: "late-check-worktree",
+			status: "passed",
+			exitCode: 0,
+			elapsedMs: 1,
+			output: "passed after closure",
+			network: "sandbox",
+			approval: "not-requested",
+		})
+		expect((await request).status).toBe("passed")
+		await closing
+		expect(existsSync(join(outputDir, "state", "routine-checks.json"))).toBe(false)
+		expect(queue.results).toEqual([])
 	})
 
 	it("authorizes every shared-check requester before returning saved evidence", async () => {

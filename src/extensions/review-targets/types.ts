@@ -1,3 +1,7 @@
+import type { ReviewPanelArguments } from "../review-panel/lenses.js"
+
+export type ReviewPanelParseResult = ReviewPanelArguments
+
 export const REVIEW_TARGET_SYNTAX = [
 	"/review working-tree [--fetch]",
 	"/review branch <ref> --base <ref> [--fetch]",
@@ -7,11 +11,13 @@ export const REVIEW_TARGET_SYNTAX = [
 export interface BareReviewRequest {
 	kind: "bare"
 	fetch: boolean
+	panel?: ReviewPanelArguments
 }
 
 export interface WorkingTreeReviewRequest {
 	kind: "working-tree"
 	fetch: boolean
+	panel?: ReviewPanelArguments
 }
 
 export interface BranchReviewRequest {
@@ -20,6 +26,7 @@ export interface BranchReviewRequest {
 	base?: string
 	includeWorkingTree: boolean
 	fetch: boolean
+	panel?: ReviewPanelArguments
 }
 
 export type ExplicitReviewRequest = WorkingTreeReviewRequest | BranchReviewRequest
