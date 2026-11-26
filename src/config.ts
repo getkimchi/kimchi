@@ -1385,7 +1385,15 @@ export function readPrReportingConsent(configPath?: string): PrReportingConsent 
 	return undefined
 }
 
-/** Persist the `prReporting` consent key in the global config.json. */
+/** Seed a legacy default without replacing an existing user choice. */
+export function initializePrReportingConsent(value: PrReportingConsent, configPath?: string): void {
+	const path = configPath ?? KIMCHI_CONFIG_PATH
+	updateConfigFile(path, (raw) => {
+		if (raw.prReporting === undefined) raw.prReporting = value
+	})
+}
+
+/** Persist an explicit `prReporting` consent choice in the global config.json. */
 export function writePrReportingConsent(value: PrReportingConsent, configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
 	updateConfigFile(path, (raw) => {

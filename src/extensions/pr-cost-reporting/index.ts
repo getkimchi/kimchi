@@ -8,7 +8,7 @@ import {
 	takeLimitNotices,
 	takeReportingNotice,
 } from "@getkimchi/kimchi-bridge/reconcile"
-import { readPrReportingConsent, writePrReportingConsent } from "../../config.js"
+import { initializePrReportingConsent, readPrReportingConsent, writePrReportingConsent } from "../../config.js"
 import { IS_ACP_MODE } from "../../modes/acp/state.js"
 import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import {
@@ -28,8 +28,8 @@ const ARGUMENT_COMPLETIONS = [
 /**
  * Seed the config-owned consent from the legacy state.json mirror. Concurrent sessions race
  * the seed from the same source file and write equivalent values, so the last write wins
- * safely; an explicit choice written while the legacy state was being read is re-checked
- * for and never overwritten.
+ * safely. The initializer checks the key again at write time so a competing explicit
+ * choice is never replaced by a legacy default.
  */
 async function migrateReportingConsent(): Promise<void> {
 	if (readPrReportingConsent() !== undefined) return
@@ -39,7 +39,7 @@ async function migrateReportingConsent(): Promise<void> {
 		// followsTelemetry wins over the derived enabled bit: a default queue reads
 		// {enabled:false, followsTelemetry:true} while telemetry is off, and that inherited
 		// policy must not become an explicit opt-out that telemetry cannot revive.
-		writePrReportingConsent(state.followsTelemetry ? "follow-telemetry" : state.enabled === false ? "off" : "on")
+		initializePrReportingConsent(state.followsTelemetry ? "follow-telemetry" : state.enabled === false ? "off" : "on")
 	} catch (error) {
 		// Migration must never block startup, including an unwritable config: log and
 		// leave the key absent, so /pr-reporting status keeps showing the legacy value

@@ -33,6 +33,23 @@ vi.mock("@getkimchi/kimchi-bridge/reconcile", async (original) => {
 	}
 })
 
+const consentMigrationProbe = vi.hoisted(() => ({
+	reads: 0,
+	duringSecondRead: undefined as (() => void) | undefined,
+}))
+vi.mock("../../config.js", async (original) => {
+	const actual = await original<typeof import("../../config.js")>()
+	return {
+		...actual,
+		readPrReportingConsent: (configPath?: string) => {
+			const value = actual.readPrReportingConsent(configPath)
+			if (consentMigrationProbe.reads === 1) consentMigrationProbe.duringSecondRead?.()
+			consentMigrationProbe.reads += 1
+			return value
+		},
+	}
+})
+
 vi.mock("../work-attribution/reconcile-supervisor.js", () => ({
 	subscribeReportingReconciliation: vi.fn(),
 	requestWorkReconciliation: vi.fn(),
@@ -57,6 +74,8 @@ beforeEach(() => {
 	vi.mocked(supervisor.subscribeReportingReconciliation).mockReturnValue(async () => {})
 })
 afterEach(() => {
+	consentMigrationProbe.reads = 0
+	consentMigrationProbe.duringSecondRead = undefined
 	vi.clearAllMocks()
 	vi.unstubAllEnvs()
 	rmSync(directory, { recursive: true, force: true })
@@ -384,6 +403,30 @@ describe("config-owned PR reporting consent", () => {
 		reportingExtension(api.api)
 		await api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
 		expect(readPrReportingConsent()).toBe("on")
+	})
+
+	it("preserves an explicit choice made during migration's last consent check", async () => {
+		await setReportingEnabled(directory, true)
+		const state = await readReportingState(directory)
+		let release!: (value: queue.ReportingState) => void
+		const blocked = new Promise<queue.ReportingState>((resolve) => {
+			release = resolve
+		})
+		const read = vi.mocked(barrelReadReportingState).mockReturnValueOnce(blocked)
+		consentMigrationProbe.reads = 0
+		const ctx = createContext()
+		const api = trackedApi(() => ctx)
+		reportingExtension(api.api)
+		const starting = api.getHandler<SessionStartEvent>("session_start")({ type: "session_start", reason: "new" }, ctx)
+		await vi.waitFor(() => expect(read).toHaveBeenCalledOnce())
+		// Simulate the other process's config write completing immediately after the
+		// migration's final check returns and before its inferred value is persisted.
+		consentMigrationProbe.duringSecondRead = () => writePrReportingConsent("off")
+		release(state)
+		await starting
+		expect(readPrReportingConsent()).toBe("off")
+		await api.getHandler("session_shutdown")({}, ctx)
+		read.mockRestore()
 	})
 
 	it("does not reseed when the config already owns the choice", async () => {
