@@ -4,15 +4,9 @@ import { expect, Key, test } from "@microsoft/tui-test"
 import { poll } from "@microsoft/tui-test/lib/utils/poll.js"
 import { fullText, viewText, waitForText } from "./support/assertions.js"
 import type { FakeToolCall } from "./support/fake-openai-server.js"
-import { harnessSettingsPath, PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { PROMPT_READY, runKimchiSession, setCollapseWorkMode, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
-
-function enableToolFolding(homeDir: string): void {
-	const settingsPath = harnessSettingsPath(homeDir)
-	const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
-	writeFileSync(settingsPath, JSON.stringify({ ...settings, collapseWork: "tools" }, null, "\t"))
-}
 
 test("Bash uses one descriptive header like Grep and expands the submitted command", async ({ terminal }) => {
 	const command = "printf 'card-output\\n'"
@@ -23,7 +17,7 @@ test("Bash uses one descriptive header like Grep and expands the submitted comma
 			extraArgs: ["--plan=false"],
 			env: { KIMCHI_PERMISSIONS: "yolo" },
 			seedHome: (home, workDir) => {
-				enableToolFolding(home)
+				setCollapseWorkMode(home, "tools")
 				writeFileSync(join(workDir, "sample.txt"), "card-output\n")
 			},
 			responses: [
@@ -233,7 +227,7 @@ test("inspect a running Bash command without interrupting it or asking the model
 			extraArgs: ["--plan=false"],
 			env: { KIMCHI_PERMISSIONS: "default" },
 			seedHome: (home, workDir) => {
-				enableToolFolding(home)
+				setCollapseWorkMode(home, "tools")
 				for (const [file, text] of Object.entries({
 					"initial.txt": "output-before-checkin",
 					"waiting.txt": "output-during-control-wait",
@@ -300,11 +294,11 @@ test("inspect a running Bash command without interrupting it or asking the model
 			trace.step("initial output visible before the handoff")
 
 			await waitForText(terminal, "The command is still running", { full: false, timeoutMs: 20_000 })
-			await waitForText(terminal, "Working", { full: false })
+			await waitForText(terminal, "Working for", { full: false })
 			expect(requests()).toHaveLength(2)
 			// The handed-off command's call row folds into the run summary; its live
 			// output and identity stay visible through the Bash Control row.
-			expect(viewText(terminal)).toContain("Working")
+			expect(viewText(terminal)).toContain("Working for")
 			expect(viewText(terminal)).not.toContain("Snapshot at check-in")
 			expect(viewText(terminal)).not.toMatch(/Command [a-f0-9-]{36}/)
 			expect(viewText(terminal)).not.toContain("cat initial.txt")
