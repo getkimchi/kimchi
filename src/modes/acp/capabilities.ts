@@ -41,7 +41,8 @@ export const AVAILABLE_EXT_METHODS = {
 	feedback: `_${CAPABILITIES_KEY}/feedback`,
 	compact: `_${CAPABILITIES_KEY}/compact`,
 	compact_abort: `_${CAPABILITIES_KEY}/compact_abort`,
-	set_model_effort: `_${CAPABILITIES_KEY}/set_model_effort`,
+	// Keep this literal visible to scripts/check-acp-wire.mjs's HEAD registry scan.
+	set_model_effort: "_kimchi.dev/set_model_effort",
 	memory_status: `_${CAPABILITIES_KEY}/memory_status`,
 	set_memory_enabled: `_${CAPABILITIES_KEY}/set_memory_enabled`,
 

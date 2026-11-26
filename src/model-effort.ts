@@ -1,5 +1,6 @@
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai"
 import { readModelEffortDefaults } from "./config.js"
+import { CAPABILITIES_KEY } from "./modes/acp/capabilities.js"
 import { CANONICAL_THINKING_LEVELS } from "./thinking-levels.js"
 
 export const SESSION_APP_MODES = ["chat", "design", "code"] as const
@@ -22,7 +23,7 @@ export function parseSessionAppMode(value: unknown): SessionAppMode | undefined 
  * omit it and retain the harness's existing model/effort fallback. */
 export function sessionAppModeFromMeta(meta: unknown): SessionAppMode | undefined {
 	if (!meta || typeof meta !== "object" || Array.isArray(meta)) return undefined
-	const kimchi = (meta as Record<string, unknown>)["kimchi.dev"]
+	const kimchi = (meta as Record<string, unknown>)[CAPABILITIES_KEY]
 	if (!kimchi || typeof kimchi !== "object" || Array.isArray(kimchi)) return undefined
 	return parseSessionAppMode((kimchi as Record<string, unknown>).appMode)
 }
@@ -33,6 +34,7 @@ export function getModelEffortDefault(
 	configPath?: string,
 ): ModelThinkingLevel | undefined {
 	if (!appMode) return undefined
+	// Keep first-use reads live so defaults written by other CLI processes are visible.
 	return parseModelThinkingLevel(readModelEffortDefaults(configPath)[appMode]?.[modelId])
 }
 

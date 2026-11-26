@@ -11015,6 +11015,96 @@ describe("setSessionConfigOption", () => {
 			})
 		})
 
+		it("reports the applied session Effort when persisting its default fails", async () => {
+			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
+			const fake = new FakeAgentSession("test-session-effort-persist-failure")
+			fake.model = REASONING_MODEL
+			fake.thinkingLevel = "low"
+			const agent = makeAgent(fake)
+			await optIntoModelEffort(agent)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
+			const failure = new Error("config is read-only")
+			vi.mocked(writeModelEffortDefault).mockImplementationOnce(() => {
+				throw failure
+			})
+			const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {})
+			onTestFinished(() => diagnostic.mockRestore())
+
+			const result = await agent.extMethod(AVAILABLE_EXT_METHODS.set_model_effort, {
+				sessionId: fake.sessionId,
+				appMode: "chat",
+				modelId: "test/reasoner",
+				value: "max",
+			})
+
+			expect(fake.thinkingLevel).toBe("max")
+			expect(result).toMatchObject({
+				configOptions: expect.arrayContaining([
+					expect.objectContaining({ id: "reasoning_effort", currentValue: "max" }),
+				]),
+			})
+			expect(diagnostic).toHaveBeenCalledExactlyOnceWith(
+				"[model-effort] failed to persist chat/test/reasoner default after applying session Effort:",
+				failure,
+			)
+		})
+
+		it("rejects a fresh edit when another request changes its model mid-switch", async () => {
+			const other = { ...REASONING_MODEL, id: "other", name: "Other" }
+			const models = [REASONING_MODEL, other].map((model) => ({ ...model, name: model.id }))
+			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
+			registerModelThinkingLevels("test/other", ["low", "high", "max"])
+			const fake = new FakeAgentSession("test-session-effort-concurrent-model")
+			fake.model = other
+			fake.thinkingLevel = "low"
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => models,
+				find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
+			}
+			const agent = makeAgent(fake)
+			await optIntoModelEffort(agent)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
+
+			let markSwitchStarted!: () => void
+			const switchStarted = new Promise<void>((resolve) => {
+				markSwitchStarted = resolve
+			})
+			let releaseSwitch!: () => void
+			const switchReleased = new Promise<void>((resolve) => {
+				releaseSwitch = resolve
+			})
+			fake.setModel = async (model) => {
+				fake.model = model
+				if (model.provider === "test" && model.id === "reasoner") {
+					markSwitchStarted()
+					await switchReleased
+				}
+			}
+			vi.mocked(writeModelEffortDefault).mockClear()
+
+			const freshEdit = agent.extMethod(AVAILABLE_EXT_METHODS.set_model_effort, {
+				sessionId: fake.sessionId,
+				appMode: "chat",
+				modelId: "test/reasoner",
+				value: "max",
+			})
+			await switchStarted
+			await agent.setSessionConfigOption({ sessionId: fake.sessionId, configId: "model", value: "test/other" })
+			releaseSwitch()
+
+			await expect(freshEdit).rejects.toMatchObject({ code: -32602 })
+			expect(fake.model).toMatchObject({ provider: "test", id: "other" })
+			expect(fake.thinkingLevel).toBe("low")
+			expect(writeModelEffortDefault).not.toHaveBeenCalled()
+			expect(fake.branch).not.toContainEqual(
+				expect.objectContaining({
+					customType: "model_effort_selection",
+					data: { modelId: "test/other", value: "max" },
+				}),
+			)
+		})
+
 		it("does not rewrite another existing session when a fresh edit changes the default", async () => {
 			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
 			vi.mocked(readModelEffortDefaults).mockReturnValue({ chat: { "test/reasoner": "high" } })
@@ -11049,6 +11139,28 @@ describe("setSessionConfigOption", () => {
 
 			expect(first.thinkingLevel).toBe("max")
 			expect(other.thinkingLevel).toBe("high")
+		})
+
+		it("keeps the harness fallback for an opted-in session without App-mode metadata", async () => {
+			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
+			vi.mocked(readModelEffortDefaults).mockReturnValue({ chat: { "test/reasoner": "max" } })
+			const fake = new FakeAgentSession("test-session-effort-no-app-mode")
+			fake.model = REASONING_MODEL
+			fake.thinkingLevel = "low"
+			const agent = makeAgent(fake)
+			await optIntoModelEffort(agent)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			expect(fake.thinkingLevel).toBe("low")
+
+			await agent.setSessionConfigOption({
+				sessionId: fake.sessionId,
+				configId: "reasoning_effort",
+				value: "high",
+			})
+
+			expect(fake.thinkingLevel).toBe("high")
+			expect(fake.branch).not.toContainEqual(expect.objectContaining({ customType: "model_effort_selection" }))
+			expect(writeModelEffortDefault).not.toHaveBeenCalled()
 		})
 
 		it("preserves legacy behavior for a non-opt-in client and rejects its fresh edit", async () => {

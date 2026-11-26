@@ -172,7 +172,6 @@ import {
 	parseModelThinkingLevel,
 	parseSessionAppMode,
 	readSessionEffortSelections,
-	type SessionAppMode,
 	sessionAppModeFromMeta,
 } from "../../model-effort.js"
 import { applyOrganizationHeader, updateModelsConfig } from "../../models.js"
@@ -1184,8 +1183,21 @@ export class KimchiAcpAgent {
 		}
 
 		if (currentRef !== params.modelId) await this.doSetModel(record, params.modelId)
+		if (!record.session.model || refFromModel(record.session.model) !== params.modelId) {
+			throw RequestError.invalidParams(
+				undefined,
+				"the session model changed during Effort selection; retry the request",
+			)
+		}
 		this.doSetThinkingLevel(record, effort)
-		writeModelEffortDefault(appMode, params.modelId, effort)
+		try {
+			writeModelEffortDefault(appMode, params.modelId, effort)
+		} catch (error) {
+			console.error(
+				`[model-effort] failed to persist ${appMode}/${params.modelId} default after applying session Effort:`,
+				error,
+			)
+		}
 		return {
 			configOptions: buildConfigOptions(record.session, this.getInitialPermissionMode(record.session).mode),
 		}
@@ -1210,7 +1222,7 @@ export class KimchiAcpAgent {
 			)
 		}
 		session.setThinkingLevel(value)
-		if (getClientOptedIntoModelEffort(this.clientCapabilities) && !isAutoRoutedModel(session.model)) {
+		if (record.appMode && getClientOptedIntoModelEffort(this.clientCapabilities) && !isAutoRoutedModel(session.model)) {
 			const modelId = refFromModel(session.model)
 			record.effortByModel.set(modelId, value)
 			session.sessionManager.appendCustomEntry(MODEL_EFFORT_SELECTION_ENTRY_TYPE, { modelId, value })
@@ -1220,7 +1232,7 @@ export class KimchiAcpAgent {
 	/** Resolve the current concrete model through session memory, then the
 	 * App-mode default, then the session's existing harness level. */
 	private restoreModelEffort(record: SessionRecord): void {
-		if (!getClientOptedIntoModelEffort(this.clientCapabilities)) return
+		if (!record.appMode || !getClientOptedIntoModelEffort(this.clientCapabilities)) return
 		const { session } = record
 		const model = session.model
 		if (!model || isAutoRoutedModel(model)) return
@@ -1236,6 +1248,8 @@ export class KimchiAcpAgent {
 		if (stored && session.thinkingLevel !== effort) session.setThinkingLevel(effort)
 		record.effortByModel.set(modelId, effort)
 		if (remembered !== effort) {
+			// Pin the baseline too: later defaults must not rewrite this existing session.
+			// Selections are session-scoped and intentionally survive App-mode metadata changes.
 			session.sessionManager.appendCustomEntry(MODEL_EFFORT_SELECTION_ENTRY_TYPE, { modelId, value: effort })
 		}
 	}

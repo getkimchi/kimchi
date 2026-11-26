@@ -1092,7 +1092,7 @@ type ModelEffortDefaults = Record<string, Record<string, string>>
 
 function parseModelEffortDefaults(value: unknown): ModelEffortDefaults {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {}
-	const defaults: ModelEffortDefaults = {}
+	const defaults: ModelEffortDefaults = Object.create(null)
 	for (const [appMode, rawModels] of Object.entries(value)) {
 		if (!rawModels || typeof rawModels !== "object" || Array.isArray(rawModels)) continue
 		const models = Object.fromEntries(

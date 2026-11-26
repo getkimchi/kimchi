@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import { writeModelEffortDefault } from "./config.js"
+import { readModelEffortDefaults, writeModelEffortDefault } from "./config.js"
 import {
 	getModelEffortDefault,
 	MODEL_EFFORT_SELECTION_ENTRY_TYPE,
@@ -51,6 +51,17 @@ describe("Model effort defaults", () => {
 		expect(getModelEffortDefault("chat", "test/invalid", configPath)).toBeUndefined()
 		expect(getModelEffortDefault("chat", "test/nonstring", configPath)).toBeUndefined()
 		expect(getModelEffortDefault("code", "test/reasoner", configPath)).toBeUndefined()
+	})
+
+	it("does not resolve App-mode defaults through a __proto__ config key", () => {
+		const configPath = makeConfig({
+			modelEffortDefaults: JSON.parse('{"__proto__":{"chat":"max"}}'),
+		})
+
+		expect(readModelEffortDefaults(configPath).chat).toBeUndefined()
+
+		writeModelEffortDefault("chat", "test/reasoner", "high", configPath)
+		expect(getModelEffortDefault("chat", "test/reasoner", configPath)).toBe("high")
 	})
 })
 

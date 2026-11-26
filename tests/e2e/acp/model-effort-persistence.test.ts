@@ -218,11 +218,7 @@ describe("ACP integration — model Effort persistence", () => {
 		expect(currentEffort(await selectModel(second, chat.sessionId, ALPHA_REF))).toBe("low")
 
 		const freshCode = await newEffortSession(second, "code")
-		if (currentModel(freshCode) !== ALPHA_REF) {
-			expect(currentEffort(await selectModel(second, freshCode.sessionId, ALPHA_REF))).toBe("high")
-		} else {
-			expect(currentEffort(freshCode)).toBe("high")
-		}
+		expect(currentEffort(await selectModel(second, freshCode.sessionId, ALPHA_REF))).toBe("high")
 	})
 
 	it("resolves persisted values to a supported higher level, then a lower level", async () => {
