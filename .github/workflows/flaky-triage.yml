@@ -72,3 +72,62 @@ jobs:
           path: ${{ env.FLAKY_OUT_DIR }}
           if-no-files-found: ignore
           retention-days: 7
+
+  fix:
+    name: flaky-fix
+    needs: triage
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'testops-experiment')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      ALLURE_ENDPOINT: https://castai.testops.cloud
+      ALLURE_PROJECT_ID: ${{ vars.ALLURE_PROJECT_ID }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
+      KIMCHI_API_KEY_AVAILABLE: ${{ secrets.KIMCHI_API_KEY != '' }}
+      KIMCHI_BIN: ${{ github.workspace }}/dist/bin/kimchi
+      FLAKY_REPORT: flaky-report/flaky-report.json
+      FLAKY_FIX_OUT_DIR: flaky-fix
+    steps:
+      - uses: actions/checkout@v4
+        if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
+        with:
+          submodules: true
+
+      - name: Report missing Kimchi authentication
+        if: env.KIMCHI_API_KEY_AVAILABLE != 'true'
+        run: echo "KIMCHI_API_KEY is missing; AI flaky-fix triage skipped" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: ./.github/actions/setup
+        if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
+        with:
+          bun: "true"
+          go: "true"
+          search-tools: "true"
+
+      - name: Build Kimchi from this checkout
+        if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
+        run: |
+          node scripts/build-proxy-helper.js --target linux-x64
+          KIMCHI_SKIP_TYPECHECK=1 pnpm run build:binary
+          chmod +x dist/bin/kimchi dist/share/kimchi/bin/proxy-helper bin/proxy-helper
+
+      - uses: actions/download-artifact@v4
+        if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
+        with:
+          name: flaky-report
+          path: flaky-report
+
+      - name: Diagnose and verify top flaky tests
+        if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
+        run: node scripts/flaky-fix.js
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flaky-fix
+          path: ${{ env.FLAKY_FIX_OUT_DIR }}
+          if-no-files-found: ignore
+          retention-days: 7

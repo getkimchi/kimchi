@@ -267,7 +267,7 @@ function publicReport(report) {
 	}
 }
 
-function readConfig(env) {
+export function readConfig(env) {
 	const endpoint = env.ALLURE_ENDPOINT?.replace(/\/$/, "")
 	const token = env.ALLURE_TOKEN
 	const projectId = env.ALLURE_PROJECT_ID
@@ -294,7 +294,7 @@ function parseEvents(value) {
 	return new Set(events)
 }
 
-async function createClient(config, fetchImpl) {
+export async function createClient(config, fetchImpl) {
 	const oauthPath = "/api/uaa/oauth/token"
 	const body = new URLSearchParams({ grant_type: "apitoken", scope: "openid", token: config.token })
 	const response = await fetchImpl(new URL(oauthPath, `${config.endpoint}/`), {
