@@ -1,17 +1,26 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 
 const {
+	agentExitReason,
 	agentFailureMetadata,
 	buildAgentPrompt,
 	buildEvidenceMarkdown,
 	buildPermissionsConfig,
+	buildVerificationCommand,
 	declaresExpectedFailure,
 	determineVerdict,
 	parseAgentSummary,
 	parseUntrackedFiles,
+	redactOutputFiles,
+	redactSensitiveValues,
 	renderFlakyFixReport,
+	runFailureReason,
 	selectFlakyTests,
 	slugify,
+	testTargetForRow,
 } = await import(new URL("./flaky-fix.js", import.meta.url).href)
 
 interface FlakyRow {
@@ -205,6 +214,82 @@ describe("result reporting success cases", () => {
 			agentOutcome: "timed-out",
 			agentResultReason: "Agent timed out after 20m 0s (exit code 143); agent did not emit a final JSON block",
 		})
+	})
+})
+
+describe("Vitest full-name targeting success cases", () => {
+	it("separates the file from describe/test names and escapes the test regex", () => {
+		const target = testTargetForRow({
+			fullName:
+				"src/extensions/bash-background/bash-control-stress.test.ts > managed stop > keeps [stdout] (open) + .*",
+		})
+		expect(target).toEqual({
+			testFile: "src/extensions/bash-background/bash-control-stress.test.ts",
+			testName: "managed stop > keeps [stdout] (open) + .*",
+		})
+		expect(buildVerificationCommand({ ...target, tui: false })).toEqual({
+			command: "pnpm",
+			args: [
+				"exec",
+				"vitest",
+				"run",
+				"src/extensions/bash-background/bash-control-stress.test.ts",
+				"-t",
+				"managed stop > keeps \\[stdout\\] \\(open\\) \\+ \\.\\*",
+				"--retry",
+				"0",
+			],
+		})
+	})
+
+	it("keeps whole-file Vitest and TUI invocations unchanged", () => {
+		expect(buildVerificationCommand({ testFile: "src/example.test.ts", testName: undefined, tui: false }).args).toEqual(
+			["exec", "vitest", "run", "src/example.test.ts", "--retry", "0"],
+		)
+		expect(
+			buildVerificationCommand({ testFile: "tests/e2e/tui/example.test.ts", testName: undefined, tui: true }),
+		).toEqual({ command: "node", args: ["scripts/run-tui-e2e.js", "tests/e2e/tui/example.test.ts"] })
+	})
+})
+
+describe("agent and run failure reporting", () => {
+	it("uses the agent's last output line as its exit reason", () => {
+		expect(agentExitReason("startup\nKIMCHI_API_KEY environment variable contains an invalid API key\n")).toBe(
+			"KIMCHI_API_KEY environment variable contains an invalid API key",
+		)
+		expect(agentExitReason("   \n")).toBe("agent produced no output")
+	})
+
+	it("fails only when every selected test errored and redacts auth details from the short reason", () => {
+		expect(runFailureReason([])).toBeNull()
+		expect(runFailureReason([{ verdict: "fixed" }, { verdict: "error" }])).toBeNull()
+		expect(runFailureReason([{ verdict: "error", agentResultReason: "invalid API key: actual-secret" }])).toBe(
+			"kimchi auth failed",
+		)
+		expect(runFailureReason([{ verdict: "error", error: "some other failure" }])).toBe("all selected tests errored")
+	})
+})
+
+describe("artifact redaction success cases", () => {
+	it("removes secret env values from text and nested files", () => {
+		const root = mkdtempSync(join(tmpdir(), "flaky-fix-redaction-"))
+		const env = { KIMCHI_API_KEY: "kimi-secret", ALLURE_TOKEN: "allure-secret", GH_TOKEN: "github-secret" }
+		try {
+			writeFileSync(join(root, "evidence.md"), "kimi-secret and allure-secret")
+			writeFileSync(join(root, "agent.log"), Buffer.from([0, ...Buffer.from("github-secret kimi-secret")]))
+			redactOutputFiles(root, env)
+			const evidence = readFileSync(join(root, "evidence.md"), "utf8")
+			const log = readFileSync(join(root, "agent.log"), "utf8")
+			expect(evidence).not.toContain("kimi-secret")
+			expect(evidence).not.toContain("allure-secret")
+			expect(log).not.toContain("github-secret")
+			expect(log).not.toContain("kimi-secret")
+			expect(redactSensitiveValues("kimi-secret allure-secret github-secret", env)).toBe(
+				"[redacted] [redacted] [redacted]",
+			)
+		} finally {
+			rmSync(root, { recursive: true, force: true })
+		}
 	})
 })
 

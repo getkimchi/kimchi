@@ -1,5 +1,14 @@
 import { execFileSync, spawn } from "node:child_process"
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
+import {
+	appendFileSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs"
 import { basename, join, relative, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { createClient, getAllPages, readConfig } from "./flaky-report.js"
@@ -47,6 +56,40 @@ export function agentFailureMetadata(agent, message) {
 			? `Agent timed out after ${elapsed} (exit code ${agent.code}); ${message}`
 			: `Agent exited with code ${agent.code} after ${elapsed}; ${message}`,
 	}
+}
+
+export function agentExitReason(output) {
+	const lines = String(output)
+		.trim()
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean)
+	return lines.at(-1)?.slice(0, 500) || "agent produced no output"
+}
+
+export function runFailureReason(results) {
+	if (results.length === 0 || results.some((result) => result.verdict !== "error")) return null
+	const reasons = results.map((result) => `${result.agentResultReason ?? ""} ${result.error ?? ""}`).join("\n")
+	return /invalid api key|auth(?:entication)? failed/i.test(reasons)
+		? "kimchi auth failed"
+		: "all selected tests errored"
+}
+
+export function testTargetForRow(row) {
+	const [fileFromFullName, ...testNameParts] = String(row.fullName).split(" > ")
+	const testFile = row.testFile ?? fileFromFullName
+	if (typeof testFile !== "string" || !/\.test\.[cm]?[jt]sx?$/.test(testFile)) {
+		throw new Error(`Cannot derive a test file from report fullName: ${row.fullName}`)
+	}
+	return { testFile, testName: testNameParts.length > 0 ? testNameParts.join(" > ") : undefined }
+}
+
+export function buildVerificationCommand({ testFile, testName, tui }) {
+	if (tui) return { command: "node", args: ["scripts/run-tui-e2e.js", testFile] }
+	const args = ["exec", "vitest", "run", testFile]
+	if (testName) args.push("-t", testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+	args.push("--retry", "0")
+	return { command: "pnpm", args }
 }
 
 export function buildEvidenceMarkdown(row, logs = [], { maxLogBytes = DEFAULT_EVIDENCE_LOG_BYTES } = {}) {
@@ -187,17 +230,30 @@ export async function runFlakyFix({ env = process.env, cwd = process.cwd(), fetc
 	const usedSlugs = new Set()
 
 	mkdirSync(outDir, { recursive: true })
-	for (const row of selected) {
-		const slug = uniqueSlug(slugify(row.fullName), usedSlugs)
-		const result = await processFlakyTest({ row, slug, env, cwd, outDir, runs, baselineRuns, model, fetchImpl })
-		results.push(result)
-		writeOutputs({ outDir, reportPath, model, runs, baselineRuns, started, results, skipped })
+	try {
+		for (const row of selected) {
+			const slug = uniqueSlug(slugify(row.fullName), usedSlugs)
+			const result = await processFlakyTest({ row, slug, env, cwd, outDir, runs, baselineRuns, model, fetchImpl })
+			results.push(result)
+			writeOutputs({ outDir, reportPath, model, runs, baselineRuns, started, results, skipped })
+		}
+		if (selected.length === 0)
+			writeOutputs({ outDir, reportPath, model, runs, baselineRuns, started, results, skipped })
+		if (env.GITHUB_STEP_SUMMARY) {
+			appendFileSync(
+				env.GITHUB_STEP_SUMMARY,
+				redactSensitiveValues(readFileSync(join(outDir, "flaky-fix.md"), "utf8"), env),
+			)
+		}
+		const failureReason = runFailureReason(results)
+		if (failureReason) {
+			console.error(`::error::${failureReason}`)
+			throw new Error(failureReason)
+		}
+		return { outDir, results, skipped }
+	} finally {
+		redactOutputFiles(outDir, env)
 	}
-	if (selected.length === 0) writeOutputs({ outDir, reportPath, model, runs, baselineRuns, started, results, skipped })
-	if (env.GITHUB_STEP_SUMMARY) {
-		appendFileSync(env.GITHUB_STEP_SUMMARY, readFileSync(join(outDir, "flaky-fix.md"), "utf8"))
-	}
-	return { outDir, results, skipped }
 }
 
 async function processFlakyTest({ row, slug, env, cwd, outDir, runs, baselineRuns, model, fetchImpl }) {
@@ -235,7 +291,8 @@ async function processFlakyTest({ row, slug, env, cwd, outDir, runs, baselineRun
 		runChecked("git", ["worktree", "add", "--detach", worktree, "HEAD"], cwd)
 		worktreeAdded = true
 		linkDependencies(cwd, worktree)
-		const testFile = testFileForRow(row)
+		const target = testTargetForRow(row)
+		const { testFile, testName } = target
 		const tui = testFile.startsWith("tests/e2e/tui/") || testFile.startsWith("tests\\e2e\\tui\\")
 		if (tui) await buildTuiBinary(worktree, env, join(caseDir, "build-baseline.log"))
 
@@ -243,6 +300,7 @@ async function processFlakyTest({ row, slug, env, cwd, outDir, runs, baselineRun
 		result.baseline = await verifyRepeatedly({
 			worktree,
 			testFile,
+			testName,
 			tui,
 			runs: baselineRuns,
 			env,
@@ -261,7 +319,7 @@ async function processFlakyTest({ row, slug, env, cwd, outDir, runs, baselineRun
 		writeFileSync(join(agentDir, "evidence.md"), worktreeEvidence)
 		writeFileSync(join(caseDir, "evidence.md"), worktreeEvidence)
 		const evidencePath = relative(worktree, join(agentDir, "evidence.md"))
-		writeFileSync(join(agentDir, "prompt.md"), buildAgentPrompt({ row: { ...row, fullName: testFile }, evidencePath }))
+		writeFileSync(join(agentDir, "prompt.md"), buildAgentPrompt({ row, evidencePath }))
 		const permissionsPath = join(agentDir, "permissions.json")
 		writeFileSync(permissionsPath, `${JSON.stringify(buildPermissionsConfig(worktree), null, 2)}\n`)
 
@@ -279,6 +337,14 @@ async function processFlakyTest({ row, slug, env, cwd, outDir, runs, baselineRun
 		result.agentDurationMs = agent.durationMs
 		result.agentOutcome = agent.timedOut ? "timed-out" : agent.code === 0 ? "completed" : "exited"
 		result.agentUsage = extractAgentUsage(agent.output)
+		if (agent.code !== 0) {
+			result.agentResultError = agentExitReason(agent.output)
+			Object.assign(result, agentFailureMetadata(agent, result.agentResultError))
+			result.error = result.agentResultReason
+			result.rootCause = `Agent execution failed with exit code ${agent.code}.`
+			result.fixSummary = result.agentResultReason
+			return finish(result, started)
+		}
 		try {
 			const summary = parseAgentSummary(agent.output)
 			Object.assign(result, summary)
@@ -304,6 +370,7 @@ async function processFlakyTest({ row, slug, env, cwd, outDir, runs, baselineRun
 		result.patched = await verifyRepeatedly({
 			worktree,
 			testFile,
+			testName,
 			tui,
 			runs,
 			env,
@@ -407,13 +474,12 @@ async function collectGitHubEvidence({ row, cwd, caseDir }) {
 	throw new Error(`no ${stem} *.fail.*.tui-e2e.log files found in ${runIds.length} linked run(s)`)
 }
 
-async function verifyRepeatedly({ worktree, testFile, tui, runs, env, logDir }) {
+async function verifyRepeatedly({ worktree, testFile, testName, tui, runs, env, logDir }) {
 	mkdirSync(logDir, { recursive: true })
 	const attempts = []
 	for (let index = 1; index <= runs; index += 1) {
 		const log = join(logDir, `run-${String(index).padStart(2, "0")}.log`)
-		const command = tui ? "node" : "pnpm"
-		const args = tui ? ["scripts/run-tui-e2e.js", testFile] : ["exec", "vitest", "run", testFile, "--retry", "0"]
+		const { command, args } = buildVerificationCommand({ testFile, testName, tui })
 		const attempt = await runProcess(command, args, {
 			cwd: worktree,
 			env: { ...env, ...(tui ? { TUI_RETRIES: "0" } : {}) },
@@ -481,9 +547,7 @@ function runProcess(command, args, { cwd, env = process.env, timeout, logPath })
 		let output = ""
 		let timedOut = false
 		const collect = (chunk) => {
-			const text = chunk.toString()
-			output += text
-			if (logPath) appendFileSync(logPath, text)
+			output += chunk.toString()
 		}
 		child.stdout.on("data", collect)
 		child.stderr.on("data", collect)
@@ -494,6 +558,7 @@ function runProcess(command, args, { cwd, env = process.env, timeout, logPath })
 		}, timeout)
 		child.on("close", (code, signal) => {
 			clearTimeout(timer)
+			if (logPath) writeFileSync(logPath, redactSensitiveValues(output, env))
 			resolvePromise({ code: code ?? (signal ? 1 : 0), signal, timedOut, durationMs: Date.now() - started, output })
 		})
 	})
@@ -614,11 +679,7 @@ function allFiles(directory) {
 }
 
 function testFileForRow(row) {
-	const value = row.testFile ?? row.fullName
-	if (typeof value !== "string" || !/\.test\.[cm]?[jt]sx?$/.test(value)) {
-		throw new Error(`Cannot derive a test file from report fullName: ${value}`)
-	}
-	return value
+	return testTargetForRow(row).testFile
 }
 
 function positiveIntegerEnv(value, fallback, name) {
@@ -668,13 +729,48 @@ function extractAgentUsage(output) {
 	return lines.slice(-3).join(" · ") || null
 }
 
-function safeErrorMessage(error, env) {
-	let message = error instanceof Error ? error.message : String(error)
-	for (const name of ["ALLURE_TOKEN", "KIMCHI_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"]) {
-		const value = env[name]
-		if (value) message = message.replaceAll(value, "[redacted]")
+const SECRET_ENV_NAMES = ["ALLURE_TOKEN", "KIMCHI_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"]
+
+function secretValues(env) {
+	return unique(SECRET_ENV_NAMES.map((name) => env[name]).filter((value) => typeof value === "string" && value))
+		.map((value) => String(value))
+		.sort((left, right) => right.length - left.length)
+}
+
+export function redactSensitiveValues(value, env) {
+	let text = String(value)
+	for (const secret of secretValues(env)) text = text.replaceAll(secret, "[redacted]")
+	return text
+}
+
+function redactBuffer(value, env) {
+	let output = value
+	for (const secret of secretValues(env)) {
+		const encoded = Buffer.from(secret)
+		let index = output.indexOf(encoded)
+		while (index !== -1) {
+			output = Buffer.concat([
+				output.subarray(0, index),
+				Buffer.from("[redacted]"),
+				output.subarray(index + encoded.length),
+			])
+			index = output.indexOf(encoded)
+		}
 	}
-	return message
+	return output
+}
+
+export function redactOutputFiles(outDir, env) {
+	for (const path of allFiles(outDir)) {
+		if (!lstatSync(path).isFile()) continue
+		const original = readFileSync(path)
+		const redacted = redactBuffer(original, env)
+		if (!original.equals(redacted)) writeFileSync(path, redacted)
+	}
+}
+
+function safeErrorMessage(error, env) {
+	return redactSensitiveValues(error instanceof Error ? error.message : String(error), env)
 }
 
 function finish(result, started) {
