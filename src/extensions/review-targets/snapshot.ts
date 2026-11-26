@@ -49,7 +49,8 @@ function statusPaths(output: Buffer): StatusEntry[] {
 		if (!entry) continue
 		const kind = entry[0]
 		if (kind === "?" || kind === "!") {
-			entries.push({ path: entry.slice(2), submodule: false, unmerged: false })
+			const path = entry.slice(2)
+			entries.push({ path, submodule: kind === "?" && path.endsWith("/"), unmerged: false })
 			continue
 		}
 		const columns = entry.split(" ")
@@ -76,10 +77,19 @@ function statusPaths(output: Buffer): StatusEntry[] {
 }
 
 async function workingTreeStatus(root: string, signal?: AbortSignal): Promise<StatusEntry[]> {
-	const result = await gitBytes(root, ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames"], {
-		signal,
-	})
+	const result = await gitBytes(
+		root,
+		["status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=dirty"],
+		{ signal },
+	)
 	return statusPaths(result.stdout)
+}
+
+function displayPaths(paths: string[]): string {
+	const visible = paths.slice(0, INDEX_FLAG_DISPLAY_LIMIT).join(", ")
+	return paths.length > INDEX_FLAG_DISPLAY_LIMIT
+		? `${visible}, and ${paths.length - INDEX_FLAG_DISPLAY_LIMIT} more`
+		: visible
 }
 
 async function indexFlaggedPaths(root: string, signal?: AbortSignal): Promise<IndexFlaggedPath[]> {
@@ -152,14 +162,13 @@ async function assertGitlinksUnchanged(
 	signal?: AbortSignal,
 ): Promise<void> {
 	const [before, after] = await Promise.all([gitlinks(root, headSha, signal), gitlinks(root, treeSha, signal)])
-	const changed =
-		before.size !== after.size ||
-		[...before].some(([path, object]) => after.get(path) !== object) ||
-		[...after.keys()].some((path) => !before.has(path))
-	if (changed) {
+	const changedPaths = [...new Set([...before.keys(), ...after.keys()])]
+		.filter((path) => before.get(path) !== after.get(path))
+		.sort()
+	if (changedPaths.length) {
 		throw new ReviewTargetError(
 			"unsupported_submodule",
-			"Working-tree snapshots do not support added, removed, or changed submodule revisions.",
+			`Working-tree snapshots do not support added, removed, or changed submodule revisions: ${displayPaths(changedPaths)}.`,
 		)
 	}
 }
@@ -177,7 +186,7 @@ async function captureTree(
 ): Promise<string> {
 	await gitText(root, ["read-tree", tipSha], { env, signal })
 	if (paths.length) {
-		await gitText(root, ["add", "--all", "--pathspec-from-file=-", "--pathspec-file-nul"], {
+		await gitText(root, ["update-index", "--add", "--remove", "-z", "--stdin"], {
 			env,
 			signal,
 			input: pathspecInput(paths),
@@ -237,10 +246,11 @@ export async function freezeWorkingTree(
 			"Cannot snapshot a working tree with unmerged paths. Resolve or abandon the merge first.",
 		)
 	}
-	if (entries.some((entry) => entry.submodule)) {
+	const submodulePaths = entries.filter((entry) => entry.submodule).map((entry) => entry.path)
+	if (submodulePaths.length) {
 		throw new ReviewTargetError(
 			"unsupported_submodule",
-			"Working-tree snapshots do not support staged, unstaged, or untracked submodule changes.",
+			`Working-tree snapshots do not support staged, unstaged, or untracked submodule changes: ${displayPaths(submodulePaths)}.`,
 		)
 	}
 	const sparse = await gitText(root, ["config", "--type=bool", "--default=false", "--get", "core.sparseCheckout"], {

@@ -266,6 +266,37 @@ describe("review target resolution", () => {
 		expect(existsSync(join(outputDir, "findings", "spec.jsonl"))).toBe(true)
 	}, 20_000)
 
+	it("captures a normal edit when a staged new file was deleted from disk", async () => {
+		initialize({ "file.txt": "base\n" })
+		write(repo, "new.txt", "new\n")
+		git(repo, "add", "new.txt")
+		rmSync(join(repo, "new.txt"))
+		write(repo, "file.txt", "edited\n")
+		const before = checkoutState(repo)
+
+		const target = await resolve({ kind: "working-tree", fetch: false })
+		expect(target.scope.files).toEqual({ changed: 1, anchorable: 1, unanchorable: 0 })
+		expect(git(repo, "show", `${target.scope.pinned.headSha}:file.txt`)).toBe("edited")
+		expect(() => git(repo, "cat-file", "-e", `${target.scope.pinned.headSha}:new.txt`)).toThrow()
+		expectCheckoutState(repo, before)
+		await target.cleanup()
+		expectCheckoutState(repo, before)
+	})
+
+	it("captures a force-added ignored file", async () => {
+		initialize({ ".gitignore": "build/\n" })
+		write(repo, "build/out.js", "ignored but staged\n")
+		git(repo, "add", "--force", "build/out.js")
+		const before = checkoutState(repo)
+
+		const target = await resolve({ kind: "working-tree", fetch: false })
+		expect(target.scope.files).toEqual({ changed: 1, anchorable: 1, unanchorable: 0 })
+		expect(git(repo, "show", `${target.scope.pinned.headSha}:build/out.js`)).toBe("ignored but staged")
+		expectCheckoutState(repo, before)
+		await target.cleanup()
+		expectCheckoutState(repo, before)
+	})
+
 	it("returns ordered bare choices, defaults to branch when clean, and working tree only for non-ignored edits", async () => {
 		initialize({ ".gitignore": "ignored.txt\n", "file.txt": "base\n" })
 		let choices = await getReviewTargetChoices({ kind: "bare", fetch: false }, { root: repo })
@@ -623,6 +654,73 @@ describe("review target resolution", () => {
 		})
 	})
 
+	it("parses a branch diff containing a submodule when diff.submodule=log", async () => {
+		initialize()
+		const source = join(sandbox, "submodule-source")
+		mkdirSync(source)
+		git(source, "init", "--initial-branch=main")
+		git(source, "config", "user.name", "Test User")
+		git(source, "config", "user.email", "test@example.com")
+		git(source, "commit", "--allow-empty", "-m", "first submodule commit")
+		git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "--quiet", source, "sub")
+		git(repo, "commit", "-m", "add submodule")
+		git(repo, "checkout", "-b", "feature")
+		git(source, "commit", "--allow-empty", "-m", "second submodule commit")
+		git(join(repo, "sub"), "-c", "protocol.file.allow=always", "pull", "--quiet")
+		git(repo, "commit", "-am", "bump submodule")
+		git(repo, "config", "diff.submodule", "log")
+
+		const target = await resolve({
+			kind: "branch",
+			branch: "feature",
+			base: "main",
+			includeWorkingTree: false,
+			fetch: false,
+		})
+		expect(target.scope.files).toEqual({ changed: 1, anchorable: 1, unanchorable: 0 })
+		const map = JSON.parse(readFileSync(target.scope.commentableLinesPath, "utf8")) as ProviderAnchorMap
+		expect(map.files.sub).toEqual({ ranges: [{ start_line: 1, end_line: 1 }] })
+		await target.cleanup()
+	})
+
+	it.runIf(process.platform !== "win32")("does not run clean filters configured only inside submodules", async () => {
+		initialize({ "file.txt": "base\n" })
+		const source = join(sandbox, "filtered-submodule-source")
+		mkdirSync(source)
+		git(source, "init", "--initial-branch=main")
+		git(source, "config", "user.name", "Test User")
+		git(source, "config", "user.email", "test@example.com")
+		write(source, ".gitattributes", "*.txt filter=evil\n")
+		write(source, "s.txt", "submodule\n")
+		git(source, "add", ".")
+		git(source, "commit", "-m", "filtered submodule")
+		git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "--quiet", source, "sub")
+		git(repo, "commit", "-m", "add submodule")
+		const nested = join(repo, "sub")
+		git(nested, "config", "user.name", "Test User")
+		git(nested, "config", "user.email", "test@example.com")
+		const marker = join(sandbox, "submodule-filter.log")
+		const filter = join(sandbox, "submodule-filter.sh")
+		writeFileSync(filter, `#!/bin/sh\nprintf ran >> ${JSON.stringify(marker)}\ncat\n`)
+		chmodSync(filter, 0o755)
+		git(nested, "config", "filter.evil.clean", filter)
+		write(nested, "s.txt", "submodule\n")
+		write(repo, "file.txt", "edited\n")
+		expect(existsSync(marker)).toBe(false)
+
+		const target = await resolve({ kind: "working-tree", fetch: false })
+		expect(target.scope.files).toEqual({ changed: 1, anchorable: 1, unanchorable: 0 })
+		expect(existsSync(marker)).toBe(false)
+		await target.cleanup()
+
+		git(nested, "-c", "filter.evil.clean=", "commit", "--allow-empty", "-m", "bump submodule")
+		await expect(resolve({ kind: "working-tree", fetch: false }, { contextDir: join(sandbox, "bump-context") })).rejects.toMatchObject({
+			code: "unsupported_submodule",
+			message: expect.stringContaining("sub"),
+		})
+		expect(existsSync(marker)).toBe(false)
+	})
+
 	it("rejects changed submodule revisions without touching either checkout", async () => {
 		initialize()
 		const nested = join(repo, "nested")
@@ -640,8 +738,24 @@ describe("review target resolution", () => {
 		const before = checkoutState(repo)
 		await expect(resolve({ kind: "working-tree", fetch: false })).rejects.toMatchObject({
 			code: "unsupported_submodule",
+			message: expect.stringContaining("nested"),
 		})
 		expectCheckoutState(repo, before)
+	})
+
+	it("names an untracked nested repository in the submodule diagnostic", async () => {
+		initialize()
+		const nested = join(repo, "vendor/lib")
+		mkdirSync(nested, { recursive: true })
+		git(nested, "init", "--initial-branch=main")
+		git(nested, "config", "user.name", "Test User")
+		git(nested, "config", "user.email", "test@example.com")
+		git(nested, "commit", "--allow-empty", "-m", "nested commit")
+
+		await expect(resolve({ kind: "working-tree", fetch: false })).rejects.toMatchObject({
+			code: "unsupported_submodule",
+			message: expect.stringContaining("vendor/lib"),
+		})
 	})
 
 	it.runIf(process.platform !== "win32")(

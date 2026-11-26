@@ -65,7 +65,18 @@ export async function localAnchors(
 	const names = namesResult.stdout.toString("utf8").split("\0").filter(Boolean)
 	const patch = await gitText(
 		root,
-		["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=0", "--find-renames", baseSha, headSha, "--"],
+		[
+			"diff",
+			"--no-color",
+			"--no-ext-diff",
+			"--no-textconv",
+			"--submodule=short",
+			"--unified=0",
+			"--find-renames",
+			baseSha,
+			headSha,
+			"--",
+		],
 		{ signal },
 	)
 	const parsed = parsePatch(patch)
