@@ -286,15 +286,13 @@ describe("review worker permission integration", () => {
 		await expect(allowed.controller.authorizeCommand("shutdown now", { mode })).resolves.toBeUndefined()
 	})
 
-	it("prevents every reviewer from writing or running scripts in read-only mode", async () => {
+	it("prevents reviewers from writing or running scripts directly in read-only mode", async () => {
 		for (const id of ["one", "two"]) {
 			const planned = gate("plan", { kind: "allow-once" }, id)
 			const write = await call(planned.child, planned.ctx, "write", { path: "focused.test", content: "test" })
 			expect(write).toMatchObject({ block: true, reason: expect.stringContaining("plan mode") })
 			const script = await call(planned.child, planned.ctx, "bash", { command: "node focused.test" })
 			expect(script).toMatchObject({ block: true, reason: expect.stringContaining("plan mode") })
-			const routine = await call(planned.child, planned.ctx, "run_review_check", { id: "test" })
-			expect(routine).toMatchObject({ block: true, reason: expect.stringContaining("plan mode") })
 			expect(planned.requestPermission).not.toHaveBeenCalled()
 		}
 	})
@@ -311,7 +309,7 @@ describe("review worker permission integration", () => {
 
 	it("lets a fenced reviewer run an approved check when the parent session is in plan mode", async () => {
 		const planned = gate("plan", { kind: "allow-once" }, "plan-approved-check")
-		await call(planned.child, planned.ctx, "run_review_check", { id: "approved-check" })
+		expect(await call(planned.child, planned.ctx, "run_review_check", { id: "approved-check" })).toBeUndefined()
 		for (const path of [
 			planned.controller.worktree.path,
 			planned.controller.worktree.scratchDir,
@@ -323,13 +321,13 @@ describe("review worker permission integration", () => {
 		}
 		const bash = createReviewBashToolDefinition(planned.controller)
 		const result = await bash.execute(
-			"approved-check",
+			"call-run_review_check",
 			{ command: "printf approved" },
 			undefined,
 			undefined,
 			createToolContext({ cwd: planned.controller.worktree.path }),
 		)
-		expect(result.isError).not.toBe(true)
+		expect(result.isError, JSON.stringify(result)).not.toBe(true)
 		expect(planned.controller.executionFor("call-run_review_check")?.mode).toBe("auto")
 		expect(planned.controller.records.at(-1)).toMatchObject({ status: "passed", output: "approved" })
 	})

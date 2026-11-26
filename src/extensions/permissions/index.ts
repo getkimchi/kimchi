@@ -2141,7 +2141,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				// A parent mode change cancels escalated prompts. The worker must
 				// refresh the parent's live policy on every pass.
 				refreshWorkerPolicy(ctx)
-				const { mode } = getRuntimePermissionMode()
+				const { mode } = getRuntimePermissionMode(toolName)
 
 				const reviewApproval =
 					options.role === "worker" && mode !== "plan" && !isDangerBypass()
