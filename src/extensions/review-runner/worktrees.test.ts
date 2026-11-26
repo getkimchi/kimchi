@@ -15,6 +15,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { reviewProcessStartIdentity } from "../review-command/owner-identity.js"
 import { parseReviewTargetArgs } from "../review-targets/parser.js"
 import { resolveReviewTarget } from "../review-targets/resolve.js"
 import type { ExplicitReviewRequest, ResolvedReviewTarget } from "../review-targets/types.js"
@@ -40,15 +41,22 @@ function refExists(root: string, ref: string): boolean {
 }
 
 async function markManifestProcessExited(runDir: string): Promise<void> {
-	const child = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" })
+	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"])
 	await new Promise<void>((resolve, reject) => {
 		child.once("error", reject)
-		child.once("close", (code) => (code === 0 ? resolve() : reject(new Error(`PID fixture exited with ${code}`))))
+		child.once("spawn", resolve)
 	})
 	if (child.pid === undefined) throw new Error("PID fixture did not expose a process ID")
+	const ownerStart = await reviewProcessStartIdentity(child.pid)
+	const closed = new Promise<void>((resolve, reject) => {
+		child.once("error", reject)
+		child.once("close", () => resolve())
+	})
+	child.kill("SIGKILL")
+	await closed
 	const manifestPath = join(runDir, REVIEW_WORKTREE_TESTING.MANIFEST)
 	const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>
-	writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, pid: child.pid }, null, 2)}\n`)
+	writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, ownerPid: child.pid, ownerStart }, null, 2)}\n`)
 }
 
 function checkoutState(root: string) {
@@ -218,6 +226,79 @@ describe("review worktree lifecycle", () => {
 		expect(existsSync(pool.runDir)).toBe(false)
 		expect(git(repo, "worktree", "list", "--porcelain")).not.toContain(worktree.path)
 		expect(refExists(repo, snapshotRef ?? "")).toBe(false)
+	})
+
+	it("reclaims dead manifest state after its repository is deleted", async () => {
+		writeFileSync(join(repo, "file.txt"), "deleted repository\n")
+		const target = await resolveReviewTarget(parseReviewTargetArgs(["working-tree"]) as ExplicitReviewRequest, {
+			root: repo,
+			contextDir,
+		})
+		const pool = await createReviewWorktreePool({ target, outputDir, rootDir })
+		const worktree = await pool.getWorktree("writer")
+		await markManifestProcessExited(pool.runDir)
+		const canonicalRepository = realpathSync(repo)
+		rmSync(repo, { recursive: true, force: true })
+		const recovered = await recoverReviewWorktrees({ rootDir, olderThanMs: 0 })
+		expect(recovered).toHaveLength(1)
+		expect(recovered[0]).toMatchObject({ runDir: pool.runDir, repository: canonicalRepository })
+		expect(existsSync(pool.runDir)).toBe(false)
+		expect(existsSync(worktree.path)).toBe(false)
+	})
+
+	it("preserves worktrees and snapshot refs owned by another live process", async () => {
+		writeFileSync(join(repo, "file.txt"), "other live review\n")
+		const target = await resolveReviewTarget(parseReviewTargetArgs(["working-tree"]) as ExplicitReviewRequest, {
+			root: repo,
+			contextDir,
+		})
+		const pool = await createReviewWorktreePool({ target, outputDir, rootDir })
+		const worktree = await pool.getWorktree("writer")
+		const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
+		const holderPid = holder.pid
+		if (holderPid === undefined) throw new Error("Live-holder process has no PID")
+		try {
+			const ownerStart = await reviewProcessStartIdentity(holderPid)
+			const manifestPath = join(pool.runDir, REVIEW_WORKTREE_TESTING.MANIFEST)
+			const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
+			manifest.ownerPid = holderPid
+			manifest.ownerStart = ownerStart
+			writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+			await expect(recoverReviewWorktrees({ rootDir, olderThanMs: 0 })).resolves.toEqual([])
+			expect(existsSync(pool.runDir)).toBe(true)
+			expect(existsSync(worktree.path)).toBe(true)
+			expect(refExists(repo, target.scope.pinned.snapshotRef ?? "")).toBe(true)
+		} finally {
+			await pool.cleanup()
+			holder.kill("SIGKILL")
+			await new Promise<void>((resolve) => holder.once("close", () => resolve()))
+		}
+	})
+
+	it("preserves live worktrees for a foreign or unknown owner during wrap-up", async () => {
+		writeFileSync(join(repo, "file.txt"), "hostname changed\n")
+		const target = await resolveReviewTarget(parseReviewTargetArgs(["working-tree"]) as ExplicitReviewRequest, {
+			root: repo,
+			contextDir,
+		})
+		const pool = await createReviewWorktreePool({ target, outputDir, rootDir })
+		const worktree = await pool.getWorktree("writer")
+		const manifestPath = join(pool.runDir, REVIEW_WORKTREE_TESTING.MANIFEST)
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
+		try {
+			manifest.ownerHost = "old-hostname.local"
+			writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+			await expect(recoverReviewWorktrees({ rootDir, olderThanMs: 0 })).resolves.toEqual([])
+			expect(existsSync(worktree.path)).toBe(true)
+
+			for (const key of ["ownerPid", "ownerHost", "ownerStart"]) delete manifest[key]
+			writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+			await expect(recoverReviewWorktrees({ rootDir, olderThanMs: 0 })).resolves.toEqual([])
+			expect(existsSync(worktree.path)).toBe(true)
+			expect(refExists(repo, target.scope.pinned.snapshotRef ?? "")).toBe(true)
+		} finally {
+			await pool.cleanup()
+		}
 	})
 
 	it.each(["before-add", "after-add"] as const)("recovers a real crash %s registration", async (point) => {

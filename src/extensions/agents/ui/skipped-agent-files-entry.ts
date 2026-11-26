@@ -122,6 +122,11 @@ class SkippedAgentFilesLine implements Component {
 		private readonly onClickToggle: () => void,
 	) {}
 
+	/** Keep this child stable across rebuilds: pi's mouse layout retains child references. */
+	setExpanded(expanded: boolean): void {
+		this.expanded = expanded
+	}
+
 	private get summary(): string {
 		// Same sentence as the plain warning, so the surfaces cannot drift. The
 		// header adds a marker after it that says the line opens, in every mode
@@ -175,15 +180,30 @@ export function createSkippedAgentFilesRenderer(
 	currentToken: () => string | undefined,
 ): EntryRenderer<SkippedAgentFilesEntryData> {
 	const flipped = new Set<string>()
+	const lines = new Map<string, SkippedAgentFilesLine>()
+	let activeToken: string | undefined
 	return (entry, options, piTheme) => {
 		const data: unknown = entry.data
 		if (!isNoticeData(data)) return undefined
 		if (data.files.length === 0) return undefined
-		if (data.token !== currentToken()) return undefined
+		const latestStart = currentToken()
+		if (latestStart !== activeToken) {
+			activeToken = latestStart
+			flipped.clear()
+			lines.clear()
+		}
+		if (data.token !== latestStart) return undefined
 		const expanded = options.expanded !== flipped.has(entry.id)
-		return new SkippedAgentFilesLine(data.files, expanded, piTheme, () => {
+		const cached = lines.get(entry.id)
+		if (cached) {
+			cached.setExpanded(expanded)
+			return cached
+		}
+		const line = new SkippedAgentFilesLine(data.files, expanded, piTheme, () => {
 			if (!flipped.delete(entry.id)) flipped.add(entry.id)
 		})
+		lines.set(entry.id, line)
+		return line
 	}
 }
 

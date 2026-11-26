@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { gitBytes, gitResultError, gitText, OBJECT_ID } from "./git.js"
+import { excludeReviewOwnedPaths } from "./path-filter.js"
 import { assertNoConversionDrivers, workingTreeCandidatePaths } from "./preflight.js"
 import type { RemovedReviewSnapshot, WorkingTreeStatus } from "./types.js"
 import { ReviewTargetError } from "./types.js"
@@ -27,6 +28,7 @@ export interface WorkingTreeSnapshot {
 
 export interface SnapshotOptions {
 	signal?: AbortSignal
+	excludedDirectories?: readonly string[]
 	beforeSnapshotCommit?: () => void | Promise<void>
 }
 
@@ -76,13 +78,19 @@ function statusPaths(output: Buffer): StatusEntry[] {
 	return entries
 }
 
-async function workingTreeStatus(root: string, signal?: AbortSignal): Promise<StatusEntry[]> {
+async function workingTreeStatus(
+	root: string,
+	signal?: AbortSignal,
+	excludedDirectories: readonly string[] = [],
+): Promise<StatusEntry[]> {
 	const result = await gitBytes(
 		root,
 		["status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=dirty"],
 		{ signal },
 	)
-	return statusPaths(result.stdout)
+	return statusPaths(result.stdout).filter((entry) =>
+		excludeReviewOwnedPaths(root, [entry.path], excludedDirectories).includes(entry.path),
+	)
 }
 
 function displayPaths(paths: string[]): string {
@@ -125,7 +133,11 @@ async function assertNoIndexVisibilityFlags(root: string, signal?: AbortSignal):
 	}
 }
 
-export async function inspectWorkingTree(root: string, signal?: AbortSignal): Promise<WorkingTreeInspection> {
+export async function inspectWorkingTree(
+	root: string,
+	signal?: AbortSignal,
+	excludedDirectories: readonly string[] = [],
+): Promise<WorkingTreeInspection> {
 	const flagged = await indexFlaggedPaths(root, signal)
 	if (flagged.length) {
 		return {
@@ -135,7 +147,7 @@ export async function inspectWorkingTree(root: string, signal?: AbortSignal): Pr
 		}
 	}
 	return {
-		status: (await workingTreeStatus(root, signal)).length ? "edits" : "clean",
+		status: (await workingTreeStatus(root, signal, excludedDirectories)).length ? "edits" : "clean",
 		flaggedPaths: [],
 		flaggedPathCount: 0,
 	}
@@ -202,8 +214,9 @@ async function assertCaptureStable(
 	capturedPaths: string[],
 	treeSha: string,
 	signal?: AbortSignal,
+	excludedDirectories: readonly string[] = [],
 ): Promise<void> {
-	const currentPaths = await workingTreeCandidatePaths(root, signal)
+	const currentPaths = await workingTreeCandidatePaths(root, signal, excludedDirectories)
 	if (
 		currentPaths.length !== capturedPaths.length ||
 		currentPaths.some((path, index) => path !== capturedPaths[index])
@@ -217,7 +230,12 @@ async function assertCaptureStable(
 	// through the same literal stdin pathspec and compare immutable tree IDs.
 	const verificationTree = await captureTree(root, env, tipSha, capturedPaths, signal)
 	const untracked = await gitBytes(root, ["ls-files", "-z", "--others", "--exclude-standard"], { env, signal })
-	if (verificationTree !== treeSha || untracked.stdout.length > 0) {
+	const unexpectedPaths = excludeReviewOwnedPaths(
+		root,
+		untracked.stdout.toString("utf8").split("\0").filter(Boolean),
+		excludedDirectories,
+	)
+	if (verificationTree !== treeSha || unexpectedPaths.length > 0) {
 		throw new ReviewTargetError(
 			"snapshot_changed",
 			"A file changed or an untracked file appeared while the working tree was being captured. Retry without concurrent edits.",
@@ -234,9 +252,9 @@ export async function freezeWorkingTree(
 	tipSha: string,
 	options: SnapshotOptions = {},
 ): Promise<WorkingTreeSnapshot> {
-	const capturedPaths = await assertNoConversionDrivers(root, options.signal)
+	const capturedPaths = await assertNoConversionDrivers(root, options.signal, options.excludedDirectories)
 	await assertNoIndexVisibilityFlags(root, options.signal)
-	const entries = await workingTreeStatus(root, options.signal)
+	const entries = await workingTreeStatus(root, options.signal, options.excludedDirectories)
 	if (!entries.length) {
 		return { tipSha, headSha: tipSha, dirty: false, cleanup: async () => {} }
 	}
@@ -270,7 +288,7 @@ export async function freezeWorkingTree(
 		const treeSha = await captureTree(root, env, tipSha, capturedPaths, options.signal)
 		await assertGitlinksUnchanged(root, tipSha, treeSha, options.signal)
 		await options.beforeSnapshotCommit?.()
-		await assertCaptureStable(root, env, tipSha, capturedPaths, treeSha, options.signal)
+		await assertCaptureStable(root, env, tipSha, capturedPaths, treeSha, options.signal, options.excludedDirectories)
 		const currentHead = await gitText(root, ["rev-parse", "--verify", "HEAD"], { signal: options.signal })
 		if (currentHead.trim() !== tipSha) {
 			throw new ReviewTargetError(

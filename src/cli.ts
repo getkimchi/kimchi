@@ -161,6 +161,7 @@ import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import refusedTurnsExtension, { applyRefusalNoticeRenderingPatch } from "./extensions/refused-turns.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
+import reviewCommandExtension from "./extensions/review-command/index.js"
 import reviewSubmitExtension from "./extensions/review-submit/index.js"
 import { createRunOutcomeTracker } from "./extensions/run-outcome.js"
 import sessionMemoryStatsExtension from "./extensions/session-memory-stats.js"
@@ -953,6 +954,7 @@ async function cliMain(): Promise<void> {
 				// Loading them through the normal inline extension list puts all three
 				// in the initial system message before the first model call.
 				reviewSubmitExtension,
+				reviewCommandExtension,
 				statsExtension,
 				statusExtension,
 				budgetCommandExtension,

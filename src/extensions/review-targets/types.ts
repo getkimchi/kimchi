@@ -70,6 +70,8 @@ export interface ReviewInvocationOptions {
 	pullRequestTargetBranch?: string
 	/** Select a configured remote when automatic selection would be ambiguous. */
 	remote?: string
+	/** Explicit Kimchi-owned directories to omit from working-tree snapshot discovery. */
+	excludedDirectories?: readonly string[]
 	signal?: AbortSignal
 }
 

@@ -12,6 +12,8 @@ The examples below use `<review-context>` and `<review-output>` for the selected
 
 Preventing a concurrent process from swapping an already validated component for a symlink before a later write is a non-goal. Such a process already has the same filesystem access as the agent, and Node has no openat-style no-follow traversal.
 
+The `--review*` switches are intentionally omitted from `kimchi --help`; they remain valid for the platform's headless integration.
+
 ## `review-comments/v1`
 
 `<review-context>/comments.json` is one JSON object, never a raw array or an unversioned document:

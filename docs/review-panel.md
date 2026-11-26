@@ -160,8 +160,14 @@ work around provenance size.
 The verifier gets a fresh stage 3 verifier worktree plus the saved candidate,
 worktree, command, routine-check, and optional comments paths. Thread history,
 including the previous revision when supplied, is also embedded in the
-reconciliation request. It must return one `review-reconciliation/v1` JSON
-object with `findings`, `decisions`, and `threads`.
+reconciliation request. It must submit a structured argument set through the
+dedicated `submit_reconciliation` tool, whose JSON schema matches
+`review-reconciliation/v1` with `findings`, `decisions`, and `threads`. The
+coordinator validates that schema and every field name exactly; unknown fields
+and aliases such as `action` or `decision` in place of `disposition` are not
+accepted. A validation failure gets one repair prompt carrying the validation
+errors, within the original verification window (`D − finalWriteHeadroomMs`).
+Operational verifier failures and expired windows get no repair attempt.
 
 Code rejects the entire semantic result unless:
 
@@ -194,6 +200,9 @@ unmerged, and no thread replies are produced for that input.
 `coverage` and is written last. When its logical content is unchanged, the
 coordinator preserves the existing file rather than refreshing `created_at`.
 Findings, summaries, and replies are therefore byte-stable across wrap-up.
+The coordinator merges its own structured environment gaps with reviewer
+reports before this comparison, so identical environment and durable inputs
+remain idempotent.
 
 ## Reserve timing
 
@@ -218,8 +227,9 @@ by abandoned timeouts.
 If `D - H` has passed at panel start, no reviewer launches. If cancellation
 does not settle in time, running lenses become cancelled and finalization uses
 the last durable checkpoint instead of waiting for workers or cleanup. Runner
-cleanup itself is bounded by `D`; retained stage 3 manifests remain available
-for recovery. Without enough verifier time, fallback finalization still writes
+cleanup itself is bounded by `D`; an aborted run also has a one-second
+settlement bound and uses whichever deadline is earlier. Retained stage 3
+manifests remain available for recovery. Without enough verifier time, fallback finalization still writes
 findings and coverage.
 
 Before either entry point returns, it closes coordinator-owned publication and

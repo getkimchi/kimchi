@@ -7,6 +7,7 @@ import {
 	type ReviewAgentSpawner,
 	type ReviewExecutionPolicyOptions,
 	ReviewRunner,
+	recoverReviewWorktrees,
 } from "../review-runner/index.js"
 import { MAX_OUTPUT_FILE_BYTES, SUMMARY_SCHEMA_VERSION } from "../review-submit/store.js"
 import { type ResolvedReviewScope, type ResolvedReviewTarget, ReviewTargetError } from "../review-targets/index.js"
@@ -30,6 +31,7 @@ import {
 	readFindingWriter,
 	reviewPanelPaths,
 } from "./output.js"
+import { ReconciliationInvocationError } from "./reconciliation.js"
 import { assertReviewPanelIdentity, createInitialPanelState, progressFor, ReviewPanelStateStore } from "./state.js"
 import type {
 	ReviewPanelModelOptions,
@@ -41,19 +43,42 @@ import type {
 import { ReviewPanelUsageBuffer } from "./usage.js"
 
 const DEFAULT_RECONCILIATION_RESERVE_MS = 120_000
-const DEFAULT_SUBMIT_GRACE_MS = 30_000
-const DEFAULT_CANCELLATION_GRACE_MS = 1_000
+
+/** Process-level smoke tests need a real signal window, not a 30-second wait. */
+function testGraceMs(name: "SUBMIT" | "CANCELLATION", productionMs: number): number {
+	// The opt-in flag is deliberate: production never changes a default merely
+	// because its NODE_ENV happens to be "test", including compiled binaries.
+	if (process.env.KIMCHI_REVIEW_TEST_TIMING !== "1") return productionMs
+	const raw =
+		name === "SUBMIT"
+			? process.env.KIMCHI_REVIEW_TEST_SUBMIT_GRACE_MS
+			: process.env.KIMCHI_REVIEW_TEST_CANCELLATION_GRACE_MS
+	if (raw === undefined) return productionMs
+	const value = Number(raw)
+	return Number.isFinite(value) && value >= 0 ? value : productionMs
+}
+
+const DEFAULT_SUBMIT_GRACE_MS = testGraceMs("SUBMIT", 30_000)
+const DEFAULT_CANCELLATION_GRACE_MS = testGraceMs("CANCELLATION", 1_000)
 const CLEANUP_EXIT_MARGIN_MS = 100
 /** Time protected from reviewers, cancellation and the verifier for final atomic artifacts. */
 export const REVIEW_PANEL_FINAL_WRITE_HEADROOM_MS = 5_000
 
-async function cleanupWithDeadline(runner: ReviewRunner, deadline: number | undefined): Promise<void> {
+async function cleanupWithDeadline(
+	runner: ReviewRunner,
+	deadline: number | undefined,
+	signal?: AbortSignal,
+	cancellationGraceMs = DEFAULT_CANCELLATION_GRACE_MS,
+): Promise<void> {
 	const cleanup = runner.cleanup()
-	if (deadline === undefined) {
+	const cancellationDeadline = signal?.aborted ? Date.now() + cancellationGraceMs : undefined
+	const boundedDeadline =
+		cancellationDeadline === undefined ? deadline : Math.min(deadline ?? Number.POSITIVE_INFINITY, cancellationDeadline)
+	if (boundedDeadline === undefined) {
 		await cleanup
 		return
 	}
-	await raceWithTimeout(cleanup, Math.max(0, deadline - Date.now() - CLEANUP_EXIT_MARGIN_MS), undefined)
+	await raceWithTimeout(cleanup, Math.max(0, boundedDeadline - Date.now() - CLEANUP_EXIT_MARGIN_MS), undefined)
 	// A wedged child must not delay final artifacts or session shutdown. The
 	// runner manifest remains available for recovery; cleanup continues in the background.
 	void cleanup.catch(() => {})
@@ -168,42 +193,55 @@ function verifierCall(
 		signal?: AbortSignal
 		respectSignal: boolean
 	},
-): { hasVerifier: boolean; reconcile?: () => Promise<string> } {
+): { hasVerifier: boolean; reconcile?: (validationErrors?: string) => Promise<unknown> } {
+	const windowEnd = options.deadline === undefined ? Date.now() + 120_000 : options.deadline - options.headroomMs
 	const available = options.deadline === undefined || options.deadline - Date.now() > options.headroomMs
 	if (!available || options.signal?.aborted) return { hasVerifier: false }
 	return {
 		hasVerifier: true,
-		reconcile: async () => {
-			const remaining = options.deadline === undefined ? 120_000 : options.deadline - Date.now() - options.headroomMs
-			if (remaining <= 0) throw new Error("The reconciliation reserve has no verifier time remaining.")
-			const timeout = new AbortController()
-			const signal =
-				options.respectSignal && options.signal ? AbortSignal.any([timeout.signal, options.signal]) : timeout.signal
-			const requestPath = reviewPanelPaths(context.outputDir).reconciliationRequestPath
-			const hasThreads = await exists(join(context.store.state.contextDir, "comments.json"))
-			const verification = context.runner.spawnVerifier({
-				id: "reconciliation",
-				type: "General-Purpose",
-				prompt: buildVerifierPrompt(requestPath, hasThreads),
-				signal,
-				agent: {
-					...childAgentOptions(options.agent, "reconciliation", context.usage),
-					maxDuration: Math.max(1, Math.floor(remaining / 1000)),
-				},
-			})
-			const outcome = await raceWithTimeout(
-				verification.then((result) => ({ kind: "settled" as const, result })),
-				remaining,
-				{ kind: "timeout" as const },
-				() => timeout.abort(),
-			)
-			if (outcome.kind === "timeout") {
-				context.runner.cancelReviewer("reconciliation", new Error("Semantic verifier settlement window expired"))
-				throw new Error("Semantic verifier did not settle within the reconciliation window; using fallback.")
+		reconcile: async (validationErrors?: string) => {
+			try {
+				const remaining = windowEnd - Date.now()
+				if (remaining <= 0) {
+					throw new ReconciliationInvocationError(
+						"The reconciliation reserve has no verifier time remaining for a repair attempt.",
+					)
+				}
+				const timeout = new AbortController()
+				const signal =
+					options.respectSignal && options.signal ? AbortSignal.any([timeout.signal, options.signal]) : timeout.signal
+				const requestPath = reviewPanelPaths(context.outputDir).reconciliationRequestPath
+				const hasThreads = await exists(join(context.store.state.contextDir, "comments.json"))
+				const verification = context.runner.spawnVerifier({
+					id: "reconciliation",
+					type: "General-Purpose",
+					prompt: buildVerifierPrompt(requestPath, hasThreads, validationErrors),
+					signal,
+					agent: {
+						...childAgentOptions(options.agent, "reconciliation", context.usage),
+						maxDuration: Math.max(1, Math.floor(remaining / 1000)),
+					},
+				})
+				const outcome = await raceWithTimeout(
+					verification.then((result) => ({ kind: "settled" as const, result })),
+					remaining,
+					{ kind: "timeout" as const },
+					() => timeout.abort(),
+				)
+				if (outcome.kind === "timeout") {
+					context.runner.cancelReviewer("reconciliation", new Error("Semantic verifier settlement window expired"))
+					throw new ReconciliationInvocationError(
+						"Semantic verifier did not settle within the reconciliation window; using fallback.",
+					)
+				}
+				const result = outcome.result
+				if (result.aborted)
+					throw new ReconciliationInvocationError("The semantic verifier was cancelled before returning output.")
+				return result.reconciliation ?? result.responseText
+			} catch (error) {
+				if (error instanceof ReconciliationInvocationError) throw error
+				throw new ReconciliationInvocationError(error instanceof Error ? error.message : String(error))
 			}
-			const result = outcome.result
-			if (result.aborted) throw new Error("The semantic verifier was cancelled before returning output.")
-			return result.responseText
 		},
 	}
 }
@@ -213,6 +251,7 @@ async function makeRunner(options: {
 	pi: RunReviewPanelOptions["pi"]
 	target: ResolvedReviewTarget
 	outputDir: string
+	signal?: AbortSignal
 	concurrency: number
 	checkDefinitions?: RunReviewPanelOptions["checkDefinitions"]
 	executionPolicy?: ReviewExecutionPolicyOptions
@@ -238,6 +277,7 @@ async function makeRunner(options: {
 		pi: options.pi,
 		target: options.target,
 		outputDir: options.outputDir,
+		signal: options.signal,
 		concurrency: options.concurrency,
 		checkDefinitions: options.checkDefinitions,
 		executionPolicy: options.executionPolicy,
@@ -311,7 +351,7 @@ async function rescanAllWriters(store: ReviewPanelStateStore, outputDir: string)
 async function finalizeWithWriterRescan(
 	store: ReviewPanelStateStore,
 	outputDir: string,
-	options: Pick<FinalizeReviewPanelOptions, "hasVerifier" | "reconcile">,
+	options: Pick<FinalizeReviewPanelOptions, "hasVerifier" | "reconcile" | "environmentGaps">,
 ): Promise<ReviewPanelResult> {
 	for (let attempt = 0; attempt < 4; attempt += 1) {
 		const inputDigest = candidateInputDigest(store.state.candidates)
@@ -334,7 +374,13 @@ async function finalizeWithWriterRescan(
 	}
 	// Continually arriving submissions are bounded by the final fallback
 	// publication; anything after its source scan belongs to the next wrap-up.
-	return finalizeReviewPanel({ store, outputDir, contextDir: store.state.contextDir, hasVerifier: false })
+	return finalizeReviewPanel({
+		store,
+		outputDir,
+		contextDir: store.state.contextDir,
+		hasVerifier: false,
+		environmentGaps: options.environmentGaps,
+	})
 }
 
 /** Run a fresh panel. Stage 5 passes parser panel fields directly plus trusted
@@ -553,16 +599,20 @@ export async function runReviewPanel(options: RunReviewPanelOptions): Promise<Re
 			deadline,
 			headroomMs,
 			agent: options.reconciliationAgent ?? options.agent,
-			respectSignal: false,
+			signal: options.signal,
+			respectSignal: true,
 		})
-		const result = await finalizeWithWriterRescan(store, outputDir, verifier)
+		const result = await finalizeWithWriterRescan(store, outputDir, {
+			...verifier,
+			environmentGaps: options.environmentGaps,
+		})
 		await usage.flush()
 		options.onProgress?.(result.progress)
 		return result
 	} finally {
 		try {
 			await store.close()
-			await cleanupWithDeadline(runner, deadline)
+			await cleanupWithDeadline(runner, deadline, options.signal, options.cancellationGraceMs)
 		} finally {
 			try {
 				await usage.flush({ deadline, exitMarginMs: CLEANUP_EXIT_MARGIN_MS })
@@ -602,6 +652,7 @@ export async function wrapUpReviewPanel(options: WrapUpReviewPanelOptions): Prom
 			}
 		}
 	})
+	await recoverReviewWorktrees({ rootDir: options.rootDir, olderThanMs: 0, signal: options.signal })
 	const usage = new ReviewPanelUsageBuffer(options.onChildUsage, options.parentToolCallId, options.onUsageDropped)
 	const runner = await makeRunner({
 		ctx: options.ctx,
@@ -626,14 +677,17 @@ export async function wrapUpReviewPanel(options: WrapUpReviewPanelOptions): Prom
 			signal: options.signal,
 			respectSignal: true,
 		})
-		const result = await finalizeWithWriterRescan(store, outputDir, verifier)
+		const result = await finalizeWithWriterRescan(store, outputDir, {
+			...verifier,
+			environmentGaps: options.environmentGaps,
+		})
 		await usage.flush()
 		options.onProgress?.(result.progress)
 		return result
 	} finally {
 		try {
 			await store.close()
-			await cleanupWithDeadline(runner, deadline)
+			await cleanupWithDeadline(runner, deadline, options.signal, options.cancellationGraceMs)
 		} finally {
 			try {
 				await usage.flush({ deadline, exitMarginMs: CLEANUP_EXIT_MARGIN_MS })

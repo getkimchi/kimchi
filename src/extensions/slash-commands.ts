@@ -15,6 +15,7 @@ export const SLASH_COMMANDS = {
 	ferment: { hint: "Run task in background" },
 	todos: { hint: "Open todo overlay / manage short-lived todo items" },
 	work: { hint: "Show, start, or continue work and link its PRs" },
+	review: { hint: "Review a working tree or branch with a reviewer panel" },
 	branch: { hint: "Branch this session and print a resume command" },
 	processes: { hint: "Inspect running Bash commands and their live output" },
 	compact: { hint: "Compact context window" },

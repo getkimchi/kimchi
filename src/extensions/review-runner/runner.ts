@@ -4,6 +4,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { type RunOptions, type RunResult, runAgent, type ToolActivity } from "../agents/manager/agent-runner.js"
 import type { LifetimeUsage } from "../agents/manager/usage.js"
 import type { SubagentType, ThinkingLevel } from "../agents/personas/types.js"
+import {
+	createReconciliationSubmissionExtension,
+	REVIEW_RECONCILIATION_TOOL,
+} from "../review-panel/reconciliation-tool.js"
+import type { SemanticReconciliation } from "../review-panel/types.js"
 import { createReviewSubmitExtension } from "../review-submit/index.js"
 import { DEFAULT_WRITER_LIMIT } from "../review-submit/store.js"
 import type { ResolvedReviewTarget } from "../review-targets/types.js"
@@ -49,6 +54,8 @@ export interface ReviewAgentResult extends RunResult {
 	writer: string
 	worktree: ReviewWorktree
 	execution: ReviewExecutionController
+	/** Structured output when a verifier uses submit_reconciliation. */
+	reconciliation?: SemanticReconciliation
 }
 
 export type ReviewAgentSpawner = (request: {
@@ -184,7 +191,7 @@ export class ReviewRunner {
 		const signal = combinedSignal(this.options.signal, options.signal, controller.signal)
 		try {
 			const worktree = await this.worktrees.getWorktree(options.id, { kind, revision: "head" })
-			const run = this.spawnInWorktree(options, worktree, signal)
+			const run = this.spawnInWorktree(options, worktree, signal, "verifier")
 			this.activeRuns.set(options.id, run)
 			return await run
 		} finally {
@@ -203,10 +210,13 @@ export class ReviewRunner {
 		options: SpawnReviewerOptions,
 		worktree: ReviewWorktree,
 		signal: AbortSignal | undefined,
+		kind?: "verifier",
 	): Promise<ReviewAgentResult> {
+		const reconciliationBridge: { value?: SemanticReconciliation } = {}
 		const execution = createReviewExecutionController({
 			mode: reviewExecutionMode(this.options.executionPolicy?.mode),
 			worktree,
+			executionGroup: resolve(this.options.outputDir),
 			...(this.options.executionPolicy?.networkBoundary !== undefined
 				? { networkBoundary: this.options.executionPolicy.networkBoundary }
 				: {}),
@@ -229,7 +239,8 @@ export class ReviewRunner {
 			inheritContext: false,
 			isolateProjectConfiguration: true,
 			reviewExecution: execution,
-			additionalToolNames: REVIEW_CHILD_TOOL_NAMES,
+			additionalToolNames:
+				kind === "verifier" ? [...REVIEW_CHILD_TOOL_NAMES, REVIEW_RECONCILIATION_TOOL] : REVIEW_CHILD_TOOL_NAMES,
 			description: options.description ?? `Review writer ${options.id}`,
 			extensionFactories: [
 				createReviewSubmitExtension(writerContext),
@@ -240,6 +251,7 @@ export class ReviewRunner {
 						checks: this.checkQueue,
 						writer: options.id,
 					}),
+				...(kind === "verifier" ? [createReconciliationSubmissionExtension(reconciliationBridge)] : []),
 			],
 		}
 		const result = await (this.options.spawnAgent ?? defaultSpawner)({
@@ -248,7 +260,13 @@ export class ReviewRunner {
 			prompt: options.prompt,
 			options: spawnOptions,
 		})
-		return { ...result, writer: options.id, worktree, execution }
+		return {
+			...result,
+			writer: options.id,
+			worktree,
+			execution,
+			...(reconciliationBridge.value === undefined ? {} : { reconciliation: reconciliationBridge.value }),
+		}
 	}
 
 	beginWrapUp = (): void => {

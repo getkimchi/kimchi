@@ -244,4 +244,33 @@ require('node:fs').writeFileSync('installed', 'yes')`,
 		expect(environment?.GOPROXY).toBe(process.env.GOPROXY)
 		expect(approve).not.toHaveBeenCalled()
 	})
+
+	it("serializes actual executions across every controller in one headless panel", async () => {
+		const executionGroup = join(root, "shared-output")
+		const first = createReviewExecutionController({ mode: "headless", worktree, executionGroup })
+		const second = createReviewExecutionController({ mode: "headless", worktree, executionGroup })
+		let active = 0
+		let maximumActive = 0
+		const operations: BashOperations = {
+			exec: async () => {
+				active += 1
+				maximumActive = Math.max(maximumActive, active)
+				await new Promise((resolvePromise) => setTimeout(resolvePromise, 20))
+				active -= 1
+				return { exitCode: 0 }
+			},
+		}
+		await Promise.all(
+			[first, second].map((controller) =>
+				executeReviewCommand(controller, {
+					command: "fixture-check",
+					cwd: worktree.path,
+					intendedCheck: "panel-wide command limit",
+					worktree,
+					operations,
+				}),
+			),
+		)
+		expect(maximumActive).toBe(1)
+	})
 })

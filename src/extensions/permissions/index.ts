@@ -83,6 +83,7 @@ import {
 import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js"
 import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import {
+	isReviewResultSubmissionTool,
 	type ReviewAuthorizationResult,
 	type ReviewPermissionPolicy,
 	reviewApprovalPresentation,
@@ -2221,6 +2222,12 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				}
 
 				if (mode === "plan") {
+					// Review result submissions are coordinator-owned output, not worktree
+					// files or scripts. Other review tools (run_review_*) remain gated.
+					if (options.role === "worker" && options.reviewExecution && isReviewResultSubmissionTool(toolName)) {
+						emitToolDecision(pi, event, mode, "accept", "preapproved")
+						return undefined
+					}
 					if (!isPlanModeTool(event.toolName)) {
 						emitToolDecision(pi, event, mode, "reject", "plan_gate")
 						return {
