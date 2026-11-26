@@ -15,14 +15,11 @@ it("leaves Vitest config unchanged when Allure reporting is not requested", () =
 	expect(withAllureReporter(config, "")).toBe(config)
 })
 
-it("adds the official Allure setup and preserves existing Vitest setup when requested", () => {
+it("adds JUnit output without registering the native Allure runner or setup", () => {
 	const config = defineConfig({ test: { setupFiles: ["./tests/setup/existing.ts"] } })
 	const enabled = withAllureReporter(config, "allure-results/unit")
-	expect(enabled.test?.setupFiles).toEqual(["./tests/setup/existing.ts", "allure-vitest/setup"])
-	expect(enabled.test?.reporters).toEqual([
-		"default",
-		["allure-vitest/reporter", { resultsDir: "allure-results/unit" }],
-	])
+	expect(enabled.test?.setupFiles).toEqual(["./tests/setup/existing.ts"])
+	expect(enabled.test?.reporters).toEqual(["default", ["junit", { outputFile: "allure-results/unit/junit.xml" }]])
 })
 
 it.each([
@@ -46,7 +43,9 @@ it.each([
 	expect(target.env).toMatchObject({
 		ALLURE_ENDPOINT: "https://castai.testops.cloud",
 		ALLURE_PROJECT_ID: githubExpression("vars.ALLURE_PROJECT_ID"),
-		ALLURE_RESULTS: resultsDir,
+		ALLURE_RESULTS: githubExpression(
+			`contains(fromJSON('["push","merge_group"]'), github.event_name) && '${resultsDir}' || ''`,
+		),
 		ALLURE_CONTINUE_ON_ERROR: "true",
 		ALLURE_UPLOAD_ENABLED: githubExpression(`contains(fromJSON('["push","merge_group"]'), github.event_name)`),
 		ALLURE_RUN_KIND: githubExpression(

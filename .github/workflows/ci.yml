@@ -146,7 +146,7 @@ jobs:
     env:
       ALLURE_ENDPOINT: https://castai.testops.cloud
       ALLURE_PROJECT_ID: ${{ vars.ALLURE_PROJECT_ID }}
-      ALLURE_RESULTS: allure-results/vitest
+      ALLURE_RESULTS: ${{ contains(fromJSON('["push","merge_group"]'), github.event_name) && 'allure-results/vitest' || '' }}
       ALLURE_TOKEN_AVAILABLE: ${{ secrets.ALLURE_TOKEN != '' }}
       ALLURE_CONTINUE_ON_ERROR: "true"
       ALLURE_UPLOAD_ENABLED: ${{ contains(fromJSON('["push","merge_group"]'), github.event_name) }}
