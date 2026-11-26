@@ -2224,7 +2224,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				if (mode === "plan") {
 					// Review result submissions are coordinator-owned output, not worktree
 					// files or scripts. Other review tools (run_review_*) remain gated.
-					if (options.role === "worker" && isReviewResultSubmissionTool(toolName)) {
+					if (options.role === "worker" && options.reviewExecution && isReviewResultSubmissionTool(toolName)) {
 						emitToolDecision(pi, event, mode, "accept", "preapproved")
 						return undefined
 					}
