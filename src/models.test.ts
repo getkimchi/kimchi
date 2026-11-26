@@ -1786,6 +1786,29 @@ describe("model thinking levels registry (/model table THINKING column)", () => 
 		expect(byId("gpt-5.1")?.thinkingLevelMap).toMatchObject({ off: null })
 	})
 
+	it("round-trips Effort search aliases and other-virtual identity through discovery and the cache", async () => {
+		const family = {
+			...(KIMI as Record<string, unknown>),
+			slug: "family",
+			display_name: "Family alias",
+			search_aliases: ["family", "router"],
+			virtual: "other",
+		}
+		fetchOnce([family])
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const cached = JSON.parse(readFileSync(modelsJsonPath, "utf-8")).providers["kimchi-dev"].models[0]
+		expect(cached).toMatchObject({ id: "family", searchAliases: ["family", "router"], virtual: "other" })
+		vi.restoreAllMocks()
+
+		const result = await updateModelsConfig(modelsJsonPath, "")
+		expect(result.models[0]).toMatchObject({
+			slug: "family",
+			search_aliases: ["family", "router"],
+			virtual: "other",
+		})
+	})
+
 	it("round-trips thinking_levels onto the cached ModelMetadata", async () => {
 		fetchOnce([KIMI, MINIMAX])
 		await updateModelsConfig(modelsJsonPath, "test-key")

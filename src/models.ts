@@ -203,6 +203,9 @@ export interface ModelMetadata {
 	/** Optional human-facing description from the models endpoint; shown in the
 	 *  /model selector's DESCRIPTION column. Absent until the backend sends it. */
 	description?: string
+	/** Optional Studio search aliases and non-Auto virtual identity for Effort row metadata. */
+	search_aliases?: string[]
+	virtual?: "other"
 	/** Curation state from the models endpoint — tri-state: omitted for
 	 *  uncurated models (clients must not infer levels), the explicit empty
 	 *  array for curated models whose thinking offers no distinct levels
@@ -332,6 +335,9 @@ export interface PiModelConfig {
 	 *  offline cache round-trip keeps it; pi's loader ignores the extra key
 	 *  (verified: ModelConfig tolerates unknown model fields). */
 	description?: string
+	/** Optional Studio search aliases and virtual-model identity supplied by model configuration. */
+	searchAliases?: string[]
+	virtual?: "other"
 	/** Curation state from the models endpoint — tri-state, persisted for the
 	 *  offline cache round-trip: undefined for uncurated models, the explicit
 	 *  empty array for curated-none ("thinking exists but offers no distinct
@@ -419,6 +425,8 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		...(responsesApi && { api: isChatgpt ? ("openai-codex-responses" as const) : ("openai-responses" as const) }),
 		...(m.provider_name?.trim() ? { providerName: m.provider_name.trim() } : {}),
 		...(m.description?.trim() ? { description: m.description.trim() } : {}),
+		...(m.search_aliases?.length ? { searchAliases: [...m.search_aliases] } : {}),
+		...(m.virtual ? { virtual: m.virtual } : {}),
 		...(curatedLevels && { thinkingLevels: curatedLevels }),
 		...(effectiveCompat && { compat: effectiveCompat }),
 		...(thinkingLevelMap && { thinkingLevelMap }),
@@ -523,6 +531,8 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 		is_serverless: true,
 		limits: { context_window: m.contextWindow, max_output_tokens: m.maxTokens },
 		...(m.description ? { description: m.description } : {}),
+		...(m.searchAliases?.length ? { search_aliases: [...m.searchAliases] } : {}),
+		...(m.virtual ? { virtual: m.virtual } : {}),
 		...(m.thinkingLevels !== undefined ? { thinking_levels: m.thinkingLevels } : {}),
 	}
 }
@@ -579,6 +589,26 @@ export function registerModelDescription(key: string, description: string): void
 
 export function getModelDescription(key: string): string | undefined {
 	return modelDescriptionRegistry().get(key)
+}
+
+type ModelEffortConfig = Pick<PiModelConfig, "searchAliases" | "virtual">
+type ModelEffortConfigRegistry = Map<string, ModelEffortConfig>
+
+function modelEffortConfigRegistry(): ModelEffortConfigRegistry {
+	const globals = process as typeof process & { __kimchiModelEffortConfig?: ModelEffortConfigRegistry }
+	if (!(globals.__kimchiModelEffortConfig instanceof Map)) globals.__kimchiModelEffortConfig = new Map()
+	return globals.__kimchiModelEffortConfig
+}
+
+/** Search aliases survive Pi's known-key model projection through the model-info registry. */
+export function getModelSearchAliases(key: string): string[] | undefined {
+	const aliases = modelEffortConfigRegistry().get(key)?.searchAliases
+	return aliases ? [...aliases] : undefined
+}
+
+/** Non-Auto virtual identity survives the same model-registry projection. */
+export function getModelVirtualIdentity(key: string): PiModelConfig["virtual"] {
+	return modelEffortConfigRegistry().get(key)?.virtual
 }
 
 /** @internal — test hook clearing the process-global registry. */
@@ -665,7 +695,14 @@ export function registerModelInfoFromProviders(
 	providers: Record<
 		string,
 		{
-			models?: Array<{ id: string; description?: string; thinkingLevels?: ModelThinkingLevel[]; providerName?: string }>
+			models?: Array<{
+				id: string
+				description?: string
+				thinkingLevels?: ModelThinkingLevel[]
+				providerName?: string
+				searchAliases?: string[]
+				virtual?: "other"
+			}>
 		}
 	>,
 ): void {
@@ -680,6 +717,14 @@ export function registerModelInfoFromProviders(
 			// is absent (uncurated).
 			if (Array.isArray(model.thinkingLevels)) registerModelThinkingLevels(key, model.thinkingLevels)
 			else modelThinkingLevelsRegistry().delete(key)
+			if (model.searchAliases !== undefined || model.virtual !== undefined) {
+				modelEffortConfigRegistry().set(key, {
+					...(model.searchAliases !== undefined ? { searchAliases: [...model.searchAliases] } : {}),
+					...(model.virtual !== undefined ? { virtual: model.virtual } : {}),
+				})
+			} else {
+				modelEffortConfigRegistry().delete(key)
+			}
 		}
 	}
 }

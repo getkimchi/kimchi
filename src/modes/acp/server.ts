@@ -175,7 +175,7 @@ import {
 	readSessionEffortSelections,
 	sessionAppModeFromMeta,
 } from "../../model-effort.js"
-import { applyOrganizationHeader, updateModelsConfig } from "../../models.js"
+import { applyOrganizationHeader, getModelDescription, updateModelsConfig } from "../../models.js"
 import { oauthConfigForRegion, ssoAvailableRegions } from "../../oauth-config.js"
 import { clearPiAuth, syncOAuthCredentialToKimchiProviders, syncPiAuth } from "../../pi-auth.js"
 import { clearProjectScopeTrust, setProjectScopeTrusted } from "../../project-scope-trust.js"
@@ -248,6 +248,12 @@ import { SsoFlowManager, type SsoFlowManagerDeps, ssoError } from "./ext-methods
 import { handleSsoCredential } from "./ext-methods/sso-credential.js"
 import { handleSteering } from "./ext-methods/steering.js"
 import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelMeta } from "./model-attribution.js"
+import {
+	buildModelEffortMeta,
+	configuredModelDescription,
+	type ModelEffortMetadataContext,
+	modelVirtualIdentity,
+} from "./model-effort-metadata.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
@@ -961,7 +967,12 @@ export class KimchiAcpAgent {
 			const sessionId = session.sessionId
 			setSnapshotArtifactsOptIn(session.sessionManager, getClientOptedIntoArtifacts(this.clientCapabilities))
 			const uiContext = this.createUiContext(session)
-			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
+			ownFlagController = registerPermissionFlagController(
+				session,
+				initialMode,
+				(params) => this.send(params),
+				() => buildConfigOptions(record, initialMode.mode, getClientOptedIntoModelEffort(this.clientCapabilities)),
+			)
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
 			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
@@ -1013,7 +1024,11 @@ export class KimchiAcpAgent {
 			this.scheduleProjectTrustUpdate(sessionId)
 
 			this.restoreModelEffort(record)
-			const configOptions = buildConfigOptions(session, initialMode.mode)
+			const configOptions = buildConfigOptions(
+				record,
+				initialMode.mode,
+				getClientOptedIntoModelEffort(this.clientCapabilities),
+			)
 			// Seed the tracker with what the client is about to receive, so the
 			// first message_start only re-publishes when the router's pick has
 			// actually changed the label.
@@ -1129,7 +1144,11 @@ export class KimchiAcpAgent {
 				throw RequestError.invalidParams(undefined, `unknown config option ${params.configId}`)
 		}
 		return {
-			configOptions: buildConfigOptions(record.session, this.getInitialPermissionMode(record.session).mode),
+			configOptions: buildConfigOptions(
+				record,
+				this.getInitialPermissionMode(record.session).mode,
+				getClientOptedIntoModelEffort(this.clientCapabilities),
+			),
 		}
 	}
 
@@ -1164,7 +1183,7 @@ export class KimchiAcpAgent {
 		}
 		const currentRef = record.session.model ? refFromModel(record.session.model) : undefined
 		const target = findModelByRef(getSessionModelRegistry(record.session), params.modelId)
-		if (!target || isAutoRoutedModel(target)) {
+		if (!target || modelVirtualIdentity(target)) {
 			throw RequestError.invalidParams(undefined, `model not available for Effort selection: ${params.modelId}`)
 		}
 		const selection = thinkingSelection(
@@ -1191,7 +1210,12 @@ export class KimchiAcpAgent {
 			)
 		}
 		this.doSetThinkingLevel(record, effort)
-		const configOptions = buildConfigOptions(record.session, this.getInitialPermissionMode(record.session).mode)
+		const configOptions = () =>
+			buildConfigOptions(
+				record,
+				this.getInitialPermissionMode(record.session).mode,
+				getClientOptedIntoModelEffort(this.clientCapabilities),
+			)
 		try {
 			writeModelEffortDefault(appMode, params.modelId, effort)
 		} catch (error) {
@@ -1200,9 +1224,9 @@ export class KimchiAcpAgent {
 				error,
 			)
 			// Retain the applied state, but let the client distinguish partial persistence failure.
-			return { configOptions, persistenceFailed: true }
+			return { configOptions: configOptions(), persistenceFailed: true }
 		}
-		return { configOptions }
+		return { configOptions: configOptions() }
 	}
 
 	/** Apply a reasoning_effort set request; the value must be one of the
@@ -1212,6 +1236,9 @@ export class KimchiAcpAgent {
 		// The option is not advertised without a model, so a set in that state is invalid.
 		if (!session.model) {
 			throw RequestError.invalidParams(undefined, "no model is selected for this session")
+		}
+		if (getClientOptedIntoModelEffort(this.clientCapabilities) && modelVirtualIdentity(session.model)) {
+			throw RequestError.invalidParams(undefined, "routed virtual models have no session Effort value")
 		}
 		const selection = thinkingSelection(session.model)
 		if (selection.mode !== "levels" || selection.selectable.length === 0) {
@@ -1224,7 +1251,11 @@ export class KimchiAcpAgent {
 			)
 		}
 		session.setThinkingLevel(value)
-		if (record.appMode && getClientOptedIntoModelEffort(this.clientCapabilities) && !isAutoRoutedModel(session.model)) {
+		if (
+			record.appMode &&
+			getClientOptedIntoModelEffort(this.clientCapabilities) &&
+			!modelVirtualIdentity(session.model)
+		) {
 			const modelId = refFromModel(session.model)
 			record.effortByModel.set(modelId, value)
 			session.sessionManager.appendCustomEntry(MODEL_EFFORT_SELECTION_ENTRY_TYPE, { modelId, value })
@@ -1237,7 +1268,7 @@ export class KimchiAcpAgent {
 		if (!record.appMode || !getClientOptedIntoModelEffort(this.clientCapabilities)) return
 		const { session } = record
 		const model = session.model
-		if (!model || isAutoRoutedModel(model)) return
+		if (!model || modelVirtualIdentity(model)) return
 		const selection = thinkingSelection(model)
 		if (selection.mode !== "levels" || selection.selectable.length === 0) return
 
@@ -1293,7 +1324,11 @@ export class KimchiAcpAgent {
 			sessionId,
 			update: {
 				sessionUpdate: "config_option_update",
-				configOptions: buildConfigOptions(session, this.getInitialPermissionMode(session).mode),
+				configOptions: buildConfigOptions(
+					record,
+					this.getInitialPermissionMode(session).mode,
+					getClientOptedIntoModelEffort(this.clientCapabilities),
+				),
 			},
 		})
 		return value
@@ -1363,7 +1398,11 @@ export class KimchiAcpAgent {
 				this.scheduleAvailableCommandsUpdate(sessionId)
 				this.scheduleProjectTrustUpdate(sessionId)
 
-				const configOptions = buildConfigOptions(existing.session, this.getInitialPermissionMode(existing.session).mode)
+				const configOptions = buildConfigOptions(
+					existing,
+					this.getInitialPermissionMode(existing.session).mode,
+					getClientOptedIntoModelEffort(this.clientCapabilities),
+				)
 				return { response: { configOptions }, publication: this.subagentRegistry.complete(sessionId, recovery) }
 			}
 			const response = await this.loadSessionFresh(params, replayHistory)
@@ -1408,7 +1447,12 @@ export class KimchiAcpAgent {
 			setSnapshotArtifactsOptIn(session.sessionManager, getClientOptedIntoArtifacts(this.clientCapabilities))
 
 			const uiContext = this.createUiContext(session)
-			ownFlagController = registerPermissionFlagController(session, initialMode, (params) => this.send(params))
+			ownFlagController = registerPermissionFlagController(
+				session,
+				initialMode,
+				(params) => this.send(params),
+				() => buildConfigOptions(record, initialMode.mode, getClientOptedIntoModelEffort(this.clientCapabilities)),
+			)
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
 			// The unsubscribe placeholder is replaced after bindAcpExtensions so no
@@ -1470,7 +1514,11 @@ export class KimchiAcpAgent {
 			this.scheduleProjectTrustUpdate(sessionId)
 
 			this.restoreModelEffort(record)
-			const configOptions = buildConfigOptions(session, initialMode.mode)
+			const configOptions = buildConfigOptions(
+				record,
+				initialMode.mode,
+				getClientOptedIntoModelEffort(this.clientCapabilities),
+			)
 			await this.subagentRegistry.replay(session, replayHistory)
 			// Same seeding as newSession (see there) — a resumed Auto session
 			// hydrates its pick before this point, so the label is already final.
@@ -3361,7 +3409,11 @@ export class KimchiAcpAgent {
 		// Child snapshots have one authoritative publisher which also includes
 		// routed physical reasoning and the child's own permission state.
 		if (this.subagentRegistry.has(sessionId)) return
-		const configOptions = buildConfigOptions(entry.session, this.getInitialPermissionMode(entry.session).mode)
+		const configOptions = buildConfigOptions(
+			entry,
+			this.getInitialPermissionMode(entry.session).mode,
+			getClientOptedIntoModelEffort(this.clientCapabilities),
+		)
 		const autoName = autoOptionName(configOptions)
 		if (!autoName || autoName === entry.lastModelOptionName) return
 		entry.lastModelOptionName = autoName
@@ -4014,18 +4066,28 @@ function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSel
 	return { value: refFromModel(model), name: baseName, description }
 }
 
-export function buildModelConfigOption(session: AgentSessionModelConfig): SessionConfigOption {
+export function buildModelConfigOption(
+	session: AgentSessionModelConfig,
+	modelEffort?: ModelEffortMetadataContext,
+): SessionConfigOption {
 	const modelRegistry = getSessionModelRegistry(session)
-	// Regular models carry no description today; deprecated ones get the
-	// picker marker (same gating as the session-start toast) so ACP clients
-	// see the deprecation before selecting, mirroring the TUI's /model column.
+	// Registry descriptions join ACP rows only for the negotiated Effort view.
+	// Legacy rows keep their previous marker-only presentation byte-for-byte.
 	const deprecationMarkers = collectDeprecationMarkers(join(loadKimchiConfig().agentConfigDir, "models.json"))
 	const options: SessionConfigSelectOption[] = modelRegistry.getAvailable().map((m) => {
-		if (isAutoRoutedModel(m)) return autoModelOption(m, session.sessionId)
-		const marker = deprecationMarkers.get(m.id)
-		return marker
-			? { value: refFromModel(m), name: m.name, description: marker }
-			: { value: refFromModel(m), name: m.name }
+		let option: SessionConfigSelectOption
+		if (isAutoRoutedModel(m)) {
+			option = autoModelOption(m, session.sessionId)
+		} else {
+			const modelId = refFromModel(m)
+			const marker = deprecationMarkers.get(m.id)
+			const configured = modelEffort ? configuredModelDescription(m) : undefined
+			const description = modelEffort
+				? (getModelDescription(modelId) ?? ([marker, configured].filter(Boolean).join(" ") || undefined))
+				: marker
+			option = { value: modelId, name: m.name, ...(description ? { description } : {}) }
+		}
+		return modelEffort ? { ...option, _meta: buildModelEffortMeta(m, modelEffort) } : option
 	})
 	options.sort((a, b) => a.value.localeCompare(b.value))
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
@@ -4062,15 +4124,21 @@ function isCanonicalThinkingLevel(value: string): value is AgentSession["thinkin
  */
 export type AgentSessionThinkingConfig = Pick<AgentSession, "model" | "thinkingLevel">
 
-export function buildThinkingConfigOption(session: AgentSessionThinkingConfig): SessionConfigOption | null {
+export function buildThinkingConfigOption(
+	session: AgentSessionThinkingConfig,
+	category: "model_config" | "thought_level" = "thought_level",
+): SessionConfigOption | null {
 	if (!session.model) return null
+	// The negotiated routed-row contract has no concrete Effort editor. Keep
+	// legacy clients' existing Auto behavior unchanged.
+	if (category === "model_config" && modelVirtualIdentity(session.model)) return null
 	const selection = thinkingSelection(session.model)
 	if (selection.mode !== "levels" || selection.selectable.length === 0) return null
 	return {
 		id: "reasoning_effort",
 		name: "Reasoning Effort",
 		type: "select",
-		category: "thought_level",
+		category,
 		description: "How much the model reasons before answering. Available levels depend on the selected model.",
 		currentValue: clampToSelection(session.thinkingLevel, selection),
 		options: selection.selectable.map((level) => ({
@@ -4098,10 +4166,24 @@ function autoOptionName(configOptions: SessionConfigOption[]): string | undefine
 	return autoNames.length > 0 ? autoNames.join(" · ") : undefined
 }
 
-function buildConfigOptions(session: AgentSession, defaultMode: PermissionMode): SessionConfigOption[] {
+function buildConfigOptions(
+	record: SessionRecord,
+	defaultMode: PermissionMode,
+	includeModelEffort: boolean,
+): SessionConfigOption[] {
+	const { session } = record
 	const mode = getPermissionMode(session.sessionId)?.mode ?? defaultMode
-	const options = [buildPermissionsConfigOption(mode), buildModelConfigOption(session)]
-	const thinking = buildThinkingConfigOption(session)
+	const modelEffort = includeModelEffort
+		? {
+				appMode: record.appMode,
+				effortByModel: record.effortByModel,
+				currentModel: session.model,
+				currentThinkingLevel: session.thinkingLevel,
+				settingsManager: session.settingsManager,
+			}
+		: undefined
+	const options = [buildPermissionsConfigOption(mode), buildModelConfigOption(session, modelEffort)]
+	const thinking = buildThinkingConfigOption(session, includeModelEffort ? "model_config" : "thought_level")
 	if (thinking) options.push(thinking)
 	return options
 }
@@ -4214,6 +4296,7 @@ function registerPermissionFlagController(
 	session: AgentSession,
 	initialMode: PermissionModeState,
 	send: (params: SessionNotification) => void,
+	buildOptions: () => SessionConfigOption[],
 ): SessionPermissionFlagController {
 	const permissionFlagController = createSessionPermissionFlagController({
 		mode: initialMode,
@@ -4226,7 +4309,7 @@ function registerPermissionFlagController(
 			sessionId: session.sessionId,
 			update: {
 				sessionUpdate: "config_option_update",
-				configOptions: buildConfigOptions(session, initialMode.mode),
+				configOptions: buildOptions(),
 			},
 		})
 	})

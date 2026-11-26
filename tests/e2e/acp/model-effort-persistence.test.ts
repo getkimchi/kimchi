@@ -127,6 +127,22 @@ function currentModel(response: unknown): string | undefined {
 	return options?.find((option) => option.id === "model")?.currentValue
 }
 
+function modelRow(response: unknown, modelId: string): acp.SessionConfigSelectOption {
+	const options = (response as { configOptions?: acp.SessionConfigOption[] }).configOptions
+	const model = options?.find((option) => option.id === "model")
+	if (model?.type !== "select") throw new Error("model select option missing")
+	const row = model.options.find((option) => "value" in option && option.value === modelId)
+	if (!row || !("value" in row)) throw new Error(`model row ${modelId} missing`)
+	return row
+}
+
+function rowEffort(response: unknown, modelId: string): Record<string, unknown> | undefined {
+	const meta = modelRow(response, modelId)._meta?.["kimchi.dev"] as
+		| { modelEffort?: Record<string, unknown> }
+		| undefined
+	return meta?.modelEffort
+}
+
 async function newEffortSession(fixture: AcpFixture, appMode: "chat" | "design" | "code") {
 	return fixture.conn.request("session/new", {
 		cwd: fixture.workDir,
@@ -174,8 +190,17 @@ describe("ACP integration — model Effort persistence", () => {
 		const chat = await newEffortSession(first, "chat")
 		const code = await newEffortSession(first, "code")
 
-		expect(currentEffort(await setFreshEffort(first, chat.sessionId, "chat", ALPHA_REF, "low"))).toBe("low")
-		expect(currentEffort(await setFreshEffort(first, code.sessionId, "code", ALPHA_REF, "high"))).toBe("high")
+		const chatLow = await setFreshEffort(first, chat.sessionId, "chat", ALPHA_REF, "low")
+		expect(currentEffort(chatLow)).toBe("low")
+		expect(rowEffort(chatLow, ALPHA_REF)).toMatchObject({
+			availability: "multiple",
+			levels: ["low", "high", "max"],
+			currentValue: "low",
+			defaultValue: "low",
+		})
+		const codeHigh = await setFreshEffort(first, code.sessionId, "code", ALPHA_REF, "high")
+		expect(currentEffort(codeHigh)).toBe("high")
+		expect(rowEffort(codeHigh, ALPHA_REF)).toMatchObject({ currentValue: "high", defaultValue: "high" })
 		expect(currentEffort(await newEffortSession(first, "chat"))).toBe("low")
 		expect(currentEffort(await newEffortSession(first, "code"))).toBe("high")
 
@@ -220,7 +245,9 @@ describe("ACP integration — model Effort persistence", () => {
 		})
 		expect(currentModel(loaded)).toBe(BETA_REF)
 		expect(currentEffort(loaded)).toBe("high")
-		expect(currentEffort(await selectModel(second, chat.sessionId, ALPHA_REF))).toBe("low")
+		const reselectedAlpha = await selectModel(second, chat.sessionId, ALPHA_REF)
+		expect(currentEffort(reselectedAlpha)).toBe("low")
+		expect(rowEffort(reselectedAlpha, ALPHA_REF)).toMatchObject({ currentValue: "low", defaultValue: "low" })
 
 		const freshCode = await newEffortSession(second, "code")
 		expect(currentEffort(await selectModel(second, freshCode.sessionId, ALPHA_REF))).toBe("high")
@@ -266,17 +293,50 @@ describe("ACP integration — model Effort persistence", () => {
 
 		const chat = await newEffortSession(fixture, "chat")
 		expect(currentEffort(chat)).toBe("low")
+		expect(rowEffort(chat, ALPHA_REF)).toMatchObject({ currentValue: "low", defaultValue: "low" })
 		const chatOptions = chat.configOptions?.find((option) => option.id === "reasoning_effort")
+		expect(chatOptions?.category).toBe("model_config")
 		expect(currentEffort(chat)).toBeOneOf(
 			chatOptions?.type === "select" ? chatOptions.options.map((option) => option.value) : [],
 		)
 
 		const code = await newEffortSession(fixture, "code")
 		expect(currentEffort(code)).toBe("high")
+		expect(rowEffort(code, ALPHA_REF)).toMatchObject({ currentValue: "high", defaultValue: "high" })
 		const codeOptions = code.configOptions?.find((option) => option.id === "reasoning_effort")
 		expect(currentEffort(code)).toBeOneOf(
 			codeOptions?.type === "select" ? codeOptions.options.map((option) => option.value) : [],
 		)
+	})
+
+	it("passes configured aliases and other-virtual identity through the real model registry", async () => {
+		const family = { ...CATALOG[0], slug: "family", displayName: "Family alias" }
+		const fixture = await start({
+			artifactName: "model-effort-configured-virtual",
+			models: [CATALOG[0], family],
+			defaultModel: "alpha",
+			responses: [],
+			clientMeta: MODEL_EFFORT_META,
+			seedHome: (home) => {
+				const path = join(home, ".config", "kimchi", "harness", "models.json")
+				const catalog = JSON.parse(readFileSync(path, "utf-8"))
+				for (const provider of Object.values(catalog.providers) as Array<{ models?: Array<Record<string, unknown>> }>) {
+					const model = provider.models?.find((candidate) => candidate.id === "family")
+					if (model) Object.assign(model, { searchAliases: ["family", "router"], virtual: "other" })
+				}
+				writeFileSync(path, JSON.stringify(catalog, null, "\t"))
+			},
+		})
+
+		const session = await newEffortSession(fixture, "chat")
+
+		expect(rowEffort(session, "fake/family")).toEqual({
+			availability: "routed",
+			currentValue: null,
+			defaultValue: null,
+			virtual: "other",
+			searchAliases: ["family", "router"],
+		})
 	})
 
 	it("keeps legacy behavior for non-opt-in clients without new persistence", async () => {
@@ -291,7 +351,11 @@ describe("ACP integration — model Effort persistence", () => {
 		const session = await newEffortSession(fixture, "chat")
 
 		expect(currentEffort(session)).toBe("high")
-		expect(currentEffort(await setStandardEffort(fixture, session.sessionId, "low"))).toBe("low")
+		expect(modelRow(session, ALPHA_REF)._meta).toBeUndefined()
+		expect(session.configOptions?.find((option) => option.id === "reasoning_effort")?.category).toBe("thought_level")
+		const legacyLow = await setStandardEffort(fixture, session.sessionId, "low")
+		expect(currentEffort(legacyLow)).toBe("low")
+		expect(modelRow(legacyLow, ALPHA_REF)._meta).toBeUndefined()
 		expect(currentEffort(await selectModel(fixture, session.sessionId, BETA_REF))).toBe("high")
 		expect(currentEffort(await selectModel(fixture, session.sessionId, ALPHA_REF))).toBe("high")
 		const turn = await fixture.conn.request("session/prompt", {
