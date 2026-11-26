@@ -145,6 +145,10 @@ export function parseUntrackedFiles(output) {
 	return output.split("\n").filter((path) => path && path !== "node_modules")
 }
 
+export function declaresExpectedFailure(source) {
+	return /^\s*test\.fail(?:\.[A-Za-z]+)?\s*\(/m.test(source)
+}
+
 export async function runFlakyFix({ env = process.env, cwd = process.cwd(), fetchImpl = fetch } = {}) {
 	const started = Date.now()
 	const reportPath = resolve(cwd, requiredEnv(env, "FLAKY_REPORT"))
@@ -154,7 +158,20 @@ export async function runFlakyFix({ env = process.env, cwd = process.cwd(), fetc
 	const baselineRuns = Math.min(runs, 10)
 	const model = env.FLAKY_FIX_MODEL || "kimi-k3.1-pro"
 	const report = JSON.parse(readFileSync(reportPath, "utf8"))
-	const selected = selectFlakyTests(report, { top, only: env.FLAKY_FIX_ONLY })
+	const ranked = selectFlakyTests(report, { top: Math.max(1, report.flaky.length), only: env.FLAKY_FIX_ONLY })
+	const selected = []
+	const skipped = []
+	for (const row of ranked) {
+		const testPath = resolve(cwd, row.testFile ?? row.fullName)
+		if (existsSync(testPath) && declaresExpectedFailure(readFileSync(testPath, "utf8"))) {
+			const reason = "Declared test.fail: an expected failure is a known-bug signal, not a flaky-test candidate."
+			skipped.push({ fullName: row.fullName, reason })
+			console.log(`flaky-fix: skipped ${row.fullName}: ${reason}`)
+			continue
+		}
+		selected.push(row)
+		if (selected.length === top) break
+	}
 	const results = []
 	const usedSlugs = new Set()
 
@@ -163,13 +180,13 @@ export async function runFlakyFix({ env = process.env, cwd = process.cwd(), fetc
 		const slug = uniqueSlug(slugify(row.fullName), usedSlugs)
 		const result = await processFlakyTest({ row, slug, env, cwd, outDir, runs, baselineRuns, model, fetchImpl })
 		results.push(result)
-		writeOutputs({ outDir, reportPath, model, runs, baselineRuns, started, results })
+		writeOutputs({ outDir, reportPath, model, runs, baselineRuns, started, results, skipped })
 	}
-	if (selected.length === 0) writeOutputs({ outDir, reportPath, model, runs, baselineRuns, started, results })
+	if (selected.length === 0) writeOutputs({ outDir, reportPath, model, runs, baselineRuns, started, results, skipped })
 	if (env.GITHUB_STEP_SUMMARY) {
 		appendFileSync(env.GITHUB_STEP_SUMMARY, readFileSync(join(outDir, "flaky-fix.md"), "utf8"))
 	}
-	return { outDir, results }
+	return { outDir, results, skipped }
 }
 
 async function processFlakyTest({ row, slug, env, cwd, outDir, runs, baselineRuns, model, fetchImpl }) {
@@ -475,7 +492,7 @@ function runChecked(command, args, cwd) {
 	}
 }
 
-function writeOutputs({ outDir, reportPath, model, runs, baselineRuns, started, results }) {
+function writeOutputs({ outDir, reportPath, model, runs, baselineRuns, started, results, skipped }) {
 	const document = {
 		generatedAt: new Date().toISOString(),
 		report: reportPath,
@@ -484,6 +501,7 @@ function writeOutputs({ outDir, reportPath, model, runs, baselineRuns, started, 
 		baselineRunsRequested: baselineRuns,
 		durationMs: Date.now() - started,
 		results,
+		skipped,
 	}
 	writeFileSync(join(outDir, "flaky-fix.json"), `${JSON.stringify(document, null, 2)}\n`)
 	const markdown = renderMarkdown(document)
@@ -498,6 +516,8 @@ function renderMarkdown(document) {
 		"",
 	]
 	if (document.results.length === 0) lines.push("No flaky tests selected.", "")
+	for (const skip of document.skipped) lines.push(`- **Skipped ${skip.fullName}:** ${skip.reason}`)
+	if (document.skipped.length > 0) lines.push("")
 	for (const result of document.results) {
 		lines.push(
 			`## ${result.fullName}`,

@@ -4,6 +4,7 @@ const {
 	buildAgentPrompt,
 	buildEvidenceMarkdown,
 	buildPermissionsConfig,
+	declaresExpectedFailure,
 	determineVerdict,
 	parseAgentSummary,
 	parseUntrackedFiles,
@@ -131,6 +132,21 @@ describe("permissions config success cases", () => {
 describe("diff input success cases", () => {
 	it("keeps new source files but excludes the dependency symlink", () => {
 		expect(parseUntrackedFiles("node_modules\nsrc/new-file.ts\n")).toEqual(["src/new-file.ts"])
+	})
+})
+
+describe("expected-failure detection", () => {
+	it.each([
+		'test.fail("known bug", async () => {})',
+		'  test.fail.each(cases)("case", async () => {})',
+	])("detects a source declaration: %s", (source) => {
+		expect(declaresExpectedFailure(source)).toBe(true)
+	})
+
+	it("ignores normal tests, other modifiers, and commented mentions", () => {
+		expect(declaresExpectedFailure('test("normal", async () => {})')).toBe(false)
+		expect(declaresExpectedFailure('test.skip("skipped", async () => {})')).toBe(false)
+		expect(declaresExpectedFailure('// test.fail("comment only")')).toBe(false)
 	})
 })
 
