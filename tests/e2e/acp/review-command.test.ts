@@ -171,7 +171,11 @@ describe("ACP review command", () => {
 			})
 			const sessionId = await newSession(fixture, fixture.workDir)
 			await prompt(fixture, sessionId, "/review")
-			expect(JSON.stringify(fixture.client.extNotifications)).toContain("/review working-tree [--fetch]")
+			const messages = await waitFor(
+				() => JSON.stringify(fixture?.client.extNotifications ?? []),
+				(value) => value.includes("/review working-tree [--fetch]"),
+			)
+			expect(messages).toContain("/review working-tree [--fetch]")
 			expect(fixture.client.permissionRequests).toHaveLength(0)
 			expect(fixture.client.elicitationRequests).toHaveLength(0)
 		},
