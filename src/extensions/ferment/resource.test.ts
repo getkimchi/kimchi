@@ -13,7 +13,6 @@ vi.mock("../../resources/store.js", async (importOriginal) => ({
 
 import * as store from "../../resources/store.js"
 import {
-	FERMENT_LEGACY_RESOURCE_ID,
 	fermentLegacyNotLoadedMessage,
 	fermentLegacyOffMessage,
 	isFermentLegacyEnabled,
@@ -21,6 +20,7 @@ import {
 	markFermentLegacyLoaded,
 	resetFermentLegacyLoadedForTests,
 } from "./resource.js"
+import { FERMENT_LEGACY_RESOURCE_ID } from "./resource-id.js"
 
 const realStore = await vi.importActual<typeof import("../../resources/store.js")>("../../resources/store.js")
 

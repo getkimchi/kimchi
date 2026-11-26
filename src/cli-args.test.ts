@@ -27,7 +27,7 @@ import {
 	resolveBashProcessLimitSeconds,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
-import { FERMENT_LEGACY_RESOURCE_ID } from "./extensions/ferment/resource.js"
+import { FERMENT_LEGACY_RESOURCE_ID } from "./extensions/ferment/resource-id.js"
 import { DANGEROUS_BYPASS_FLAG } from "./extensions/permissions/constants.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { resetOrgPolicyForTests } from "./org-policy.js"

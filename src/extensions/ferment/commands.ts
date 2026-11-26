@@ -31,7 +31,7 @@ import {
 	handleStepAction,
 } from "./progress-overlay.js"
 import { promptEditor } from "./prompt-ui.js"
-import { FERMENT_LEGACY_COMMAND_NAME } from "./resource.js"
+import { FERMENT_LEGACY_COMMAND_NAME } from "./resource-id.js"
 import { restoreFermentWork, resumeFerment } from "./resume.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"

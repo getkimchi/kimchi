@@ -37,11 +37,8 @@ import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { BUILTIN_TOOL_NAMES } from "../agents/personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../agents/personas/default-agents.js"
 import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
-import {
-	FERMENT_LEGACY_RESOURCE_ID,
-	markFermentLegacyLoaded,
-	resetFermentLegacyLoadedForTests,
-} from "../ferment/resource.js"
+import { markFermentLegacyLoaded, resetFermentLegacyLoadedForTests } from "../ferment/resource.js"
+import { FERMENT_LEGACY_RESOURCE_ID } from "../ferment/resource-id.js"
 import { loadRuntimeState } from "../ferment/runtime-state-store.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
