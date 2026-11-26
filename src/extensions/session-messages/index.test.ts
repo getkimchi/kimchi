@@ -272,44 +272,44 @@ describe("session-messages", () => {
 
 	it("holds a message from another permission mode for the receiver's approval", async () => {
 		const dir = tempDir()
-		const strictId = A1
-		const looseId = A2
-		const strict = await startSession(dir, { id: strictId, name: "strict" })
-		const loose = await startSession(dir, { id: looseId, name: "loose" })
-		setPermissionMode(looseId, { mode: "yolo", initiatedBy: "user", source: "runtime" })
+		// a1 stays in default mode; a2 runs in yolo, so their modes differ.
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		const a2 = await startSession(dir, { id: A2, name: "a2" })
+		setPermissionMode(A2, { mode: "yolo", initiatedBy: "user", source: "runtime" })
 		try {
-			vi.mocked(loose.ctx.ui.confirm).mockResolvedValue(true)
-			expect(await strict.run("message_agent", { to: "loose", message: "Delete the cache." })).toContain(
-				"loose [000002] runs in another permission mode, so the message waits up to 5 minutes for its user's approval.",
+			vi.mocked(a2.ctx.ui.confirm).mockResolvedValue(true)
+			expect(await a1.run("message_agent", { to: "a2", message: "Delete the cache." })).toContain(
+				"a2 [000002] runs in another permission mode, so the message waits up to 5 minutes for its user's approval.",
 			)
-			expect(loose.ctx.ui.confirm).toHaveBeenCalledWith(
-				"Message from strict [000001]",
+			expect(a2.ctx.ui.confirm).toHaveBeenCalledWith(
+				"Message from a1 [000001]",
 				expect.stringContaining("runs in default mode and this one in yolo"),
 				{ timeout: 5 * 60_000 },
 			)
-			await vi.waitFor(() => expect(loose.harness.sendMessage).toHaveBeenCalledTimes(1))
+			await vi.waitFor(() => expect(a2.harness.sendMessage).toHaveBeenCalledTimes(1))
 		} finally {
-			unregisterSessionPermissionFlagController(looseId)
-			clearPermissionModeEnv(looseId)
+			unregisterSessionPermissionFlagController(A2)
+			clearPermissionModeEnv(A2)
 		}
 	})
 
 	it("asks about a held message only after the permission prompt on screen is answered", async () => {
 		const dir = tempDir()
-		const strict = await startSession(dir, { id: A1, name: "strict" })
-		const loose = await startSession(dir, { id: A2, name: "loose" })
+		// a1 stays in default mode; a2 runs in yolo, so their modes differ.
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		const a2 = await startSession(dir, { id: A2, name: "a2" })
 		setPermissionMode(A2, { mode: "yolo", initiatedBy: "user", source: "runtime" })
 		// Pi has one dialog slot: a question shown now would replace the prompt and orphan its tool call.
 		const prompts = new PromptQueue()
-		setSessionPromptQueue(loose.harness.api.events, prompts)
+		setSessionPromptQueue(a2.harness.api.events, prompts)
 		let answer = (_approved: boolean) => {}
 		void prompts.enqueue(() => new Promise<boolean>((resolve) => (answer = resolve)))
 		try {
-			await strict.run("message_agent", { to: "loose", message: "Delete the cache." })
+			await a1.run("message_agent", { to: "a2", message: "Delete the cache." })
 			await new Promise((resolve) => setTimeout(resolve, 20))
-			expect(loose.ctx.ui.confirm).not.toHaveBeenCalled()
+			expect(a2.ctx.ui.confirm).not.toHaveBeenCalled()
 			answer(true)
-			await vi.waitFor(() => expect(loose.ctx.ui.confirm).toHaveBeenCalledTimes(1))
+			await vi.waitFor(() => expect(a2.ctx.ui.confirm).toHaveBeenCalledTimes(1))
 		} finally {
 			unregisterSessionPermissionFlagController(A2)
 			clearPermissionModeEnv(A2)
@@ -318,45 +318,44 @@ describe("session-messages", () => {
 
 	it("tells the sender when its held message is declined or expires", async () => {
 		const dir = tempDir()
-		const strictId = A1
-		const looseId = A2
-		const strict = await startSession(dir, { id: strictId, name: "strict" })
-		const loose = await startSession(dir, { id: looseId, name: "loose" })
-		setPermissionMode(looseId, { mode: "yolo", initiatedBy: "user", source: "runtime" })
+		// a1 stays in default mode; a2 runs in yolo, so their modes differ.
+		const a1 = await startSession(dir, { id: A1, name: "a1" })
+		const a2 = await startSession(dir, { id: A2, name: "a2" })
+		setPermissionMode(A2, { mode: "yolo", initiatedBy: "user", source: "runtime" })
 		try {
-			await strict.run("message_agent", { to: "loose", message: "Delete the cache." })
+			await a1.run("message_agent", { to: "a2", message: "Delete the cache." })
 			await vi.waitFor(() =>
-				expect(strict.harness.sendMessage).toHaveBeenCalledWith(
+				expect(a1.harness.sendMessage).toHaveBeenCalledWith(
 					{
 						customType: CROSS_SESSION_NOTICE_TYPE,
-						content: "Your message to loose [000002] was not delivered: its user declined it.",
+						content: "Your message to a2 [000002] was not delivered: its user declined it.",
 						display: true,
-						details: { title: "Not delivered to loose [000002]", text: "Its user declined it." },
+						details: { title: "Not delivered to a2 [000002]", text: "Its user declined it." },
 					},
 					STEER_AND_WAKE,
 				),
 			)
-			expect(loose.harness.sendMessage).not.toHaveBeenCalled()
+			expect(a2.harness.sendMessage).not.toHaveBeenCalled()
 
 			// The dialog's own timeout answers no as well: five minutes later the notice says it expired.
-			vi.mocked(loose.ctx.ui.confirm).mockImplementationOnce(async () => {
+			vi.mocked(a2.ctx.ui.confirm).mockImplementationOnce(async () => {
 				const shown = Date.now()
 				vi.spyOn(Date, "now").mockReturnValue(shown + 5 * 60_000)
 				return false
 			})
-			await strict.run("message_agent", { to: "loose", message: "Delete the cache, please." })
+			await a1.run("message_agent", { to: "a2", message: "Delete the cache, please." })
 			await vi.waitFor(() =>
-				expect(strict.harness.sendMessage).toHaveBeenLastCalledWith(
+				expect(a1.harness.sendMessage).toHaveBeenLastCalledWith(
 					expect.objectContaining({
-						content: "Your message to loose [000002] was not delivered: its user did not answer within 5 minutes.",
+						content: "Your message to a2 [000002] was not delivered: its user did not answer within 5 minutes.",
 					}),
 					STEER_AND_WAKE,
 				),
 			)
 		} finally {
 			vi.restoreAllMocks()
-			unregisterSessionPermissionFlagController(looseId)
-			clearPermissionModeEnv(looseId)
+			unregisterSessionPermissionFlagController(A2)
+			clearPermissionModeEnv(A2)
 		}
 	})
 

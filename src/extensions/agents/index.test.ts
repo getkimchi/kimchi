@@ -1557,7 +1557,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 describe("messageSubagent (message_agent to a subagent)", () => {
-	function spawnRecord(pi: ReturnType<typeof makeMockPi>, parentSessionId = "test-session", fresh = true) {
+	function spawnRecord(pi: ReturnType<typeof makeMockPi>, parentSessionId = "a1", fresh = true) {
 		// Mock managers reuse IDs, so earlier tests' managers must not answer for this one.
 		if (fresh) clearSubagentMessengersForTest()
 		agentsExtension(pi)
@@ -1586,8 +1586,8 @@ describe("messageSubagent (message_agent to a subagent)", () => {
 		const pi = makeMockPi()
 		const { id, acpClient } = spawnRecord(pi)
 
-		expect(listSubagents("test-session").map((record) => record.id)).toEqual([id])
-		expect(listSubagents("another-session")).toEqual([])
+		expect(listSubagents("a1").map((record) => record.id)).toEqual([id])
+		expect(listSubagents("a2")).toEqual([])
 		expect(await messageSubagent(id, "also list the tests")).toContain(`Steering message sent to agent ${id}`)
 		expect((acpClient.steer.mock.calls[0] as unknown[])[0]).toContain("also list the tests")
 	})
@@ -1617,7 +1617,7 @@ describe("messageSubagent (message_agent to a subagent)", () => {
 	it("keeps each session's subagents apart when one process serves several, as ACP does", async () => {
 		const first = spawnRecord(makeMockPi())
 		const secondPi = makeMockPi()
-		spawnRecord(secondPi, "other-session", false)
+		spawnRecord(secondPi, "a2", false)
 		const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
 		const { id: _, ...sibling } = manager.getRecord("mock-0")
 		const second = manager.spawn(secondPi, undefined, "Explore", "prompt", {
@@ -1625,8 +1625,8 @@ describe("messageSubagent (message_agent to a subagent)", () => {
 			description: "check the docs",
 		})
 
-		expect(listSubagents("test-session").map((record) => record.id)).toEqual([first.id])
-		expect(listSubagents("other-session").map((record) => record.id)).toEqual(["mock-0", second])
+		expect(listSubagents("a1").map((record) => record.id)).toEqual([first.id])
+		expect(listSubagents("a2").map((record) => record.id)).toEqual(["mock-0", second])
 		expect(await messageSubagent(second, "and the README")).toContain(`Steering message sent to agent ${second}`)
 		expect(first.acpClient.steer).not.toHaveBeenCalled()
 	})
