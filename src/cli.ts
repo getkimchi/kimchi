@@ -163,6 +163,7 @@ import remoteRunExtension from "./extensions/remote-run/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import { createRunOutcomeTracker } from "./extensions/run-outcome.js"
 import sessionMemoryStatsExtension from "./extensions/session-memory-stats.js"
+import sessionMessagesExtension from "./extensions/session-messages/index.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
@@ -1109,6 +1110,7 @@ async function cliMain(): Promise<void> {
 				submitTimingExtension,
 				llmResponseLogExtension,
 				activityExtension,
+				sessionMessagesExtension,
 				infrastructureErrorTracker.extension,
 				runOutcomeTracker.extension,
 				infrastructureBreakerExtension,

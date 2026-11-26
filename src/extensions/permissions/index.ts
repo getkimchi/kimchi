@@ -139,7 +139,7 @@ import {
 	releaseTargetForPlanApproval,
 } from "./policy.js"
 import { getPermissionPolicySource, registerPermissionPolicySource } from "./policy-source-registry.js"
-import { PromptQueue } from "./prompt-queue.js"
+import { PromptQueue, setSessionPromptQueue } from "./prompt-queue.js"
 import {
 	type EscalatedCallStatus,
 	MODE_CHANGED_ABORT_ERROR,
@@ -228,6 +228,9 @@ const BUILTIN_ALLOW_TOOL_NAMES = [
 	"codemode",
 	"get_subagent_result",
 	"steer_subagent",
+	// Like steer_subagent, a message changes nothing here; the receiving
+	// session gates whatever it does with its own permission mode.
+	"send_message",
 	// Plan-review control plane: writes the plan artifact and opens the review
 	// flow — there is nothing for permissions to gate here.
 	SUBMIT_PLAN_TOOL_NAME,
@@ -555,6 +558,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	 *  replace the first and orphan its promise. Escalated subagent prompts
 	 *  (requestPermission on the session's registered sink) share the queue. */
 	const promptQueue = new PromptQueue()
+	setSessionPromptQueue(pi.events, promptQueue)
 	const dialogActivity = isWorker
 		? undefined
 		: createBlockedDialogActivity(pi.events, () => permissionPromptDepth.get(pi.events) ?? 0)

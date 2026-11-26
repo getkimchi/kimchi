@@ -139,3 +139,16 @@ export class PromptQueue {
 function defaultAbortReason(): Error {
 	return new Error("Permission prompt aborted")
 }
+
+/** Each session's queue, by its event bus (as permissionPromptDepth is keyed), so other extensions' dialogs wait too. */
+const sessionQueues = new WeakMap<object, PromptQueue>()
+
+/** The permissions extension registers its session's queue here. */
+export function setSessionPromptQueue(events: object, queue: PromptQueue): void {
+	sessionQueues.set(events, queue)
+}
+
+/** Shows a dialog only after the session's permission prompts and other queued dialogs are done. */
+export function inDialogTurn<T>(events: object, dialog: () => Promise<T>): Promise<T> {
+	return sessionQueues.get(events)?.enqueue(dialog) ?? dialog()
+}

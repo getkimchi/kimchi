@@ -115,6 +115,12 @@ describe("composeAvailableCommands", () => {
 			"language",
 			"pr-watch",
 		])
+		expect(composeAvailableCommands(new Map(), false, true).map((c) => c.name)).toEqual([
+			"bug",
+			"compact",
+			"language",
+			"session-messages",
+		])
 	})
 })
 
