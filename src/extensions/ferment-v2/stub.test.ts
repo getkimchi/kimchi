@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { setResourceOverride } from "../../resources/store.js"
+import { isInCommandReplyScope } from "../../shared/command-reply-scope.js"
 import { createCommandContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { fermentNotLoadedMessage } from "./availability.js"
@@ -50,6 +51,21 @@ describe("Ferment stub", () => {
 		)
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 		expect(harness.registerTool).not.toHaveBeenCalled()
+	})
+
+	it("sends its reply inside a command reply scope for the session, so ACP shows it", async () => {
+		setResourceOverride(FERMENT_V2_RESOURCE_ID, false)
+		const { command } = setup()
+		const ctx = createCommandContext()
+		const sessionId = ctx.sessionManager.getSessionId()
+		let inScopeDuringNotify: boolean | undefined
+		vi.mocked(ctx.ui.notify).mockImplementation(() => {
+			inScopeDuringNotify = isInCommandReplyScope(sessionId)
+		})
+		expect(isInCommandReplyScope(sessionId)).toBe(false)
+		await command.handler("refactor auth", ctx)
+		expect(inScopeDuringNotify).toBe(true)
+		expect(isInCommandReplyScope(sessionId)).toBe(false)
 	})
 
 	// Startup had Ferment off, then the user turned it on in /resources.

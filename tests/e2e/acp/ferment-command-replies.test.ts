@@ -77,6 +77,25 @@ describe("ACP integration — /ferment command replies", () => {
 		expect(chatRequests(active)).toHaveLength(0)
 	})
 
+	it("answers /ferment with the enable hint as text when Ferment is off", async () => {
+		fixture = await startAcpFixture({
+			artifactName: "acp-ferment-reply-off",
+			responses: [],
+			settings: { resources: { "extensions.ferment": false } },
+		})
+		const active = fixture
+		const sessionId = await newSession(active, active.workDir)
+
+		const result = await prompt(active, sessionId, "/ferment refactor auth")
+
+		expect(result.stopReason).toBe("end_turn")
+		const replies = agentTextChunks(active, sessionId).filter((text) =>
+			text.includes("kimchi resources enable extensions.ferment"),
+		)
+		expect(replies).toHaveLength(1)
+		expect(chatRequests(active)).toHaveLength(0)
+	})
+
 	it("does not mirror notifications from the run itself", async () => {
 		const modelText = "FERMENT_RUN_MODEL_TEXT"
 		fixture = await startAcpFixture({

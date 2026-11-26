@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isResourceEnabled } from "../../resources/store.js"
+import { withCommandReplyScope } from "../../shared/command-reply-scope.js"
 import { notifyUser } from "../../utils/notify-user.js"
 import { fermentNotLoadedMessage } from "./availability.js"
 import { FERMENT_V2_COMMAND_NAME, FERMENT_V2_RESOURCE_ID } from "./constants.js"
@@ -14,8 +15,12 @@ export function fermentStubExtension(pi: ExtensionAPI): void {
 	pi.registerCommand(FERMENT_V2_COMMAND_NAME, {
 		description: "Ferment is not loaded. Run it to see how to turn it on.",
 		// Arguments are ignored: the fix is the same whatever the user meant.
+		// The scope makes ACP also send the reply as agent text. Plain clients
+		// ignore pi_notify, so they would see nothing.
 		async handler(_args, ctx) {
-			notifyUser(ctx, fermentNotLoadedMessage(`/${FERMENT_V2_COMMAND_NAME}`), "warning")
+			await withCommandReplyScope(ctx.sessionManager.getSessionId(), async () => {
+				notifyUser(ctx, fermentNotLoadedMessage(`/${FERMENT_V2_COMMAND_NAME}`), "warning")
+			})
 		},
 	})
 }
