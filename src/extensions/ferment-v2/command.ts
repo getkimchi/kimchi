@@ -1,3 +1,5 @@
+import { fermentLegacyOffMessage } from "../ferment/resource.js"
+import { FERMENT_LEGACY_COMMAND_NAME } from "../ferment/resource-id.js"
 import { formatCount, formatDuration } from "../format.js"
 import { FERMENT_V2_COMMAND_NAME } from "./constants.js"
 import { deriveFermentV2Name } from "./name.js"
@@ -10,8 +12,58 @@ export type FermentV2Command =
 	| { action: "pause" }
 	| { action: "resume" }
 	| { action: "clear" }
+	| { action: "legacy-hint"; word: FermentLegacyWord }
 
 export const FERMENT_V2_COMMAND_COMPLETIONS = ["edit", "pause", "resume", "clear"] as const
+
+/**
+ * Subcommand words of the legacy `/ferment-legacy` parser. Before V2 took the
+ * `/ferment` name these were `/ferment <word>`, so V1 users still type them.
+ * `pause` and `resume` are left out because V2 handles them itself.
+ * Keep in sync with `parseFermentCommand` in ../ferment/command-parser.ts.
+ */
+export const FERMENT_LEGACY_WORDS = [
+	"list",
+	"manual",
+	"auto",
+	"progress",
+	"exit",
+	"new",
+	"switch",
+	"delete",
+	"abandon",
+	"revise",
+	"export",
+	"one-shot",
+] as const
+
+export type FermentLegacyWord = (typeof FERMENT_LEGACY_WORDS)[number]
+
+// These legacy words do nothing alone, so the hint shows the argument too.
+const FERMENT_LEGACY_WORD_USAGE: Partial<Record<FermentLegacyWord, string>> = {
+	switch: "switch <id-or-name>",
+	delete: "delete <id-or-name>",
+	revise: "revise goal|criteria|constraints",
+}
+
+function isFermentLegacyWord(word: string): word is FermentLegacyWord {
+	return (FERMENT_LEGACY_WORDS as readonly string[]).includes(word)
+}
+
+/**
+ * Shown instead of starting a run when `/ferment <word>` is a bare legacy
+ * word. A one-word objective like "list" is almost always a V1 habit, and a
+ * run would start autonomous work on it.
+ */
+export function formatFermentLegacyWordHint(word: FermentLegacyWord): string {
+	const legacyCommand = `/${FERMENT_LEGACY_COMMAND_NAME} ${FERMENT_LEGACY_WORD_USAGE[word] ?? word}`
+	const offMessage = fermentLegacyOffMessage(legacyCommand)
+	return [
+		`/${FERMENT_V2_COMMAND_NAME} ${word} is a legacy Ferment command. Use ${legacyCommand}.`,
+		...(offMessage ? [offMessage] : []),
+		`To start a Ferment with "${word}" as the objective, write a longer objective.`,
+	].join("\n")
+}
 
 export function formatFermentV2Status(fermentV2: SessionFermentV2 | undefined, evaluating = false): string | undefined {
 	if (!fermentV2) return undefined
@@ -44,6 +96,7 @@ export function parseFermentV2Command(args: string): FermentV2Command {
 	if (action === "pause" && rest.length === 0) return { action: "pause" }
 	if (action === "resume" && rest.length === 0) return { action: "resume" }
 	if (action === "clear" && rest.length === 0) return { action: "clear" }
+	if (rest.length === 0 && isFermentLegacyWord(action)) return { action: "legacy-hint", word: action }
 	const parsed = parseTokenBudget(trimmed)
 	return parsed.tokenBudget === undefined
 		? { action: "set", objective: parsed.objective }

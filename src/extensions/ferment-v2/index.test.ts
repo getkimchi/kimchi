@@ -171,6 +171,37 @@ describe("Ferment V2 extension", () => {
 		expect(result.details.fermentV2).toBeNull()
 	})
 
+	// Regression: `/ferment list` used to create a run with the objective "list".
+	it("shows a hint and creates no run for a bare legacy word", async () => {
+		await harness.command("  LIST ")
+
+		expect(harness.currentFermentV2()).toBeUndefined()
+		expect(harness.appendEntry).not.toHaveBeenCalled()
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		expect(harness.ui.confirm).not.toHaveBeenCalled()
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(
+			expect.stringContaining("/ferment list is a legacy Ferment command. Use /ferment-legacy list."),
+			"warning",
+		)
+	})
+
+	it("keeps the current run and asks nothing when a legacy word is typed during a run", async () => {
+		await harness.command("ship feature A")
+		const first = harness.currentFermentV2()
+		harness.ui.confirm.mockClear()
+
+		await harness.command("exit")
+
+		expect(harness.ui.confirm).not.toHaveBeenCalled()
+		expect(harness.currentFermentV2()).toMatchObject({ id: first?.id, objective: "ship feature A" })
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Use /ferment-legacy exit."), "warning")
+	})
+
+	it("starts a run when a legacy word is followed by more text", async () => {
+		await harness.command("list all todos in the repo")
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "list all todos in the repo", status: "active" })
+	})
+
 	it("creates a Ferment V2, persists it, and confirms unfinished replacement", async () => {
 		await harness.command("ship feature A")
 		const first = harness.currentFermentV2()

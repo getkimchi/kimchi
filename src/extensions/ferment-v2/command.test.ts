@@ -1,6 +1,17 @@
-import { describe, expect, it } from "vitest"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resetOrgPolicyForTests } from "../../org-policy.js"
+import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
+import { setResourceOverride } from "../../resources/store.js"
+import { parseFermentCommand } from "../ferment/command-parser.js"
+import { getFermentArgumentCompletions } from "../ferment/commands.js"
+import { FERMENT_LEGACY_RESOURCE_ID } from "../ferment/resource-id.js"
 import {
+	FERMENT_LEGACY_WORDS,
 	FERMENT_V2_COMMAND_COMPLETIONS,
+	formatFermentLegacyWordHint,
 	formatFermentV2Accounting,
 	formatFermentV2Duration,
 	formatFermentV2Status,
@@ -210,3 +221,120 @@ function fermentV2(status: FermentV2Status): SessionFermentV2 {
 		updatedAt: "2026-07-16T10:00:00.000Z",
 	}
 }
+
+describe("legacy Ferment words typed into /ferment", () => {
+	// Regression: before the fix every one of these became a V2 objective.
+	it.each([...FERMENT_LEGACY_WORDS])("returns a hint for the bare legacy word %s", (word) => {
+		expect(parseFermentV2Command(word)).toEqual({ action: "legacy-hint", word })
+	})
+
+	it.each([
+		["  LIST ", "list"],
+		["Exit", "exit"],
+		["\tone-SHOT\n", "one-shot"],
+		["   Auto", "auto"],
+	])("ignores case and surrounding whitespace in %j", (input, word) => {
+		expect(parseFermentV2Command(input)).toEqual({ action: "legacy-hint", word })
+	})
+
+	it.each([
+		"list all todos in the repo",
+		"exit early when the build fails",
+		"new landing page",
+		"delete dead code",
+		"switch the CI to pnpm",
+		"revise the README",
+		"export metrics to CSV",
+		"one-shot fix for the flaky test",
+	])("still starts a run when a legacy word has more text: %j", (input) => {
+		expect(parseFermentV2Command(input)).toEqual({ action: "set", objective: input })
+	})
+
+	it("still starts a run when a legacy word has a token budget", () => {
+		expect(parseFermentV2Command("list --tokens 5k")).toEqual({ action: "set", objective: "list", tokenBudget: 5_000 })
+	})
+
+	it("does not catch words that only look like legacy words", () => {
+		expect(parseFermentV2Command("lists")).toEqual({ action: "set", objective: "lists" })
+		expect(parseFermentV2Command("oneshot")).toEqual({ action: "set", objective: "oneshot" })
+		expect(parseFermentV2Command("ship")).toEqual({ action: "set", objective: "ship" })
+	})
+
+	it("keeps the V2 words, including the ones V1 also had", () => {
+		expect(parseFermentV2Command("pause")).toEqual({ action: "pause" })
+		expect(parseFermentV2Command("RESUME")).toEqual({ action: "resume" })
+		expect(parseFermentV2Command("clear")).toEqual({ action: "clear" })
+		expect(parseFermentV2Command("edit")).toEqual({ action: "edit" })
+	})
+
+	it("matches the legacy subcommands except the V2 words", () => {
+		const legacyLabels = (getFermentArgumentCompletions("") ?? []).map((entry) => entry.label)
+		const v2Words: readonly string[] = FERMENT_V2_COMMAND_COMPLETIONS
+		expect([...FERMENT_LEGACY_WORDS].sort()).toEqual(legacyLabels.filter((label) => !v2Words.includes(label)).sort())
+	})
+
+	it.each([...FERMENT_LEGACY_WORDS])("names a word the legacy parser knows: %s", (word) => {
+		const withArgument = ["switch", "delete", "revise"].includes(word) ? `${word} goal` : word
+		expect(parseFermentCommand(withArgument).type).not.toBe("unknown")
+	})
+
+	describe("hint text", () => {
+		let agentDir: string
+
+		beforeEach(() => {
+			agentDir = mkdtempSync(join(tmpdir(), "ferment-v2-legacy-hint-"))
+			process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+			Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+			resetOrgPolicyForTests()
+		})
+
+		afterEach(() => {
+			resetOrgPolicyForTests()
+			Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
+			rmSync(agentDir, { recursive: true, force: true })
+		})
+
+		it("points to /ferment-legacy when legacy is on", () => {
+			setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+			expect(formatFermentLegacyWordHint("list")).toBe(
+				[
+					"/ferment list is a legacy Ferment command. Use /ferment-legacy list.",
+					'To start a Ferment with "list" as the objective, write a longer objective.',
+				].join("\n"),
+			)
+		})
+
+		it("shows the argument for legacy words that need one", () => {
+			setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+			expect(formatFermentLegacyWordHint("switch")).toContain("Use /ferment-legacy switch <id-or-name>.")
+			expect(formatFermentLegacyWordHint("delete")).toContain("Use /ferment-legacy delete <id-or-name>.")
+			expect(formatFermentLegacyWordHint("revise")).toContain("Use /ferment-legacy revise goal|criteria|constraints.")
+		})
+
+		it("says how to turn legacy on when it is off", () => {
+			expect(formatFermentLegacyWordHint("exit")).toBe(
+				[
+					"/ferment exit is a legacy Ferment command. Use /ferment-legacy exit.",
+					"/ferment-legacy exit needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable extensions.ferment-legacy",
+					'To start a Ferment with "exit" as the objective, write a longer objective.',
+				].join("\n"),
+			)
+		})
+
+		it("names the org policy when the organization turned legacy off", async () => {
+			setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+			await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "FORCE_OFF" } })
+			const hint = formatFermentLegacyWordHint("auto")
+			expect(hint).toContain("Use /ferment-legacy auto.")
+			expect(hint).toContain("which your organization turned off")
+			expect(hint).not.toContain("kimchi resources enable")
+		})
+
+		it("names the org policy when the organization turned Ferment off", async () => {
+			await setOrgPolicyForTests({ resources: { "extensions.ferment": "FORCE_OFF" } })
+			const hint = formatFermentLegacyWordHint("list")
+			expect(hint).toContain("which your organization turned off (extensions.ferment")
+			expect(hint).not.toContain("kimchi resources enable")
+		})
+	})
+})

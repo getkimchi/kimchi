@@ -25,6 +25,7 @@ import { holdWorkedDuration } from "../tool-rendering.js"
 import { holdWorkedForMessage, holdWorkingIndicator } from "../ui.js"
 import {
 	FERMENT_V2_COMMAND_COMPLETIONS,
+	formatFermentLegacyWordHint,
 	formatFermentV2Status,
 	formatFermentV2Summary,
 	formatFermentV2VerifyingStatus,
@@ -1710,6 +1711,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				if (command.action === "show") {
 					bindSession(ctx)
 					ctx.ui.notify(formatFermentV2Summary(currentFermentV2, liveElapsedMs()), "info")
+					return
+				}
+				if (command.action === "legacy-hint") {
+					ctx.ui.notify(formatFermentLegacyWordHint(command.word), "warning")
 					return
 				}
 				if (command.action === "set") await handleSetFermentV2(command.objective, command.tokenBudget, ctx)
