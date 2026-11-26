@@ -1,10 +1,10 @@
 import { join } from "node:path"
-import { envAgentDir } from "../env-root.js"
+import { profileAgentDir } from "../profile-root.js"
 import { readJson, readJsonCached, writeJson } from "./json.js"
 
 type Satisfies<T> = (value: unknown) => value is T
 
-const HARNESS_CONFIG_BASE_DIR = envAgentDir()
+const HARNESS_CONFIG_BASE_DIR = profileAgentDir()
 const HARNESS_SETTINGS_PATH = join(HARNESS_CONFIG_BASE_DIR, "settings.json")
 
 export function getConfigSetting<T>(

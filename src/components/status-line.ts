@@ -7,7 +7,6 @@ import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { readJsonCached } from "../config/json.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
 import { parseTag } from "../config/tags.js"
-import { envAgentDir } from "../env-root.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { isAutoRoutedModel } from "../extensions/auto-model/constants.js"
 import { getBillingStatusLine } from "../extensions/billing/status.js"
@@ -17,6 +16,7 @@ import { formatFermentStatusLineDisplay } from "../extensions/ferment/status-lin
 import { formatCount } from "../extensions/format.js"
 import { getPermissionMode } from "../extensions/permissions/mode-controller.js"
 import { peekActiveTags } from "../extensions/tags.js"
+import { profileAgentDir } from "../profile-root.js"
 import { getActiveAnchor } from "../shared/active-anchor.js"
 import { thinkingSelection } from "../thinking-selection.js"
 import { truncateLinesToWidth, truncateLineToWidth } from "../truncate-lines.js"
@@ -86,7 +86,7 @@ interface CompactionContext {
 	semantic: (color: string, s: string) => string
 }
 
-const HARNESS_SETTINGS_PATH = join(envAgentDir(), "settings.json")
+const HARNESS_SETTINGS_PATH = join(profileAgentDir(), "settings.json")
 
 // ── Assistant-usage totals memoization ─────────────────────────────────────
 // The session journal is append-only and its entries are immutable

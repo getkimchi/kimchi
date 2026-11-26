@@ -18,7 +18,7 @@
  */
 import { type Dirent, existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { envAgentDir } from "../../env-root.js"
+import { profileAgentDir } from "../../profile-root.js"
 import { createMemoryBackend, defaultMemoryDir, memoryDbPath } from "./backend.js"
 import { MEMORY_SCOPE_ID, MEMORY_USER_ID } from "./config.js"
 
@@ -61,7 +61,7 @@ export function collectAgentMemoryFiles(homeDir?: string): Array<{ agentName: st
 	const root =
 		homeDir !== undefined
 			? join(homeDir, ".config", "kimchi", "harness", "agent-memory")
-			: join(envAgentDir(), "agent-memory")
+			: join(profileAgentDir(), "agent-memory")
 	if (!existsSync(root) || isSymlink(root)) return []
 	let entries: Dirent[]
 	try {

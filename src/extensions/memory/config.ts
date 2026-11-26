@@ -5,7 +5,7 @@
  * reverse).
  */
 import { join } from "node:path"
-import { envRootOrLegacy } from "../../env-root.js"
+import { profileRoot } from "../../profile-root.js"
 
 /** The personal scope id — the always-present global store. Project scopes are keyed by owner/name (scope.ts). */
 export const MEMORY_SCOPE_ID = "personal"
@@ -413,7 +413,7 @@ export function digestDbPath(): string {
 }
 
 export function defaultMemoryDir(): string {
-	return join(envRootOrLegacy(), "memory")
+	return join(profileRoot(), "memory")
 }
 
 /** Scope ids interpolate into filesystem paths — allowlist strictly. */

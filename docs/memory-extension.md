@@ -259,4 +259,4 @@ The complete record schema and representative Grafana queries live in `src/exten
 
 ## See also
 
-- [Harness environments](environments.md) — the memory store is scoped per environment (`--env <name>`).
+- [Harness profiles](profiles.md) — the memory store is scoped per profile (`--profile <name>`).

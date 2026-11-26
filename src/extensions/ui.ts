@@ -18,8 +18,8 @@ import {
 	StatusLineScript,
 } from "../components/status-line.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
-import { envAgentDir } from "../env-root.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
+import { profileAgentDir } from "../profile-root.js"
 import { getActiveAnchor } from "../shared/active-anchor.js"
 import { refreshGitBranch } from "../utils.js"
 import { getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
@@ -98,7 +98,7 @@ export function findNextCompatibleModel(
 	return { model: undefined, skipped }
 }
 
-const HARNESS_SETTINGS_PATH = join(envAgentDir(), "settings.json")
+const HARNESS_SETTINGS_PATH = join(profileAgentDir(), "settings.json")
 
 function getEnabledModelIds(): Set<string> | null {
 	try {

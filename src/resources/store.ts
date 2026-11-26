@@ -1,15 +1,15 @@
 import { resolve } from "node:path"
 import type { ResourcePolicy } from "../api/org-settings.js"
 import { readJson, readJsonCached, writeJson } from "../config/json.js"
-import { envAgentDir } from "../env-root.js"
 import { getOrgPolicy } from "../org-policy.js"
+import { profileAgentDir } from "../profile-root.js"
 import { getResourceDefinition } from "./definitions.js"
 import { type ListedResourceSetting, RESOURCE_KINDS, type ResourceId, type ResourceSettings } from "./types.js"
 
 const SETTINGS_KEY = "resources"
 
 export function getResourceSettingsPath(): string {
-	return resolve(envAgentDir(), "settings.json")
+	return resolve(profileAgentDir(), "settings.json")
 }
 
 export const settingsPath = getResourceSettingsPath

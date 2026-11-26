@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { join } from "node:path"
 import { resolveAuxiliaryFilesDir } from "../auxiliary-files/resolver.js"
 import { compareSemverGte } from "../integrations/opencode.js"
 import { extractArchive, verifyChecksum } from "./extract.js"
@@ -13,7 +13,7 @@ import {
 	reportBridgeRefresh,
 	smokeTestBinary,
 } from "./install.js"
-import { envBinaryPath, resolveExecutablePath } from "./paths.js"
+import { resolveExecutablePath } from "./paths.js"
 import { isStale, isUpdateCheckDisabled, loadRepoState, saveRepoState } from "./state.js"
 
 export interface CheckResult {
@@ -234,13 +234,7 @@ export interface UpdateOptions {
 export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 	const repo = opts.repo ?? KIMCHI_REPO
 	const client = opts.client ?? new GitHubClient({ signal: opts.signal })
-	const envBinary = envBinaryPath()
-	const targetPath = opts.executablePath ?? envBinary ?? resolveExecutablePath()
-	const isEnvInstall = envBinary !== undefined && targetPath === envBinary
-	// Per-env installs target <envRoot>/bin/kimchi, whose directory does not
-	// exist until the first install — global installs target an existing bin
-	// dir, so this is a no-op there.
-	mkdirSync(dirname(targetPath), { recursive: true })
+	const targetPath = opts.executablePath ?? resolveExecutablePath()
 
 	const workDir = mkdtempSync(join(tmpdir(), "kimchi-update-"))
 	try {
@@ -270,31 +264,11 @@ export async function applyUpdate(opts: UpdateOptions): Promise<UpdateResult> {
 			// written to ~/.local/share while the binary's sibling
 			// share (/usr/local/share) still had the stale metadata.
 			const shareSrc = join(extractedRoot, "share", "kimchi")
-			// PI_PACKAGE_DIR must not drive the share destination: the running
-			// process always exports it (entry.ts), and resolveAuxiliaryFilesDir
-			// honors it FIRST — so an env-scoped install would drop the env
-			// binary's sibling share files into the GLOBAL share dir, and the
-			// env binary would then fail its next launch for lack of
-			// <envRoot>/share/kimchi. Resolve from the install target instead;
-			// for global installs this lands where PI_PACKAGE_DIR pointed
-			// anyway (the running binary's own share dir).
-			const { PI_PACKAGE_DIR: _ignored, ...envWithoutPackageDir } = process.env
-			// Env installs compute — not probe — the sibling share: on the FIRST
-			// install <envRoot>/share/kimchi does not exist yet, and a probe
-			// (resolveAuxiliaryFilesDir) would fall back to the global data dir
-			// (~/.local/share/kimchi), leaving the env binary without its share
-			// and clobbering the global install's. copySupportingFiles creates it.
-			const shareDst = isEnvInstall
-				? join(dirname(targetPath), "..", "share", "kimchi")
-				: resolveAuxiliaryFilesDir(envWithoutPackageDir, homedir(), targetPath)
+			const shareDst = resolveAuxiliaryFilesDir(process.env, homedir(), targetPath)
 			// Always clean up the vendored and bundled-plugin directories to fully override them.
 			for (const dir of ["vendor", "bridge"]) rmSync(join(shareDst, dir), { recursive: true, force: true })
 			copySupportingFiles(shareSrc, shareDst, repo.binary)
-			// The Claude Code/Codex bridge is machine-global: an env-scoped
-			// install must not re-point it at the env's binary, or a later plain
-			// `claude` invocation would run this env's version. Only the global
-			// install refreshes the bridge.
-			const clients = isEnvInstall ? [] : refreshBridge(shareDst, targetPath)
+			const clients = refreshBridge(shareDst, targetPath)
 			await reportBridgeRefresh(shareDst, clients)
 
 			return { from: opts.tag, to: opts.tag, backupPath }

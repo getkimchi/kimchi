@@ -52,12 +52,12 @@ export const ENV_VARS: EnvVarDef[] = [
 	{
 		name: "KIMCHI_CODING_AGENT_DIR",
 		description:
-			"Internal: the active environment's agent dir (<envRoot>/harness; default env: ~/.config/kimchi/harness). Set at startup — inherited values are preserved, not honored",
+			"Internal: the active profile's agent dir (<profileRoot>/harness; default profile: ~/.config/kimchi/harness). Set at startup — inherited values are preserved, not honored",
 	},
 	{
-		name: "KIMCHI_ENV",
+		name: "KIMCHI_PROFILE",
 		description:
-			"Harness environment for this invocation: named envs live under ~/.config/kimchi/envs/<name>/ (same as --env)",
+			"Harness profile for this invocation: named profiles live under ~/.config/kimchi/profiles/<name>/ (same as --profile)",
 	},
 	{
 		name: "KIMCHI_ENABLE_RESOURCES",
@@ -272,11 +272,11 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_DISABLE_REDACTION_EVENTS",
 	// hand-registered: set by kimchi for child processes (update/install, bridge)
 	"KIMCHI_BIN",
-	// harness-environment plumbing (src/env-root.ts): set by src/entry.ts at
-	// startup; read back by readResolvedKimchiEnv(). User-facing selection is
-	// KIMCHI_ENV / --env above.
-	"KIMCHI_ENV_ROOT",
-	"KIMCHI_ENV_LEGACY_DEFAULT",
+	// harness-profile plumbing (src/profile-root.ts): set by src/entry.ts at
+	// startup; read back by readResolvedKimchiProfile(). User-facing selection is
+	// KIMCHI_PROFILE / --profile above.
+	"KIMCHI_PROFILE_ROOT",
+	"KIMCHI_PROFILE_DEFAULT",
 	// OAuth dev/mock endpoint overrides (src/oauth-config.ts)
 	"KIMCHI_OAUTH_CLIENT_ID",
 	"KIMCHI_OAUTH_AUTHORIZE_URL",

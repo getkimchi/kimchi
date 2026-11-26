@@ -16,12 +16,12 @@ vi.mock("node:os", async (importOriginal) => {
 	return { ...actual, homedir: () => home }
 })
 
-// config.ts fixes the global config path at import time from KIMCHI_ENV_ROOT
+// config.ts fixes the global config path at import time from KIMCHI_PROFILE_ROOT
 // (published by entry.ts; the isolated-home setup also pins it), with the
 // mocked homedir() as fallback — route the env root at the mocked home's
 // legacy layout so KIMCHI_CONFIG_PATH matches the mock above. The existing
 // vi.unstubAllEnvs() in afterAll keeps the pin file-scoped.
-vi.stubEnv("KIMCHI_ENV_ROOT", join(home, ".config", "kimchi"))
+vi.stubEnv("KIMCHI_PROFILE_ROOT", join(home, ".config", "kimchi"))
 
 const { endpointsForRegion, invalidateResolvedEndpoints, resolveEndpoints, writeApiKey } = await import("./config.js")
 // The legacy-layout endpoints (path-prefixed bases) a discovery document

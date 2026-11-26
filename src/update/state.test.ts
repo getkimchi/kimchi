@@ -301,7 +301,7 @@ describe("isUpdateCheckDisabled", () => {
 describe("update state cache env scoping", () => {
 	let tmp: string
 	let prevXdg: string | undefined
-	const envKeys = ["KIMCHI_ENV", "KIMCHI_ENV_ROOT", "KIMCHI_ENV_LEGACY_DEFAULT"] as const
+	const envKeys = ["KIMCHI_PROFILE", "KIMCHI_PROFILE_ROOT", "KIMCHI_PROFILE_DEFAULT"] as const
 	const saved: Partial<Record<(typeof envKeys)[number], string | undefined>> = {}
 
 	beforeEach(() => {
@@ -324,20 +324,20 @@ describe("update state cache env scoping", () => {
 		rmSync(tmp, { recursive: true, force: true })
 	})
 
-	it("scopes state, results, last-installed, and backups under envs/<name>/ for a named env", () => {
-		process.env.KIMCHI_ENV = "test"
-		process.env.KIMCHI_ENV_ROOT = "/envs/test-root"
-		process.env.KIMCHI_ENV_LEGACY_DEFAULT = "0"
-		expect(statePath()).toBe(join(tmp, "kimchi", "envs", "test", "state.json"))
-		expect(updateResultPath()).toBe(join(tmp, "kimchi", "envs", "test", "update-result.json"))
-		expect(lastInstalledPath()).toBe(join(tmp, "kimchi", "envs", "test", "last-installed.json"))
-		expect(backupDir()).toBe(join(tmp, "kimchi", "envs", "test", "backups"))
+	it("scopes state, results, last-installed, and backups under profiles/<name>/ for a named env", () => {
+		process.env.KIMCHI_PROFILE = "test"
+		process.env.KIMCHI_PROFILE_ROOT = "/profiles/test-root"
+		process.env.KIMCHI_PROFILE_DEFAULT = "0"
+		expect(statePath()).toBe(join(tmp, "kimchi", "profiles", "test", "state.json"))
+		expect(updateResultPath()).toBe(join(tmp, "kimchi", "profiles", "test", "update-result.json"))
+		expect(lastInstalledPath()).toBe(join(tmp, "kimchi", "profiles", "test", "last-installed.json"))
+		expect(backupDir()).toBe(join(tmp, "kimchi", "profiles", "test", "backups"))
 	})
 
 	it("keeps the legacy ~/.cache/kimchi location for the legacy default env", () => {
-		process.env.KIMCHI_ENV = "default"
-		process.env.KIMCHI_ENV_ROOT = "/legacy/root"
-		process.env.KIMCHI_ENV_LEGACY_DEFAULT = "1"
+		process.env.KIMCHI_PROFILE = "default"
+		process.env.KIMCHI_PROFILE_ROOT = "/legacy/root"
+		process.env.KIMCHI_PROFILE_DEFAULT = "1"
 		expect(statePath()).toBe(join(tmp, "kimchi", "state.json"))
 		expect(backupDir()).toBe(join(tmp, "kimchi", "backups"))
 	})

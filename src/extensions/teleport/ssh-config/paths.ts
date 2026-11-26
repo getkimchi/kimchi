@@ -14,9 +14,13 @@ export interface SshConfigPaths {
 
 export function resolveSshConfigPaths(env: NodeJS.ProcessEnv = process.env): SshConfigPaths {
 	const home = env.HOME || homedir()
+	// Profile-scoped: the managed ssh_config lives under the active profile's
+	// root (default profile: ~/.config/kimchi), so named profiles keep a fully
+	// separated ssh setup. The XDG fallback preserves the pre-profile location
+	// for standalone imports that never resolved a profile.
 	const xdgConfigHome =
 		env.XDG_CONFIG_HOME && env.XDG_CONFIG_HOME.length > 0 ? env.XDG_CONFIG_HOME : join(home, ".config")
-	const managedDir = join(xdgConfigHome, "kimchi")
+	const managedDir = env.KIMCHI_PROFILE_ROOT ?? join(xdgConfigHome, "kimchi")
 	const sshDir = join(home, ".ssh")
 	return {
 		managedDir,

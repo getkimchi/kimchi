@@ -117,4 +117,4 @@ reader of project scope calls `isProjectScopeAllowed(cwd)`:
 
 ## See also
 
-- [Harness environments](environments.md) — trust decisions, like all kimchi state, are scoped per environment (`--env <name>`).
+- [Harness profiles](profiles.md) — trust decisions, like all kimchi state, are scoped per profile (`--profile <name>`).

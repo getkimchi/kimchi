@@ -20,15 +20,15 @@ import {
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
 	populateCliArgs,
-	stripEnvArg,
 	stripExperimentalFeaturesArg,
+	stripProfileArg,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
-import { envAgentDir } from "./env-root.js"
 import { createGuidedCodemodeExtension } from "./extensions/codemode/guidance.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
+import { profileAgentDir } from "./profile-root.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
 import { installThinkingLevelAdvisor } from "./thinking-selection.js"
@@ -277,7 +277,9 @@ function getSubcommand(args: string[]): string {
 		// Checked BEFORE the help/version flags: a known subcommand invocation
 		// (`kimchi env --help`) reports the subcommand, not "help" — the flags
 		// belong to the subcommand, not to the harness.
-		if (["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory", "env"].includes(sub))
+		if (
+			["setup", "config", "login", "logout", "doctor", "skills", "telemetry", "mcp", "memory", "profile"].includes(sub)
+		)
 			return sub
 	}
 	if (args.includes("--version") || args.includes("-v")) return "version"
@@ -285,9 +287,9 @@ function getSubcommand(args: string[]): string {
 	return "harness"
 }
 
-// `--env <name>` is consumed by src/entry.ts before any config import, so it
+// `--profile <name>` is consumed by src/entry.ts before any config import, so it
 // must not reach subcommand dispatch, the help/version path, or pi's main().
-const originalArgs = stripEnvArg(process.argv.slice(2))
+const originalArgs = stripProfileArg(process.argv.slice(2))
 
 // No top-level await in the startup graph: `bun build --compile --bytecode`
 // (and --minify) reject TLA in bundled modules, so the remaining bootstrap
@@ -495,7 +497,7 @@ async function cliMain(): Promise<void> {
 		const cliTrustOptions = getParsedCliArgs().options
 		const cliTrustOverride =
 			cliTrustOptions["no-approve"] === true ? false : cliTrustOptions.approve === true ? true : undefined
-		const preMainAgentDir = envAgentDir()
+		const preMainAgentDir = profileAgentDir()
 		setProjectScopeTrusted(
 			process.cwd(),
 			resolvePreMainProjectTrustWithOverrides(process.cwd(), preMainAgentDir, cliTrustOverride),

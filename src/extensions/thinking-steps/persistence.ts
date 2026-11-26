@@ -1,13 +1,13 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
-import { envAgentDir } from "../../env-root.js"
+import { profileAgentDir } from "../../profile-root.js"
 import { parseThinkingMode } from "./parse.js"
 import type { PersistedThinkingStepsPreferenceScope, ThinkingStepsMode } from "./types.js"
 
 const PREFERENCE_FILE_NAME = "thinking-steps.json"
 
 function getAgentDir(): string {
-	return envAgentDir()
+	return profileAgentDir()
 }
 
 function getPreferencePath(scope: PersistedThinkingStepsPreferenceScope, cwd: string): string {

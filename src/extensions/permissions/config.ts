@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { z } from "zod"
-import { envAgentDir } from "../../env-root.js"
+import { profileAgentDir } from "../../profile-root.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { DEFAULT_CONFIG, PERMISSION_MODES } from "./constants.js"
 import type { PermissionsConfig } from "./types.js"
@@ -32,7 +32,7 @@ export interface LoadConfigOptions {
 	cliDeny?: string[]
 }
 
-const USER_CONFIG_PATH = resolve(envAgentDir(), "permissions.json")
+const USER_CONFIG_PATH = resolve(profileAgentDir(), "permissions.json")
 const PROJECT_CONFIG_SUFFIX = join(".kimchi", "permissions.json")
 const LOCAL_CONFIG_SUFFIX = join(".kimchi", "permissions.local.json")
 

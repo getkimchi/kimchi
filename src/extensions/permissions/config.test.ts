@@ -31,7 +31,7 @@ describe("loadConfig merging", () => {
 		// USER_CONFIG_PATH derives from the env-root helpers (KIMCHI_CODING_AGENT_DIR
 		// first, env-root fallback), and the isolated-home setup pins the agent dir
 		// elsewhere — route both at the mocked home's legacy layout like the mock above.
-		vi.stubEnv("KIMCHI_ENV_ROOT", join(tmpCwd, ".config", "kimchi"))
+		vi.stubEnv("KIMCHI_PROFILE_ROOT", join(tmpCwd, ".config", "kimchi"))
 		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", join(tmpCwd, ".config", "kimchi", "harness"))
 		vi.resetModules()
 		try {

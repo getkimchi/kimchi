@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ENV_VARS, IGNORED_ENV_VARS, TEST_SUITE_ENV_VARS } from "../env-vars.js"
-import { runEnv } from "./env.js"
+import { runProfile } from "./profile.js"
 
-describe("runEnv", () => {
+describe("kimchi profile vars", () => {
 	let logs: string[]
 
 	beforeEach(() => {
@@ -18,7 +18,7 @@ describe("runEnv", () => {
 	})
 
 	it("exits 0 and prints every user-facing variable with its description", async () => {
-		expect(await runEnv([])).toBe(0)
+		expect(await runProfile(["vars"])).toBe(0)
 		const output = logs.join("\n")
 		// Descriptions wrap at the terminal width — flatten wrapped lines before
 		// asserting on the full description text.
@@ -30,7 +30,7 @@ describe("runEnv", () => {
 	})
 
 	it("aligns wrapped description continuations with the description column", async () => {
-		await runEnv(["--values"])
+		await runProfile(["--values"])
 		const descCol = 2 + Math.max(...ENV_VARS.map((v) => v.name.length)) + 2
 		for (const line of logs) {
 			// Bare console.log() calls land in the mock as "undefined"; the
@@ -55,7 +55,7 @@ describe("runEnv", () => {
 		const previousColumns = stdout.columns
 		stdout.columns = columns
 		try {
-			await runEnv([])
+			await runProfile(["vars"])
 		} finally {
 			if (previousColumns === undefined) stdout.columns = undefined
 			else stdout.columns = previousColumns
@@ -78,7 +78,7 @@ describe("runEnv", () => {
 	const NOT_SET = "(not set)"
 
 	it("never prints internal/dev variables", async () => {
-		await runEnv([])
+		await runProfile(["vars"])
 		const output = logs.join("\n")
 		for (const name of [...IGNORED_ENV_VARS, ...TEST_SUITE_ENV_VARS]) {
 			expect(output, `${name} should stay hidden`).not.toContain(name)
@@ -88,7 +88,7 @@ describe("runEnv", () => {
 	it("omits markers by default; --values prints set/not-set only, never the value", async () => {
 		vi.stubEnv("KIMCHI_REGION", "eu")
 
-		await runEnv([])
+		await runProfile(["vars"])
 		const bare = logs.join("\n")
 		expect(bare).toContain("KIMCHI_REGION")
 		expect(
@@ -102,7 +102,7 @@ describe("runEnv", () => {
 		).toBe(true)
 
 		logs = []
-		await runEnv(["--values"])
+		await runProfile(["--values"])
 		expect(valueLineFor("KIMCHI_REGION").trim()).toBe("set")
 		expect(logs.join("\n")).toContain(NOT_SET)
 		// The value itself is never disclosed as an output row — note
@@ -122,7 +122,7 @@ describe("runEnv", () => {
 		vi.stubEnv("KIMCHI_PROXY", `http://${urlPassword}proxy.internal:8080`)
 		vi.stubEnv("KIMCHI_TAGS", "env:dbg,owner:[REDACTED-EMAIL_ADDRESS]")
 		vi.stubEnv("KIMCHI_REGION", "region-with\nnewline\x1b[2J")
-		await runEnv(["--values"])
+		await runProfile(["--values"])
 		const output = logs.join("\n")
 		for (const leaked of [
 			"super-secret-key",
@@ -147,7 +147,7 @@ describe("runEnv", () => {
 		const previous = process.env.KIMCHI_REGION
 		delete process.env.KIMCHI_REGION
 		try {
-			await runEnv(["--values"])
+			await runProfile(["--values"])
 			expect(logs.join("\n")).toContain("(not set)")
 		} finally {
 			if (previous !== undefined) process.env.KIMCHI_REGION = previous
@@ -156,16 +156,16 @@ describe("runEnv", () => {
 
 	it("treats an explicitly empty value as not set", async () => {
 		vi.stubEnv("KIMCHI_API_KEY", "")
-		await runEnv(["--values"])
+		await runProfile(["--values"])
 		const valueLine = valueLineFor("KIMCHI_API_KEY")
 		expect(valueLine).toContain("(not set)")
 		expect(valueLine.trim()).not.toBe("set")
 	})
 
 	it("prints usage on --help without the variable list", async () => {
-		expect(await runEnv(["--help"])).toBe(0)
+		expect(await runProfile(["--help"])).toBe(0)
 		const output = logs.join("\n")
-		expect(output).toContain("Usage: kimchi env")
+		expect(output).toContain("Usage: kimchi profile")
 		expect(output).not.toContain("KIMCHI_API_KEY")
 	})
 
@@ -174,9 +174,9 @@ describe("runEnv", () => {
 		vi.spyOn(console, "error").mockImplementation((msg?: unknown) => {
 			errors.push(String(msg))
 		})
-		expect(await runEnv(["--bogus"])).not.toBe(0)
+		expect(await runProfile(["--bogus"])).not.toBe(0)
 		const stderr = errors.join("\n")
-		expect(stderr).toContain("Usage: kimchi env")
+		expect(stderr).toContain("Usage: kimchi profile")
 		expect(stderr).toContain('"--bogus"')
 		expect(logs.join("\n")).not.toContain("KIMCHI_API_KEY")
 	})
@@ -186,12 +186,12 @@ describe("runEnv", () => {
 		vi.spyOn(console, "error").mockImplementation((msg?: unknown) => {
 			errors.push(String(msg))
 		})
-		expect(await runEnv(["--bogus", "--help"])).not.toBe(0)
+		expect(await runProfile(["--bogus", "--help"])).not.toBe(0)
 		expect(errors.join("\n")).toContain('"--bogus"')
 	})
 
 	it("lists the user-facing KIMCHI_BROWSER override", async () => {
-		await runEnv([])
+		await runProfile(["vars"])
 		expect(logs.join("\n")).toContain("KIMCHI_BROWSER")
 	})
 
@@ -204,13 +204,13 @@ describe("runEnv", () => {
 		stdout.isTTY = true
 		try {
 			// With colour available the header is bolded.
-			await runEnv([])
+			await runProfile(["vars"])
 			expect(logs[0]).toContain("\x1b[1m")
 
 			// A NO_COLOR export after module import must still take effect.
 			vi.stubEnv("NO_COLOR", "1")
 			logs = []
-			await runEnv([])
+			await runProfile(["vars"])
 			expect(logs[0]).not.toContain("\x1b[")
 		} finally {
 			if (previousIsTTY === undefined) stdout.isTTY = undefined

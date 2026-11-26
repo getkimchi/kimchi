@@ -492,60 +492,6 @@ describe("applyUpdate share destination", () => {
 		)
 	})
 
-	it("installs an env-scoped binary with its own sibling share, ignoring PI_PACKAGE_DIR, and never re-points the global bridge", async () => {
-		const envRoot = mkdtempSync(join(tmpdir(), "kimchi-envroot-test-"))
-		const decoyShare = mkdtempSync(join(tmpdir(), "kimchi-decoy-share-"))
-		const keys = ["KIMCHI_ENV", "KIMCHI_ENV_ROOT", "KIMCHI_ENV_LEGACY_DEFAULT", "PI_PACKAGE_DIR"] as const
-		const saved: Partial<Record<(typeof keys)[number], string>> = {}
-		try {
-			for (const key of keys) {
-				saved[key] = process.env[key]
-				delete process.env[key]
-			}
-			process.env.KIMCHI_ENV = "test"
-			process.env.KIMCHI_ENV_ROOT = envRoot
-			process.env.KIMCHI_ENV_LEGACY_DEFAULT = "0"
-			// entry.ts always exports PI_PACKAGE_DIR pointing at the RUNNING
-			// binary's share — for an env install that is the wrong tree, and
-			// resolveAuxiliaryFilesDir honors it first, so the decoy must lose.
-			mkdirSync(join(decoyShare, "share", "kimchi"), { recursive: true })
-			writeFileSync(join(decoyShare, "share", "kimchi", "package.json"), "{}")
-			process.env.PI_PACKAGE_DIR = join(decoyShare, "share", "kimchi")
-
-			// First-install state: NO pre-existing <envRoot>/share/kimchi — the
-			// destination must be computed, not probed (the resolver would fall
-			// back to the global data dir and clobber it).
-			const siblingShare = join(envRoot, "share", "kimchi")
-
-			vi.resetModules()
-			const { applyUpdate: applyUpdateFresh } = await import("./workflow.js")
-			const client = {
-				fetchChecksum: mocks.fetchChecksum,
-				downloadArchive: mocks.downloadArchive,
-			} as unknown as GitHubClient
-
-			await applyUpdateFresh({ tag: "v0.0.24", client })
-
-			expect(mocks.atomicInstall).toHaveBeenCalledWith(expect.any(String), join(envRoot, "bin", "kimchi"))
-			expect(mocks.copySupportingFiles).toHaveBeenCalledWith(
-				join(extractRoot, "share", "kimchi"),
-				siblingShare,
-				"kimchi",
-			)
-			// The machine-global Claude/Codex bridge must stay bound to the
-			// global install — an env's binary never refreshes it.
-			expect(mocks.refreshBridge).not.toHaveBeenCalled()
-			expect(mocks.reportBridgeRefresh).toHaveBeenCalledWith(siblingShare, [])
-		} finally {
-			for (const key of keys) {
-				if (saved[key] === undefined) delete process.env[key]
-				else process.env[key] = saved[key]
-			}
-			rmSync(envRoot, { recursive: true, force: true })
-			rmSync(decoyShare, { recursive: true, force: true })
-		}
-	})
-
 	it("uses kimchi.exe from Windows archives", async () => {
 		const origPlatform = process.platform
 		const origArch = process.arch

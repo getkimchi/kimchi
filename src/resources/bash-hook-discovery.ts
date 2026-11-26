@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, statSync } from "node:fs"
 import { basename, extname, join, resolve } from "node:path"
-import { envAgentDir } from "../env-root.js"
+import { profileAgentDir } from "../profile-root.js"
 import { isProjectScopeAllowed } from "../project-scope-trust.js"
 import type { ResourceDefinition } from "./types.js"
 
@@ -14,7 +14,7 @@ export interface BashHookResource extends ResourceDefinition {
 }
 
 export function getGlobalBashHookDir(): string {
-	return resolve(envAgentDir(), "hooks", "bash")
+	return resolve(profileAgentDir(), "hooks", "bash")
 }
 
 export function getProjectBashHookDir(cwd = process.cwd()): string {

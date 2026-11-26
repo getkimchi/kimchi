@@ -78,15 +78,15 @@ describe("entry.ts static import graph", () => {
 	it("resolves the harness env (env-root-init) before any relative import that freezes config paths", () => {
 		// src/entry.ts → ssh-proxy.ts → config.ts freezes KIMCHI_CONFIG_PATH /
 		// AGENT_CONFIG_DIR at module evaluation; env-root-init publishes
-		// KIMCHI_ENV_ROOT as a side effect and must evaluate first. ESM
+		// KIMCHI_PROFILE_ROOT as a side effect and must evaluate first. ESM
 		// evaluates imports in listed order, so the invariant is: in entry.ts's
-		// static import list, ./env-root-init.js appears before every import
+		// static import list, ./profile-root-init.js appears before every import
 		// whose transitive static graph reaches src/config.ts. (This tolerates
 		// biome's organizeImports sorting as long as the order relation holds.)
 		const source = readFileSync(resolve(SRC, "entry.ts"), "utf-8")
 		const specs = staticImportSpecifiers(source)
-		const initIndex = specs.indexOf("./env-root-init.js")
-		expect(initIndex, "entry.ts must import ./env-root-init.js").toBeGreaterThanOrEqual(0)
+		const initIndex = specs.indexOf("./profile-root-init.js")
+		expect(initIndex, "entry.ts must import ./profile-root-init.js").toBeGreaterThanOrEqual(0)
 		for (const [index, spec] of specs.entries()) {
 			if (index >= initIndex || !spec.startsWith(".")) continue
 			const resolved = resolveRelative(resolve(SRC, "entry.ts"), spec)
@@ -94,15 +94,15 @@ describe("entry.ts static import graph", () => {
 			const chains = findChains(resolved, isKimchiConfig)
 			expect(
 				chains,
-				`"${spec}" reaches config.ts and must be imported after ./env-root-init.js:\n${chains.join("\n")}`,
+				`"${spec}" reaches config.ts and must be imported after ./profile-root-init.js:\n${chains.join("\n")}`,
 			).toEqual([])
 		}
 
 		// The init module itself must not reach config.ts (or pi-mono): it only
 		// publishes env vars, and importing config there would be circular.
-		const configChains = findChains(resolve(SRC, "env-root-init.ts"), isKimchiConfig)
+		const configChains = findChains(resolve(SRC, "profile-root-init.ts"), isKimchiConfig)
 		expect(configChains, `env-root-init reaches config.ts:\n${configChains.join("\n")}`).toEqual([])
-		const piChains = findChains(resolve(SRC, "env-root-init.ts"), isPiMono)
+		const piChains = findChains(resolve(SRC, "profile-root-init.ts"), isPiMono)
 		expect(piChains, `env-root-init reaches pi-mono:\n${piChains.join("\n")}`).toEqual([])
 	})
 })

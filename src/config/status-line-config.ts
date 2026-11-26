@@ -1,5 +1,5 @@
 import { join } from "node:path"
-import { envAgentDir } from "../env-root.js"
+import { profileAgentDir } from "../profile-root.js"
 import { invalidateJsonCache, readJson, readJsonCached, writeJson } from "./json.js"
 
 export type StatusLineElementId =
@@ -131,7 +131,7 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 ]
 
 function getSettingsPath(): string {
-	return join(envAgentDir(), "settings.json")
+	return join(profileAgentDir(), "settings.json")
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

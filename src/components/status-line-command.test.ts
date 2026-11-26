@@ -24,7 +24,7 @@ vi.mock("node:os", async (importOriginal) => {
 })
 
 const MOCK_HOME = join(tmpdir(), `kimchi-statusline-cmd-mock-home-${process.pid}`)
-// status-line.ts resolves HARNESS_SETTINGS_PATH through envAgentDir() at
+// status-line.ts resolves HARNESS_SETTINGS_PATH through profileAgentDir() at
 // module load. The isolated-home setup pins KIMCHI_CODING_AGENT_DIR to a
 // per-test agent dir — exactly like production, where entry.ts publishes it —
 // so the settings files must be written there. The mocked homedir is still

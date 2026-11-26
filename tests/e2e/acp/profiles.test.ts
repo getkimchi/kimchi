@@ -1,12 +1,13 @@
-// ACP integration — harness environment scoping. One workflow: an ACP server
-// started with `--env test` creates a session whose state lives under
-// ~/.config/kimchi/envs/test/, and a second server instance WITHOUT the env
-// selection must not list that session — session stores are scoped per env.
+// ACP integration — harness profile scoping. One workflow: an ACP server
+// started with `--profile test` creates a session whose state lives under
+// ~/.config/kimchi/profiles/test/, and a second server instance WITHOUT the
+// profile selection must not list that session — session stores are scoped
+// per profile.
 //
 // The two-server form (rather than a single filesystem-only assertion) is
 // practical here: the ACP fixture supports homeDirOverride/workDirOverride +
 // keepDirsOnStop, so the second process shares the first one's HOME while
-// resolving a different env.
+// resolving a different profile.
 
 import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
@@ -19,9 +20,9 @@ interface ListedSessions {
 }
 
 async function listSessions(fixture: AcpFixture, cwd: string): Promise<ListedSessions> {
-	// The lister only honors the env-scoped session store when `cwd` is
+	// The lister only honors the profile-scoped session store when `cwd` is
 	// supplied (a cwd-less request degrades to pi's listAll, which has no
-	// agentDir slot and would not reflect env scoping).
+	// agentDir slot and would not reflect profile scoping).
 	return (await fixture.conn.request("session/list", { cwd })) as ListedSessions
 }
 
@@ -34,22 +35,23 @@ function sessionLogFiles(sessionsRoot: string): string[] {
 		.sort()
 }
 
-describe("ACP integration — environments", () => {
-	it("scopes sessions per harness environment: a --env test session is invisible without the env", async () => {
-		// Process 1: ACP server on the named env. The fixture seeds the
-		// legacy layout before seedHome runs; mirror config/models/settings
-		// into envs/test so the env-selected server finds its provider.
+describe("ACP integration — profiles", () => {
+	it("scopes sessions per harness profile: a --profile test session is invisible without the profile", async () => {
+		// Process 1: ACP server on the named profile. The fixture seeds a
+		// minimal ~/.config/kimchi (the default profile's own state); mirror
+		// config/models/settings into profiles/test so the profile-selected
+		// server finds its provider.
 		const first = await startAcpFixture({
-			artifactName: "acp-environments-named",
-			responses: [{ stream: ["Hello from the test env."] }],
-			extraArgs: ["--env", "test"],
+			artifactName: "acp-profiles-named",
+			responses: [{ stream: ["Hello from the test profile."] }],
+			extraArgs: ["--profile", "test"],
 			keepDirsOnStop: true,
 			seedHome: (homeDir) => {
 				const configDir = join(homeDir, ".config", "kimchi")
-				const testEnvRoot = join(configDir, "envs", "test")
-				const testHarness = join(testEnvRoot, "harness")
+				const testRoot = join(configDir, "profiles", "test")
+				const testHarness = join(testRoot, "harness")
 				mkdirSync(testHarness, { recursive: true })
-				cpSync(join(configDir, "config.json"), join(testEnvRoot, "config.json"))
+				cpSync(join(configDir, "config.json"), join(testRoot, "config.json"))
 				for (const file of ["models.json", "settings.json"]) {
 					const source = join(configDir, "harness", file)
 					if (existsSync(source)) cpSync(source, join(testHarness, file))
@@ -70,26 +72,25 @@ describe("ACP integration — environments", () => {
 		}
 		const { homeDir, workDir } = first
 
-		// The named env's session log lives under envs/test, never the
-		// legacy harness dir the default env would use.
-		const testSessionsRoot = join(homeDir, ".config", "kimchi", "envs", "test", "harness", "sessions")
+		// The named profile's session log lives under profiles/test, never the
+		// default profile's harness dir.
+		const testSessionsRoot = join(homeDir, ".config", "kimchi", "profiles", "test", "harness", "sessions")
 		const namedLogs = sessionLogFiles(testSessionsRoot)
 		expect(namedLogs.some((path) => path.endsWith(`_${sessionId}.jsonl`))).toBe(true)
 		expect(sessionLogFiles(join(homeDir, ".config", "kimchi", "harness", "sessions"))).toEqual([])
 
 		// The ACP fixture spreads `process.env` into the spawned kimchi, so a
-		// stray KIMCHI_ENV from the enclosing shell would silently scope the
-		// second server back to the test env. Drop it before spawning and
-		// restore afterwards so this test never leak its scrub into the worker.
-		const savedKimchiEnv = process.env.KIMCHI_ENV
-		delete process.env.KIMCHI_ENV
+		// stray KIMCHI_PROFILE from the enclosing shell would silently scope the
+		// second server back to the test profile. Drop it before spawning and
+		// restore afterwards so this test never leaks its scrub into the worker.
+		const savedKimchiProfile = process.env.KIMCHI_PROFILE
+		delete process.env.KIMCHI_PROFILE
 
-		// Process 2: same HOME, no env selection — the legacy layout in
-		// place resolves the default env, whose session store must not
-		// list the env-scoped session.
+		// Process 2: same HOME, no profile selection — the default profile
+		// (~/.config/kimchi) must not list the profile-scoped session.
 		const second = await startAcpFixture({
-			artifactName: "acp-environments-default",
-			responses: [{ stream: ["Hello from the default env."] }],
+			artifactName: "acp-profiles-default",
+			responses: [{ stream: ["Hello from the default profile."] }],
 			homeDirOverride: homeDir,
 			workDirOverride: workDir,
 		})
@@ -97,8 +98,8 @@ describe("ACP integration — environments", () => {
 			const listed = await listSessions(second, workDir)
 			expect(listed.sessions.some((session) => session.sessionId === sessionId)).toBe(false)
 
-			// Its own session lands under the legacy harness dir — and the
-			// named env's tree does not grow from the default-env server.
+			// Its own session lands under the default harness dir — and the
+			// named profile's tree does not grow from the default-profile server.
 			// (A turn is needed to persist the log — see the note above.)
 			const defaultSessionId = await newSession(second, workDir)
 			const defaultTurn = await prompt(second, defaultSessionId, "Say hello again")
@@ -110,8 +111,8 @@ describe("ACP integration — environments", () => {
 			).toBe(true)
 			expect(sessionLogFiles(testSessionsRoot)).toEqual(namedLogs)
 		} finally {
-			if (savedKimchiEnv === undefined) delete process.env.KIMCHI_ENV
-			else process.env.KIMCHI_ENV = savedKimchiEnv
+			if (savedKimchiProfile === undefined) delete process.env.KIMCHI_PROFILE
+			else process.env.KIMCHI_PROFILE = savedKimchiProfile
 			await second.stop()
 			// Both fixtures kept the dirs (hand-off + override): the test
 			// owns the cleanup.

@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
 import { writeJson } from "./config/json.js"
-import { envAgentDir, envRootOrLegacy } from "./env-root.js"
+import { profileAgentDir, profileRoot } from "./profile-root.js"
 import { isProjectScopeAllowed } from "./project-scope-trust.js"
 import {
 	DEFAULT_REGION,
@@ -24,8 +24,8 @@ import {
 } from "./regions.js"
 import { getVersion } from "./utils.js"
 
-const KIMCHI_CONFIG_PATH = resolve(envRootOrLegacy(), "config.json")
-const AGENT_CONFIG_DIR = envAgentDir()
+const KIMCHI_CONFIG_PATH = resolve(profileRoot(), "config.json")
+const AGENT_CONFIG_DIR = profileAgentDir()
 
 let startupApiKey: string | undefined
 

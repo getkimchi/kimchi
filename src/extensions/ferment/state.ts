@@ -13,9 +13,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
-import { envAgentDir } from "../../env-root.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
+import { profileAgentDir } from "../../profile-root.js"
 import { pinWorkContext, type WorkContext } from "../work-attribution.js"
 import {
 	deleteRuntimeState,
@@ -126,7 +126,7 @@ const SAFE_FERMENT_ID = /^[A-Za-z0-9._-]+$/
 function getFermentLockDir(): string {
 	const override = process.env.KIMCHI_FERMENT_LOCK_DIR?.trim()
 	if (override) return override
-	return join(envAgentDir(), "ferment-locks")
+	return join(profileAgentDir(), "ferment-locks")
 }
 
 export function getFermentLockPath(fermentId: string): string {

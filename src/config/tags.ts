@@ -1,5 +1,5 @@
 import { join } from "node:path"
-import { envRootOrLegacy } from "../env-root.js"
+import { profileRoot } from "../profile-root.js"
 import { isProjectScopeAllowed } from "../project-scope-trust.js"
 import { findNearestAncestorPath } from "../utils/find-nearest-ancestor.js"
 import { readJsonCached } from "./json.js"
@@ -85,7 +85,7 @@ export function resolveDefaultTags(options?: { cwd?: string; homeDir?: string; e
 	// home-relative path (tests, custom setups).
 	const globalTagsFile = options?.homeDir
 		? join(options.homeDir, GLOBAL_TAGS_FILE_REL)
-		: join(envRootOrLegacy(), "tags.json")
+		: join(profileRoot(), "tags.json")
 
 	const tiers: Array<{ tier: TagTier; tags: string[] }> = [{ tier: "global", tags: readTagFile(globalTagsFile) }]
 

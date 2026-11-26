@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os"
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
-import { envRootOrLegacy } from "../../env-root.js"
+import { profileRoot } from "../../profile-root.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 
 export const CLAUDE_CODE_SKILLS_RESOURCE_ID = "extensions.claude-code-skills"
@@ -153,13 +153,13 @@ function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
 	// `.config/kimchi/...` paths are env-owned: re-anchor under the active
 	// env root so a named env's configured skills resolve inside the env
 	// (the default env's legacy root is byte-identical to the home anchor).
-	// Paths already under envs/ (another environment's tree, or the fresh
+	// Paths already under profiles/ (another environment's tree, or the fresh
 	// default) are explicit cross-references — left untouched.
 	const legacyKimchiRoot = join(home, ".config", "kimchi")
 	const reanchorEnvOwned = (p: string): string => {
 		const rel = relative(legacyKimchiRoot, p)
-		if (rel === "" || rel.startsWith("envs") || !isSameOrDescendant(p, legacyKimchiRoot)) return p
-		return join(envRootOrLegacy(), rel)
+		if (rel === "" || rel.startsWith("profiles") || !isSameOrDescendant(p, legacyKimchiRoot)) return p
+		return join(profileRoot(), rel)
 	}
 	// The cwd expansion of a relative configured path is project-scoped:
 	// while the project is untrusted, a repo must not contribute skills

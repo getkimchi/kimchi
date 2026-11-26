@@ -32,7 +32,7 @@ describe("unit test home isolation", () => {
 
 	it("kimchi config paths captured at module import time resolve into the isolated home", () => {
 		// src/config.ts captures AGENT_CONFIG_DIR at import time. The
-		// isolated-home setup pins KIMCHI_CODING_AGENT_DIR (and KIMCHI_ENV_ROOT
+		// isolated-home setup pins KIMCHI_CODING_AGENT_DIR (and KIMCHI_PROFILE_ROOT
 		// for the config path), so both derivations land inside the isolated
 		// home — never the enclosing session's or the developer's real one.
 		expect(getAgentConfigDir()).toBe(process.env.KIMCHI_CODING_AGENT_DIR)

@@ -10,13 +10,13 @@ import { runClaude } from "./claude.js"
 import { runCodex } from "./codex.js"
 import { runConfig } from "./config.js"
 import { runCursor } from "./cursor.js"
-import { runEnv } from "./env.js"
 import { runGsd2 } from "./gsd2.js"
 import { runLogin } from "./login.js"
 import { runMcp } from "./mcp.js"
 import { runMemory } from "./memory.js"
 import { runOpenClaw } from "./openclaw.js"
 import { runOpenCode } from "./opencode.js"
+import { runProfile } from "./profile.js"
 import { runResources } from "./resources.js"
 import { runSetup } from "./setup.js"
 import { runSetupTools } from "./setup-tools.js"
@@ -48,9 +48,9 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "mcp", summary: "MCP server utilities (probe and diagnostics)", run: runMcp },
 	{ name: "memory", summary: "Manage persistent memory (list, search, delete, reset)", run: runMemory },
 	{
-		name: "env",
-		summary: "Manage harness environments (list|which|create); `env vars` lists recognised environment variables",
-		run: runEnv,
+		name: "profile",
+		summary: "Manage harness profiles (list|which|create|vars)",
+		run: runProfile,
 	},
 	{ name: "version", summary: "Print the kimchi version", run: runVersion },
 ]

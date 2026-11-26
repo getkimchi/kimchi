@@ -187,4 +187,4 @@ _Avoid_: consent gate, opt-in banner
 
 ## See also
 
-- [Harness environments](environments.md) — non-default environments install their own binary under `<envRoot>/bin/kimchi`; the legacy default keeps the in-place update behavior.
+- [Harness profiles](profiles.md) — update state and backups are scoped per profile; the binary itself updates in place for every profile in v1.

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join, resolve, sep } from "node:path"
 import { pathToFileURL } from "node:url"
-import { envAgentDir } from "../env-root.js"
+import { profileAgentDir } from "../profile-root.js"
 import { COMMANDS } from "./registry.js"
 
 /**
@@ -51,7 +51,7 @@ function isReservedCommandName(name: string): boolean {
 }
 
 function agentDir(): string {
-	return envAgentDir()
+	return profileAgentDir()
 }
 
 /** Cache per agent dir: re-keyed when the env var points elsewhere. */

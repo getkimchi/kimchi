@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
-import { envAgentDir } from "../env-root.js"
+import { profileAgentDir } from "../profile-root.js"
 import { isProjectScopeAllowed } from "../project-scope-trust.js"
 
 /**
@@ -71,7 +71,7 @@ const SETTINGS_KEY = "collapseWork"
 const SETTINGS_CACHE_TTL_MS = 5_000
 
 export function getAgentDir(): string {
-	return envAgentDir()
+	return profileAgentDir()
 }
 
 export function parseCollapseWorkMode(value: unknown): CollapseWorkMode | undefined {
