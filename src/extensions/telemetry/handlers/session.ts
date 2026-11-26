@@ -1,17 +1,20 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { getSideChatHost } from "../../side-chat/harness.js"
-import type { TelemetryContext } from "../session-context.js"
+import type { TelemetryContext, TuiStartupMode } from "../session-context.js"
 
 /**
  * Snapshot of the interactive TUI mode at session_start. Read from the
  * authoritative live renderer via the always-loaded side-chat harness
  * (`isViewportTUI(mode.renderer)`), not from a mutable setting or argv.
+ * The side-chat harness is the one module allowed to touch upstream
+ * `InteractiveMode` internals, so the live renderer is read through its host
+ * rather than through a second patch here.
  *
- * Omitted (undefined) for non-TUI run modes (rpc / json / print — the ACP host
- * among them) and when the live interactive session is unavailable, rather
+ * Omitted (undefined) for non-TUI run modes (rpc / json / print; ACP runs as
+ * rpc) and when the live interactive session is unavailable, rather
  * than guessing `regular`.
  */
-export function resolveTuiStartupMode(ctx: ExtensionContext): "fullscreen" | "regular" | undefined {
+function resolveTuiStartupMode(ctx: ExtensionContext): TuiStartupMode | undefined {
 	if (ctx.mode !== "tui") return undefined
 	const host = getSideChatHost()
 	if (!host) return undefined
