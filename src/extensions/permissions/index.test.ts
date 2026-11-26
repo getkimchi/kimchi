@@ -73,6 +73,7 @@ import permissionsExtension, {
 	checkCompoundCommand,
 	createPermissionsExtension,
 	createWorkerPermissionsExtension,
+	FERMENT_ENABLED_AFTER_START_NOTICE,
 	getPermissionsExtensionOptions,
 	handleCompoundConfirm,
 	notifyFermentActive,
@@ -3648,6 +3649,7 @@ describe("plan mode assumption detection", () => {
 					expect.anything(),
 				)
 				expect(isResourceEnabledMock).toHaveBeenCalledWith(FERMENT_V2_RESOURCE_ID)
+				expect(ctx.ui.notify).not.toHaveBeenCalledWith(FERMENT_ENABLED_AFTER_START_NOTICE, "info")
 				expect(existsSync(planFile)).toBe(true)
 			} finally {
 				rmSync(tmpDir, { recursive: true, force: true })
@@ -3675,6 +3677,52 @@ describe("plan mode assumption detection", () => {
 			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", source: "runtime", initiatedBy: "user" })
 		})
 
+		it("Execute tells the user why the plan runs without Ferment when Ferment was enabled after startup", async () => {
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID || id === COST_PER_PR_RESOURCE_ID)
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const ctx = createMockContext(["Execute the plan locally"])
+
+			await submitPlan(harness, PLAN_V1, ctx)
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(FERMENT_ENABLED_AFTER_START_NOTICE, "info")
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				"Ferment was turned on after kimchi started, so this plan runs without Ferment. Restart kimchi to use Ferment.",
+				"info",
+			)
+			expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN_V1) }),
+				{ triggerTurn: true },
+			)
+		})
+
+		it("Execute logs the Ferment-after-startup notice on the console when no UI is attached", async () => {
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID || id === COST_PER_PR_RESOURCE_ID)
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const ctx = createMockContext(["Execute the plan locally"])
+			// Drop the UI after the menu answers, so the notice path runs headless.
+			const select = ctx.ui.select
+			ctx.ui.select = vi.fn(async (...args: Parameters<typeof select>) => {
+				const choice = await select(...args)
+				Object.assign(ctx, { hasUI: false })
+				return choice
+			})
+			const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {})
+			try {
+				await submitPlan(harness, PLAN_V1, ctx)
+
+				expect(consoleLog).toHaveBeenCalledWith(FERMENT_ENABLED_AFTER_START_NOTICE)
+				expect(ctx.ui.notify).not.toHaveBeenCalledWith(FERMENT_ENABLED_AFTER_START_NOTICE, "info")
+				expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+					expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN_V1) }),
+					{ triggerTurn: true },
+				)
+			} finally {
+				consoleLog.mockRestore()
+			}
+		})
+
 		it("Execute takes the plain plan path and skips a registered V2 executor when Ferment is off", async () => {
 			isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
@@ -3691,6 +3739,22 @@ describe("plan mode assumption detection", () => {
 				{ triggerTurn: true },
 			)
 			expect(ctx.ui.notify).not.toHaveBeenCalledWith("Could not start the approved plan automatically.", "error")
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith(FERMENT_ENABLED_AFTER_START_NOTICE, "info")
+		})
+
+		it("Execute shows no Ferment notice when Ferment is off and no executor is registered", async () => {
+			isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			await harness.fire("session_start", {}, createMockContext([]))
+			const ctx = createMockContext(["Execute the plan locally"])
+
+			await submitPlan(harness, PLAN_V1, ctx)
+
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith(FERMENT_ENABLED_AFTER_START_NOTICE, "info")
+			expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN_V1) }),
+				{ triggerTurn: true },
+			)
 		})
 
 		it("Execute reports a V2 executor failure on the console when no UI is attached", async () => {

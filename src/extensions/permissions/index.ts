@@ -212,6 +212,9 @@ const PLAN_MODE_TOOL_SET = new Set(getToolsForProfile("planning-adhoc").map((too
 const PLAN_MODE_MCP_NOTE =
 	"\n\nPlan mode is active: the `mcp` gateway is restricted to read-only operations (status, search, describe, server instructions, and read-only-qualified tool calls). All non-read-only `mcp__*` server tools are hidden while plan mode is on; read-only `mcp__*` tools remain available. Install/auth actions, explicit reconnects, and write-capable gateway calls are blocked. Hidden tools and mutating operations work again after the user leaves plan mode. If the user's request needs a mutating MCP operation, say it is unavailable in plan mode instead of reporting a connection or login problem."
 
+export const FERMENT_ENABLED_AFTER_START_NOTICE =
+	"Ferment was turned on after kimchi started, so this plan runs without Ferment. Restart kimchi to use Ferment."
+
 // Tools that auto-approve in headless/auto modes without LLM classification.
 // `agent`/`get_subagent_result`/`steer_subagent` are the agents-extension
 // surface — `agent` is the canonical delegation tool, allowed without its own
@@ -1038,7 +1041,13 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		// The setting is read live, so a V2 enable after startup finds no
 		// executor. V2 loads only at startup, so fall through to the plain path
 		// instead of dropping the approved plan.
-		const executor = isResourceEnabled(FERMENT_V2_RESOURCE_ID) ? getFermentV2PlanExecutor(pi) : undefined
+		const fermentEnabled = isResourceEnabled(FERMENT_V2_RESOURCE_ID)
+		const executor = fermentEnabled ? getFermentV2PlanExecutor(pi) : undefined
+		if (fermentEnabled && !executor) {
+			// Without this the user expects a Ferment run and gets a plain one
+			// with no reason given.
+			notifyUser(ctx, FERMENT_ENABLED_AFTER_START_NOTICE, "info")
+		}
 		if (executor) {
 			try {
 				await executor(
