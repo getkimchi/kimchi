@@ -14,6 +14,7 @@ import { formatCount, formatDuration } from "../format.js"
 import { ASSISTANT_OUTPUT_WITHHELD } from "../orchestration/continuation-nudge.js"
 import { getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
 import { PERMISSION_EVENTS } from "../permissions/permissions-events.js"
+import { isFermentRunnable } from "../permissions/policy.js"
 import { holdPromptSummary } from "../prompt-summary.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { registerTodoCommandMutationHandler } from "../todos/command-mutation.js"
@@ -36,6 +37,7 @@ import {
 	FERMENT_V2_COMMAND_NAME,
 	FERMENT_V2_CONTROL_MESSAGE_TYPE,
 	FERMENT_V2_CUSTOM_ENTRY_TYPE,
+	FERMENT_V2_PLAN_ONLY_MESSAGE,
 	FERMENT_V2_TOOL_NAMES,
 	GET_FERMENT_V2_TOOL_NAME,
 	RESPOND_TO_FERMENT_V2_FINDING_TOOL_NAME,
@@ -1226,6 +1228,11 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			if (!approvedPlan) notifyFermentV2ToolsUnavailable(ctx)
 			return "unavailable"
 		}
+		// An approved plan is told by the permissions extension already.
+		if (!isFermentRunnable()) {
+			if (!approvedPlan) ctx.ui.notify(FERMENT_V2_PLAN_ONLY_MESSAGE, "warning")
+			return "unavailable"
+		}
 		if (captured && captured.status !== "complete") {
 			if (!ctx.hasUI) {
 				ctx.ui.notify(
@@ -1432,6 +1439,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const captured = currentFermentV2
 		let terminalWaiter: Promise<void> | undefined
 		if (!captured) return ctx.ui.notify("No Ferment is currently set.", "warning")
+		if (!isFermentRunnable()) return ctx.ui.notify(FERMENT_V2_PLAN_ONLY_MESSAGE, "warning")
 		await serializeUserMutation(sessionId, captured, ctx, "resume", () => {
 			assertCurrentSession(ctx, sessionId)
 			const current = assertUnchanged(captured)

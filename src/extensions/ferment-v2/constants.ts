@@ -13,3 +13,5 @@ export const FERMENT_V2_TOOL_NAMES = [
 	UPDATE_FERMENT_V2_TOOL_NAME,
 	RESPOND_TO_FERMENT_V2_FINDING_TOOL_NAME,
 ] as const
+
+export const FERMENT_V2_PLAN_ONLY_MESSAGE = "Your organization's policy only allows plan mode, so Ferment cannot run."

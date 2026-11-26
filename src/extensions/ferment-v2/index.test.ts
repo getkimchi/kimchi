@@ -22,6 +22,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
+import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -41,6 +42,7 @@ import {
 	FERMENT_V2_CONTEXT_MESSAGE_TYPE,
 	FERMENT_V2_CONTROL_MESSAGE_TYPE,
 	FERMENT_V2_CUSTOM_ENTRY_TYPE,
+	FERMENT_V2_PLAN_ONLY_MESSAGE,
 	FERMENT_V2_TOOL_NAMES,
 	GET_FERMENT_V2_TOOL_NAME,
 	RESPOND_TO_FERMENT_V2_FINDING_TOOL_NAME,
@@ -441,6 +443,86 @@ describe("Ferment V2 extension", () => {
 			"info",
 		)
 		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	describe("plan-only org policy", () => {
+		const PLAN_ONLY = { allowedPermissionModes: { plan: true, default: false, auto: false, yolo: false } }
+
+		afterEach(() => {
+			resetOrgPolicyForTests()
+		})
+
+		it("refuses to start a run and leaves the mode alone", async () => {
+			setPermissionMode(TEST_SESSION_ID, { mode: "plan", initiatedBy: "user", source: "runtime" })
+			await setOrgPolicyForTests(PLAN_ONLY)
+
+			await harness.command("build a cache")
+
+			expect(harness.currentFermentV2()).toBeUndefined()
+			expect(harness.sendMessage).not.toHaveBeenCalled()
+			expect(harness.ui.confirm).not.toHaveBeenCalled()
+			expect(harness.ui.notify).toHaveBeenLastCalledWith(FERMENT_V2_PLAN_ONLY_MESSAGE, "warning")
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", initiatedBy: "user", source: "runtime" })
+		})
+
+		it("refuses to resume a paused run", async () => {
+			await harness.command("ship feature A")
+			await harness.command("pause")
+			expect(harness.currentFermentV2()?.status).toBe("paused")
+			harness.sendMessage.mockClear()
+			await setOrgPolicyForTests(PLAN_ONLY)
+
+			await harness.command("resume")
+
+			expect(harness.currentFermentV2()?.status).toBe("paused")
+			expect(harness.ui.notify).toHaveBeenLastCalledWith(FERMENT_V2_PLAN_ONLY_MESSAGE, "warning")
+			expect(harness.sendMessage).not.toHaveBeenCalled()
+		})
+
+		it("shows the policy message on resume for a run that was active when the policy changed", async () => {
+			await harness.command("ship feature A")
+			expect(harness.currentFermentV2()?.status).toBe("active")
+			harness.sendMessage.mockClear()
+			await setOrgPolicyForTests(PLAN_ONLY)
+			// The org switch clamps the session to plan mode, which pauses the run on bind.
+			setPermissionMode(TEST_SESSION_ID, { mode: "plan", initiatedBy: "user", source: "runtime" })
+
+			await harness.command("resume")
+
+			expect(harness.currentFermentV2()?.status).toBe("paused")
+			expect(harness.ui.notify).toHaveBeenLastCalledWith(FERMENT_V2_PLAN_ONLY_MESSAGE, "warning")
+			expect(harness.sendMessage).not.toHaveBeenCalled()
+			await harness.command("resume")
+			expect(harness.ui.notify).toHaveBeenLastCalledWith(FERMENT_V2_PLAN_ONLY_MESSAGE, "warning")
+		})
+
+		it("does not ask to replace a run", async () => {
+			await harness.command("ship feature A")
+			const first = harness.currentFermentV2()
+			await setOrgPolicyForTests(PLAN_ONLY)
+
+			await harness.command("other goal")
+
+			expect(harness.ui.confirm).not.toHaveBeenCalled()
+			expect(harness.currentFermentV2()?.id).toBe(first?.id)
+			expect(harness.ui.notify).toHaveBeenLastCalledWith(FERMENT_V2_PLAN_ONLY_MESSAGE, "warning")
+		})
+
+		it("does not notify for an approved plan", async () => {
+			await setOrgPolicyForTests(PLAN_ONLY)
+			const executor = getFermentV2PlanExecutor(harness.pi)
+			if (!executor) throw new Error("expected approved-plan executor")
+
+			// The executor wrapper turns "unavailable" into a rejection.
+			await expect(
+				executor(
+					{ objective: "Read the plan.", title: "Cache plan", planText: "# Cache plan", planPath: "/tmp/plan.md" },
+					harness.ctx,
+				),
+			).rejects.toThrow("The approved plan execution tools are unavailable.")
+			expect(harness.ui.notify).not.toHaveBeenCalled()
+			expect(harness.currentFermentV2()).toBeUndefined()
+		})
 	})
 
 	it("registers an approved-plan executor that starts through the Ferment V2 mutation path", async () => {
