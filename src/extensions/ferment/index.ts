@@ -55,6 +55,7 @@ import {
 import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { withWorkingHidden } from "./prompt-ui.js"
+import { markFermentLegacyLoaded } from "./resource.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
@@ -154,6 +155,7 @@ const fermentRequestRenderer: MessageRenderer<FermentRequestMessageDetails> = (m
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime) {
+	markFermentLegacyLoaded()
 	// Wire pi.events into the runtime so createApplyAndPersist can emit domain
 	// events for every state mutation without importing from telemetry.
 	runtime.events = pi.events

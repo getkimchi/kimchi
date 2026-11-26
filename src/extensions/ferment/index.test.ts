@@ -26,6 +26,7 @@ import {
 	getPendingPlanReview,
 	setPendingPlanReview,
 } from "./plan-review.js"
+import { isFermentLegacyLoadedAndEnabled, resetFermentLegacyLoadedForTests } from "./resource.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import {
 	clearActiveFermentId,
@@ -165,6 +166,20 @@ function makeActiveFerment(status: Ferment["status"]): Ferment {
 		updatedAt: "2026-01-01T00:00:00.000Z",
 	}
 }
+
+describe("fermentExtension load marker", () => {
+	afterEach(resetFermentLegacyLoadedForTests)
+
+	it("marks the legacy Ferment as loaded when the factory runs", () => {
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "extensions.ferment-legacy")
+		resetFermentLegacyLoadedForTests()
+		expect(isFermentLegacyLoadedAndEnabled()).toBe(false)
+
+		registerFermentExtension()
+
+		expect(isFermentLegacyLoadedAndEnabled()).toBe(true)
+	})
+})
 
 describe("fermentExtension tips", () => {
 	it("registers a contextual provider backed by the active Ferment state", () => {

@@ -37,7 +37,11 @@ import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { BUILTIN_TOOL_NAMES } from "../agents/personas/agent-types.js"
 import { DEFAULT_AGENTS } from "../agents/personas/default-agents.js"
 import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
-import { FERMENT_LEGACY_RESOURCE_ID } from "../ferment/resource.js"
+import {
+	FERMENT_LEGACY_RESOURCE_ID,
+	markFermentLegacyLoaded,
+	resetFermentLegacyLoadedForTests,
+} from "../ferment/resource.js"
 import { loadRuntimeState } from "../ferment/runtime-state-store.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
@@ -189,8 +193,11 @@ beforeEach(() => {
 	// Legacy Ferment on by default so V1 plan-review paths (menu + start_ferment)
 	// stay exercised; legacy-off tests override this mock in-body.
 	isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID || id === FERMENT_LEGACY_RESOURCE_ID)
+	// As if startup loaded the V1 factory; tests for a mid-session enable reset it.
+	markFermentLegacyLoaded()
 })
 afterEach(() => populateCliArgs([]))
+afterEach(resetFermentLegacyLoadedForTests)
 afterEach(cleanPermissionEnv)
 afterEach(resetProjectScopeTrustForTests)
 
@@ -3254,6 +3261,40 @@ describe("plan mode assumption detection", () => {
 		const options = vi.mocked(ctx.ui.select).mock.calls[0]?.[1] as string[]
 		expect(options).not.toContain("Start as ferment")
 		expect(options).not.toContain("Start as ferment (legacy)")
+	})
+
+	// Regression: legacy turned on in /resources after a start with it off.
+	// The setting says on, but V1 tools and scheduler were never registered.
+	it("review menu hides Start as ferment when legacy is on but V1 was not loaded at startup", async () => {
+		resetFermentLegacyLoadedForTests()
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+
+		const planText =
+			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n## Verification\nRun tests."
+		const ctx = createMockContext(["Rework the plan"])
+		await submitPlan(harness, planText, ctx)
+
+		expect(ctx.ui.select).toHaveBeenCalledWith(
+			"Plan complete. How would you like to proceed?",
+			["Execute the plan locally", "Execute the plan in a remote workspace", "Rework the plan"],
+			expect.anything(),
+		)
+	})
+
+	it("review menu hides Start as ferment when V1 was loaded but legacy was turned off later", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		await harness.fire("session_start", {}, createMockContext([]))
+		isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
+
+		const planText =
+			"# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.\n\n## Verification\nRun tests."
+		const ctx = createMockContext(["Rework the plan"])
+		await submitPlan(harness, planText, ctx)
+
+		const options = vi.mocked(ctx.ui.select).mock.calls[0]?.[1] as string[]
+		expect(options).not.toContain("Start as ferment (legacy)")
+		expect(options).toContain("Rework the plan")
 	})
 
 	it("start_ferment with legacy off warns the user and writes no ferment file", async () => {

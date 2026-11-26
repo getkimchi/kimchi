@@ -13,11 +13,16 @@ vi.mock("../../config.js", () => ({
 	writeHideTips: (...args: unknown[]) => mockWriteHideTips(...args),
 }))
 
-// Control the legacy-Ferment gate for the /tips catalog tests.
-const legacyEnabledState = vi.hoisted(() => ({ on: false }))
+// Control the legacy-Ferment gate for the /tips catalog tests. `on` is the
+// live setting and `loaded` is whether the V1 factory ran at startup.
+const legacyEnabledState = vi.hoisted(() => ({ on: false, loaded: true }))
 vi.mock("../ferment/resource.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../ferment/resource.js")>()
-	return { ...actual, isFermentLegacyEnabled: () => legacyEnabledState.on }
+	return {
+		...actual,
+		isFermentLegacyEnabled: () => legacyEnabledState.on,
+		isFermentLegacyLoadedAndEnabled: () => legacyEnabledState.loaded && legacyEnabledState.on,
+	}
 })
 
 // Capture the catalog the /tips command hands to the panel, with each tip's source.
@@ -263,8 +268,9 @@ describe("tips extension", () => {
 		expect(component?.render(120).join("\n")).toContain("You ran out of credits.")
 	})
 
-	async function openCatalog(on: boolean): Promise<Array<{ source?: string }>> {
+	async function openCatalog(on: boolean, loaded = true): Promise<Array<{ source?: string }>> {
 		legacyEnabledState.on = on
+		legacyEnabledState.loaded = loaded
 		capturedCatalog.tips = []
 		const harness = createHarness({ hasUI: true })
 		harness.start()
@@ -285,6 +291,17 @@ describe("tips extension", () => {
 	it("includes kimchi.ferment catalog entries when legacy is on", async () => {
 		const tips = await openCatalog(true)
 		expect(tips.some((t) => t.source === "kimchi.ferment")).toBe(true)
+	})
+
+	// Regression: legacy enabled mid-session, after startup skipped the V1 factory.
+	it("omits kimchi.ferment catalog entries when legacy is on but V1 was not loaded", async () => {
+		const tips = await openCatalog(true, false)
+		expect(tips.some((t) => t.source === "kimchi.ferment")).toBe(false)
+	})
+
+	it("omits kimchi.ferment catalog entries when legacy was loaded but is now off", async () => {
+		const tips = await openCatalog(false, true)
+		expect(tips.some((t) => t.source === "kimchi.ferment")).toBe(false)
 	})
 
 	it("handles /tips disable command", async () => {

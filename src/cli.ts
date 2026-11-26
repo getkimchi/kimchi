@@ -1023,8 +1023,8 @@ async function cliMain(): Promise<void> {
 				...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 				ideAdapterExtension,
 				// Ferment must see raw input before prompt enrichment rewrites print-mode text.
-				// Same gate as every other V1 entry point, so the factory, the flags
-				// and the plan option cannot disagree about whether V1 is on.
+				// Same gate as the flags. Later entry points (plan option, tips) also
+				// check that this factory ran, through isFermentLegacyLoadedAndEnabled().
 				...(isFermentLegacyEnabled() ? [fermentExtension] : []),
 				questionnaireExtension,
 				// Backend-routed virtual models (`auto`, `auto-beta`, …) learn + display

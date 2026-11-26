@@ -19,6 +19,30 @@ export function isFermentLegacyEnabled(): boolean {
 	return isResourceEnabled(FERMENT_LEGACY_RESOURCE_ID)
 }
 
+// cli.ts decides once at startup whether to load V1. A later /resources
+// toggle changes the setting but cannot load or unload the extension.
+let fermentLegacyLoaded = false
+
+/** The V1 extension factory calls this when it runs. */
+export function markFermentLegacyLoaded(): void {
+	fermentLegacyLoaded = true
+}
+
+/**
+ * Gate for V1 entry points that run after startup, such as the plan-review
+ * option and the V1 tips. The live setting alone is not enough: turning
+ * legacy on mid-session does not register V1 tools or its scheduler. The
+ * setting still counts, so turning legacy off (or an org FORCE_OFF refresh)
+ * hides V1 at once.
+ */
+export function isFermentLegacyLoadedAndEnabled(): boolean {
+	return fermentLegacyLoaded && isFermentLegacyEnabled()
+}
+
+export function resetFermentLegacyLoadedForTests(): void {
+	fermentLegacyLoaded = false
+}
+
 /**
  * The one text that tells a user why legacy Ferment is off and what to do.
  * `subject` names what needed it, such as `--ferment-oneshot` or a command.

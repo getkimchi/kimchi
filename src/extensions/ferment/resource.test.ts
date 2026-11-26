@@ -12,7 +12,14 @@ vi.mock("../../resources/store.js", async (importOriginal) => ({
 }))
 
 import * as store from "../../resources/store.js"
-import { FERMENT_LEGACY_RESOURCE_ID, fermentLegacyOffMessage, isFermentLegacyEnabled } from "./resource.js"
+import {
+	FERMENT_LEGACY_RESOURCE_ID,
+	fermentLegacyOffMessage,
+	isFermentLegacyEnabled,
+	isFermentLegacyLoadedAndEnabled,
+	markFermentLegacyLoaded,
+	resetFermentLegacyLoadedForTests,
+} from "./resource.js"
 
 const realStore = await vi.importActual<typeof import("../../resources/store.js")>("../../resources/store.js")
 
@@ -125,6 +132,78 @@ describe("legacy Ferment under org policy", () => {
 	it.each(["ON", "OFF", "FORCE_ON"] as const)("stays off by default under extensions.ferment %s", async (policy) => {
 		await setOrgPolicyForTests({ resources: { "extensions.ferment": policy } })
 		expect(isFermentLegacyEnabled()).toBe(false)
+	})
+})
+
+// The setting can change after startup, but V1 loads only once. These cover
+// both directions against the real store.
+describe("isFermentLegacyLoadedAndEnabled", () => {
+	let agentDir: string
+
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "ferment-legacy-loaded-"))
+		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+		isResourceEnabledMock.mockReset()
+		isResourceEnabledMock.mockImplementation((id) => realStore.isResourceEnabled(id))
+		resetOrgPolicyForTests()
+		resetFermentLegacyLoadedForTests()
+	})
+
+	afterEach(() => {
+		resetFermentLegacyLoadedForTests()
+		resetOrgPolicyForTests()
+		Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
+		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+		rmSync(agentDir, { recursive: true, force: true })
+	})
+
+	it("is false when V1 was not loaded and legacy is off", () => {
+		expect(isFermentLegacyLoadedAndEnabled()).toBe(false)
+	})
+
+	it("is false when legacy is turned on after a start that did not load V1", () => {
+		store.setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+		expect(isFermentLegacyEnabled()).toBe(true)
+		expect(isFermentLegacyLoadedAndEnabled()).toBe(false)
+	})
+
+	it("is true when V1 was loaded and legacy is on", () => {
+		store.setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+		markFermentLegacyLoaded()
+		expect(isFermentLegacyLoadedAndEnabled()).toBe(true)
+	})
+
+	it("is false when legacy is turned off after V1 was loaded", () => {
+		store.setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+		markFermentLegacyLoaded()
+		store.setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, false)
+		expect(isFermentLegacyLoadedAndEnabled()).toBe(false)
+	})
+
+	it("is false when an org FORCE_OFF on extensions.ferment arrives after V1 was loaded", async () => {
+		store.setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+		markFermentLegacyLoaded()
+		await setOrgPolicyForTests({ resources: { "extensions.ferment": "FORCE_OFF" } })
+		expect(isFermentLegacyLoadedAndEnabled()).toBe(false)
+	})
+
+	it("is false under a legacy FORCE_ON when V1 was not loaded", async () => {
+		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "FORCE_ON" } })
+		expect(isFermentLegacyLoadedAndEnabled()).toBe(false)
+	})
+
+	it("is true under a legacy FORCE_ON when V1 was loaded", async () => {
+		markFermentLegacyLoaded()
+		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "FORCE_ON" } })
+		expect(isFermentLegacyLoadedAndEnabled()).toBe(true)
+	})
+
+	it("resets to not loaded", () => {
+		store.setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+		markFermentLegacyLoaded()
+		resetFermentLegacyLoadedForTests()
+		expect(isFermentLegacyLoadedAndEnabled()).toBe(false)
 	})
 })
 

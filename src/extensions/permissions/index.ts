@@ -54,7 +54,7 @@ import {
 } from "../ferment/elevation-gate.js"
 import { appendRefEntry } from "../ferment/nudge.js"
 import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
-import { isFermentLegacyEnabled } from "../ferment/resource.js"
+import { isFermentLegacyEnabled, isFermentLegacyLoadedAndEnabled } from "../ferment/resource.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { safeSendMessage } from "../ferment/safe-send.js"
 import {
@@ -1612,7 +1612,9 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				}
 				options.push(DECLINE)
 				// Org policy: without an executable mode, ferment cannot run — hide it.
-				if (isFermentRunnable() && isFermentLegacyEnabled()) options.push(START_AS_FERMENT)
+				// Legacy must also be loaded, not only on: a mid-session enable
+				// leaves no V1 tools or scheduler to run the ferment.
+				if (isFermentRunnable() && isFermentLegacyLoadedAndEnabled()) options.push(START_AS_FERMENT)
 
 				void withBlocked(pi.events, "Plan complete", () =>
 					withWorkingHidden(ctx, () =>
