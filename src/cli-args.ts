@@ -507,7 +507,6 @@ export function hasInitGitArg(args: readonly string[]): boolean {
  * `undefined` when legacy is on (including an org FORCE_ON lock) or when no
  * V1-only flag is present, so callers can gate without re-checking the flags. */
 export function fermentLegacyFlagError(args: readonly string[]): string | undefined {
-	if (isFermentLegacyEnabled()) return undefined
 	const flag =
 		mentionsFlag(args, "--ferment-oneshot") || hasFermentOneshotArg(args)
 			? "--ferment-oneshot"
@@ -515,6 +514,7 @@ export function fermentLegacyFlagError(args: readonly string[]): string | undefi
 				? "--init-git"
 				: undefined
 	if (flag === undefined) return undefined
+	if (isFermentLegacyEnabled()) return undefined
 	return fermentLegacyOffMessage(flag)
 }
 
