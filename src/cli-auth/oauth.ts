@@ -237,6 +237,57 @@ interface KimchiCredentialExtras {
 
 type TokenFlowConfig = Omit<KimchiOAuthConfig, "authorizeUrl" | "organizationsUrl">
 
+// ---------------------------------------------------------------------------
+// Shared bearer-expiry rule (schedule from the token actually sent)
+// ---------------------------------------------------------------------------
+
+/** The persisted-credential fields the shared expiry rule needs: the bearer
+ * actually sent to the gateway (`access`), the stored response-derived
+ * schedule (`expires`, already margin-adjusted), and the bearer-selection
+ * flag. No token validation happens here — only a numeric `exp` is read. */
+export type KimchiCredentialExpiryInput = Pick<OAuthCredentials, "access" | "expires"> &
+	Partial<Pick<KimchiCredentialExtras, "useIdToken">>
+
+/** Numeric JWT `exp` converted to milliseconds; undefined for malformed/opaque,
+ * missing, non-numeric, or non-finite metadata. No token validation — this is
+ * for scheduling only, never for trusting the token. */
+function numericBearerExpiryMs(bearer: string): number | undefined {
+	const segments = bearer.split(".")
+	if (segments.length !== 3 || segments[0] === "" || segments[1] === "") return undefined
+	let payload: unknown
+	try {
+		payload = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8"))
+	} catch {
+		return undefined
+	}
+	if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined
+	const exp = (payload as { exp?: unknown }).exp
+	if (typeof exp !== "number" || !Number.isFinite(exp)) return undefined
+	return exp * 1000
+}
+
+/** Before the safety margin: min(response lifetime, selected ID-token exp).
+ * Raw-access-token mode always uses the response lifetime; opaque tokens and
+ * unusable expiry metadata fall back to the response lifetime. */
+function effectiveBearerExpiryMs(input: { responseExpiryMs: number; bearer: string; useIdToken: boolean }): number {
+	if (!input.useIdToken) return input.responseExpiryMs
+	const bearerExpiryMs = numericBearerExpiryMs(input.bearer)
+	if (bearerExpiryMs === undefined) return input.responseExpiryMs
+	return Math.min(input.responseExpiryMs, bearerExpiryMs)
+}
+
+/** Stored expires already includes the response lifetime and margin, so narrow
+ * it only when a usable selected ID-token JWT exp is earlier. Never extends a
+ * stored expiry — the response-derived schedule stays the upper bound. The
+ * persisted `access` is authoritative because it is the credential sent to
+ * the gateway (raw-access-token mode therefore returns `credential.expires`). */
+export function effectiveStoredOAuthExpiryMs(credential: KimchiCredentialExpiryInput): number {
+	if (credential.useIdToken !== true) return credential.expires
+	const bearerExpiryMs = numericBearerExpiryMs(credential.access)
+	if (bearerExpiryMs === undefined) return credential.expires
+	return Math.min(credential.expires, bearerExpiryMs - EXPIRY_MARGIN_MS)
+}
+
 function credentialFromTokenResponse(
 	token: TokenResponseBody,
 	config: TokenFlowConfig,
@@ -281,11 +332,18 @@ function credentialFromTokenResponse(
 		throw new Error("Kimchi sign-in did not return an ID token (KIMCHI_OAUTH_USE_ID_TOKEN=0 to use the access token)")
 	}
 
+	const nowMs = Date.now()
+	const responseExpiryMs = nowMs + token.expires_in * 1000
 	return {
 		type: "oauth",
 		access: bearer,
 		refresh,
-		expires: Date.now() + token.expires_in * 1000 - EXPIRY_MARGIN_MS,
+		expires:
+			effectiveBearerExpiryMs({
+				responseExpiryMs,
+				bearer,
+				useIdToken: config.useIdToken,
+			}) - EXPIRY_MARGIN_MS,
 		...extras,
 	}
 }

@@ -12,10 +12,12 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
+import { resetAcpInteractionRegistriesForTests } from "../../modes/acp/child-interaction-registry.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { isResourceEnabled } from "../../resources/store.js"
+import { registerMcpCallLookup } from "../../shared/mcp-call-lookup.js"
 import { UNRETAINED_PLAN_NOTICE } from "../../shared/planning/plan-markdown.js"
 import {
 	emitPlanReviewDecision,
@@ -41,6 +43,7 @@ import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/con
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
+import type { McpCallFacts } from "../mcp/call-facts.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
@@ -93,6 +96,7 @@ vi.mock("../remote-run/runner.js", async (importOriginal) => {
 const runCloudAgentMock = vi.mocked(runCloudAgent)
 
 import { SessionMemory } from "./session-memory.js"
+import { registerSessionPermissionPrompter } from "./session-prompter-registry.js"
 import type { PermissionModeState, Rule } from "./types.js"
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -374,6 +378,443 @@ async function submitPlan(
 	await new Promise<void>((resolve) => setTimeout(resolve, 0))
 	return result
 }
+
+describe("auto MCP read-only approval", () => {
+	const toolCall = (toolName: string, input: Record<string, unknown>, toolCallId = "tc-mcp") => ({
+		type: "tool_call",
+		toolCallId,
+		toolName,
+		input,
+	})
+
+	beforeEach(() => {
+		vi.mocked(classifyToolCall).mockClear()
+	})
+
+	function autoContext(sessionId = TEST_SESSION_ID): ExtensionContext {
+		const ctx = createClassifierContext()
+		return {
+			...ctx,
+			hasUI: true,
+			sessionManager: { ...ctx.sessionManager, getSessionId: () => sessionId },
+		} as ExtensionContext
+	}
+
+	function collectDecisions(harness: ReturnType<typeof createPermissionsHarness>): unknown[] {
+		const decisions: unknown[] = []
+		harness.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, (payload) => decisions.push(payload))
+		return decisions
+	}
+
+	async function expectAutoAllow(options: {
+		toolName: string
+		input: Record<string, unknown>
+		facts: McpCallFacts
+		sourceDetail: string
+	}) {
+		const { toolName, input, facts, sourceDetail } = options
+		const harness = createPermissionsHarness([toolName], { auto: true })
+		const lookup = vi.fn(() => facts)
+		registerMcpCallLookup(harness.pi, lookup)
+		const decisions = collectDecisions(harness)
+		const ctx = autoContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", toolCall(toolName, input), ctx)
+
+		expect(result).toBeUndefined()
+		expect(lookup).toHaveBeenCalledExactlyOnceWith(toolName, input)
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-mcp",
+				toolName,
+				decision: "accept",
+				sourceDetail,
+				permissionMode: "auto",
+			},
+		])
+	}
+
+	async function expectAnnotatedGetClassified(evidence: "annotation_false" | "none") {
+		const toolName = "get_issue"
+		const input = { id: "LLM-4358" }
+		const harness = createPermissionsHarness([toolName], { auto: true })
+		registerMcpCallLookup(harness.pi, () => ({
+			kind: "tool",
+			via: "direct",
+			server: "jira",
+			tool: "get_issue",
+			evidence,
+		}))
+		const decisions = collectDecisions(harness)
+		const ctx = autoContext()
+		await harness.fire("session_start", {}, ctx)
+
+		expect(await harness.fire("tool_call", toolCall(toolName, input), ctx)).toBeUndefined()
+
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-mcp",
+				toolName,
+				decision: "accept",
+				sourceDetail: "classifier",
+				permissionMode: "auto",
+			},
+		])
+	}
+
+	async function expectCurrentFallback(facts?: McpCallFacts) {
+		const harness = createPermissionsHarness(["get_issue", "update_issue"], { auto: true })
+		if (facts) registerMcpCallLookup(harness.pi, () => facts)
+		const decisions = collectDecisions(harness)
+		const ctx = autoContext()
+		await harness.fire("session_start", {}, ctx)
+
+		expect(await harness.fire("tool_call", toolCall("get_issue", {}, "tc-read"), ctx)).toBeUndefined()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(await harness.fire("tool_call", toolCall("update_issue", {}, "tc-write"), ctx)).toBeUndefined()
+
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-read",
+				toolName: "get_issue",
+				decision: "accept",
+				sourceDetail: "readonly",
+				permissionMode: "auto",
+			},
+			{
+				toolCallId: "tc-write",
+				toolName: "update_issue",
+				decision: "accept",
+				sourceDetail: "classifier",
+				permissionMode: "auto",
+			},
+		])
+	}
+
+	it("auto allows gateway metadata without classifier or prompt", async () => {
+		await expectAutoAllow({
+			toolName: "mcp",
+			input: {},
+			facts: { kind: "metadata", op: "status" },
+			sourceDetail: "mcp_gateway_readonly",
+		})
+	})
+
+	it("auto allows annotated direct gateway and namespace reads without classifier or prompt", async () => {
+		const cases = [
+			{
+				toolName: "jira_get_issue",
+				input: { id: "LLM-4358" },
+				facts: {
+					kind: "tool",
+					via: "direct",
+					server: "jira",
+					tool: "get_issue",
+					evidence: "annotation_true",
+				},
+			},
+			{
+				toolName: "mcp",
+				input: { tool: "get_issue", server: "jira", args: { id: "LLM-4358" } },
+				facts: {
+					kind: "tool",
+					via: "gateway",
+					server: "jira",
+					tool: "get_issue",
+					evidence: "annotation_true",
+				},
+			},
+			{
+				toolName: "mcp__jira",
+				input: { tool: "get_issue", args: { id: "LLM-4358" } },
+				facts: {
+					kind: "tool",
+					via: "namespace",
+					server: "jira",
+					tool: "get_issue",
+					evidence: "annotation_true",
+				},
+			},
+		] as const
+
+		for (const testCase of cases) {
+			await expectAutoAllow({ ...testCase, sourceDetail: "mcp_readonly_annotation" })
+		}
+	})
+
+	it("auto classifies get_* direct tools with annotation_false instead of using name taxonomy", async () => {
+		await expectAnnotatedGetClassified("annotation_false")
+	})
+
+	it("auto classifies get_* direct tools with none evidence instead of using name taxonomy", async () => {
+		await expectAnnotatedGetClassified("none")
+	})
+
+	it("auto keeps name-based approval for unannotated get_* direct tools", async () => {
+		await expectAutoAllow({
+			toolName: "get_issue",
+			input: { id: "LLM-4358" },
+			facts: {
+				kind: "tool",
+				via: "direct",
+				server: "jira",
+				tool: "get_issue",
+				evidence: "name_convention",
+			},
+			sourceDetail: "readonly",
+		})
+	})
+
+	it("deny rules win over MCP auto approval", async () => {
+		const harness = createPermissionsHarness(["mcp"], { auto: true, "deny-tool": "mcp" })
+		const lookup = vi.fn((): McpCallFacts => ({ kind: "metadata", op: "status" }))
+		registerMcpCallLookup(harness.pi, lookup)
+		const decisions = collectDecisions(harness)
+		const ctx = autoContext()
+		await harness.fire("session_start", {}, ctx)
+
+		expect(await harness.fire("tool_call", toolCall("mcp", {}), ctx)).toEqual({
+			block: true,
+			reason: "Denied by rule mcp [cli]",
+		})
+		expect(lookup).not.toHaveBeenCalled()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-mcp",
+				toolName: "mcp",
+				decision: "reject",
+				sourceDetail: "rule",
+				permissionMode: "auto",
+			},
+		])
+	})
+
+	it("allow rules retain precedence over MCP classification", async () => {
+		const harness = createPermissionsHarness(["get_issue"], { auto: true, "allow-tool": "get_issue" })
+		const lookup = vi.fn(
+			(): McpCallFacts => ({
+				kind: "tool",
+				via: "direct",
+				server: "jira",
+				tool: "get_issue",
+				evidence: "annotation_false",
+			}),
+		)
+		registerMcpCallLookup(harness.pi, lookup)
+		const decisions = collectDecisions(harness)
+		const ctx = autoContext()
+		await harness.fire("session_start", {}, ctx)
+
+		expect(await harness.fire("tool_call", toolCall("get_issue", {}), ctx)).toBeUndefined()
+		expect(lookup).not.toHaveBeenCalled()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-mcp",
+				toolName: "get_issue",
+				decision: "accept",
+				sourceDetail: "rule",
+				permissionMode: "auto",
+			},
+		])
+	})
+
+	it("no registered lookup falls back to current name taxonomy and classifier", async () => {
+		await expectCurrentFallback()
+	})
+
+	it.each([
+		["a stale cache entry", { kind: "unresolved", via: "namespace", why: "stale" }],
+		["an unknown server", { kind: "unresolved", via: "namespace", why: "unknown" }],
+		[
+			"an unannotated tool",
+			{ kind: "tool", via: "namespace", server: "readwise", tool: "delete_highlight", evidence: "unannotated" },
+		],
+	] satisfies [
+		string,
+		McpCallFacts,
+	][])("auto classifies a read-looking MCP proxy name with %s", async (_label, facts) => {
+		// `mcp__readwise` looks read-only to the name taxonomy, but the inner tool decides what runs.
+		const toolName = "mcp__readwise"
+		const input = { tool: "delete_highlight", args: { id: 1 } }
+		const harness = createPermissionsHarness([toolName], { auto: true })
+		registerMcpCallLookup(harness.pi, () => facts)
+		const decisions = collectDecisions(harness)
+		const ctx = autoContext()
+		await harness.fire("session_start", {}, ctx)
+
+		expect(await harness.fire("tool_call", toolCall(toolName, input), ctx)).toBeUndefined()
+
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-mcp",
+				toolName,
+				decision: "accept",
+				sourceDetail: "classifier",
+				permissionMode: "auto",
+			},
+		])
+	})
+
+	it("default and plan modes never consult the MCP lookup", async () => {
+		for (const mode of ["default", "plan"] as const) {
+			const harness = createPermissionsHarness(["get_issue"], { plan: mode === "plan" })
+			const lookup = vi.fn(
+				(): McpCallFacts => ({
+					kind: "tool",
+					via: "direct",
+					server: "jira",
+					tool: "get_issue",
+					evidence: "annotation_true",
+				}),
+			)
+			registerMcpCallLookup(harness.pi, lookup)
+			const decisions = collectDecisions(harness)
+			const ctx = autoContext(`mcp-${mode}`)
+			await harness.fire("session_start", {}, ctx)
+
+			expect(await harness.fire("tool_call", toolCall("get_issue", {}), ctx)).toBeUndefined()
+			expect(lookup).not.toHaveBeenCalled()
+			expect(classifyToolCall).not.toHaveBeenCalled()
+			expect(ctx.ui.select).not.toHaveBeenCalled()
+			expect(decisions).toEqual([
+				{
+					toolCallId: "tc-mcp",
+					toolName: "get_issue",
+					decision: "accept",
+					sourceDetail: mode === "plan" ? "plan_readonly" : "readonly",
+					permissionMode: mode,
+				},
+			])
+		}
+	})
+
+	it("yolo mode never consults the MCP lookup", async () => {
+		const harness = createPermissionsHarness(["update_issue"], { yolo: true })
+		const lookup = vi.fn((): McpCallFacts => ({ kind: "metadata", op: "status" }))
+		registerMcpCallLookup(harness.pi, lookup)
+		const ctx = autoContext()
+		await harness.fire("session_start", {}, ctx)
+
+		expect(await harness.fire("tool_call", toolCall("update_issue", {}), ctx)).toBeUndefined()
+		expect(lookup).not.toHaveBeenCalled()
+		expect(classifyToolCall).not.toHaveBeenCalled()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+	})
+
+	it("headless default keeps its current classifier behavior", async () => {
+		const harness = createPermissionsHarness(["update_issue"])
+		const lookup = vi.fn(
+			(): McpCallFacts => ({
+				kind: "tool",
+				via: "direct",
+				server: "jira",
+				tool: "update_issue",
+				evidence: "annotation_true",
+			}),
+		)
+		registerMcpCallLookup(harness.pi, lookup)
+		const decisions = collectDecisions(harness)
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		expect(await harness.fire("tool_call", toolCall("update_issue", {}), ctx)).toBeUndefined()
+		expect(lookup).not.toHaveBeenCalled()
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-mcp",
+				toolName: "update_issue",
+				decision: "accept",
+				sourceDetail: "classifier",
+				permissionMode: "default",
+			},
+		])
+	})
+
+	it("emits mcp_gateway_readonly for metadata approvals", async () => {
+		await expectAutoAllow({
+			toolName: "mcp",
+			input: { server: "jira" },
+			facts: { kind: "metadata", op: "server" },
+			sourceDetail: "mcp_gateway_readonly",
+		})
+	})
+
+	it("emits mcp_readonly_annotation for annotated tool approvals", async () => {
+		await expectAutoAllow({
+			toolName: "jira_get_issue",
+			input: { id: "LLM-4358" },
+			facts: {
+				kind: "tool",
+				via: "direct",
+				server: "jira",
+				tool: "get_issue",
+				evidence: "annotation_true",
+			},
+			sourceDetail: "mcp_readonly_annotation",
+		})
+	})
+
+	it("auto classifies a mixed-case MCP tool with annotation_false instead of using name taxonomy", async () => {
+		const toolName = "getJiraIssue"
+		const input = { id: "LLM-4358" }
+		const harness = createPermissionsHarness([toolName], { auto: true })
+		const lookup = vi.fn(
+			(name: string): McpCallFacts =>
+				name === "getJiraIssue"
+					? { kind: "tool", via: "direct", server: "jira", tool: "getJiraIssue", evidence: "annotation_false" }
+					: { kind: "not_mcp" },
+		)
+		registerMcpCallLookup(harness.pi, lookup)
+		const decisions = collectDecisions(harness)
+		const ctx = autoContext()
+		await harness.fire("session_start", {}, ctx)
+
+		const result = await harness.fire("tool_call", toolCall(toolName, input), ctx)
+
+		expect(result).toBeUndefined()
+		expect(lookup).toHaveBeenCalledExactlyOnceWith("getJiraIssue", input)
+		expect(classifyToolCall).toHaveBeenCalledOnce()
+		expect(ctx.ui.select).not.toHaveBeenCalled()
+		expect(decisions).toEqual([
+			{
+				toolCallId: "tc-mcp",
+				toolName: "getJiraIssue",
+				decision: "accept",
+				sourceDetail: "classifier",
+				permissionMode: "auto",
+			},
+		])
+	})
+
+	it("auto approves a mixed-case MCP tool with annotation_true", async () => {
+		await expectAutoAllow({
+			toolName: "getJiraIssue",
+			input: { id: "LLM-4358" },
+			facts: {
+				kind: "tool",
+				via: "direct",
+				server: "jira",
+				tool: "getJiraIssue",
+				evidence: "annotation_true",
+			},
+			sourceDetail: "mcp_readonly_annotation",
+		})
+	})
+})
 
 describe("host pre-approval (createPermissionsExtension preApproved)", () => {
 	const writeEvent = {
@@ -3919,15 +4360,54 @@ describe("permissions TUI allow-remember", () => {
 
 describe("permissions ACP prompter", () => {
 	beforeEach(() => {
+		resetAcpInteractionRegistriesForTests()
 		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
 		vi.mocked(classifyToolCall).mockClear()
 	})
 
 	afterEach(() => {
+		resetAcpInteractionRegistriesForTests()
 		unregisterAcpPrompter(TEST_SESSION_ID)
+		unregisterAcpPrompter("parent-root")
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 		Reflect.deleteProperty(process.env, `${PERMISSIONS_ENV_KEY}_${TEST_SESSION_ID}`)
 		vi.unstubAllEnvs()
+	})
+
+	it("withdraws a worker's direct prompt and re-evaluates it when the parent's mode changes", async () => {
+		const parent = createPermissionsHarness(["bash"], { default: true })
+		await parent.fire("session_start", {}, { ...createClassifierContext(), mode: "rpc" })
+		const worker = createWorkerHarness(["bash"], { parentSessionId: TEST_SESSION_ID, persona: "explorer" })
+		const workerCtx = createClassifierContext()
+		await worker.fire("session_start", {}, workerCtx)
+		let approve = () => {}
+		const request = vi.fn<ToolPermissionPrompter["request"]>(
+			(req) =>
+				new Promise((resolve) => {
+					approve = () => resolve({ kind: "allow-once" })
+					if (req.signal?.aborted) return resolve({ kind: "aborted" })
+					req.signal?.addEventListener("abort", () => resolve({ kind: "aborted" }), { once: true })
+				}),
+		)
+		const remove = registerSessionPermissionPrompter(TEST_SESSION_ID, {
+			canPromptDirectly: () => true,
+			resolve: () => ({ request }),
+		})
+		const childCall = {
+			type: "tool_call",
+			toolCallId: "direct-child-write",
+			toolName: "bash",
+			input: { command: "touch /tmp/direct-child-output" },
+		}
+		const result = runAsAgentWorker(() => worker.fire("tool_call", childCall, workerCtx))
+		await vi.waitFor(() => expect(request).toHaveBeenCalledOnce())
+		setPermissionMode(TEST_SESSION_ID, { mode: "plan", source: "runtime", initiatedBy: "user" })
+		await new Promise((resolve) => setTimeout(resolve, 100))
+		approve()
+		expect(await result).toMatchObject({ block: true })
+		expect(request).toHaveBeenCalledTimes(1)
+		expect(request.mock.calls[0]?.[0].signal?.aborted).toBe(true)
+		remove()
 	})
 
 	it("uses a registered ACP prompter in headless rpc mode", async () => {
@@ -4046,6 +4526,84 @@ describe("permissions ACP prompter", () => {
 		expect(result).toEqual({ block: true, reason: "Classifier: needs a human (no UI to confirm)" })
 		expect(requests).toEqual([])
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+	})
+
+	it.each(["parent", "child"] as const)("routes a worker through its %s session interaction", async (route) => {
+		const requests: Array<{ route: string; toolCallId: string }> = []
+		const prompter = (source: string): ToolPermissionPrompter => ({
+			request: async (req) => {
+				requests.push({ route: source, toolCallId: req.toolCallId })
+				return { kind: "allow-once" }
+			},
+		})
+		registerSessionPermissionPrompter(TEST_SESSION_ID, {
+			canPromptDirectly: () => route === "child",
+			resolve: () => prompter(route),
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = { ...createClassifierContext(), mode: "rpc" } as unknown as ExtensionContext
+		await harness.fire("session_start", {}, ctx)
+		const result = await runAsAgentWorker(() =>
+			harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "tc-worker", toolName: "bash", input: { command: "touch worker.txt" } },
+				ctx,
+			),
+		)
+
+		expect(result).toBeUndefined()
+		if (route === "parent") {
+			// Unexposed workers use the classifier before parent escalation.
+			// The default safe verdict needs no approval request.
+			expect(requests).toEqual([])
+			expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		} else {
+			expect(requests).toEqual([{ route, toolCallId: "tc-worker" }])
+			expect(classifyToolCall).not.toHaveBeenCalled()
+		}
+	})
+
+	it("switches a worker from parent fallback to its child prompter and back without rebinding", async () => {
+		const requests: string[] = []
+		let direct = false
+		const removeWorker = registerSessionPermissionPrompter(TEST_SESSION_ID, {
+			canPromptDirectly: () => direct,
+			resolve: () => ({
+				request: async () => {
+					requests.push(direct ? "child" : "parent")
+					return { kind: "allow-once" }
+				},
+			}),
+		})
+		const harness = createPermissionsHarness(["bash"])
+		const ctx = { ...createClassifierContext(), mode: "rpc" } as unknown as ExtensionContext
+		await harness.fire("session_start", {}, ctx)
+		const call = () =>
+			runAsAgentWorker(() =>
+				harness.fire(
+					"tool_call",
+					{
+						type: "tool_call",
+						toolCallId: `tc-worker-${requests.length}`,
+						toolName: "bash",
+						input: { command: "touch worker.txt" },
+					},
+					ctx,
+				),
+			)
+
+		await call()
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+		direct = true
+		await call()
+		expect(requests).toEqual(["child"])
+		expect(classifyToolCall).toHaveBeenCalledTimes(1)
+
+		direct = false
+		await call()
+		expect(requests).toEqual(["child"])
+		expect(classifyToolCall).toHaveBeenCalledTimes(2)
+		removeWorker()
 	})
 
 	it("uses the ACP prompter in rpc mode even when hasUI is true (acp wins over terminal)", async () => {

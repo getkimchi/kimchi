@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
@@ -14,6 +14,16 @@ import { installKimchiOAuth } from "../extensions/login/flow.js"
 import { fakeOAuthDeps } from "../modes/acp/ext-methods/oauth-test-utils.js"
 import { syncOAuthCredentialToKimchiProviders } from "../pi-auth.js"
 import { prepareActivePromptKimchiCredential } from "./active-prompt-refresh.js"
+import {
+	FAKE_NOW,
+	HOUR_MS,
+	installOAuthCountingBrowser,
+	jwtWithExp,
+	legacyIdTokenEntry,
+	readAuthStore,
+	STORED_EXPIRES,
+	writeLegacyIdTokenCredential,
+} from "./oauth-legacy-test-utils.js"
 import { shouldReusePreparedOAuthCredential } from "./short-lived-credential-handoff.js"
 
 vi.mock("../pi-auth.js", async (importOriginal) => {
@@ -805,6 +815,263 @@ describe("active prompt Kimchi credential preparation", () => {
 		expect(readStore()["kimchi-dev/openai"]).toMatchObject({ refresh: "rotated-refresh" })
 	})
 
+	// ---------------------------------------------------------------------------
+	// Legacy ID-token bearer recovery (stored schedule outlives the bearer)
+	// ---------------------------------------------------------------------------
+
+	describe("legacy ID-token bearer recovery", () => {
+		beforeEach(() => {
+			// Only Date is faked, matching the issuance tests in cli-auth/oauth.test.ts:
+			// ModelRuntime, the file-backed store, and the fake transports keep real
+			// timers while `Date.now()` stays pinned for exact expiry assertions.
+			vi.useFakeTimers({ toFake: ["Date"] })
+			vi.setSystemTime(FAKE_NOW)
+		})
+
+		afterEach(() => {
+			vi.useRealTimers()
+		})
+
+		it.each([
+			{ description: "expired", bearerExpiryMs: FAKE_NOW - 10 * 60_000 },
+			{ description: "near-expiry renewal boundary", bearerExpiryMs: FAKE_NOW + 5 * 60_000 },
+		])("refreshes a $description legacy ID-token bearer once and persists the corrected expiry", async ({
+			bearerExpiryMs,
+		}) => {
+			writeLegacyIdTokenCredential(paths.authPath, bearerExpiryMs)
+			const replacementExpiry = FAKE_NOW + 25 * HOUR_MS
+			const replacementAccess = jwtWithExp(replacementExpiry)
+			const oauth = fakeOAuthDeps((credential) => ({
+				...credential,
+				access: replacementAccess,
+				expires: replacementExpiry,
+			}))
+			const browser = installOAuthCountingBrowser(oauth)
+
+			await expect(prepareActivePromptKimchiCredential(paths, browser.installOAuth)).resolves.toBe("ready")
+
+			expect(oauth.refreshCalls).toHaveLength(1)
+			expect(browser.browserLoginAttempts()).toBe(0)
+			const stored = readStore()
+			for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+				expect(stored[providerId]).toMatchObject({
+					access: replacementAccess,
+					// Non-rotating grant: the issuer kept the existing refresh token.
+					refresh: "legacy-refresh",
+					expires: replacementExpiry,
+					// Preserved metadata fanned out with the replacement.
+					useIdToken: true,
+					region: "us",
+					audience: "https://llm.kimchi.dev",
+					orgId: "org-legacy",
+					orgName: "Legacy Org",
+				})
+			}
+		})
+
+		it("accepts a replacement shorter than the forced minimum through one re-resolution and a single grant", async () => {
+			writeLegacyIdTokenCredential(paths.authPath, FAKE_NOW - 60_000)
+			// Outside the ordinary five-minute window, but shorter than the forced
+			// minimum implied by the 24h stored schedule: upstream rejects it once
+			// on the forced call, then accepts it without the temporary minimum.
+			const replacementExpiry = FAKE_NOW + 30 * 60_000
+			const replacementAccess = jwtWithExp(replacementExpiry)
+			const oauth = fakeOAuthDeps((credential) => ({
+				...credential,
+				access: replacementAccess,
+				expires: replacementExpiry,
+			}))
+			const browser = installOAuthCountingBrowser(oauth)
+
+			await expect(prepareActivePromptKimchiCredential(paths, browser.installOAuth)).resolves.toBe("ready")
+
+			// The durable refresh already happened on the forced call; the
+			// re-resolution performs no second grant and no browser login.
+			expect(oauth.refreshCalls).toHaveLength(1)
+			expect(browser.browserLoginAttempts()).toBe(0)
+			const stored = readStore()
+			for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+				expect(stored[providerId]).toMatchObject({
+					access: replacementAccess,
+					refresh: "legacy-refresh",
+					expires: replacementExpiry,
+				})
+			}
+		})
+
+		it("recovers an inside-window legacy replacement with exactly two grants and no third after handoff registration", async () => {
+			writeLegacyIdTokenCredential(paths.authPath, FAKE_NOW - 60_000)
+			// Inside the ordinary five-minute window and far below the forced minimum:
+			// the forced call persists it durably, upstream rejects it once under the
+			// forced minimum, and the ordinary re-resolution issues one more grant
+			// before accepting the same replacement.
+			const replacementExpiry = FAKE_NOW + 3 * 60_000
+			const replacementAccess = jwtWithExp(replacementExpiry)
+			const oauth = fakeOAuthDeps((credential) => ({
+				...credential,
+				access: replacementAccess,
+				expires: replacementExpiry,
+			}))
+			const owner: object = {}
+			const installOwnerScopedOAuth = (runtime: ModelRuntime): void => {
+				oauth.installOAuth(runtime)
+				const providerOAuth = runtime.getRegisteredProviderConfig("kimchi-dev")?.oauth
+				const refreshTransport = providerOAuth?.refreshToken
+				if (!providerOAuth || !refreshTransport) throw new Error("expected fake refresh transport")
+				// The wrapper only recognizes this prompt's registered handoff; every
+				// other refresh — including both recovery grants below — reaches the
+				// recording transport untouched.
+				const refreshToken: typeof refreshTransport = (credential, signal) =>
+					shouldReusePreparedOAuthCredential(paths.authPath, credential, owner)
+						? Promise.resolve(credential)
+						: refreshTransport(credential, signal)
+				runtime.registerProvider("kimchi-dev", {
+					oauth: Object.assign({}, providerOAuth, { refreshToken }),
+				})
+			}
+
+			await expect(
+				prepareActivePromptKimchiCredential(paths, installOwnerScopedOAuth, "kimchi-dev/openai", owner),
+			).resolves.toBe("ready")
+
+			// Exactly two grants: the durable forced grant plus the ordinary
+			// re-resolution grant that accepts the still-inside-window replacement.
+			expect(oauth.refreshCalls).toHaveLength(2)
+			const stored = readStore()
+			for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+				expect(stored[providerId]).toMatchObject({
+					access: replacementAccess,
+					// Non-rotating grant: the issuer kept the existing refresh token.
+					refresh: "legacy-refresh",
+					expires: replacementExpiry,
+				})
+			}
+			const persistedCanonical = readStoredCredential("kimchi-dev", paths.authPath)
+			if (persistedCanonical?.type !== "oauth") throw new Error("expected the persisted legacy replacement")
+			expect(shouldReusePreparedOAuthCredential(paths.authPath, persistedCanonical, owner)).toBe(true)
+
+			const runtime = await ModelRuntime.create({ authPath: paths.authPath, modelsPath: null })
+			installOwnerScopedOAuth(runtime)
+			const canonicalOAuth = runtime.getRegisteredProviderConfig("kimchi-dev")?.oauth
+			if (!canonicalOAuth) throw new Error("expected canonical test OAuth")
+			runtime.registerProvider("kimchi-dev/openai", { oauth: canonicalOAuth })
+
+			const requestAuth = await runtime.getAuth("kimchi-dev/openai")
+			expect(requestAuth?.auth.apiKey).toBe(persistedCanonical.access)
+			// The owner-scoped handoff supplied the replacement: no third grant.
+			expect(oauth.refreshCalls).toHaveLength(2)
+		})
+
+		it("fans the corrected replacement to a pre-existing legacy concrete entry", async () => {
+			const legacy = legacyIdTokenEntry(FAKE_NOW - 10 * 60_000)
+			writeFileSync(paths.authPath, JSON.stringify({ "kimchi-dev": legacy, "kimchi-dev/openai": legacy }))
+			const replacementExpiry = FAKE_NOW + 25 * HOUR_MS
+			const replacementAccess = jwtWithExp(replacementExpiry)
+			const oauth = fakeOAuthDeps((credential) => ({
+				...credential,
+				access: replacementAccess,
+				expires: replacementExpiry,
+			}))
+			const browser = installOAuthCountingBrowser(oauth)
+
+			await expect(prepareActivePromptKimchiCredential(paths, browser.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+				"ready",
+			)
+
+			// One refresh recovers the bearer actually sent by the active provider: a
+			// pre-existing concrete entry is stale through its expired ID-token bearer
+			// even though its stored response-derived schedule is still 24h away, so it
+			// is not protected and receives the replacement like the canonical entry.
+			expect(oauth.refreshCalls).toHaveLength(1)
+			expect(browser.browserLoginAttempts()).toBe(0)
+			const stored = readStore()
+			for (const providerId of ["kimchi-dev", "kimchi-dev/openai"]) {
+				expect(stored[providerId]).toMatchObject({
+					access: replacementAccess,
+					// Non-rotating grant: the issuer kept the existing refresh token.
+					refresh: "legacy-refresh",
+					expires: replacementExpiry,
+					// Preserved token-selection and org/region/client/audience metadata.
+					useIdToken: true,
+					region: "us",
+					audience: "https://llm.kimchi.dev",
+					orgId: "org-legacy",
+					orgName: "Legacy Org",
+				})
+			}
+		})
+
+		it("does not continue a prompt on an expired legacy active bearer after a transient canonical failure", async () => {
+			const legacy = legacyIdTokenEntry(FAKE_NOW - 10 * 60_000)
+			writeFileSync(paths.authPath, JSON.stringify({ "kimchi-dev": legacy, "kimchi-dev/openai": legacy }))
+			const oauth = fakeOAuthDeps(() => {
+				throw new Error("fake refresh transport temporarily unavailable")
+			})
+
+			await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth, "kimchi-dev/openai")).resolves.toBe(
+				"oauth_refresh_failed",
+			)
+
+			// The active legacy entry's stored response-derived schedule is still 24h
+			// away, but its selected bearer is expired: it must not be treated as an
+			// independently fresh fallback that bypasses the canonical failure.
+			expect(oauth.refreshCalls).toHaveLength(1)
+			expect(syncOAuthCredentialToKimchiProviders).not.toHaveBeenCalled()
+			expect(readStore()["kimchi-dev/openai"]).toMatchObject({
+				refresh: "legacy-refresh",
+				expires: STORED_EXPIRES,
+			})
+		})
+
+		it("does not force a refresh for a fresh legacy ID-token bearer", async () => {
+			const bearerExpiryMs = FAKE_NOW + 12 * HOUR_MS
+			const legacyAccess = jwtWithExp(bearerExpiryMs)
+			writeLegacyIdTokenCredential(paths.authPath, bearerExpiryMs)
+			const oauth = fakeOAuthDeps((credential) => ({
+				...credential,
+				access: jwtWithExp(FAKE_NOW + 48 * HOUR_MS),
+				expires: FAKE_NOW + 48 * HOUR_MS,
+			}))
+
+			await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
+
+			expect(oauth.refreshCalls).toHaveLength(0)
+			expect(syncOAuthCredentialToKimchiProviders).not.toHaveBeenCalled()
+			expect(readStore()["kimchi-dev"]).toMatchObject({
+				access: legacyAccess,
+				refresh: "legacy-refresh",
+				expires: STORED_EXPIRES,
+			})
+		})
+
+		it("continues the prompt for a legacy ID-token bearer without issuer refresh metadata", async () => {
+			const legacyAccess = jwtWithExp(FAKE_NOW - 60_000)
+			writeFileSync(
+				paths.authPath,
+				JSON.stringify({
+					"kimchi-dev": {
+						type: "oauth",
+						access: legacyAccess,
+						refresh: "legacy-refresh",
+						expires: STORED_EXPIRES,
+						useIdToken: true,
+					},
+				}),
+			)
+			const oauth = fakeOAuthDeps()
+
+			await expect(prepareActivePromptKimchiCredential(paths, oauth.installOAuth)).resolves.toBe("ready")
+
+			expect(oauth.refreshCalls).toHaveLength(0)
+			expect(syncOAuthCredentialToKimchiProviders).not.toHaveBeenCalled()
+			expect(readStore()["kimchi-dev"]).toMatchObject({
+				access: legacyAccess,
+				refresh: "legacy-refresh",
+				expires: STORED_EXPIRES,
+			})
+		})
+	})
+
 	function rotatingOAuthDeps(): ReturnType<typeof fakeOAuthDeps> {
 		return fakeOAuthDeps((credential) => ({
 			...credential,
@@ -839,6 +1106,6 @@ describe("active prompt Kimchi credential preparation", () => {
 	}
 
 	function readStore(): Record<string, Record<string, unknown>> {
-		return JSON.parse(readFileSync(paths.authPath, "utf-8")) as Record<string, Record<string, unknown>>
+		return readAuthStore(paths.authPath)
 	}
 })

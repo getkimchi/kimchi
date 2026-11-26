@@ -25,16 +25,18 @@
 import type { Message, Model } from "@earendil-works/pi-ai"
 import { stream } from "@earendil-works/pi-ai/api/anthropic-messages"
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript"
-import type { ContextEvent, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
+import type { BeforeAgentStartEvent, ContextEvent, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
 import { convertToLlm } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { MEMORY_PRE_REQUEST_TIMEOUT_MS } from "../memory/config.js"
+import { createMemoryExtension } from "../memory/index.js"
 import todosExtension from "../todos/index.js"
 import { __resetTodoStore, applyWriteTodos } from "../todos/store.js"
 
 const SESSION_ID = "cache-replay-session"
 
-type ExtensionHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>
 /** Session-pipeline message shape — the same element type the `context`
  *  event carries (pi-coding-agent does not re-export `AgentMessage` from
  *  its package root). */
@@ -77,27 +79,20 @@ function toolResult(callId: string, text: string, timestamp: number): AgentMessa
 
 // ─── Harness: real extension over a simulated growing session ────────────────
 
-function createHarness() {
-	const handlers = new Map<string, ExtensionHandler[]>()
-	/** Simulated persistent session history. pi.sendMessage persists here,
-	 *  mirroring what the session manager does with hidden custom messages. */
+function createHarness(registerExtension?: (pi: ExtensionAPI) => void) {
+	const mock = createExtensionApi()
 	const history: AgentMessage[] = []
-
-	const pi = {
-		registerTool: vi.fn(),
-		registerCommand: vi.fn(),
-		registerShortcut: vi.fn(),
-		appendEntry: vi.fn(),
-		sendMessage: vi.fn((message: Record<string, unknown>) => {
-			history.push({ role: "custom", timestamp: Date.now(), ...message } as unknown as AgentMessage)
-		}),
-		getActiveTools: vi.fn(() => []),
-		on: vi.fn((event: string, handler: ExtensionHandler) => {
-			const list = handlers.get(event) ?? []
-			list.push(handler)
-			handlers.set(event, list)
-		}),
-	} as unknown as ExtensionAPI
+	let timestamp = 0
+	mock.sendMessage.mockImplementation((message) => {
+		history.push({
+			role: "custom",
+			customType: message.customType,
+			content: message.content,
+			display: message.display,
+			details: message.details,
+			timestamp: timestamp++,
+		} as unknown as AgentMessage)
+	})
 
 	const ctx = createContext({
 		hasUI: false,
@@ -108,16 +103,22 @@ function createHarness() {
 		},
 	})
 
-	todosExtension(pi)
+	todosExtension(mock.api)
+	registerExtension?.(mock.api)
 
 	async function fire(event: string, payload: unknown): Promise<unknown> {
 		let result: unknown
 		let currentPayload = payload
-		for (const handler of handlers.get(event) ?? []) {
+		for (const handler of mock.getHandlers(event)) {
 			result = await handler(currentPayload, ctx)
-			const contextResult = result as { messages?: AgentMessage[] } | undefined
-			if (event === "context" && contextResult?.messages) {
-				currentPayload = { type: "context", messages: contextResult.messages }
+			if (
+				event === "context" &&
+				result &&
+				typeof result === "object" &&
+				"messages" in result &&
+				Array.isArray(result.messages)
+			) {
+				currentPayload = { ...(currentPayload as Record<string, unknown>), messages: result.messages }
 			}
 		}
 		return result
@@ -132,7 +133,7 @@ function createHarness() {
 		return result?.messages ?? history
 	}
 
-	return { history, pi, fire, requestView }
+	return { history, pi: mock.api, fire, requestView }
 }
 
 // ─── Real anthropic-messages wire capture ─────────────────────────────────────
@@ -168,7 +169,10 @@ interface CapturedBody {
 	messages: Array<Record<string, unknown>>
 }
 
-async function captureRequestBody(messages: AgentMessage[]): Promise<CapturedBody> {
+async function captureRequestBody(
+	messages: AgentMessage[],
+	systemPrompt = "You are a cache replay test.",
+): Promise<CapturedBody> {
 	let capturedBody: string | undefined
 	const captureFetch = async (_url: unknown, init: unknown) => {
 		capturedBody = String((init as { body?: unknown })?.body ?? "")
@@ -183,7 +187,7 @@ async function captureRequestBody(messages: AgentMessage[]): Promise<CapturedBod
 			// upstream pi: stream() takes a TranscriptContext; normalizeContext folds the
 			// raw context (systemPrompt/tools here) into the transcript.
 			normalizeContext({
-				systemPrompt: "You are a cache replay test.",
+				systemPrompt,
 				tools: TEST_TOOLS,
 				messages: convertToLlm(messages) as Message[],
 			}),
@@ -403,5 +407,122 @@ describe("anthropic prefix-cache reproduction (persist-on-change)", () => {
 				expect(harness.history).toContain(message)
 			}
 		}
+	})
+})
+
+describe("memory prefix stability", () => {
+	const systemPrompt = "You are a cache replay test."
+
+	function memoryStartEvent(prompt: string): BeforeAgentStartEvent {
+		return {
+			type: "before_agent_start",
+			messageType: "user",
+			systemPrompt,
+			systemPromptOptions: undefined,
+			prompt,
+			images: [],
+		} as unknown as BeforeAgentStartEvent
+	}
+
+	function resultSystemPrompt(result: unknown): string {
+		return (result as { systemPrompt?: string } | undefined)?.systemPrompt ?? systemPrompt
+	}
+
+	async function startMemoryTurn(harness: ReturnType<typeof createHarness>, prompt: string): Promise<string> {
+		return resultSystemPrompt(await harness.fire("before_agent_start", memoryStartEvent(prompt)))
+	}
+
+	beforeEach(() => {
+		__resetTodoStore()
+		vi.stubEnv("KIMCHI_MEMORY_DECISION_GATE", "off")
+	})
+
+	afterEach(() => {
+		vi.useRealTimers()
+		vi.unstubAllEnvs()
+	})
+
+	it("keeps the system body stable and appends delayed memory to history", async () => {
+		vi.useFakeTimers()
+		const search = vi.fn(() => {
+			if (search.mock.calls.length === 1) return new Promise<Array<{ memory?: string }>>(() => {})
+			return Promise.resolve([{ memory: "late fact", score: 0.7 }])
+		})
+		const harness = createHarness((pi) =>
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(pi),
+		)
+		harness.history.push(userMessage("turn 1", 1_000))
+		const pending = harness.fire("before_agent_start", memoryStartEvent("turn 1"))
+		await vi.advanceTimersByTimeAsync(MEMORY_PRE_REQUEST_TIMEOUT_MS + 10)
+		const firstPrompt = resultSystemPrompt(await pending)
+		const first = await captureRequestBody(await harness.requestView(), firstPrompt)
+
+		harness.history.push(userMessage("turn 2", 1_001))
+		const secondPrompt = await startMemoryTurn(harness, "turn 2")
+		expect(secondPrompt).toBe(firstPrompt)
+		await vi.waitFor(() =>
+			expect(harness.history.some((message) => JSON.stringify(message).includes("late fact"))).toBe(true),
+		)
+		const second = await captureRequestBody(await harness.requestView(), secondPrompt)
+
+		expect(second.system).toEqual(first.system)
+		expect(second.tools).toEqual(first.tools)
+		expect(firstDivergence(first, second)).toBe(first.messages.length)
+		const { cacheRead } = simulateCache([first, second])
+		expect(cacheRead[1]).toBeGreaterThan(cacheRead[0])
+	})
+
+	it("feeds context handlers their predecessors' messages", async () => {
+		const seen: string[] = []
+		const harness = createHarness((pi) => {
+			pi.on("context", (event: ContextEvent) => {
+				seen.push("first")
+				return { messages: [...event.messages, userMessage("first-injected", 1_000)] }
+			})
+			pi.on("context", (event: ContextEvent) => {
+				seen.push("second")
+				return { messages: [...event.messages, userMessage("second-injected", 1_001)] }
+			})
+		})
+		const view = await harness.requestView()
+		expect(seen).toEqual(["first", "second"])
+		expect(JSON.stringify(view)).toContain("first-injected")
+		expect(JSON.stringify(view)).toContain("second-injected")
+	})
+
+	it("reuses an immediate digest without later system changes", async () => {
+		const search = vi.fn(async () => [{ memory: "immediate fact", score: 0.7 }])
+		const harness = createHarness((pi) =>
+			createMemoryExtension({ isEnabled: () => true, createSearcher: async () => ({ search }) })(pi),
+		)
+		harness.history.push(userMessage("turn 1", 1_000))
+		const firstPrompt = await startMemoryTurn(harness, "turn 1")
+		expect(firstPrompt).toContain("immediate fact")
+		const first = await captureRequestBody(await harness.requestView(), firstPrompt)
+
+		harness.history.push(userMessage("turn 2", 1_001))
+		const secondPrompt = await startMemoryTurn(harness, "turn 2")
+		expect(secondPrompt).toBe(firstPrompt)
+		const second = await captureRequestBody(await harness.requestView(), secondPrompt)
+		expect(second.system).toEqual(first.system)
+		expect(firstDivergence(first, second)).toBe(first.messages.length)
+	})
+
+	it("keeps identical base prompts with memory disabled", async () => {
+		const search = vi.fn(async () => [{ memory: "unused fact", score: 0.7 }])
+		const harness = createHarness((pi) =>
+			createMemoryExtension({ isEnabled: () => false, createSearcher: async () => ({ search }) })(pi),
+		)
+		harness.history.push(userMessage("turn 1", 1_000))
+		const firstPrompt = await startMemoryTurn(harness, "turn 1")
+		const first = await captureRequestBody(await harness.requestView(), firstPrompt)
+
+		harness.history.push(userMessage("turn 2", 1_001))
+		const secondPrompt = await startMemoryTurn(harness, "turn 2")
+		expect(secondPrompt).toBe(firstPrompt)
+		const second = await captureRequestBody(await harness.requestView(), secondPrompt)
+		expect(second.system).toEqual(first.system)
+		expect(firstDivergence(first, second)).toBe(first.messages.length)
+		expect(search).not.toHaveBeenCalled()
 	})
 })

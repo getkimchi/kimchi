@@ -1,29 +1,17 @@
 import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent"
 import { readStoredCredential } from "@earendil-works/pi-coding-agent"
-import { isInvalidGrantError } from "../cli-auth/oauth.js"
+import { effectiveStoredOAuthExpiryMs, isInvalidGrantError } from "../cli-auth/oauth.js"
 import { clearRefreshedCredentialStale, isCredentialKeyRejected } from "../credential-staleness.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
 import { syncOAuthCredentialToKimchiProviders } from "../pi-auth.js"
 import {
+	hasStoredOAuthRefreshConfiguration,
 	KIMCHI_OAUTH_MINIMUM_VALIDITY_MS,
 	type RefreshAwareCredentialPaths,
 	resolveRefreshAwareKimchiAuth,
 } from "./refresh-aware-credential.js"
 import { rememberPreparedOAuthCredential } from "./short-lived-credential-handoff.js"
-
-/** Only issuer-configured credentials can use Kimchi's refresh preflight. */
-function hasStoredOAuthRefreshConfiguration(credential: ReturnType<typeof readStoredCredential>): boolean {
-	return (
-		credential?.type === "oauth" &&
-		"tokenUrl" in credential &&
-		typeof credential.tokenUrl === "string" &&
-		credential.tokenUrl.length > 0 &&
-		"clientId" in credential &&
-		typeof credential.clientId === "string" &&
-		credential.clientId.length > 0
-	)
-}
 
 /**
  * Refresh canonical Kimchi OAuth state before an active TUI/ACP user prompt.
@@ -55,8 +43,12 @@ export async function prepareActivePromptKimchiCredential(
 		if (storedCredential?.type !== "oauth") return "ready"
 		// Missing issuer metadata is not proof of revocation. Preserve existing
 		// request-time handling for externally-created or legacy OAuth entries.
+		// Freshness follows the bearer actually sent to the gateway, so a legacy
+		// ID-token bearer that expired while its stored response-derived schedule
+		// is still fresh no longer skips resolution (opaque/raw credentials and
+		// records without refresh metadata keep the previous outcome).
 		if (
-			Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= storedCredential.expires &&
+			Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= effectiveStoredOAuthExpiryMs(storedCredential) &&
 			!hasStoredOAuthRefreshConfiguration(storedCredential)
 		) {
 			return "ready"
@@ -96,7 +88,8 @@ export async function prepareActivePromptKimchiCredential(
 					activeCredentialBeforeCanonical?.type === "api_key" ||
 					(activeCredentialBeforeCanonical?.type === "oauth" &&
 						!activeSharesRejectedStoredToken &&
-						Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS < activeCredentialBeforeCanonical.expires)
+						Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS <
+							effectiveStoredOAuthExpiryMs(activeCredentialBeforeCanonical))
 				) {
 					return undefined
 				}
@@ -111,12 +104,15 @@ export async function prepareActivePromptKimchiCredential(
 		// A coalesced peer may have persisted the canonical replacement after
 		// this call started but before its own fan-out finished. Close that gap
 		// without another grant. Never replace a fresh, distinct active entry.
+		// Freshness follows the selected bearer actually sent to the gateway, so
+		// a legacy entry whose stored response-derived schedule outlives an
+		// expired ID-token bearer counts as stale and receives the replacement.
 		const staleActiveCredential =
 			activeCredential?.type === "oauth" &&
 			(activeCredential.access !== credential.access ||
 				activeCredential.refresh !== credential.refresh ||
 				activeCredential.expires !== credential.expires) &&
-			Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= activeCredential.expires
+			Date.now() + KIMCHI_OAUTH_MINIMUM_VALIDITY_MS >= effectiveStoredOAuthExpiryMs(activeCredential)
 		// Recovery must also create a child entry removed by an earlier failed
 		// fan-out. An api_key child is not missing and must retain its identity.
 		const synchronizationNeeded =

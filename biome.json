@@ -72,6 +72,19 @@
 					}
 				}
 			}
+		},
+		{
+			"includes": ["src/modes/acp/server.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noExcessiveLinesPerFile": {
+							"level": "error",
+							"options": { "maxLines": 5000 }
+						}
+					}
+				}
+			}
 		}
 	]
 }

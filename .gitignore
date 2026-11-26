@@ -109,3 +109,6 @@ vendor/superpowers/
 
 # pnpm patch edit-dirs
 .kimchi-worktrees/
+
+# TUI e2e per-file timings written in CI (KIMCHI_TUI_TIMINGS_OUT)
+tui-e2e-timings.json

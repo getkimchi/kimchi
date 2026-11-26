@@ -20,6 +20,7 @@
  */
 
 import { type BulkheadConfig, createEngine, DEFAULT_CONFIG, type GuardrailsEngine } from "@bulkhead-ai/core"
+import { stringDigest } from "./attestation.js"
 import { getManagedRedactionPolicy, getRedactionConfig, type RedactionRenderMode } from "./config.js"
 import { type RedactionPattern, resolveRedactionPolicy } from "./policy.js"
 import { TOKENIZED_ENTITIES, type TokenVault, tokenFor, tokensToMarkers } from "./vault.js"
@@ -1324,7 +1325,24 @@ export interface RedactionMeasurement<T> {
  *   `[<ENTITY>_N]` tokens recorded in the vault (presentation-side
  *   retrieval). Omitted by exports and non-hook callers → markers always.
  */
-export async function redactObjectStringsMeasured<T>(obj: T, vault?: TokenVault): Promise<RedactionMeasurement<T>> {
+/**
+ * A clean-string memo: digests of strings whose full scan (engine + custom
+ * patterns) completed with zero engine failures AND produced no change — a
+ * scan fixed point. A string in the memo is returned unchanged without an
+ * engine scan. Content-keyed on purpose — no hook in the request path
+ * preserves message-object identity, so the memo is the only cache that can
+ * hit. Process-global trust level: a string proven clean once is clean for
+ * every caller that passes the memo (the provider path and the storage
+ * hooks); the strict export path never passes one and keeps its fail-closed
+ * rescan.
+ */
+export type CleanStringMemo = Set<string>
+
+export async function redactObjectStringsMeasured<T>(
+	obj: T,
+	vault?: TokenVault,
+	memo?: CleanStringMemo,
+): Promise<RedactionMeasurement<T>> {
 	const report: RedactionReport = { entities: {}, categories: {}, stringsScanned: 0, engineFailures: 0 }
 	let failureLogged = false
 	// One snapshot per measured pass — the SECRET_FIELD gate in the walker and
@@ -1332,10 +1350,16 @@ export async function redactObjectStringsMeasured<T>(obj: T, vault?: TokenVault)
 	const snapshot = resolveSnapshot()
 	const redactStringMeasured = async (text: string, labelHint?: string): Promise<string> => {
 		if (text.length === 0) return text
+		// Memo hit: this exact string already completed a clean full scan in
+		// this process — skip the engine entirely.
+		const digest = stringDigest(text)
+		if (memo?.has(digest)) return text
 		report.stringsScanned += 1
-		return redactTextCounted(
+		let failed = false
+		const redactedText = await redactTextCounted(
 			text,
 			(err) => {
+				failed = true
 				report.engineFailures += 1
 
 				// One log per invocation: a persistently degraded engine would
@@ -1350,6 +1374,12 @@ export async function redactObjectStringsMeasured<T>(obj: T, vault?: TokenVault)
 			vault,
 			labelHint,
 		)
+		// Admission is a scan FIXED POINT: completed without an engine failure
+		// AND produced no change. A string whose scan redacted something is
+		// NOT clean — every occurrence must be scanned and redacted. A
+		// fail-open string retries on every pass until it completes clean.
+		if (!failed && memo && redactedText === text) memo.add(digest)
+		return redactedText
 	}
 	const redacted = await redactObjectStringsWith(obj, redactStringMeasured, snapshot, (input, output) =>
 		tallyMarkersNet(input, output, report.entities),

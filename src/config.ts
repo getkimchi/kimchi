@@ -173,9 +173,9 @@ export function upgradeLegacyRetrySettings(retry: unknown): RetrySettings | unde
  * This is the explicit, visible default set for new users: once the file
  * exists these values are never rewritten (see the `ensure*` helpers below,
  * which only fill gaps for files predating a given key). `collapseWork` is
- * seeded as `"all"` so a fresh install shows "Collapse work: all" in
+ * seeded as `"off"` so a fresh install shows "Collapse work: off" in
  * settings.json and in the `/settings` panel; readers already fall back to
- * `"all"` when the key is absent, so this only makes the default explicit.
+ * `"off"` when the key is absent, so this only makes the default explicit.
  */
 export function firstRunSettingsDefaults(): Record<string, unknown> {
 	return {
@@ -185,7 +185,7 @@ export function firstRunSettingsDefaults(): Record<string, unknown> {
 		// `retry.provider.timeoutMs`) can't corrupt the shared defaults.
 		retry: structuredClone(RETRY_DEFAULTS),
 		hideThinkingBlock: true,
-		collapseWork: "all",
+		collapseWork: "off",
 	}
 }
 
@@ -1085,6 +1085,38 @@ function updateConfigFile(
 function writeConfigField(key: string, value: unknown, configPath: string): void {
 	updateConfigFile(configPath, (raw) => {
 		raw[key] = value
+	})
+}
+
+type ModelEffortDefaults = Record<string, Record<string, string>>
+
+function parseModelEffortDefaults(value: unknown): ModelEffortDefaults {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+	const defaults: ModelEffortDefaults = Object.create(null)
+	for (const [appMode, rawModels] of Object.entries(value)) {
+		if (!rawModels || typeof rawModels !== "object" || Array.isArray(rawModels)) continue
+		const models = Object.fromEntries(
+			Object.entries(rawModels).filter(([modelId, effort]) => modelId.length > 0 && typeof effort === "string"),
+		) as Record<string, string>
+		if (Object.keys(models).length > 0) defaults[appMode] = models
+	}
+	return defaults
+}
+
+export function readModelEffortDefaults(configPath: string = KIMCHI_CONFIG_PATH): ModelEffortDefaults {
+	return parseModelEffortDefaults(readConfigObject(configPath)?.modelEffortDefaults)
+}
+
+export function writeModelEffortDefault(
+	appMode: string,
+	modelId: string,
+	effort: string,
+	configPath: string = KIMCHI_CONFIG_PATH,
+): void {
+	updateConfigFile(configPath, (raw) => {
+		const defaults = parseModelEffortDefaults(raw.modelEffortDefaults)
+		defaults[appMode] = { ...defaults[appMode], [modelId]: effort }
+		raw.modelEffortDefaults = defaults
 	})
 }
 

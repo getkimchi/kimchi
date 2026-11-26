@@ -179,13 +179,14 @@ import {
 	DefaultResourceLoader,
 	type ExtensionAPI,
 	type ExtensionFactory,
+	type ExtensionUIContext,
 	type InlineExtension,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
 import { resetOrgPolicyForTests } from "../../../org-policy.js"
 import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"
-import { holdAgentWorkerInactivity, runAsAgentWorker } from "../../agent-worker-context.js"
+import { holdAgentWorkerInactivity, registerWorkerParentSession, runAsAgentWorker } from "../../agent-worker-context.js"
 import {
 	createSubagentBashClampExtension,
 	DEFAULT_BASH_TIMEOUT_SECONDS,
@@ -213,6 +214,7 @@ import {
 	runAgent,
 	shouldRegisterDapForTools,
 } from "./agent-runner.js"
+import { registerAgentWorkerSessionAdapter } from "./agent-worker-session.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "./constants.js"
 import { formatRunResultText } from "./result-text.js"
 
@@ -357,7 +359,7 @@ function makeFakeSession({
 
 	// Attach extensionRunner directly so callers can inspect it without destructuring.
 	const fullSession = Object.assign(session, {
-		extensionRunner: { emit: vi.fn().mockResolvedValue(true) },
+		extensionRunner: { emit: vi.fn().mockResolvedValue(true), setUIContext: vi.fn() },
 	})
 	return fullSession
 }
@@ -890,7 +892,7 @@ describe("runAgent — telemetry extension", () => {
 			abortSpy,
 			emitUsage: false,
 			promptAction: async (emit) => {
-				const factory = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories?.[6]
+				const factory = mockCreateWorkerReportExtension.mock.results[0]?.value
 				const childApi = createExtensionApi()
 				await runInlineExtension(factory, childApi.api)
 				const tool = childApi.getRegisteredTool("submit_agent_report")
@@ -1502,6 +1504,44 @@ describe("runAgent — token_budget tool skip (R2)", () => {
 		await resumeAgent(session as unknown as AgentSession, "continue", {})
 
 		expect(emitSpy).toHaveBeenCalledWith({ type: "session_start", reason: "resume" })
+	})
+
+	it("resumeAgent: restores the owning worker's host before its resume lifecycle", async () => {
+		const lifecycle: string[] = []
+		const uiContext = { tag: "worker" } as unknown as ExtensionUIContext
+		const session = {
+			sessionId: "child-session",
+			subscribe: vi.fn(() => () => {}),
+			abort: vi.fn(),
+			steer: vi.fn(),
+			messages: [],
+			extensionRunner: {
+				setUIContext: (ui: unknown) => lifecycle.push(ui === uiContext ? "host-bound" : "unexpected-host"),
+				emit: vi.fn(async () => lifecycle.push("resume")),
+			},
+			getSessionStats: vi.fn().mockReturnValue({
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+			prompt: vi.fn().mockResolvedValue(undefined),
+		}
+		registerWorkerParentSession(session as unknown as AgentSession, "parent")
+		const removeAdapter = registerAgentWorkerSessionAdapter("parent", () => ({
+			bindings: { mode: "rpc", uiContext },
+			cleanup: () => lifecycle.push("cleanup"),
+		}))
+		let cleanup = () => {}
+		try {
+			await resumeAgent(session as unknown as AgentSession, "continue", {
+				onRuntimeCleanupRegistered: (release) => {
+					cleanup = release
+				},
+			})
+			expect(lifecycle).toEqual(["host-bound", "resume"])
+		} finally {
+			cleanup()
+			removeAdapter()
+		}
+		expect(lifecycle).toEqual(["host-bound", "resume", "cleanup"])
 	})
 })
 

@@ -1,8 +1,8 @@
-import { readFileSync, writeFileSync } from "node:fs"
+import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { fullText, STARTUP_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
-import { harnessSettingsPath, launchKimchi, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { launchKimchi, runKimchiSession, setCollapseWorkMode, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -11,12 +11,6 @@ const BETA = "BETA_COLLAPSE_CONTENT"
 const INTERIM = "INTERIM_COLLAPSE_MARKER"
 const FINAL = "DISPLAY_MODE_COMPLETE"
 type DisplayMode = "all" | "tools" | "off"
-
-function seedCollapseWork(mode: DisplayMode, homeDir: string): void {
-	const path = harnessSettingsPath(homeDir)
-	const settings = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>
-	writeFileSync(path, JSON.stringify({ ...settings, collapseWork: mode }, null, "\t"))
-}
 
 function successfulResponses() {
 	return [
@@ -58,7 +52,7 @@ for (const mode of ["all", "tools", "off"] as const) {
 				artifactName: `collapse-work-${mode}-success`,
 				exitMarker,
 				seedHome(homeDir, workDir) {
-					seedCollapseWork(mode, homeDir)
+					setCollapseWorkMode(homeDir, mode)
 					writeFileSync(join(workDir, "a.txt"), `${ALPHA}\n`)
 					writeFileSync(join(workDir, "b.txt"), `${BETA}\n`)
 				},
@@ -101,7 +95,7 @@ for (const mode of ["all", "tools"] as const) {
 			{
 				artifactName: `collapse-work-${mode}-failure`,
 				seedHome(homeDir, workDir) {
-					seedCollapseWork(mode, homeDir)
+					setCollapseWorkMode(homeDir, mode)
 					writeFileSync(join(workDir, "a.txt"), `${ALPHA}\n`)
 				},
 				responses: [

@@ -9,6 +9,7 @@ import { AgentSession, type ExtensionAPI, parseArgs as parsePiArgs } from "@eare
 import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
+	applyDebugPromptsOptOut,
 	dropRetiredMultiModelArg,
 	getCliModeArg,
 	getParsedCliArgs,
@@ -18,11 +19,13 @@ import {
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
+	normalizeBooleanFlagArgs,
 	normalizeResumeIdArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
+import { applyPostMainRunOutcomeExitPolicy } from "./cli-run-outcome-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
 import { createGuidedCodemodeExtension } from "./extensions/codemode/guidance.js"
@@ -158,6 +161,7 @@ import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import refusedTurnsExtension, { applyRefusalNoticeRenderingPatch } from "./extensions/refused-turns.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
+import { createRunOutcomeTracker } from "./extensions/run-outcome.js"
 import sessionMemoryStatsExtension from "./extensions/session-memory-stats.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
@@ -222,6 +226,8 @@ import { syncPiAuth } from "./pi-auth.js"
 import resourcesExtension from "./resources/extension.js"
 import { enabledExtensionFactories, type ManagedExtensionFactory } from "./resources/filter.js"
 import resourceToolBlockerExtension from "./resources/tool-blocker.js"
+import { classifyRunOutcome } from "./run-outcome.js"
+import { observeAgentSessionPrompts } from "./run-outcome-prompt-patch.js"
 import { runSetupWizard, shouldRunSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { applyTelemetryPolicy } from "./telemetry-policy.js"
@@ -341,6 +347,9 @@ async function cliMain(): Promise<void> {
 	// Observes provider transport failures in-process (via message_end) so the
 	// exit path can reclassify a failed run as infrastructure (exit 74).
 	const infrastructureErrorTracker = createInfrastructureErrorTracker()
+	// Detects print/json runs that end without a prompt or final answer.
+	const runOutcomeTracker = createRunOutcomeTracker()
+	if (!IS_ACP_MODE) observeAgentSessionPrompts(AgentSession.prototype, runOutcomeTracker.notePrompt)
 
 	// --- Org policy ---
 	// Resolve the organization's harness policy (permission modes, usage
@@ -792,8 +801,9 @@ async function cliMain(): Promise<void> {
 			if (supportedArgs.length !== originalArgs.length) {
 				console.warn("Warning: --model multi-model is no longer supported; using your default model.")
 			}
+			applyDebugPromptsOptOut(supportedArgs, process.env)
 			const atFileArgs = normalizeAtFileArgs(
-				normalizeResumeIdArgs(stripExperimentalFeaturesArg(supportedArgs)),
+				normalizeResumeIdArgs(normalizeBooleanFlagArgs(stripExperimentalFeaturesArg(supportedArgs))),
 				process.cwd(),
 				isCliAtFileArg,
 			)
@@ -913,6 +923,8 @@ async function cliMain(): Promise<void> {
 				// First so its session_start handler syncs project trust onto the
 				// settings watcher before any other handler reads settings.
 				settingsTrustSyncExtension,
+				// Before every other input/tool_call handler; see RunOutcomeTracker.earlyObserver.
+				runOutcomeTracker.earlyObserver,
 				// Registers `codemode` with kimchi's selection rule. The settings
 				// bootstrap disables pi's replaceable built-in so TUI/print do not
 				// emit a conflict warning; ACP loads no pi built-ins at all.
@@ -1098,6 +1110,7 @@ async function cliMain(): Promise<void> {
 				llmResponseLogExtension,
 				activityExtension,
 				infrastructureErrorTracker.extension,
+				runOutcomeTracker.extension,
 				infrastructureBreakerExtension,
 				interactiveErrorSurfaceExtension,
 				rateLimitNoticeExtension,
@@ -1128,6 +1141,7 @@ async function cliMain(): Promise<void> {
 				process.exit,
 				Boolean(process.exitCode) || hasPrintFlag(rawArgs),
 			)
+			applyPostMainRunOutcomeExitPolicy(classifyRunOutcome(runOutcomeTracker.getSnapshot()))
 		}
 	} catch (err) {
 		await drainPreSessionTelemetry()

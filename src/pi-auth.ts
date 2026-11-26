@@ -60,6 +60,18 @@ export async function clearPiAuth(authPath: string): Promise<void> {
 }
 
 /**
+ * Credential identity for the guarded fan-out: a credential is "the same"
+ * when its access token, refresh token, and expiry match. Unrelated metadata
+ * (region, issuer fields, key ordering) is ignored, matching the existing
+ * definition of a refreshed credential.
+ */
+function isExpectedCanonical(current: unknown, expected: Record<string, unknown>): boolean {
+	if (typeof current !== "object" || current === null) return false
+	const record = current as Record<string, unknown>
+	return record.access === expected.access && record.refresh === expected.refresh && record.expires === expected.expires
+}
+
+/**
  * Fan an OAuth credential out to every Kimchi-managed provider in models.json
  * (kimchi-dev + kimchi-dev/* sub-providers), mirroring how syncPiAuth fans out
  * API keys: sub-providers resolve auth per provider id, so each needs an
@@ -73,18 +85,37 @@ export async function clearPiAuth(authPath: string): Promise<void> {
  * detection). Step-1 registration must keep rotation OFF. When Auth0 rotation
  * is eventually wanted, replace fan-out with a single-entry credential +
  * parent-lookup resolution.
+ *
+ * Guarded fan-out: a caller that resolved a credential through a refresh can
+ * pass that post-refresh snapshot as `options.expectedCanonical`. The snapshot
+ * is re-checked against the canonical kimchi-dev entry inside the same lock
+ * used for the write, so a superseding login or logout that landed in between
+ * wins and the stale snapshot is not resurrected over concrete entries.
  */
 export async function syncOAuthCredentialToKimchiProviders(
 	authPath: string,
 	modelsPath: string,
 	credential: Record<string, unknown>,
 	protectedProviderId?: string,
+	options?: { expectedCanonical?: Record<string, unknown> },
 ): Promise<void> {
 	mkdirSync(dirname(authPath), { recursive: true, mode: 0o700 })
 	const release = await lock(authPath, { realpath: false, retries: 10 })
 	try {
 		const authExists = existsSync(authPath)
 		const credentials = authExists ? (JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, unknown>) : {}
+		// Guarded callers (auth status) pass the post-refresh canonical snapshot
+		// they expect to still own the store. Inside this same critical section,
+		// a missing or different canonical means a newer login or a logout owns
+		// auth.json now: the stale snapshot loses, and no fan-out write happens.
+		// Returning here (before the models.json read) also means a losing guard
+		// never trips over a malformed models.json or other storage errors.
+		if (
+			options?.expectedCanonical &&
+			!isExpectedCanonical(credentials[KIMCHI_PROVIDER_ID], options.expectedCanonical)
+		) {
+			return
+		}
 		const nextCredentials = { ...credentials }
 
 		const models = existsSync(modelsPath)

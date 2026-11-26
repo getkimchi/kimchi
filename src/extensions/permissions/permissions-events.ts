@@ -110,6 +110,8 @@ export type PermissionDecisionSourceDetail =
 	| "bundled_skill_cli"
 	| "bundled_skill_dir_deny"
 	| "readonly"
+	| "mcp_gateway_readonly"
+	| "mcp_readonly_annotation"
 	/** A host-spawned agent's pre-approved, narrowly scoped operation (see PermissionsExtensionOptions). */
 	| "preapproved"
 	| "ferment_internal"

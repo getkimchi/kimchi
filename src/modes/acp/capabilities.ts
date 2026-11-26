@@ -28,9 +28,9 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 //   agent-initiated run (one no client prompt owns), on the same precedent:
 //   not advertised in _meta, sessionId carried in the payload.
 //
-// Capability advertising: every entry here is exposed in
-// `_meta["kimchi.dev"][<key>] === true` so clients can discover the methods
-// the agent supports.
+// Capability advertising: ordinary entries are exposed in
+// `_meta["kimchi.dev"][<key>] === true`. set_model_effort uses only the
+// versioned modelEffort advertisement because dispatch requires that opt-in.
 export const AVAILABLE_EXT_METHODS = {
 	// Agent→client (outbound). The agent calls conn.extMethod on the client.
 	pi_editor: `_${CAPABILITIES_KEY}/pi_editor`,
@@ -41,6 +41,8 @@ export const AVAILABLE_EXT_METHODS = {
 	feedback: `_${CAPABILITIES_KEY}/feedback`,
 	compact: `_${CAPABILITIES_KEY}/compact`,
 	compact_abort: `_${CAPABILITIES_KEY}/compact_abort`,
+	// Keep this literal visible to scripts/check-acp-wire.mjs's HEAD registry scan.
+	set_model_effort: "_kimchi.dev/set_model_effort",
 	memory_status: `_${CAPABILITIES_KEY}/memory_status`,
 	set_memory_enabled: `_${CAPABILITIES_KEY}/set_memory_enabled`,
 
@@ -105,14 +107,19 @@ export const AVAILABLE_EXT_NOTIFICATIONS = {
 } as const
 
 export type AcpExtMethod = keyof typeof AVAILABLE_EXT_METHODS
+type AdvertisedExtMethod = Exclude<AcpExtMethod, "set_model_effort">
 
-export const ADVERTISED_CAPABILITIES: Record<AcpExtMethod, boolean> = Object.keys(AVAILABLE_EXT_METHODS).reduce(
-	(acc, method) => {
-		acc[method as AcpExtMethod] = true
-		return acc
-	},
-	{} as Record<AcpExtMethod, boolean>,
+export const ADVERTISED_CAPABILITIES: Record<AdvertisedExtMethod, boolean> = (
+	Object.keys(AVAILABLE_EXT_METHODS) as AcpExtMethod[]
 )
+	.filter((method): method is AdvertisedExtMethod => method !== "set_model_effort")
+	.reduce(
+		(acc, method) => {
+			acc[method] = true
+			return acc
+		},
+		{} as Record<AdvertisedExtMethod, boolean>,
+	)
 
 export function getClientSupportsMethod(capabilities: ClientCapabilities | undefined, method: AcpExtMethod): boolean {
 	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
@@ -176,6 +183,17 @@ export const PR_MONITORING_CAPABILITY = "prMonitoring"
 export function getClientOptedIntoPRMonitoring(capabilities: ClientCapabilities | undefined): boolean {
 	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
 	return flags?.[PR_MONITORING_CAPABILITY] === true && getClientOptedIntoBackgroundRuns(capabilities)
+}
+
+/** Versioned opt-in for App-mode-scoped model Effort persistence. ACP's
+ * completed Model Config Option Category RFD covers placement, not a vendor
+ * default write; there is no ACP v2 RFD for this preference operation. */
+export const MODEL_EFFORT_CAPABILITY = "modelEffort"
+export const MODEL_EFFORT_VERSION = 1
+
+export function getClientOptedIntoModelEffort(capabilities: ClientCapabilities | undefined): boolean {
+	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, unknown> | undefined
+	return flags?.[MODEL_EFFORT_CAPABILITY] === MODEL_EFFORT_VERSION
 }
 
 /**

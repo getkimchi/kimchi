@@ -7,8 +7,8 @@ import { getParsedCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { resolveFermentsDir } from "../../ferment/store.js"
 import { isExistingDirectory } from "../../fs-paths.js"
-import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { isResourceEnabled } from "../../resources/store.js"
+import { lookupMcpCall } from "../../shared/mcp-call-lookup.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
 import { derivePlanTitle, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
@@ -71,6 +71,7 @@ import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/con
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { createBlockedDialogActivity, withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
+import { decideAutoMcpCall } from "../mcp/auto-policy.js"
 import { shouldSuppressFermentModeTools } from "../print-mode.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
@@ -158,6 +159,7 @@ import {
 } from "./prompts.js"
 import { evaluateRules, parseRules, stringifyRule } from "./rules.js"
 import { SessionMemory } from "./session-memory.js"
+import { canPromptThroughSession, resolveSessionPermissionPrompter } from "./session-prompter-registry.js"
 import {
 	isCompoundCommand,
 	isHardBlockedBash,
@@ -263,23 +265,20 @@ async function withPermissionBlocked<T>(
 }
 
 function canPrompt(ctx: ExtensionContext, worker = false): boolean {
+	// A session host can explicitly expose a direct interaction. An unexposed
+	// worker uses the classifier-then-parent-escalation flow so its request
+	// carries origin metadata and lifecycle reporting to the parent surface.
+	if (canPromptThroughSession(ctx)) return true
 	if (worker || isAgentWorker()) return false
-
-	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
-	if (ctx.mode === "rpc" && acpPrompter) return true
-
-	if (ctx.hasUI) return true
-	return false
+	return ctx.hasUI
 }
 
 function resolvePrompter(ctx: ExtensionContext, worker = false): ToolPermissionPrompter | undefined {
+	const sessionPrompter = resolveSessionPermissionPrompter(ctx)
+	if (sessionPrompter) return sessionPrompter
 	if (worker || isAgentWorker()) return undefined
 
-	const acpPrompter = getAcpPrompter(ctx.sessionManager.getSessionId())
-	if (ctx.mode === "rpc" && acpPrompter) return acpPrompter
-
-	if (ctx.hasUI) return terminalPrompter(ctx)
-	return undefined
+	return ctx.hasUI ? terminalPrompter(ctx) : undefined
 }
 
 /**
@@ -569,6 +568,11 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	let lastModeChangeAt = Number.NEGATIVE_INFINITY
 	let unsubscribePermissionFlagController: (() => void) | undefined
 	let unregisterMainPolicy: (() => void) | undefined
+	const registerParentAbort: ConfirmOptions["registerParentAbort"] = isWorker
+		? (controller, toolCallId) => {
+				return registerEscalationAbort(options.parentSessionId, toolCallId, controller, options.agentId)
+			}
+		: undefined
 	let workerMode: PermissionModeState | undefined
 	let workerRules: Rule[] | undefined
 	let workerDangerBypass: boolean | undefined
@@ -2205,6 +2209,14 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					return undefined
 				}
 
+				// MCP names are case-sensitive, so look them up with the original tool name, not the lowercased version.
+				const autoMcpDecision =
+					mode === "auto" ? decideAutoMcpCall(lookupMcpCall(pi, event.toolName, input)) : undefined
+				if (autoMcpDecision?.action === "allow") {
+					emitToolDecision(pi, event, mode, "accept", autoMcpDecision.sourceDetail)
+					return undefined
+				}
+
 				// In default mode, a questionnaire call means the agent wants to plan —
 				// auto-promote the session to plan mode so the rest of the conversation
 				// runs under the right tool set instead of silently approving here.
@@ -2218,7 +2230,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					emitToolDecision(pi, event, mode, "accept", "questionnaire_promotion")
 					return undefined
 				}
-				if (isReadOnlyTool(toolName)) {
+				if (autoMcpDecision?.action !== "classify" && isReadOnlyTool(toolName)) {
 					emitToolDecision(pi, event, mode, "accept", "readonly")
 					return undefined
 				}
@@ -2285,7 +2297,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 								// toast the parent on every subagent run.
 								if (ctx.hasUI && !classifierWarnings.has(health.notifyKey)) {
 									classifierWarnings.add(health.notifyKey)
-									ctx.ui.notify(health.message, "warning")
+									reportClassifierNotice(ctx, health.message, "warning")
 								}
 							} else if (promptAvailable) {
 								// The health line is for the prompt path only: without a
@@ -2357,6 +2369,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 							allRules,
 							permissionMode: mode,
 							promptQueue,
+							registerParentAbort,
 						})
 						const settledOutcome = settleWorkerAbort(result)
 						if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
@@ -2403,6 +2416,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 						permissionMode: mode,
 						worker: isWorker,
 						promptQueue,
+						registerParentAbort,
 					})
 					const settledOutcome = settleWorkerAbort(result)
 					if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
@@ -2426,6 +2440,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 								permissionMode: mode,
 								worker: isWorker,
 								promptQueue,
+								registerParentAbort,
 							})
 							const settledOutcome = settleWorkerAbort(result)
 							if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
@@ -2443,6 +2458,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					permissionMode: mode,
 					worker: isWorker,
 					promptQueue,
+					registerParentAbort,
 				})
 				const settledOutcome = settleWorkerAbort(result)
 				if (promptAbortedByModeChange(settledOutcome)) continue // mode changed, re-evaluate
@@ -2514,6 +2530,9 @@ interface ConfirmOptions {
 	/** Override the resolved prompter — escalated subagent calls forward to the
 	 *  parent session's surface instead of the worker's (nonexistent) UI. */
 	prompter?: ToolPermissionPrompter
+	/** Link a direct worker prompt to its parent's mode-change cancellations.
+	 *  Escalated prompts already register through the parent surface. */
+	registerParentAbort?: (controller: AbortController, toolCallId: string) => () => void
 	/** Prebuilt choices for the prompt (escalated prompts carry
 	 *  "for this subagent" remember labels). */
 	choices?: PermissionChoice[]
@@ -2538,14 +2557,34 @@ async function runQueuedPrompt<T extends { kind: string }>(
 	}
 }
 
+function createConfirmAbort(
+	opts: ConfirmOptions,
+	toolCallId: string | undefined,
+): {
+	controller: AbortController
+	cleanup: () => void
+} {
+	const controller = new AbortController()
+	const unlinkAbort = linkAbortSignal(opts.ctx.signal, controller)
+	opts.activeAborts.add(controller)
+	opts.promptToolCalls.set(controller, toolCallId ?? "")
+	const unregister = opts.prompter ? undefined : opts.registerParentAbort?.(controller, toolCallId ?? "")
+	return {
+		controller,
+		cleanup: () => {
+			unregister?.()
+			unlinkAbort()
+			opts.activeAborts.delete(controller)
+			opts.promptToolCalls.delete(controller)
+		},
+	}
+}
+
 async function handleConfirm(
 	event: ToolCallEvent,
 	opts: ConfirmOptions,
 ): Promise<{ block: true; reason: string } | "aborted" | undefined> {
-	const abort = new AbortController()
-	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
-	opts.activeAborts.add(abort)
-	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
+	const { controller: abort, cleanup } = createConfirmAbort(opts, event.toolCallId)
 	try {
 		const prompter = opts.prompter ?? resolvePrompter(opts.ctx, opts.worker)
 		if (!prompter) {
@@ -2604,9 +2643,7 @@ async function handleConfirm(
 			return applyApprovalOutcome(outcome, opts.session)
 		})
 	} finally {
-		unlinkAbort()
-		opts.activeAborts.delete(abort)
-		opts.promptToolCalls.delete(abort)
+		cleanup()
 	}
 }
 
@@ -2614,10 +2651,7 @@ export async function handleCompoundConfirm(
 	event: ToolCallEvent,
 	opts: ConfirmOptions & { subcommands: string[] },
 ): Promise<{ block: true; reason: string } | "aborted" | undefined> {
-	const abort = new AbortController()
-	const unlinkAbort = linkAbortSignal(opts.ctx.signal, abort)
-	opts.activeAborts.add(abort)
-	opts.promptToolCalls.set(abort, event.toolCallId ?? "")
+	const { controller: abort, cleanup } = createConfirmAbort(opts, event.toolCallId)
 	try {
 		const prompter = resolvePrompter(opts.ctx, opts.worker)
 		if (!prompter) {
@@ -2759,9 +2793,7 @@ export async function handleCompoundConfirm(
 			return { block: true, reason: "Declined by user" }
 		})
 	} finally {
-		unlinkAbort()
-		opts.activeAborts.delete(abort)
-		opts.promptToolCalls.delete(abort)
+		cleanup()
 	}
 }
 

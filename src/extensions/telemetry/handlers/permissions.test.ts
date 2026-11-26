@@ -62,6 +62,8 @@ describe("handleToolDecision", () => {
 			["no_ui", "config"],
 			["bundled_skill_cli", "config"],
 			["bundled_skill_dir_deny", "config"],
+			["mcp_gateway_readonly", "config"],
+			["mcp_readonly_annotation", "config"],
 			["classifier", "hook"],
 			["allow_once", "user_temporary"],
 			["allow_remember_wildcard", "user_permanent"],
@@ -92,6 +94,39 @@ describe("handleToolDecision", () => {
 		for (const [sourceDetail, decisionSource] of cases) {
 			const event = events.find((e) => e.attrs.source_detail === sourceDetail)
 			expect(event?.attrs.decision_source).toBe(decisionSource)
+		}
+	})
+
+	it("exports both MCP source details with config decision_source", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		for (const sourceDetail of ["mcp_gateway_readonly", "mcp_readonly_annotation"] as const) {
+			handleToolDecision(ctx, {
+				toolCallId: `tc-${sourceDetail}`,
+				toolName: "mcp",
+				decision: "accept",
+				sourceDetail,
+				permissionMode: "auto",
+			})
+		}
+
+		ctx.flushLogBuffer()
+
+		await vi.waitFor(() => {
+			const events = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).filter(
+				(e) => e.eventName === TOOL_DECISION_EVENT,
+			)
+			expect(events).toHaveLength(2)
+		})
+		const events = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).filter(
+			(e) => e.eventName === TOOL_DECISION_EVENT,
+		)
+		for (const sourceDetail of ["mcp_gateway_readonly", "mcp_readonly_annotation"]) {
+			expect(events.find((event) => event.attrs.source_detail === sourceDetail)?.attrs).toMatchObject({
+				source_detail: sourceDetail,
+				decision_source: "config",
+				decision: "accept",
+				permission_mode: "auto",
+			})
 		}
 	})
 
@@ -286,5 +321,25 @@ describe("handleToolDecision", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0))
 		const events = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>)
 		expect(events.find((e) => e.eventName === TOOL_DECISION_EVENT)).toBeUndefined()
+	})
+
+	it("preserves mixed-case MCP tool names in telemetry", async () => {
+		const ctx = new TelemetryContext(makeConfig())
+		handleToolDecision(ctx, {
+			toolCallId: "tc-mcp",
+			toolName: "getJiraIssue",
+			decision: "accept",
+			sourceDetail: "mcp_readonly_annotation",
+			permissionMode: "auto",
+		})
+
+		ctx.flushLogBuffer()
+
+		let event: ReturnType<typeof logEvents>[number] | undefined
+		await vi.waitFor(() => {
+			event = logEvents(globalThis.fetch as ReturnType<typeof vi.fn>).find((e) => e.eventName === TOOL_DECISION_EVENT)
+			expect(event).toBeDefined()
+		})
+		expect(event?.attrs.tool_name).toBe("getJiraIssue")
 	})
 })
