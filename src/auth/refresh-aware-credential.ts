@@ -1,6 +1,6 @@
 import { type CredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelsError } from "@earendil-works/pi-ai/utils/models-error"
-import { ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent"
+import { ModelRuntime, type ModelRuntimeAuthOverrides, readStoredCredential } from "@earendil-works/pi-coding-agent"
 import { effectiveStoredOAuthExpiryMs } from "../cli-auth/oauth.js"
 import { KIMCHI_PROVIDER_ID } from "../kimchi-provider.js"
 
@@ -123,6 +123,7 @@ export async function resolveRefreshAwareKimchiAuth(
 	paths: RefreshAwareCredentialPaths,
 	installOAuth: (runtime: ModelRuntime, owner?: object) => void,
 	owner?: object,
+	getAuthOverrides?: ModelRuntimeAuthOverrides,
 ): Promise<RefreshAwareCredentialResolution> {
 	try {
 		const modelRuntime = await ModelRuntime.create({
@@ -134,13 +135,20 @@ export async function resolveRefreshAwareKimchiAuth(
 		})
 		installOAuth(modelRuntime, owner)
 		const before = readCanonicalCredential(paths.authPath)
-		const forcedMinimumMs = forcedLegacyRefreshMinimumMs(before)
+		// A caller-forced minimum (exact rejected access token) wins; otherwise
+		// the legacy re-derivation above supplies a one-shot minimum when the
+		// stored schedule outlives the selected bearer. Either way a forced
+		// minimum only applies when it is non-undefined.
+		const forcedMinimumMs = getAuthOverrides?.minOAuthValidityMs ?? forcedLegacyRefreshMinimumMs(before)
 		let auth: RefreshAwareAuth
 		try {
-			auth =
-				forcedMinimumMs === undefined
-					? await modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
-					: await modelRuntime.getAuth(KIMCHI_PROVIDER_ID, { minOAuthValidityMs: forcedMinimumMs })
+			if (getAuthOverrides) {
+				auth = await modelRuntime.getAuth(KIMCHI_PROVIDER_ID, getAuthOverrides)
+			} else if (forcedMinimumMs === undefined) {
+				auth = await modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
+			} else {
+				auth = await modelRuntime.getAuth(KIMCHI_PROVIDER_ID, { minOAuthValidityMs: forcedMinimumMs })
+			}
 		} catch (error) {
 			// Upstream applies the forced minimum after the refresh too and
 			// rejects a valid shorter replacement. That refresh is already
@@ -149,9 +157,11 @@ export async function resolveRefreshAwareKimchiAuth(
 			// ordinary re-resolution issue one additional grant before accepting
 			// it; one outside the window is accepted with no second grant. Either
 			// way, the short-lived-credential handoff is registered only after this
-			// resolver returns, so it cannot suppress either grant. No other error —
-			// invalid grants, transient failures, store errors — is caught or
-			// remapped here.
+			// resolver returns, so it cannot suppress either grant. This applies
+			// to caller-forced rejection refreshes as well: the rejected grant is
+			// retired either way and the durable replacement should be accepted.
+			// No other error — invalid grants, transient failures, store errors —
+			// is caught or remapped here.
 			if (forcedMinimumMs === undefined || !isForcedRefreshTooSoonError(error)) throw error
 			auth = await modelRuntime.getAuth(KIMCHI_PROVIDER_ID)
 		}

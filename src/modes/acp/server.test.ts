@@ -235,6 +235,7 @@ import { notifyPlanReviewClosed } from "../../shared/planning/plan-review-bus.js
 import { THINKING_LEVEL_DESCRIPTIONS } from "../../thinking-levels.js"
 import { AVAILABLE_EXT_METHODS, AVAILABLE_EXT_NOTIFICATIONS, CAPABILITIES_KEY } from "./capabilities.js"
 import { COMPACT_COMMAND_ENTRY_TYPE } from "./commands.js"
+import { fakeOAuthDeps } from "./ext-methods/oauth-test-utils.js"
 import type { SsoFlowManager } from "./ext-methods/sso.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
@@ -8869,6 +8870,144 @@ describe("terminal turn errors surface instead of silent end_turn", () => {
 		expect((err as Error).message).toMatch(/401/)
 		// Structured branch signal: clients route to login UI off `data`, not text.
 		expect((err as { data?: unknown }).data).toEqual({ kind: "auth" })
+	})
+
+	// Incident regression: a canonical Kimchi OAuth token with far-future
+	// expiry receives a raw nginx HTML 401 (outside the proactive five-minute
+	// window, so nothing refreshes on the first prompt). The turn-time 401
+	// persists an exact rejection for the submitted token; the NEXT prompt's
+	// preflight must force exactly one refresh of that token, persist the
+	// replacement before the second model request, and clear the old mark.
+	it("refreshes the exact rejected OAuth token on the next prompt after a turn-time nginx 401 outside the refresh window", async () => {
+		resetCredentialStalenessForTests()
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-incident-rejection-refresh-"))
+		const authPath = join(agentDir, "auth.json")
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		// Real ModelRuntime OAuth refresh fake: rotate the grant on the token
+		// endpoint, recording every refresh call for preflight causality.
+		const oauth = fakeOAuthDeps((credential) => ({
+			...credential,
+			access: "replacement-access",
+			refresh: "rotated-refresh",
+			expires: credential.expires + 1_000,
+		}))
+		// Swap the production installKimchiOAuth preflight install for the fake
+		// registration so the real resolver/refresh path stays hermetic.
+		const realPrepare = vi.mocked(prepareActivePromptKimchiCredential).getMockImplementation()
+		if (!realPrepare) throw new Error("expected the default prepareActivePromptKimchiCredential implementation")
+		vi.mocked(prepareActivePromptKimchiCredential).mockImplementation(
+			async (paths, _install, activeProviderId, owner) =>
+				realPrepare(paths, oauth.installOAuth, activeProviderId, owner),
+		)
+		try {
+			writeFileSync(
+				authPath,
+				JSON.stringify({
+					"kimchi-dev": {
+						type: "oauth",
+						tokenUrl: "https://issuer.invalid/oauth/token",
+						clientId: "fake-issuer-client",
+						access: "incident-rejected-access",
+						refresh: "original-refresh",
+						// At least an hour away: well outside the proactive window, so
+						// only the exact rejection may force the second refresh.
+						expires: Date.now() + 3_600_000,
+					},
+				}),
+			)
+			writeFileSync(
+				authPath.replace("auth.json", "models.json"),
+				JSON.stringify({ providers: { "kimchi-dev/openai": {} } }),
+			)
+			const fake = new FakeAgentSession("session-incident-401-then-refresh")
+			fake.model = {
+				provider: "kimchi-dev",
+				id: "some-model",
+				name: "Some Model",
+				input: ["text"],
+				contextWindow: 200_000,
+			}
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+
+			// The raw nginx body a misconfigured gateway returns: multiline HTML,
+			// no axios wrapper text, just the 401 title.
+			const nginxUnauthorized = [
+				"<html>",
+				"<head><title>401 Authorization Required</title></head>",
+				"<body>",
+				"<center><h1>401 Authorization Required</h1></center>",
+				"<hr><center>nginx</center>",
+				"</body>",
+				"</html>",
+			].join("\n")
+
+			// First (scheduled-style) prompt: no rejection is recorded yet, so the
+			// preflight must not refresh anything — the turn simply dies on the 401.
+			fake.promptImpl = async () => {
+				fake.emit({ type: "agent_start" })
+				fake.emit(assistantErrorEvent(nginxUnauthorized))
+				fake.emit(agentEnd())
+			}
+			const firstError = await agent
+				.prompt({ sessionId: "session-incident-401-then-refresh", prompt: [{ type: "text", text: "first attempt" }] })
+				.catch((e) => e)
+			expect(firstError).toMatchObject({ code: -32000 })
+			expect((firstError as { data?: unknown }).data).toEqual({ kind: "auth" })
+			// Provider detail (the raw nginx HTML) is preserved in the message.
+			expect((firstError as Error).message).toMatch(/401 Authorization Required/)
+			expect((firstError as Error).message).toMatch(/nginx/)
+			// Preflight causality part one: zero refresh grants on the first prompt.
+			expect(oauth.refreshCalls).toHaveLength(0)
+			// The actual submitted token is persisted as exactly rejected.
+			expect(isCredentialStale("incident-rejected-access", "kimchi-dev")).toBe(true)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("incident-rejected-access", "kimchi-dev")).toBe(true)
+
+			// Second prompt: capture the persisted canonical bearer at model-request
+			// time to prove the replacement is what the request would submit.
+			let accessAtSecondModelRequest: string | undefined
+			fake.promptImpl = async () => {
+				const stored = JSON.parse(readFileSync(authPath, "utf-8")) as {
+					"kimchi-dev"?: { access?: string }
+				}
+				accessAtSecondModelRequest = stored["kimchi-dev"]?.access
+				fake.emit({ type: "agent_start" })
+				fake.emit(assistantSuccessEvent())
+				fake.emit(agentEnd())
+			}
+			await expect(
+				agent.prompt({ sessionId: "session-incident-401-then-refresh", prompt: [{ type: "text", text: "retry" }] }),
+			).resolves.toMatchObject({ stopReason: "end_turn" })
+
+			// Preflight causality part two: exactly one grant total, rotating the
+			// actual rejected token rather than greeting an expired one.
+			expect(oauth.refreshCalls).toHaveLength(1)
+			expect(oauth.refreshCalls[0]).toMatchObject({
+				access: "incident-rejected-access",
+				refresh: "original-refresh",
+			})
+			// The replacement bearer was persisted before the second model request.
+			expect(accessAtSecondModelRequest).toBe("replacement-access")
+			const stored = JSON.parse(readFileSync(authPath, "utf-8")) as {
+				"kimchi-dev"?: { access?: string; refresh?: string }
+			}
+			expect(stored["kimchi-dev"]).toMatchObject({ access: "replacement-access", refresh: "rotated-refresh" })
+			// The old exact rejection is cleared; the replacement is not marked.
+			expect(isCredentialStale(undefined, "kimchi-dev")).toBe(false)
+			expect(isCredentialStale("incident-rejected-access", "kimchi-dev")).toBe(false)
+			resetCredentialStalenessForTests()
+			expect(isCredentialStale("incident-rejected-access", "kimchi-dev")).toBe(false)
+			expect(isCredentialStale("replacement-access", "kimchi-dev")).toBe(false)
+		} finally {
+			vi.mocked(prepareActivePromptKimchiCredential).mockImplementation(realPrepare)
+			vi.unstubAllEnvs()
+			rmSync(agentDir, { recursive: true, force: true })
+		}
 	})
 
 	// Chain second half: the turn-time 401 is the first proof this key is

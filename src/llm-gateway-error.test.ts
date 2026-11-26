@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest"
 import { classifyLLMGatewayError, formatWait, LLMGatewayError, parseRateLimitRetryAt } from "./llm-gateway-error.js"
 
+// Byte-for-byte the nginx HTML body observed when a Kimchi OAuth access
+// token is rejected by the gateway, embedded multiline in the error text.
+// Auth rejection is a provider verdict, not infrastructure failure, so the
+// classifier must leave it undefined (never retryable exit-74).
+const NGINX_401_HTML = `<html>
+<head><title>401 Authorization Required</title></head>
+<body>
+<center><h1>401 Authorization Required</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>`
+
 describe("classifyLLMGatewayError", () => {
 	it.each([
 		{
@@ -322,6 +334,10 @@ describe("classifyLLMGatewayError", () => {
 		"content was filtered for safety reasons",
 	])("ignores non-gateway provider verdicts: %s", (message) => {
 		expect(classifyLLMGatewayError(message)).toBeUndefined()
+	})
+
+	it("does not classify the exact multiline nginx HTML 401 rejection page", () => {
+		expect(classifyLLMGatewayError(NGINX_401_HTML)).toBeUndefined()
 	})
 
 	// A digit run equal to a status code but outside status context (an offset,
