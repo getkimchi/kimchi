@@ -425,12 +425,6 @@ export function getParsedCliArgs(): SessionCliArgs {
 	return cachedCliArgs
 }
 
-/** Canonicalize the extension-boolean switch so Pi's unknown-flag parser
- * cannot consume the following positional prompt as a string value. */
-export function normalizeReviewBooleanArgs(args: string[]): string[] {
-	return args.map((arg) => (arg === "--review" ? "--review=true" : arg))
-}
-
 export function normalizeResumeIdArgs(args: string[]): string[] {
 	const normalized: string[] = []
 	for (let i = 0; i < args.length; i += 1) {

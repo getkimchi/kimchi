@@ -21,7 +21,6 @@ import {
 	isTerminalUiMode,
 	normalizeBooleanFlagArgs,
 	normalizeResumeIdArgs,
-	normalizeReviewBooleanArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
@@ -813,7 +812,7 @@ async function cliMain(): Promise<void> {
 				console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
 				process.exit(1)
 			}
-			const rawArgs = normalizeReviewBooleanArgs(atFileArgs.args)
+			const rawArgs = atFileArgs.args
 
 			// Parse Kimchi-local CLI flags once before upstream pi-mono sees them.
 			populateCliArgs(rawArgs)

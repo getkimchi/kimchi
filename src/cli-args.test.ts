@@ -20,7 +20,6 @@ import {
 	isTerminalUiMode,
 	normalizeBooleanFlagArgs,
 	normalizeResumeIdArgs,
-	normalizeReviewBooleanArgs,
 	parseCliArgs,
 	populateCliArgs,
 	resolveBashProcessLimitSeconds,
@@ -46,14 +45,6 @@ describe("value-flag parsing", () => {
 		expect(getParsedCliArgs().options.models).toBe("kimchi-dev/auto,kimchi-dev/glm-5.3")
 		populateCliArgs([])
 		expect(getParsedCliArgs().options.models).toBeUndefined()
-	})
-})
-
-describe("normalizeReviewBooleanArgs", () => {
-	it("keeps the positional prompt out of the upstream extension-flag value parser", () => {
-		expect(normalizeReviewBooleanArgs(["--review", "Review target"])).toEqual(["--review=true", "Review target"])
-		expect(normalizeReviewBooleanArgs(["--review=false", "Review target"])).toEqual(["--review=false", "Review target"])
-		expect(normalizeReviewBooleanArgs(["--review-writer", "final"])).toEqual(["--review-writer", "final"])
 	})
 })
 
