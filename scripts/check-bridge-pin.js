@@ -238,7 +238,7 @@ async function runSelfTest() {
 				packageJsonSpec: `github:getkimchi/kimchi-bridge#${PIN_A}`,
 				bundleScript: "SOURCE=package\nVERSION=v0.1.0-rc.0\n",
 			},
-			runCommitCheck: (sha) => Promise.resolve({ sha: PIN_B }),
+			runCommitCheck: () => Promise.resolve({ sha: PIN_B }),
 			expect: (r) => r.ok === false && r.reason.includes("resolved as a different commit"),
 		},
 		{
