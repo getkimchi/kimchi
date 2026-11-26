@@ -84,11 +84,11 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 	"ferment-oneshot": {
 		type: "boolean",
-		description: "Bootstrap the initial prompt as an automated one-shot ferment.",
+		description: "Legacy Ferment only: bootstrap the initial prompt as an automated one-shot ferment.",
 	},
 	"init-git": {
 		type: "boolean",
-		description: "When the ferment cwd is not a git repo, run `git init` instead of skipping.",
+		description: "Legacy Ferment only: when the ferment cwd is not a git repo, run `git init` instead of skipping.",
 	},
 	provider: {
 		type: "string",
@@ -497,12 +497,6 @@ export function hasFermentOneshotArg(args: readonly string[]): boolean {
 	return args.some((a) => a === "--ferment-oneshot" || a === "--ferment-oneshot=true" || a === "ferment-oneshot=true")
 }
 
-/** True when argv requests legacy git initialization `--init-git[=true]`. A
- * V1-only entry point, so it must be gated the same way as `--ferment-oneshot`. */
-export function hasInitGitArg(args: readonly string[]): boolean {
-	return args.some((a) => a === "--init-git" || a === "--init-git=true")
-}
-
 /** Error text for a V1-only flag used while the legacy Ferment is off. Returns
  * `undefined` when legacy is on (including an org FORCE_ON lock) or when no
  * V1-only flag is present, so callers can gate without re-checking the flags. */
@@ -515,7 +509,7 @@ export function fermentLegacyFlagError(args: readonly string[]): string | undefi
 				: undefined
 	if (flag === undefined) return undefined
 	if (isFermentLegacyEnabled()) return undefined
-	return fermentLegacyOffMessage(flag)
+	return `${fermentLegacyOffMessage(flag)}\nOr remove ${flag} from the command.`
 }
 
 /** True for `--flag` and any `--flag=<value>`. With legacy off the flag is not

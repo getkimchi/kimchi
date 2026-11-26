@@ -294,11 +294,11 @@ export function registerFermentEvents(
 	let pendingOneshot = false
 	pi.registerFlag("ferment-oneshot", {
 		type: "boolean",
-		description: "Bootstrap the initial prompt as an automated one-shot ferment.",
+		description: "Legacy Ferment only: bootstrap the initial prompt as an automated one-shot ferment.",
 	})
 	pi.registerFlag("init-git", {
 		type: "boolean",
-		description: "When the ferment cwd is not a git repo, run `git init` instead of skipping.",
+		description: "Legacy Ferment only: when the ferment cwd is not a git repo, run `git init` instead of skipping.",
 	})
 
 	function recoverStuckFerments(): string[] {

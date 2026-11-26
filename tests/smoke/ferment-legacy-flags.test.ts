@@ -16,7 +16,7 @@ const FAKE_PROVIDER = "fake"
 const PROCESS_EXIT_TIMEOUT_MS = 12_000
 
 const EXPECTED_ERROR =
-	"--ferment-oneshot needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable extensions.ferment-legacy"
+	"--ferment-oneshot needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable extensions.ferment-legacy\nOr remove --ferment-oneshot from the command."
 
 interface ProcessResult {
 	code: number | null

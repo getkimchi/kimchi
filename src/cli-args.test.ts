@@ -13,7 +13,6 @@ import {
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
-	hasInitGitArg,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
 	isHelpOrVersionArgs,
@@ -771,21 +770,13 @@ describe("applyDebugPromptsOptOut", () => {
 	})
 })
 
-describe("hasInitGitArg", () => {
-	it("matches --init-git and --init-git=true", () => {
-		expect(hasInitGitArg(["--init-git"])).toBe(true)
-		expect(hasInitGitArg(["--init-git=true"])).toBe(true)
-	})
-
-	it("does not match unrelated or disabled forms", () => {
-		expect(hasInitGitArg(["-p", "hello"])).toBe(false)
-		expect(hasInitGitArg(["--init-git=false"])).toBe(false)
-		expect(hasInitGitArg(["init-git=true"])).toBe(false)
-	})
-})
-
 describe("fermentLegacyFlagError", () => {
 	let agentDir: string
+
+	it("help text marks the flags as legacy", () => {
+		expect(CLI_OPTIONS["ferment-oneshot"].description).toMatch(/^Legacy Ferment only: /)
+		expect(CLI_OPTIONS["init-git"].description).toMatch(/^Legacy Ferment only: /)
+	})
 
 	beforeEach(() => {
 		// Isolate the resource settings path so a developer's real settings.json
@@ -806,13 +797,13 @@ describe("fermentLegacyFlagError", () => {
 
 	it("reports the exact --ferment-oneshot error when legacy is off", () => {
 		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toBe(
-			`--ferment-oneshot needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`,
+			`--ferment-oneshot needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}\nOr remove --ferment-oneshot from the command.`,
 		)
 	})
 
 	it("names --init-git in its own error when legacy is off", () => {
 		expect(fermentLegacyFlagError(["--init-git"])).toBe(
-			`--init-git needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`,
+			`--init-git needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}\nOr remove --init-git from the command.`,
 		)
 	})
 
@@ -833,7 +824,7 @@ describe("fermentLegacyFlagError", () => {
 		["--ferment-oneshot", "false"],
 	])("catches %j with legacy off, since upstream would reject it as unknown", (...flagArgs) => {
 		expect(fermentLegacyFlagError(["-p", ...flagArgs, "x"])).toBe(
-			`--ferment-oneshot needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`,
+			`--ferment-oneshot needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}\nOr remove --ferment-oneshot from the command.`,
 		)
 	})
 
@@ -846,7 +837,7 @@ describe("fermentLegacyFlagError", () => {
 		["--init-git", "false"],
 	])("catches %j with legacy off, since upstream would reject it as unknown", (...flagArgs) => {
 		expect(fermentLegacyFlagError(["-p", ...flagArgs, "x"])).toBe(
-			`--init-git needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`,
+			`--init-git needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}\nOr remove --init-git from the command.`,
 		)
 	})
 
@@ -883,10 +874,10 @@ describe("fermentLegacyFlagError", () => {
 	it("says the organization turned legacy off, without a resources enable hint, under FORCE_OFF", async () => {
 		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "FORCE_OFF" } })
 		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toBe(
-			`--ferment-oneshot needs the legacy Ferment, which your organization turned off (${FERMENT_LEGACY_RESOURCE_ID} is locked off). Ask your organization admin to change the policy.`,
+			`--ferment-oneshot needs the legacy Ferment, which your organization turned off (${FERMENT_LEGACY_RESOURCE_ID} is locked off). Ask your organization admin to change the policy.\nOr remove --ferment-oneshot from the command.`,
 		)
 		expect(fermentLegacyFlagError(["--init-git"])).toBe(
-			`--init-git needs the legacy Ferment, which your organization turned off (${FERMENT_LEGACY_RESOURCE_ID} is locked off). Ask your organization admin to change the policy.`,
+			`--init-git needs the legacy Ferment, which your organization turned off (${FERMENT_LEGACY_RESOURCE_ID} is locked off). Ask your organization admin to change the policy.\nOr remove --init-git from the command.`,
 		)
 		expect(fermentLegacyFlagError(["--ferment-oneshot"])).not.toContain("resources enable")
 	})
@@ -900,7 +891,7 @@ describe("fermentLegacyFlagError", () => {
 	it("keeps the ordinary enable hint under a soft org OFF the user can override", async () => {
 		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "OFF" } })
 		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toBe(
-			`--ferment-oneshot needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`,
+			`--ferment-oneshot needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}\nOr remove --ferment-oneshot from the command.`,
 		)
 	})
 
@@ -913,10 +904,10 @@ describe("fermentLegacyFlagError", () => {
 		process.env.KIMCHI_ENABLE_RESOURCES = FERMENT_LEGACY_RESOURCE_ID
 		await setOrgPolicyForTests({ resources: { "extensions.ferment": "FORCE_OFF" } })
 		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toBe(
-			"--ferment-oneshot needs the legacy Ferment, which your organization turned off (extensions.ferment is locked off). Ask your organization admin to change the policy.",
+			"--ferment-oneshot needs the legacy Ferment, which your organization turned off (extensions.ferment is locked off). Ask your organization admin to change the policy.\nOr remove --ferment-oneshot from the command.",
 		)
 		expect(fermentLegacyFlagError(["--init-git"])).toBe(
-			"--init-git needs the legacy Ferment, which your organization turned off (extensions.ferment is locked off). Ask your organization admin to change the policy.",
+			"--init-git needs the legacy Ferment, which your organization turned off (extensions.ferment is locked off). Ask your organization admin to change the policy.\nOr remove --init-git from the command.",
 		)
 	})
 
