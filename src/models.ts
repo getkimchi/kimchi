@@ -594,21 +594,19 @@ export function getModelDescription(key: string): string | undefined {
 type ModelEffortConfig = Pick<PiModelConfig, "searchAliases" | "virtual">
 type ModelEffortConfigRegistry = Map<string, ModelEffortConfig>
 
-function modelEffortConfigRegistry(): ModelEffortConfigRegistry {
-	const globals = process as typeof process & { __kimchiModelEffortConfig?: ModelEffortConfigRegistry }
-	if (!(globals.__kimchiModelEffortConfig instanceof Map)) globals.__kimchiModelEffortConfig = new Map()
-	return globals.__kimchiModelEffortConfig
-}
+// Unlike description and thinking registries, patched Pi components never
+// read this ACP cache, so it stays private to this module.
+const modelEffortConfigRegistry: ModelEffortConfigRegistry = new Map()
 
 /** Search aliases survive Pi's known-key model projection through the model-info registry. */
 export function getModelSearchAliases(key: string): string[] | undefined {
-	const aliases = modelEffortConfigRegistry().get(key)?.searchAliases
+	const aliases = modelEffortConfigRegistry.get(key)?.searchAliases
 	return aliases ? [...aliases] : undefined
 }
 
 /** Non-Auto virtual identity survives the same model-registry projection. */
 export function getModelVirtualIdentity(key: string): PiModelConfig["virtual"] {
-	return modelEffortConfigRegistry().get(key)?.virtual
+	return modelEffortConfigRegistry.get(key)?.virtual
 }
 
 /** @internal — test hook clearing the process-global registry. */
@@ -718,12 +716,12 @@ export function registerModelInfoFromProviders(
 			if (Array.isArray(model.thinkingLevels)) registerModelThinkingLevels(key, model.thinkingLevels)
 			else modelThinkingLevelsRegistry().delete(key)
 			if (model.searchAliases !== undefined || model.virtual !== undefined) {
-				modelEffortConfigRegistry().set(key, {
+				modelEffortConfigRegistry.set(key, {
 					...(model.searchAliases !== undefined ? { searchAliases: [...model.searchAliases] } : {}),
 					...(model.virtual !== undefined ? { virtual: model.virtual } : {}),
 				})
 			} else {
-				modelEffortConfigRegistry().delete(key)
+				modelEffortConfigRegistry.delete(key)
 			}
 		}
 	}
