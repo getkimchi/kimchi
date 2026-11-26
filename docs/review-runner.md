@@ -173,13 +173,17 @@ Every local offline command is enclosed before execution:
   for selected writable subpaths. The network rule denies remote and loopback
   TCP and outbound Unix-domain socket `connect()` calls, including package
   downloads from a local HTTP server and local daemon connections.
-- **Linux:** `bwrap --unshare-net` with a read-only root mount and selected
-  writable binds. The new network namespace has no usable external network
-  interfaces. `unshare --net` alone is not a fallback because it cannot confine
-  filesystem writes.
+- **Linux:** detection first tries `bwrap --unshare-net` with a read-only root
+  mount and selected writable binds. If `bwrap` is missing or its probe fails,
+  detection tries `unshare --net --map-root-user`. Both create a network
+  namespace with no usable external interfaces. The `unshare-net` fallback
+  confines **network access only**: it does not confine filesystem writes, so
+  the checkout, other user files, and shared Git metadata retain their ordinary
+  host write permissions. Prefer `bwrap` whenever it works.
 
-The writable locations are the linked checkout and its canonical private
-scratch/build/cache/home directories. One additional exception supports Git
+The `sandbox-exec` and `bwrap` writable locations are the linked checkout and
+its canonical private scratch/build/cache/home directories. One additional
+exception supports Git
 index operations: the boundary derives the linked worktree's admin directory
 with `git rev-parse --git-dir`, canonicalizes it, and verifies that it is inside
 `<common-dir>/worktrees/`. Only that per-worktree admin directory is writable;
@@ -189,18 +193,20 @@ lock files. Commands that write objects or shared refs—including `git add`,
 `git commit`, and `git stash`—are unsupported inside review worktrees.
 
 A check that needs local IPC—such as a Docker socket, a local database, or a
-loopback HTTP server—cannot use the offline boundary and must request an
-approved online run. Containers commonly used for CI and development do not
-permit unprivileged user namespaces; when `bwrap` is unavailable on Linux (or
-`sandbox-exec` is unavailable on macOS), no boundary is available.
+loopback HTTP server—cannot use an offline boundary and must request an
+approved online run. Containers commonly used for CI and development may not
+permit unprivileged user namespaces; no Linux boundary is available only when
+both `bwrap` and `unshare --net --map-root-user` fail their execution probes.
+An unavailable `sandbox-exec` likewise leaves no boundary on macOS.
 
-Availability is probed once. If no boundary works, an ordinary local command is
-**not** run under an unenforced label. It instead needs the same online approval
+Availability is probed once per process, in the order described above. If no
+boundary works, an ordinary local command is **not** run under an unenforced
+label. It instead needs the same online approval
 as an install. That approval explicitly says offline access cannot be enforced.
 Declined/unavailable approval yields `status: "blocked"`, `network:
 "unenforced"`, and zero command execution. `network: "offline"` is recorded only
-when the command really ran inside a named boundary (`sandbox-exec` or
-`bwrap`).
+when the command really ran inside a named boundary (`sandbox-exec`, `bwrap`,
+or the weaker `unshare-net` network-only fallback).
 
 ### Narrow environment allowlist
 

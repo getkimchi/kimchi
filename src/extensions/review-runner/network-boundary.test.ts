@@ -16,6 +16,7 @@ import { join, resolve } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	createReviewExecutionController,
+	executeReviewCommand,
 	type ReviewApprovalRequest,
 	type ReviewApprovalStatus,
 	type ReviewExecutionEvent,
@@ -236,8 +237,8 @@ describe("real OS offline network boundary", () => {
 	}, 30_000)
 
 	it("allows linked-worktree index refreshes but not main repository or object writes", async (ctx) => {
-		if (!boundary) {
-			ctx.skip("No OS execution boundary is available on this host")
+		if (!boundary || boundary.kind === "unshare-net") {
+			ctx.skip("The selected OS network boundary does not confine filesystem writes")
 			return
 		}
 		const linked = linkedWorktree(root)
@@ -280,5 +281,48 @@ describe("real OS offline network boundary", () => {
 		])
 		expect(writableBinds).not.toContainEqual(["--bind", linked.repository, linked.repository])
 		expect(args.slice(-3)).toEqual(["/bin/sh", "-c", command])
+	})
+
+	it("prefers bwrap write confinement over the network-only Linux fallback", async () => {
+		const probe = vi.fn(async (_command: string) => true)
+		const detected = await REVIEW_NETWORK_BOUNDARY_TESTING.detectLinuxBoundary(probe)
+
+		expect(detected?.kind).toBe("bwrap")
+		expect(probe.mock.calls.map(([command]) => command)).toEqual(["bwrap"])
+	})
+
+	it("falls back to unshare-net and records its boundary name", async () => {
+		const probe = vi.fn(async (command: string) => command === "unshare")
+		const detected = await REVIEW_NETWORK_BOUNDARY_TESTING.detectLinuxBoundary(probe)
+		const command = "node --version"
+		const wrapped = "unshare --net --map-root-user -- /bin/sh -c 'node --version'"
+
+		expect(detected?.kind).toBe("unshare-net")
+		expect(detected?.wrap(command, worktree)).toBe(wrapped)
+		expect(probe.mock.calls.map(([name]) => name)).toEqual(["bwrap", "unshare"])
+
+		const controller = createReviewExecutionController({ mode: "local", worktree, networkBoundary: detected })
+		const commands: string[] = []
+		const result = await executeReviewCommand(controller, {
+			command,
+			cwd: worktree.path,
+			intendedCheck: "network-only fallback evidence",
+			worktree,
+			operations: {
+				exec: async (actual) => {
+					commands.push(actual)
+					return { exitCode: 0 }
+				},
+			},
+		})
+		expect(commands).toEqual([wrapped])
+		expect(result).toMatchObject({ status: "passed", network: "offline", networkBoundary: "unshare-net" })
+	})
+
+	it("reports no Linux boundary only after both enforcement probes fail", async () => {
+		const probe = vi.fn(async (_command: string) => false)
+
+		expect(await REVIEW_NETWORK_BOUNDARY_TESTING.detectLinuxBoundary(probe)).toBeUndefined()
+		expect(probe.mock.calls.map(([command]) => command)).toEqual(["bwrap", "unshare"])
 	})
 })

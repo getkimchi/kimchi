@@ -317,8 +317,8 @@ describe("review worker permission integration", () => {
 
 	it("blocks review command writes outside private worktree directories without a prompt", async (ctx) => {
 		const boundary = await detectReviewNetworkBoundary()
-		if (!boundary) {
-			ctx.skip("No OS execution boundary is available on this host")
+		if (!boundary || boundary.kind === "unshare-net") {
+			ctx.skip("The selected OS network boundary does not confine filesystem writes")
 			return
 		}
 		const localRoot = mkdtempSync("/tmp/review-write-boundary-")

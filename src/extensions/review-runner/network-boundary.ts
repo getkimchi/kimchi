@@ -4,8 +4,9 @@ import { isAbsolute, join, relative, resolve } from "node:path"
 import type { ReviewWorktree } from "./types.js"
 
 export interface ReviewNetworkBoundary {
-	kind: "sandbox-exec" | "bwrap"
-	/** Enclose a command in outbound-network and private-worktree write boundaries. */
+	kind: "sandbox-exec" | "bwrap" | "unshare-net"
+	/** Enclose a command in its detected network boundary. The unshare-net
+	 * fallback does not provide the other kinds' private-worktree write boundary. */
 	wrap: (command: string, worktree: ReviewWorktree) => string
 }
 
@@ -73,7 +74,7 @@ function linuxBoundaryArguments(worktree: ReviewWorktree, command: string): stri
 	]
 }
 
-export const REVIEW_NETWORK_BOUNDARY_TESTING = { linuxBoundaryArguments }
+export const REVIEW_NETWORK_BOUNDARY_TESTING = { linuxBoundaryArguments, detectLinuxBoundary }
 
 function macosProfile(worktree: ReviewWorktree): string {
 	const writeAllows = privateWritePaths(worktree)
@@ -91,6 +92,24 @@ function succeeds(command: string, args: readonly string[]): Promise<boolean> {
 	})
 }
 
+async function detectLinuxBoundary(
+	probe: (command: string, args: readonly string[]) => Promise<boolean> = succeeds,
+): Promise<ReviewNetworkBoundary | undefined> {
+	if (await probe("bwrap", ["--unshare-net", "--ro-bind", "/", "/", process.execPath, "--version"])) {
+		return {
+			kind: "bwrap",
+			wrap: (command, worktree) => linuxBoundaryArguments(worktree, command).map(shellQuote).join(" "),
+		}
+	}
+	if (await probe("unshare", ["--net", "--map-root-user", process.execPath, "--version"])) {
+		return {
+			kind: "unshare-net",
+			wrap: (command) => `unshare --net --map-root-user -- /bin/sh -c ${shellQuote(command)}`,
+		}
+	}
+	return undefined
+}
+
 async function detectPlatformBoundary(): Promise<ReviewNetworkBoundary | undefined> {
 	if (process.platform === "darwin") {
 		if (!(await succeeds("sandbox-exec", ["-p", MACOS_DETECTION_PROFILE, process.execPath, "--version"])))
@@ -101,15 +120,7 @@ async function detectPlatformBoundary(): Promise<ReviewNetworkBoundary | undefin
 				`sandbox-exec -p ${shellQuote(macosProfile(worktree))} /bin/sh -c ${shellQuote(command)}`,
 		}
 	}
-	if (process.platform === "linux") {
-		if (!(await succeeds("bwrap", ["--unshare-net", "--ro-bind", "/", "/", process.execPath, "--version"]))) {
-			return undefined
-		}
-		return {
-			kind: "bwrap",
-			wrap: (command, worktree) => linuxBoundaryArguments(worktree, command).map(shellQuote).join(" "),
-		}
-	}
+	if (process.platform === "linux") return detectLinuxBoundary()
 	return undefined
 }
 
