@@ -67,7 +67,7 @@ describe("LogoHeader", () => {
 
 	it("renders a bordered two-column layout at width 120", () => {
 		const theme = createMockTheme()
-		const header = new LogoHeader(theme)
+		const header = new LogoHeader(theme, { isFermentAvailable: () => true })
 		const lines = header.render(120)
 
 		// First and last lines are borders
@@ -118,7 +118,7 @@ describe("LogoHeader", () => {
 
 	it("wraps right column text at width 60", () => {
 		const theme = createMockTheme()
-		const header = new LogoHeader(theme)
+		const header = new LogoHeader(theme, { isFermentAvailable: () => true })
 		const lines = header.render(60)
 
 		// Should still be a bordered box
@@ -141,7 +141,7 @@ describe("LogoHeader", () => {
 
 	it("degrades gracefully at narrow width 45", () => {
 		const theme = createMockTheme()
-		const header = new LogoHeader(theme)
+		const header = new LogoHeader(theme, { isFermentAvailable: () => true })
 		const lines = header.render(45)
 
 		// Still has borders and dividers
@@ -168,7 +168,7 @@ describe("LogoHeader", () => {
 
 	it("uses accent color for borders, divider, and highlighted commands", () => {
 		const theme = createMockTheme()
-		const header = new LogoHeader(theme)
+		const header = new LogoHeader(theme, { isFermentAvailable: () => true })
 		const lines = header.render(120)
 
 		// Borders use accent ANSI
@@ -185,7 +185,7 @@ describe("LogoHeader", () => {
 
 	it("uses the V2 ferment tip text and never mentions /ferment exit", () => {
 		const theme = createMockTheme()
-		const header = new LogoHeader(theme)
+		const header = new LogoHeader(theme, { isFermentAvailable: () => true })
 		const lines = header.render(120)
 		const rightText = rightColumnText(lines)
 
@@ -199,6 +199,7 @@ describe("LogoHeader", () => {
 	it("shows a long blocked-Community notice instead of the secondary ferment tip", () => {
 		const theme = createMockTheme()
 		const header = new LogoHeader(theme, {
+			isFermentAvailable: () => true,
 			getRightColumnNotice: () =>
 				"You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder.",
 		})
@@ -275,9 +276,11 @@ describe("LogoHeader", () => {
 			expect(rightColumnText(header.render(120))).toContain("/ferment")
 		})
 
-		it("assumes Ferment is available when the caller gives no check", () => {
+		it("shows neutral tips when the caller gives no check", () => {
 			const header = new LogoHeader(createMockTheme())
-			expect(rightColumnText(header.render(120))).toContain("/ferment pause")
+			const rightText = rightColumnText(header.render(120))
+			expect(rightText).toContain("Getting started:")
+			expect(rightText).not.toContain("/ferment")
 		})
 
 		it.each([1, 10, 30, 60])("never exceeds width %i with the neutral tips", (width) => {

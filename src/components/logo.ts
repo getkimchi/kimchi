@@ -60,7 +60,7 @@ export class LogoHeader implements Component {
 			getBranch?(): string | undefined
 			getRightColumnNotice?(): string | undefined
 			// The caller decides, because components must not import feature code.
-			// Without it the header assumes Ferment is available.
+			// Without it the header shows the neutral tips, so a caller that forgets the check cannot advertise a command that may not exist.
 			isFermentAvailable?(): boolean
 		},
 	) {
@@ -125,7 +125,7 @@ export class LogoHeader implements Component {
 		const accentText = (text: string) => theme.fg("accent", text)
 		// Typing /ferment when Ferment is off sends plain text to the model, so
 		// the header must not advertise it then.
-		const fermentAvailable = this.isFermentAvailable?.() ?? true
+		const fermentAvailable = this.isFermentAvailable?.() ?? false
 		const labelLine = fermentAvailable ? "Kimchi's special:" : "Getting started:"
 		const tip1Text = fermentAvailable
 			? `Use ${accentText("/ferment")} to work on one objective until it is verified done.`
