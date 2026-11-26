@@ -151,6 +151,7 @@ jobs:
         continue-on-error: true
         run: >-
           allurectl upload
+          --job-run-uid "$GITHUB_RUN_ID-shard-${{ matrix.shard }}-iteration-${{ matrix.iteration }}"
           --launch-name "TUI E2E $ALLURE_RUN_KIND shard ${{ matrix.shard }}/4 iteration ${{ matrix.iteration }}"
           --launch-tags "commit=$GITHUB_SHA,event=$ALLURE_RUN_KIND,iteration=${{ matrix.iteration }},run_id=$GITHUB_RUN_ID,run_attempt=$GITHUB_RUN_ATTEMPT,shard=${{ matrix.shard }}"
           "$ALLURE_RESULTS"
