@@ -39,10 +39,30 @@ export function getResourceOverride(id: string, path = getResourceSettingsPath()
  * free-form resource ids, so the map may hold ids this harness does not
  * know; those are inert — they only matter when something asks about that
  * id by name, and then only if a definition or gate consults it.
+ *
+ * A resource with no entry of its own can still be locked off through
+ * `inheritsOrgForceOffFrom`. Every lock check reads this function, so the
+ * inherited lock reaches the store guard, /resources, the CLI and ACP alike.
  */
 export function getResourcePolicy(id: string): ResourcePolicy | undefined {
 	assertResourceId(id)
-	return getOrgPolicy()?.resources?.[id]
+	const source = getResourcePolicySource(id)
+	return source === undefined ? undefined : getOrgPolicy()?.resources?.[source]
+}
+
+/**
+ * The id whose org-policy entry decides this resource's policy: the id
+ * itself, the id it inherits a FORCE_OFF from, or undefined when no entry
+ * applies. Messages use it to name the entry an admin must change.
+ */
+export function getResourcePolicySource(id: string): ResourceId | undefined {
+	assertResourceId(id)
+	const policies = getOrgPolicy()?.resources
+	if (!policies) return undefined
+	if (policies[id] !== undefined) return id
+	const parent = getResourceDefinition(id)?.inheritsOrgForceOffFrom
+	if (parent !== undefined && policies[parent] === "FORCE_OFF") return parent
+	return undefined
 }
 
 /** Whether the org policy locks the resource (FORCE_ON / FORCE_OFF). */
@@ -69,9 +89,18 @@ export function orgLockMessage(id: string): string {
 		return `${id} is ${describeOrgLock(policy)} by your organization; it cannot be disabled locally.`
 	}
 	if (policy === "FORCE_OFF") {
-		return `${id} is ${describeOrgLock(policy)} by your organization; it cannot be enabled locally.`
+		return `${id} is ${describeOrgLock(policy)} by your organization${inheritedLockNote(id)}; it cannot be enabled locally.`
 	}
 	return `${id} is managed by your organization; it cannot be changed locally.`
+}
+
+/**
+ * " through <parent id>" when the lock comes from another resource's entry.
+ * Without it, an admin would search the policy for an id it does not contain.
+ */
+export function inheritedLockNote(id: string): string {
+	const source = getResourcePolicySource(id)
+	return source !== undefined && source !== id ? ` through ${source}` : ""
 }
 
 /**

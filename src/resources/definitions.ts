@@ -213,6 +213,9 @@ export const STATIC_RESOURCE_DEFINITIONS: readonly ResourceDefinition[] = [
 		description: "Legacy Ferment (V1) with phases and workers. Will be removed.",
 		defaultEnabled: false,
 		restartRequired: true,
+		// V1 used extensions.ferment before V2 took the id. An org that blocked
+		// it there meant to block autonomous Ferment, so the block still holds.
+		inheritsOrgForceOffFrom: FERMENT_V2_RESOURCE_ID,
 	},
 	{
 		id: MEMORY_RESOURCE_ID,

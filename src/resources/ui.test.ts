@@ -114,6 +114,31 @@ describe("ResourceManagerComponent", () => {
 		expect(getResourceOverride("tools.web_search")).toBeUndefined()
 	})
 
+	it("shows legacy Ferment as org-locked when the lock is inherited from extensions.ferment", async () => {
+		await setOrgPolicyForTests({ resources: { "extensions.ferment": "FORCE_OFF" } })
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as unknown as Theme
+		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "plugins")
+		component.handleInput("\t")
+		component.handleInput("\t")
+
+		// Wide enough that the lock note is not wrapped.
+		const rendered = component.render(300).join("\n")
+		expect(rendered).toContain("extensions.ferment-legacy")
+		expect(rendered).toContain("disabled (org-locked)")
+		expect(rendered).toContain(
+			"Managed by your organization: locked off through extensions.ferment (it cannot be enabled locally).",
+		)
+
+		// The row is inert, so the user cannot write a setting that would do nothing.
+		component.handleInput(" ")
+		expect(isResourceEnabled("extensions.ferment-legacy")).toBe(false)
+		expect(getResourceOverride("extensions.ferment-legacy")).toBeUndefined()
+	})
+
 	it("aligns the value column across rows", async () => {
 		await setOrgPolicyForTests({ resources: { "tools.web_search": "FORCE_OFF" } })
 		const theme = {

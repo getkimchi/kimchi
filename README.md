@@ -159,7 +159,7 @@ Only non-default values need to be specified; missing or invalid keys fall back 
 
 ## Legacy Ferment (V1) -- cross-session project management
 
-> **Legacy.** This section describes Ferment V1, now the legacy Ferment under `/ferment-legacy` and the experimental resource `extensions.ferment-legacy`. It is off by default and will be removed in a later release. Turn it on with `kimchi resources enable extensions.ferment-legacy` (or under `/resources` → **Experimental**), then restart Kimchi. `/ferment` runs the new Ferment described above.
+> **Legacy.** This section describes Ferment V1, now the legacy Ferment under `/ferment-legacy` and the experimental resource `extensions.ferment-legacy`. It is off by default and will be removed in a later release. Turn it on with `kimchi resources enable extensions.ferment-legacy` (or under `/resources` → **Experimental**), then restart Kimchi. `/ferment` runs the new Ferment described above. If your organization locks `extensions.ferment` off, the legacy Ferment is locked off too, unless the organization sets its own policy for `extensions.ferment-legacy`.
 
 Legacy Ferment is Kimchi's progressive-refinement project mode for multi-session work. Instead of starting from scratch each chat, Ferment persists a structured plan (goal, phases, steps) as a JSON state file.
 

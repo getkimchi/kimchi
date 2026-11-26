@@ -104,7 +104,7 @@ import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import feedbackExtension from "./extensions/feedback/index.js"
 import fermentExtension from "./extensions/ferment/index.js"
-import { FERMENT_LEGACY_RESOURCE_ID } from "./extensions/ferment/resource.js"
+import { isFermentLegacyEnabled } from "./extensions/ferment/resource.js"
 import { FERMENT_V2_RESOURCE_ID } from "./extensions/ferment-v2/constants.js"
 import fermentV2Extension from "./extensions/ferment-v2/index.js"
 import helpExtension from "./extensions/help.js"
@@ -1023,9 +1023,9 @@ async function cliMain(): Promise<void> {
 				...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 				ideAdapterExtension,
 				// Ferment must see raw input before prompt enrichment rewrites print-mode text.
-				...enabledExtensionFactories([
-					{ id: FERMENT_LEGACY_RESOURCE_ID, factory: fermentExtension },
-				] satisfies ManagedExtensionFactory[]),
+				// Same gate as every other V1 entry point, so the factory, the flags
+				// and the plan option cannot disagree about whether V1 is on.
+				...(isFermentLegacyEnabled() ? [fermentExtension] : []),
 				questionnaireExtension,
 				// Backend-routed virtual models (`auto`, `auto-beta`, …) learn + display
 				// the concrete pick, re-sync capabilities, and (main session) install the

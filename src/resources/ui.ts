@@ -13,6 +13,7 @@ import { getResourceDefinitions, getResourcesByKind } from "./definitions.js"
 import {
 	describeOrgLock,
 	getResourcePolicy,
+	inheritedLockNote,
 	isResourceEnabled,
 	isResourceLocked,
 	setResourceOverride,
@@ -231,15 +232,15 @@ function resourceValue(resource: ResourceDefinition, locked: boolean): string {
 
 function resourceDescription(resource: ResourceDefinition, locked: boolean): string {
 	const scope = resource.restartRequired ? "Applies after restart." : "Applies immediately."
-	const managed = locked ? ` ${orgLockNote(getResourcePolicy(resource.id))}` : ""
+	const managed = locked ? ` ${orgLockNote(resource.id, getResourcePolicy(resource.id))}` : ""
 	return `${resource.id} — ${scope} ${resource.description}${managed}`
 }
 
 /** Human phrasing for the forced policy — raw enum names are API values. */
-function orgLockNote(policy: ResourcePolicy | undefined): string {
+function orgLockNote(id: string, policy: ResourcePolicy | undefined): string {
 	if (policy === "FORCE_ON" || policy === "FORCE_OFF") {
 		const tail = policy === "FORCE_ON" ? "it cannot be disabled locally" : "it cannot be enabled locally"
-		return `Managed by your organization: ${describeOrgLock(policy)} (${tail}).`
+		return `Managed by your organization: ${describeOrgLock(policy)}${inheritedLockNote(id)} (${tail}).`
 	}
 	return ""
 }
