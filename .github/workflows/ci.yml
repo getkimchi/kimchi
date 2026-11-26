@@ -69,8 +69,8 @@ jobs:
       playwright: true
       command: pnpm run test --shard="$SHARD_INDEX/$SHARD_TOTAL"
       allure-launch: Vitest
-      allure-upload: ${{ github.event_name == 'merge_group' }}
-      allure-kind: merge_queue
+      allure-upload: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment')) }}
+      allure-kind: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment') && 'experiment' || 'merge_queue' }}
       iteration: "1"
 
   # Builds the binary and proxy-helper once. Every suite that runs the binary
@@ -165,8 +165,8 @@ jobs:
       search-tools: true
       command: pnpm run test:e2e:acp:ci
       allure-launch: ACP E2E
-      allure-upload: ${{ github.event_name == 'merge_group' }}
-      allure-kind: merge_queue
+      allure-upload: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment')) }}
+      allure-kind: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment') && 'experiment' || 'merge_queue' }}
       iteration: "1"
       failure-artifacts: |
         *.acp-e2e.log

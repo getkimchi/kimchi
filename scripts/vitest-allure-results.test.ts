@@ -28,15 +28,19 @@ it("adds native Allure output without registering the native Allure runner or se
 it.each([
 	{ job: "unit", launchName: "Vitest" },
 	{ job: "acp-e2e", launchName: "ACP E2E" },
-])("reports $job from merge queue with TestOps launch and iteration tags", ({ job, launchName }) => {
+])("reports $job from merge queue and experiment PRs with TestOps launch and iteration tags", ({ job, launchName }) => {
 	const config = parseYaml(readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8"))
 	const target = config.jobs[job]
 	expect(target.uses).toBe("./.github/workflows/_test-suite.yml")
 	expect(target.secrets.ALLURE_TOKEN).toBe(githubExpression("secrets.ALLURE_TOKEN"))
 	expect(target.with).toMatchObject({
 		"allure-launch": launchName,
-		"allure-upload": githubExpression("github.event_name == 'merge_group'"),
-		"allure-kind": "merge_queue",
+		"allure-upload": githubExpression(
+			"github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment'))",
+		),
+		"allure-kind": githubExpression(
+			"github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment') && 'experiment' || 'merge_queue'",
+		),
 		iteration: "1",
 	})
 
