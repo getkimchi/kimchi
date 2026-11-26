@@ -32,6 +32,7 @@ import {
 	closeBackends,
 	fingerprint,
 	getNote,
+	OUTBOX_DELIVERY_STATUS_SQL,
 	outboxClaimsSql,
 	readRecords,
 	readRecordsSinceSql,
@@ -2327,6 +2328,48 @@ const commands: Record<string, (agent: string, arg?: string) => Promise<void>> =
 		}
 		out({ claimRows: plan(false), claimRowsPage: plan(true) })
 		store.close()
+	},
+	"delivery-plan": (agent) => {
+		// Several accounts, one with a large history: pending, acknowledged, blocked, and a batch without events.
+		const store = openStore(agent)
+		const insert = store.db.query(
+			"INSERT INTO outbox_events (id, account_key, entity_id, kind, body, hash, created_at, acked_at, blocked) VALUES (?, ?, ?, 'work', '{}', 'hash', ?, ?, ?)",
+		)
+		store.tx(() => {
+			for (let index = 0; index < 25_000; index++) insert.run(`bulk-${index}`, "bulk", `e-${index}`, index, null, "")
+			insert.run("acked-1", "acked", "e-acked", 1, 2, "")
+			insert.run("blocked-1", "blocked", "e-blocked", 1, null, "waiting")
+			store.db
+				.query(
+					"INSERT INTO outbox_batches (id, account_key, body, event_ids, created_at, order_key) VALUES (?, ?, '{}', '[]', ?, ?)",
+				)
+				.run("batch-b", "batch-only", 2, "b")
+			store.db
+				.query(
+					"INSERT INTO outbox_batches (id, account_key, body, event_ids, created_at, order_key) VALUES (?, ?, '{}', '[]', ?, ?)",
+				)
+				.run("batch-a", "bulk", 1, "a")
+		})
+		const plan = store.db
+			.query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${OUTBOX_DELIVERY_STATUS_SQL}`)
+			.all()
+			.map((row) => row.detail)
+		// The straightforward enumeration the indexed form must agree with, row for row.
+		const reference = store.db
+			.query(`
+				SELECT a.account_key AS accountKey,
+					EXISTS(SELECT 1 FROM outbox_events e
+						WHERE e.account_key = a.account_key AND e.acked_at IS NULL AND e.blocked = '') AS sendable,
+					EXISTS(SELECT 1 FROM outbox_batches b WHERE b.account_key = a.account_key) AS hasBatch,
+					(SELECT id FROM outbox_batches WHERE account_key = a.account_key
+						ORDER BY order_key, created_at, rowid LIMIT 1) AS firstBatchId
+				FROM (SELECT account_key FROM outbox_events UNION SELECT account_key FROM outbox_batches) a
+				ORDER BY a.account_key`)
+			.all()
+		store.close()
+		const rows = backendFor(agent).outboxDeliveryStatus()
+		closeBackends()
+		out({ plan, rows, reference })
 	},
 	"pre-migrate": async (agent) => {
 		// Strip a ledger to its pre-migration shape: no materialized repository

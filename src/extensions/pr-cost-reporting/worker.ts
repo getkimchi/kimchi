@@ -1002,21 +1002,28 @@ export { preludeStretch } from "./prelude.js"
 
 /** Time a pass keeps for committing one more chunk and delivering what it captured. */
 const CHUNK_RESERVE_MS = 500
-/** The group translation in progress: units committed while its marked records stay unchanged. */
+/** Ceiling for building one group's translation plan; the prelude yields throughout and runs once per round. */
+const PRELUDE_MS = 60_000
+const PRELUDE_TIMEOUT_MESSAGE = "PR reporting translation time limit exceeded"
+export class TranslationPreludeTimeoutError extends Error {}
+/** The group translation in progress: units committed under the plan its group and plan digest name. Records
+ * captured after that plan was built leave the count valid; they wait for the next round. */
 const PROGRESS_NOTE = "translation-progress"
 
-/** The built plan of a translation pass's prelude lives in its own note, written once per input signature.
+/** The built plan of a translation pass's prelude lives in its own note, written once per round of a group.
  *
- * Deliberate single slot: only one group's plan and progress are retained at a time. When several groups
- * translate across interleaved passes, group B's rebuild overwrites group A's suspended plan — the
- * signature checks make the fallback correct (A re-runs its full prelude), so only the resume optimization
- * is lost, never correctness. Per-group keys (`translation-plan:<groupKey>`, cleaned on completion) are the
- * upgrade if that loss ever shows up in real interleaving. */
+ * Deliberate single slot: only one group's plan and progress are retained at a time. The group that owns a
+ * suspended plan resumes first in the next pass, so another group cannot take over the slot while it is
+ * unfinished. A plan whose group or covered markers no longer match reads as absent and the group rebuilds, so a
+ * lost slot costs only the resume, never correctness. */
 const PLAN_NOTE = "translation-plan"
 
 /** The persisted composition of a translation pass's prelude, JSON round-trippable through the plan note. */
 interface PlanTail {
-	signature: string
+	/** The works the plan was built over (groupKey); a regrouped history never resumes it. */
+	group: string
+	/** The marked records the plan covers: only these clear when it completes. */
+	markers: string[]
 	generation: number
 	units: EventUnit[]
 	accounts: readonly { account: WorkAccount; facts: Fact[] }[]
@@ -1043,19 +1050,27 @@ function groupSignatureParts(works: readonly string[], changed: ReadonlyMap<stri
 	)
 }
 
-function planSignature(works: readonly string[], changed: ReadonlyMap<string, string>): string {
-	return groupSignatureParts(works, changed)
+/** SHA-256 of NUL-joined parts. Over a group's works it is the key the plan and progress notes carry. */
+function digestParts(parts: readonly string[]): string {
+	return createHash("sha256").update(parts.join("\0")).digest("hex")
 }
 
 /**
  * A note left by another version, or corrupted storage, never substitutes for a rebuilt plan. The elements are
  * checked one by one — not only the envelope — and every unit's entities must resolve to facts the note itself
  * carries: a partial tail would otherwise be replayed as empty events with the markers still cleared.
+ *
+ * Records captured after the plan was built only add markers. The plan still resumes while every marker it covers
+ * is still pending: finishing it is exactly the round that would have completed before those records arrived, and
+ * the new markers stay for the next round. Rebuilding instead restarts a large group from its first unit on every
+ * pass that sees a new record, so a group in active use never finishes.
  */
-function readPlanTail(value: unknown, signature: string): PlanTail | undefined {
+function readPlanTail(value: unknown, groupKey: string, changed: ReadonlyMap<string, string>): PlanTail | undefined {
 	if (!object(value)) return undefined
 	if (
-		value.signature !== signature ||
+		value.group !== groupKey ||
+		!Array.isArray(value.markers) ||
+		!value.markers.every((marker) => typeof marker === "string" && changed.has(marker)) ||
 		value.generation !== PLAN_GENERATION ||
 		!Array.isArray(value.units) ||
 		!Array.isArray(value.accounts) ||
@@ -1092,7 +1107,8 @@ function readPlanTail(value: unknown, signature: string): PlanTail | undefined {
 		if (!entities || !unit.entities.every((entity) => entities.has(entity))) return undefined
 	}
 	return {
-		signature,
+		group: groupKey,
+		markers: value.markers,
 		generation: PLAN_GENERATION,
 		units,
 		accounts,
@@ -1111,10 +1127,10 @@ const STALLED_NOTE = "translation-stalled"
 
 /**
  * A group whose translation completed but left requests waiting for evidence larger than the records alone (a PR
- * merge, a repository lookup that failed then) resolves only when its inputs move: new markers, or external state
- * gathered during translation. Re-running the identical group every pass blocks the UI for its whole read cost; a
- * group with the identical signature waits this long between full retries. New markers flip the signature and the
- * group re-runs immediately.
+ * merge), or whose repository identities did not all resolve, keeps its markers and resolves only when its inputs
+ * move: new markers, or external state gathered during translation. Re-running the identical group every pass
+ * re-pays its whole prelude; a group with the identical signature waits this long between full retries. New
+ * markers flip the signature and the group re-runs immediately.
  */
 const STALLED_RETRY_MS = 5 * 60_000
 
@@ -1160,6 +1176,20 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 	}
 	const producer = await reportingProducer(agentDir, check)
 	const groups = changedWorkGroups(backend, new Set(marked.keys()))
+	// The plan slot holds one group's suspended translation. That group resumes first: another group running ahead
+	// of it would take over the slot, and the suspended group would restart its prelude from the beginning.
+	const suspended = (() => {
+		try {
+			const progress: unknown = JSON.parse(backend.getNote("agent", PROGRESS_NOTE) ?? "null")
+			return object(progress) && typeof progress.group === "string" ? progress.group : undefined
+		} catch {
+			return undefined
+		}
+	})()
+	if (suspended !== undefined) {
+		const index = groups.findIndex((works) => digestParts(works) === suspended)
+		if (index > 0) groups.unshift(...groups.splice(index, 1))
+	}
 	const signatures = groups.map((works) => ({
 		works,
 		signature: groupSignature(works, new Map(works.flatMap((workId) => [...(marked.get(workId) ?? [])]))),
@@ -1200,19 +1230,29 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 			continue
 		}
 		const changed = new Map(works.flatMap((workId) => [...(marked.get(workId) ?? [])]))
-		const translated = await translateGroup(agentDir, works, changed, producer, deadline, bounded, check)
+		let translated: { waiting: boolean; addedMarkers: boolean } | undefined
+		try {
+			translated = await translateGroup(agentDir, works, changed, producer, deadline, check, signal, assertLease)
+		} catch (error) {
+			// An unfinished prelude saves no plan; bound how often identical inputs pay for another full build.
+			if (error instanceof TranslationPreludeTimeoutError && !signal.aborted) {
+				stalled[signature] = { at: Date.now() }
+				backend.tx(() => backend.putNote("agent", STALLED_NOTE, JSON.stringify(stalled)))
+			}
+			throw error
+		}
 		if (translated === undefined) return
-		waiting ||= translated
-		// Every retry that still leaves the group unresolved rests the window from now; a group that invoked every
-		// attempt and still waits for evidence otherwise re-runs on every pass once its first window elapsed.
-		const stamped = translated || signature in stalled
-		if (translated) stalled[signature] = { at: Date.now() }
+		waiting ||= translated.waiting
+		// A resumed plan did not translate markers added while suspended: do not rest the signature containing them.
+		const rests = translated.waiting && !translated.addedMarkers
+		const stamped = rests || signature in stalled
+		if (rests) stalled[signature] = { at: Date.now() }
 		else delete stalled[signature]
 		if (stamped) backend.tx(() => backend.putNote("agent", STALLED_NOTE, JSON.stringify(stalled)))
 	}
 	await recordReportingError(
 		agentDir,
-		waiting ? "Some PR cost events are waiting for complete original evidence" : undefined,
+		waiting ? "Some PR cost events are waiting for complete original evidence or a repository identity" : undefined,
 	)
 }
 
@@ -1260,7 +1300,8 @@ function changedWorkGroups(backend: RecordBackend, changed: ReadonlySet<string>)
 
 /**
  * Rebuilds one group from all of its records and observes the units its changed records touch, in bounded
- * transactions. Returns whether any touched request still waits for evidence, or undefined when time ran out.
+ * transactions. Returns its unresolved state and whether a resumed plan left newer markers for the next round,
+ * or undefined when time ran out.
  */
 async function translateGroup(
 	agentDir: string,
@@ -1268,13 +1309,17 @@ async function translateGroup(
 	changed: ReadonlyMap<string, string>,
 	producer: string,
 	deadline: number,
-	bounded: AbortSignal,
 	check: () => void,
-): Promise<boolean | undefined> {
+	signal: AbortSignal,
+	assertLease: () => void,
+): Promise<{ waiting: boolean; addedMarkers: boolean } | undefined> {
 	const backend = backendFor(agentDir)
-	const hash = (parts: string[]) => createHash("sha256").update(parts.join("\0")).digest("hex")
-	const groupKey = hash(works)
-	const signature = planSignature(works, changed)
+	// Lease and cancellation only: the pass deadline bounds the chunk loop, not the plan's construction.
+	const checkLease = () => {
+		assertLease()
+		signal.throwIfAborted()
+	}
+	const groupKey = digestParts(works)
 	// A note written by another version, or corrupted storage, never substitutes for a rebuild: it reads as absent.
 	const readNote = (note: string): unknown => {
 		try {
@@ -1284,13 +1329,11 @@ async function translateGroup(
 		}
 	}
 	const saved: unknown = readNote(PROGRESS_NOTE)
-	// A deadline that lands inside this function's prelude (reads, report, attribution) discards the built plan; on a
-	// large attributed group the prelude alone exceeds the pass budget, so the identical pass repeats the prelude on
-	// every interval and blocks the UI loop each time. The plan persists in its own note, written once per identical
-	// inputs, and a pass over the exact same works and markers resumes after the prelude instead of re-paying it.
+	// The plan persists in its own note once its prelude (reads, report, attribution) finishes. A later pass over
+	// the same works resumes after the prelude while every marker the plan covers is still pending.
 	const existingPlan = (() => {
 		if (!object(saved) || saved.group !== groupKey) return undefined
-		const plan = readPlanTail(readNote(PLAN_NOTE), signature)
+		const plan = readPlanTail(readNote(PLAN_NOTE), groupKey, changed)
 		// A committed count cannot point beyond the plan it indexes: an out-of-range counter degrades the plan
 		// to a full rebuild — never to a skipped loop that retires the markers without uploading the facts.
 		if (
@@ -1306,6 +1349,8 @@ async function translateGroup(
 	let unresolved: number
 	let settled: boolean
 	let serializedAccounts: PlanTail["accounts"]
+	// A resumed plan covers the markers it was built for; markers captured since then wait for the next round.
+	const markers = existingPlan ? existingPlan.markers : [...changed.keys()].sort()
 	if (existingPlan) {
 		builtUnits = existingPlan.units
 		unresolved = existingPlan.unresolved
@@ -1313,6 +1358,18 @@ async function translateGroup(
 		serializedAccounts = existingPlan.accounts
 		facts = factsMapOf(serializedAccounts)
 	} else {
+		// The prelude runs under its own limit, not the pass deadline: a large group's read, report and event build
+		// take longer than one pass, and only a finished prelude saves a plan. It yields on its stretch cadence
+		// throughout and runs once per round; later passes commit the saved plan's chunks under the pass deadline.
+		const preludeTimeout = AbortSignal.timeout(PRELUDE_MS)
+		const preludeSignal = AbortSignal.any([signal, preludeTimeout])
+		const preludeDeadline = Date.now() + PRELUDE_MS
+		const preludeCheck = () => {
+			assertLease()
+			signal.throwIfAborted()
+			if (preludeTimeout.aborted || Date.now() >= preludeDeadline)
+				throw new TranslationPreludeTimeoutError(PRELUDE_TIMEOUT_MESSAGE)
+		}
 		// Reads page through each work's records — at most 128 rows materialize between
 		// stretches, so a single work with a huge history cannot own the UI loop for its
 		// whole read — and parses pull one record at a time, so a big group keeps breathing:
@@ -1325,7 +1382,7 @@ async function translateGroup(
 			const through = backend.recordWatermark()
 			let after = 0
 			for (;;) {
-				const page = backend.readWorkRecordPage(workId, after, through, 128, check)
+				const page = backend.readWorkRecordPage(workId, after, through, 128, preludeCheck)
 				if (!page.length) break
 				for (const row of page) {
 					stored.push(row)
@@ -1338,20 +1395,21 @@ async function translateGroup(
 		}
 		const records: WorkRecord[] = []
 		for (const row of stored) {
-			check()
+			preludeCheck()
 			records.push(JSON.parse(row.body) as WorkRecord)
 			await stretch()
 		}
 		// The report shares the prelude's stretch cadence: a big group breathes between the calculation's
 		// 2,000-step or ~50ms stretches instead of owning the loop end-to-end.
 		const { report } = await readWorkCostReportAsync(records, stretch)
+		// Lookups get a full pass window of their own, not whatever the read left of the pass.
 		const { repositories, settled: identitiesSettled } = await repositoryIdentities(
 			agentDir,
 			records,
 			report,
-			deadline,
-			bounded,
-			check,
+			Math.min(Date.now() + PASS_MS, preludeDeadline),
+			preludeSignal,
+			preludeCheck,
 		)
 		// A commit or work link can move any request of the group; other records touch only their own request.
 		const structural = [...changed.values()].some((type) => type === "commit" || type === "work_link")
@@ -1370,8 +1428,8 @@ async function translateGroup(
 			report,
 			repositories,
 			producer,
-			check,
-			(account, entities) => effectiveClaimsAsync(backend, account, entities, stretch, check),
+			preludeCheck,
+			(account, entities) => effectiveClaimsAsync(backend, account, entities, stretch, preludeCheck),
 			touched,
 			stretch,
 		)
@@ -1381,14 +1439,15 @@ async function translateGroup(
 		serializedAccounts = built.accounts
 		facts = factsMapOf(serializedAccounts)
 	}
-	check()
+	checkLease()
 	const progress = {
 		group: groupKey,
-		markers: changed.size,
-		plan: hash(builtUnits.map((unit) => unit.requestId ?? unit.recordHashes.join())),
+		markers: markers.length,
+		plan: digestParts(builtUnits.map((unit) => unit.requestId ?? unit.recordHashes.join())),
 	}
 	const tail: PlanTail = {
-		signature,
+		group: groupKey,
+		markers,
 		generation: PLAN_GENERATION,
 		units: builtUnits,
 		accounts: serializedAccounts,
@@ -1438,11 +1497,12 @@ async function translateGroup(
 	backend.tx(() => {
 		check()
 		// A repository lookup that failed or ran out of time retries the group with a later pass.
-		if (settled) for (const recordHash of changed.keys()) backend.clearTranslation(recordHash)
+		if (settled) for (const recordHash of markers) backend.clearTranslation(recordHash)
 		backend.deleteNote("agent", PROGRESS_NOTE)
 		backend.deleteNote("agent", PLAN_NOTE)
 	})
-	return unresolved > 0
+	// Unresolved requests and unsettled repository identities both keep the group waiting for external state.
+	return { waiting: unresolved > 0 || !settled, addedMarkers: !!existingPlan && changed.size > markers.length }
 }
 
 /**

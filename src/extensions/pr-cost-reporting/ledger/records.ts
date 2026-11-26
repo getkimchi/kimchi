@@ -685,6 +685,32 @@ function drainStatementPage<T, A extends unknown[]>(
 const OUTBOX_CLAIM_COLUMNS =
 	"id, account_key AS accountKey, entity_id AS entityId, kind, body, hash, created_at AS createdAt, acked_at AS ackedAt, blocked"
 
+/**
+ * One row per account with outbox events or batches. The few distinct account keys are reached by seeking the
+ * outbox_pending index from one key to the next, so the cost follows the number of accounts, not the number of
+ * events; the sendable probe is covered by outbox_pending_cover (account_key, acked_at, blocked) and the
+ * first-batch lookup by outbox_batches_by_account (account_key, order_key, created_at).
+ */
+export const OUTBOX_DELIVERY_STATUS_SQL = `
+	WITH RECURSIVE event_accounts(account_key) AS (
+		SELECT (SELECT MIN(account_key) FROM outbox_events)
+		UNION ALL
+		SELECT (SELECT MIN(account_key) FROM outbox_events WHERE account_key > event_accounts.account_key)
+		FROM event_accounts WHERE event_accounts.account_key IS NOT NULL
+	)
+	SELECT a.account_key AS accountKey,
+		EXISTS(SELECT 1 FROM outbox_events e
+			WHERE e.account_key = a.account_key AND e.acked_at IS NULL AND e.blocked = '') AS sendable,
+		EXISTS(SELECT 1 FROM outbox_batches b WHERE b.account_key = a.account_key) AS hasBatch,
+		(SELECT id FROM outbox_batches WHERE account_key = a.account_key
+			ORDER BY order_key, created_at, rowid LIMIT 1) AS firstBatchId
+	FROM (
+		SELECT account_key FROM event_accounts WHERE account_key IS NOT NULL
+		UNION SELECT account_key FROM outbox_batches
+	) a
+	ORDER BY a.account_key
+`
+
 /** Pins the selective entity index; otherwise SQLite scans a whole account and sorts it per page. */
 export function outboxClaimsSql(entityPlaceholders: readonly string[], paged: boolean): string {
 	return `SELECT ${paged ? "rowid AS position, " : ""}${OUTBOX_CLAIM_COLUMNS} FROM outbox_events INDEXED BY outbox_entity WHERE account_key = ? AND entity_id IN (${entityPlaceholders.join(",")})${paged ? " AND rowid > ? ORDER BY rowid LIMIT ?" : " ORDER BY rowid"}`
@@ -796,22 +822,10 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 			USING (account_key)
 		ORDER BY a.account_key
 	`)
-	// The sendable probe is fully covered by outbox_pending_cover (account_key, acked_at, blocked) and
-	// the first-batch lookup by outbox_batches_by_account (account_key, order_key, created_at): no
-	// aggregation over event history, no new index.
 	const outboxDeliveryRows = db.query<
 		{ accountKey: string; sendable: number; hasBatch: number; firstBatchId: string | null },
 		[]
-	>(`
-		SELECT a.account_key AS accountKey,
-			EXISTS(SELECT 1 FROM outbox_events e
-				WHERE e.account_key = a.account_key AND e.acked_at IS NULL AND e.blocked = '') AS sendable,
-			EXISTS(SELECT 1 FROM outbox_batches b WHERE b.account_key = a.account_key) AS hasBatch,
-			(SELECT id FROM outbox_batches WHERE account_key = a.account_key
-				ORDER BY order_key, created_at, rowid LIMIT 1) AS firstBatchId
-		FROM (SELECT account_key FROM outbox_events UNION SELECT account_key FROM outbox_batches) a
-		ORDER BY a.account_key
-	`)
+	>(OUTBOX_DELIVERY_STATUS_SQL)
 	const getRow = db.query<{ body: string }, [string, string, string]>(
 		"SELECT body FROM work_projection_rows WHERE work_id = ? AND log = ? AND key = ?",
 	)
