@@ -130,9 +130,8 @@ jobs:
       timeout-minutes: 15
       use-build: true
       search-tools: true
-      command: |
-        KIMCHI_PROXY_HELPER="$PWD/bin/proxy-helper" KIMCHI_TUI_TIMINGS_OUT="$PWD/tui-e2e-timings.json" \
-          node scripts/run-tui-e2e.js --shard "$SHARD_INDEX/$SHARD_TOTAL"
+      # The timings file feeds pnpm run test:e2e:tui:timings (docs/ci.md).
+      command: KIMCHI_TUI_TIMINGS_OUT="$PWD/tui-e2e-timings.json" pnpm run test:e2e:tui:ci --shard "$SHARD_INDEX/$SHARD_TOTAL"
       report-artifacts: tui-e2e-timings.json
       failure-artifacts: |
         *.tui-e2e.log
@@ -149,7 +148,7 @@ jobs:
       timeout-minutes: 15
       use-build: true
       search-tools: true
-      command: KIMCHI_PROXY_HELPER="$PWD/bin/proxy-helper" pnpm exec vitest run --config tests/e2e/acp/vitest.config.ts
+      command: pnpm run test:e2e:acp:ci
       failure-artifacts: |
         *.acp-e2e.log
         **/acp-traces/**
@@ -163,7 +162,7 @@ jobs:
     with:
       name: mcp-conformance
       use-build: true
-      command: KIMCHI_PROXY_HELPER="$PWD/bin/proxy-helper" pnpm run test:e2e:mcp:conformance
+      command: pnpm run test:e2e:mcp:conformance:ci
       failure-artifacts: .kimchi/mcp-conformance-results/**
 
   # Tripwire for ACP wire-compat regressions (docs/acp-compat.md). It diffs

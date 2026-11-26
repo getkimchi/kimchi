@@ -38,11 +38,37 @@ The `changes` job decides which suites a PR needs. The rules are in
 `scripts/ci-changes.js`, with tests beside it. Docs-only changes skip all
 three e2e suites. The merge queue and manual runs do not filter.
 
+## Where to change what
+
+`ci.yml` says what runs and when. How a suite runs lives next to the suite,
+so most suite changes do not touch `ci.yml`.
+
+| To change | Edit |
+|---|---|
+| A test | the test file. CI picks up new files by itself |
+| How a suite runs its files | its config or script, and its `test:e2e:<suite>:ci` script in `package.json` |
+| When a suite runs | `scripts/ci-changes.js` |
+| Shard count, timeout, logs to keep | the suite's block in `ci.yml` |
+| Setup for every suite | `.github/workflows/_test-suite.yml` or `.github/actions/setup` |
+| What blocks a merge | `needs` of `master-checks` |
+
+The `test:e2e:<suite>:ci` scripts run the suite against a binary that is
+already built, the way CI does. They set `KIMCHI_PROXY_HELPER`, because
+kimchi does not look for proxy-helper in the repo's `bin/` folder. To run
+one locally, build both first, then run the script:
+
+```bash
+pnpm run build:binary
+make -C tools/proxy-helper copy-for-dev   # puts proxy-helper in bin/
+pnpm run test:e2e:tui:ci --shard 2/6
+```
+
 ## Adding a test suite
 
-Use the reusable workflow `.github/workflows/_test-suite.yml`. It checks out
-the repo, sets up the tools, optionally downloads the build, runs the command
-and uploads logs when the command fails.
+Add a `test:e2e:<suite>:ci` script to `package.json`. Then call it from
+`ci.yml` through the reusable workflow `.github/workflows/_test-suite.yml`.
+That workflow checks out the repo, sets up the tools, optionally downloads
+the build, runs the command and uploads logs when the command fails.
 
 ```yaml
 my-suite:
@@ -52,7 +78,7 @@ my-suite:
     name: my-suite
     use-build: true           # download dist/ and bin/proxy-helper
     shards: "[1, 2]"          # optional, one job per entry
-    command: pnpm exec vitest run --config my.config.ts --shard="$SHARD_INDEX/$SHARD_TOTAL"
+    command: pnpm run test:e2e:my-suite:ci --shard="$SHARD_INDEX/$SHARD_TOTAL"
     failure-artifacts: "*.my-suite.log"
 ```
 
