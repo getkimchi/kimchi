@@ -1,9 +1,21 @@
 import { createHash, randomUUID } from "node:crypto"
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, join } from "node:path"
 
 const MAX_ATTACHMENT_BYTES = 1024 * 1024
 const TRUNCATION_MARKER = "\n\n[log truncated to 1 MiB]\n"
+
+export function listFailLogs(dir) {
+	return readdirSync(dir)
+		.filter((name) => name.includes(".fail.") && name.endsWith(".tui-e2e.log"))
+		.map((name) => join(dir, name))
+		.sort()
+}
+
+export function newFailLogs(before, after) {
+	const existing = new Set(before)
+	return after.filter((path) => !existing.has(path))
+}
 
 /** Write one native Allure result for an entire test file, not for its individual test cases. */
 export function writeTuiAllureResult({ resultsDir, stem, exitCode, start, stop, failLogPaths = [], failureMessage }) {

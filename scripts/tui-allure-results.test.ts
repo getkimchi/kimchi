@@ -18,6 +18,7 @@ import { parse } from "yaml"
 const repoRoot = fileURLToPath(new URL("../", import.meta.url))
 const runnerPath = join(repoRoot, "scripts", "run-tui-e2e.js")
 const allureResultsPath = join(repoRoot, "scripts", "tui-allure-results.js")
+const { listFailLogs, newFailLogs } = await import(new URL("./tui-allure-results.js", import.meta.url).href)
 const githubExpression = (expression: string) => `\${{ ${expression} }}`
 const allureSetupAction = "allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db"
 
@@ -112,6 +113,23 @@ function createTuiRunnerFixture({
 		},
 	}
 }
+
+it("attributes differently named fail logs by spawn snapshot and excludes pre-existing logs", () => {
+	const root = mkdtempSync(join(tmpdir(), "kimchi-tui-log-snapshot-"))
+	try {
+		const existing = join(root, "billing-low-warning.fail.previous-1.tui-e2e.log")
+		writeFileSync(existing, "previous failure")
+		const before = listFailLogs(root)
+		const created = join(root, "bash-card-layout.fail.current-1.tui-e2e.log")
+		writeFileSync(created, "failure from the bash-commands spawn")
+		writeFileSync(join(root, "bash-card-layout.pass.current-1.tui-e2e.log"), "pass artifact")
+
+		expect(newFailLogs(before, listFailLogs(root))).toEqual([created])
+		expect(newFailLogs(before, before)).toEqual([])
+	} finally {
+		rmSync(root, { recursive: true, force: true })
+	}
+})
 
 function readResults(resultsDir: string): AllureResult[] {
 	return readdirSync(resultsDir)

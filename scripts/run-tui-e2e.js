@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
-import { basename, dirname, isAbsolute, join, resolve } from "node:path"
+import { basename, dirname, isAbsolute, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { inflateSync } from "node:zlib"
 import { SKIPPED_TUI_TESTS } from "../tests/e2e/tui/skip-list.js"
-import { writeTuiAllureResult } from "./tui-allure-results.js"
+import { listFailLogs, newFailLogs, writeTuiAllureResult } from "./tui-allure-results.js"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const tuiCwd = resolve(repoRoot, "tests/e2e/tui")
@@ -63,13 +63,13 @@ function runTui(runArgs, stem) {
 	const start = Date.now()
 	// Artifact names are unique per attempt, so a before/after snapshot avoids
 	// both stale logs and same-millisecond mtime boundary errors.
-	const failLogsBefore = new Set(stem ? findFailLogs() : [])
+	const failLogsBefore = stem ? listFailLogs(repoRoot) : []
 	const result = spawnSync(tuiTest, runArgs, { cwd: tuiCwd, stdio: "inherit", env })
 	const stop = Date.now()
 	const status = result.status ?? 1
 	if (stem && process.env.ALLURE_RESULTS) {
 		try {
-			const failLogPaths = findFailLogs().filter((path) => !failLogsBefore.has(path))
+			const failLogPaths = newFailLogs(failLogsBefore, listFailLogs(repoRoot))
 			writeTuiAllureResult({
 				resultsDir: process.env.ALLURE_RESULTS,
 				stem,
@@ -94,13 +94,6 @@ function runTui(runArgs, stem) {
 function testStemFromArgs(runArgs) {
 	const filter = runArgs.find((arg) => !arg.startsWith("-"))
 	return filter ? basename(filter).replace(/\.test\.ts$/, "") : undefined
-}
-
-function findFailLogs() {
-	return readdirSync(repoRoot)
-		.filter((name) => name.includes(".fail.") && name.endsWith(".tui-e2e.log"))
-		.map((name) => join(repoRoot, name))
-		.sort()
 }
 
 function runEach(stems) {
