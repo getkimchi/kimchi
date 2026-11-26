@@ -400,6 +400,9 @@ it("restricts TestOps uploads to trusted events and tags nightly repetitions", (
 	expect(job.env.ALLURE_TOKEN).toBeUndefined()
 	const upload = job.steps.find((step: { name?: string }) => step.name === "Upload TUI results to Allure TestOps")
 	expect(upload.run).toContain("$ALLURE_RUN_KIND")
+	expect(upload.run).toContain(
+		`--job-run-uid "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-shard-${githubExpression("matrix.shard")}-iteration-${githubExpression("matrix.iteration")}"`,
+	)
 	expect(upload.run).toContain("commit=$GITHUB_SHA")
 	expect(upload.run).toContain("event=$ALLURE_RUN_KIND")
 	expect(upload.run).toContain(`iteration=${githubExpression("matrix.iteration")}`)
@@ -423,5 +426,6 @@ it("tags ACP and Vitest uploads with GitHub run correlation", () => {
 		)
 		expect(upload.run).toContain("run_id=$GITHUB_RUN_ID")
 		expect(upload.run).toContain("run_attempt=$GITHUB_RUN_ATTEMPT")
+		expect(upload.run).toContain('--job-run-uid "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-')
 	}
 })
