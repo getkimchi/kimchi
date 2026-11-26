@@ -368,6 +368,36 @@ describe("review target resolution", () => {
 		expect(failure).not.toMatchObject({ code: "no_commits" })
 	})
 
+	it("does not misdiagnose a detached HEAD naming a missing object as no commits", async () => {
+		initialize()
+		const gitDir = git(repo, "rev-parse", "--absolute-git-dir")
+		writeFileSync(join(gitDir, "HEAD"), `${"1".repeat(40)}\n`)
+
+		const failure = await resolve({ kind: "working-tree", fetch: false }).catch((error: unknown) => error)
+		expect(failure).toBeInstanceOf(Error)
+		expect(failure).not.toMatchObject({ code: "no_commits" })
+		expect(failure).toMatchObject({ code: "unknown_revision" })
+	})
+
+	it("propagates a numeric Git failure during unborn HEAD confirmation", async () => {
+		initialize()
+		const gitDir = git(repo, "rev-parse", "--absolute-git-dir")
+		const heldGitDir = `${gitDir}-held`
+		let failure: unknown
+		try {
+			failure = await resolve(
+				{ kind: "working-tree", fetch: false },
+				{ beforeHeadResolution: () => renameSync(gitDir, heldGitDir) },
+			).catch((error: unknown) => error)
+		} finally {
+			renameSync(heldGitDir, gitDir)
+		}
+
+		expect(failure).toBeInstanceOf(Error)
+		expect(failure).not.toMatchObject({ code: "no_commits" })
+		expect(failure).toMatchObject({ message: expect.stringContaining("symbolic-ref") })
+	})
+
 	it("pins a remote tracking comparison at the merge base and suggests remote HEAD or a known target", async () => {
 		const base = initialize()
 		git(repo, "checkout", "-b", "feature")

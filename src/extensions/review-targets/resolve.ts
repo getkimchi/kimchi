@@ -86,6 +86,23 @@ async function symbolicRef(root: string, ref: string, signal?: AbortSignal): Pro
 	return result.stdout.toString("utf8").trim() || undefined
 }
 
+async function isUnbornHead(root: string, signal?: AbortSignal): Promise<boolean> {
+	const symbolicArgs = ["symbolic-ref", "--quiet", "HEAD"] as const
+	const symbolic = await gitBytes(root, symbolicArgs, { signal, allowFailure: true })
+	if (symbolic.exitCode !== 0) {
+		if (symbolic.exitCode === 1 && symbolic.failure?.code === 1 && !symbolic.stderr) return false
+		throw gitResultError(symbolicArgs, symbolic)
+	}
+	const ref = symbolic.stdout.toString("utf8").trim()
+	if (!/^refs\/heads\/.+/.test(ref)) return false
+
+	const showRefArgs = ["show-ref", "--verify", "--quiet", ref] as const
+	const target = await gitBytes(root, showRefArgs, { signal, allowFailure: true })
+	if (target.exitCode === 0) return false
+	if (target.exitCode === 1 && target.failure?.code === 1 && !target.stderr) return true
+	throw gitResultError(showRefArgs, target)
+}
+
 async function pullRequestBase(
 	root: string,
 	branch: string | undefined,
@@ -276,9 +293,9 @@ export async function resolveReviewTarget(
 				tipSha = await resolveCommit(root, "HEAD", options.signal)
 			} catch (error) {
 				if (!(error instanceof ReviewTargetError) || error.code !== "unknown_revision") throw error
-				// Confirm an unborn HEAD independently. optionalCommit propagates aborts
-				// and process failures; a successful second read preserves the original error.
-				if ((await optionalCommit(root, "HEAD", options.signal)) !== undefined) throw error
+				// Only a symbolic refs/heads/... HEAD whose target is verifiably absent
+				// is unborn; detached HEADs and confirmation failures are not no-commit states.
+				if (!(await isUnbornHead(root, options.signal))) throw error
 				throw new ReviewTargetError(
 					"no_commits",
 					"No commits yet. Make a first commit before running a working-tree review.",
