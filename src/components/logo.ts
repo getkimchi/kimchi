@@ -50,13 +50,24 @@ export class LogoHeader implements Component {
 	private readonly theme: Theme
 	private readonly getBranch?: () => string | undefined
 	private readonly getRightColumnNotice?: () => string | undefined
+	private readonly isFermentAvailable?: () => boolean
 	private logoLines!: string[]
 	private compactLogoLines!: string[]
 
-	constructor(theme: Theme, opts?: { getBranch?(): string | undefined; getRightColumnNotice?(): string | undefined }) {
+	constructor(
+		theme: Theme,
+		opts?: {
+			getBranch?(): string | undefined
+			getRightColumnNotice?(): string | undefined
+			// The caller decides, because components must not import feature code.
+			// Without it the header assumes Ferment is available.
+			isFermentAvailable?(): boolean
+		},
+	) {
 		this.theme = theme
 		this.getBranch = opts?.getBranch
 		this.getRightColumnNotice = opts?.getRightColumnNotice
+		this.isFermentAvailable = opts?.isFermentAvailable
 		this.rebuildArt()
 	}
 
@@ -112,11 +123,18 @@ export class LogoHeader implements Component {
 
 		// Right column content (static text — no dynamic tip mechanism exists yet)
 		const accentText = (text: string) => theme.fg("accent", text)
-		const labelLine = "Kimchi's special:"
-		const tip1Text = `Use ${accentText("/ferment")} to work on one objective until it is verified done.`
+		// Typing /ferment when Ferment is off sends plain text to the model, so
+		// the header must not advertise it then.
+		const fermentAvailable = this.isFermentAvailable?.() ?? true
+		const labelLine = fermentAvailable ? "Kimchi's special:" : "Getting started:"
+		const tip1Text = fermentAvailable
+			? `Use ${accentText("/ferment")} to work on one objective until it is verified done.`
+			: `Type ${accentText("/")} to see the commands you can use.`
 		const tip2Text =
 			this.getRightColumnNotice?.() ??
-			`Use ${accentText("/ferment pause")} to stop it, and ${accentText("/ferment resume")} to go on.`
+			(fermentAvailable
+				? `Use ${accentText("/ferment pause")} to stop it, and ${accentText("/ferment resume")} to go on.`
+				: `Use ${accentText("/help")} to learn what kimchi can do.`)
 
 		const labelWrap = wrapTextWithAnsi(labelLine, rightColWidth)
 		const wrap1 = wrapTextWithAnsi(tip1Text, rightColWidth)

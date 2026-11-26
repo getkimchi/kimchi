@@ -215,6 +215,79 @@ describe("LogoHeader", () => {
 		expect(rightText).not.toContain("ferment exit")
 	})
 
+	describe("Ferment availability", () => {
+		it("shows the /ferment tips when the caller reports Ferment available", () => {
+			const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => true })
+			const rightText = rightColumnText(header.render(120))
+
+			expect(rightText).toContain("Kimchi's special:")
+			expect(rightText).toContain("Use /ferment to work on one objective until it is verified done.")
+			expect(rightText).toContain("/ferment pause")
+			expect(rightText).toContain("/ferment resume")
+		})
+
+		it("shows neutral tips and no /ferment text when Ferment is not available", () => {
+			const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => false })
+			const lines = header.render(120)
+			const rightText = rightColumnText(lines)
+
+			expect(rightText).toContain("Getting started:")
+			expect(rightText).toContain("Type / to see the commands you can use.")
+			expect(rightText).toContain("Use /help to learn what kimchi can do.")
+			expect(rightText).not.toContain("Kimchi's special")
+			for (const line of lines) {
+				expect(stripAnsi(line)).not.toContain("ferment")
+			}
+		})
+
+		it("highlights the neutral commands in the accent color", () => {
+			const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => false })
+			const rightSection = header.render(120).slice(1, -1).join("\n")
+
+			expect(rightSection).toContain("\x1b[36m/\x1b[0m")
+			expect(rightSection).toContain("\x1b[36m/help\x1b[0m")
+		})
+
+		it("keeps the Community notice in place of the second tip when Ferment is not available", () => {
+			const header = new LogoHeader(createMockTheme(), {
+				isFermentAvailable: () => false,
+				getRightColumnNotice: () => "You are using the Community tier.",
+			})
+			const lines = header.render(120)
+			const rightText = rightColumnText(lines)
+
+			expect(rightText).toContain("Type / to see the commands you can use.")
+			expect(rightText).toContain("You are using the Community tier.")
+			expect(rightText).not.toContain("/help")
+			for (const line of lines) {
+				expect(stripAnsi(line)).not.toContain("ferment")
+			}
+		})
+
+		it("reads availability on every render, so a mid-session change shows at once", () => {
+			let available = true
+			const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => available })
+
+			expect(rightColumnText(header.render(120))).toContain("/ferment")
+			available = false
+			expect(rightColumnText(header.render(120))).not.toContain("/ferment")
+			available = true
+			expect(rightColumnText(header.render(120))).toContain("/ferment")
+		})
+
+		it("assumes Ferment is available when the caller gives no check", () => {
+			const header = new LogoHeader(createMockTheme())
+			expect(rightColumnText(header.render(120))).toContain("/ferment pause")
+		})
+
+		it.each([1, 10, 30, 60])("never exceeds width %i with the neutral tips", (width) => {
+			const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => false })
+			for (const line of header.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			}
+		})
+	})
+
 	it("centers the logo and info lines vertically as a unit", () => {
 		const theme = createMockTheme()
 		const header = new LogoHeader(theme)
