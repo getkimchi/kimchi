@@ -78,8 +78,8 @@ importers:
         specifier: 1.3.0
         version: 1.3.0(patch_hash=e408270e14bd077bef77c9f874196e25d726fb3eaeda919bb44d850bcd402937)
       '@getkimchi/kimchi-bridge':
-        specifier: github:getkimchi/kimchi-bridge#0095a69b2119c9d6b21b5fad11c610788b6c11c1
-        version: https://codeload.github.com/getkimchi/kimchi-bridge/tar.gz/0095a69b2119c9d6b21b5fad11c610788b6c11c1(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.12.3)(ws@8.22.0)(zod@4.6.7)
+        specifier: github:getkimchi/kimchi-bridge#185d64d3ea2d2f3e769c98fd2965c2df5317153f
+        version: https://codeload.github.com/getkimchi/kimchi-bridge/tar.gz/185d64d3ea2d2f3e769c98fd2965c2df5317153f(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.12.3)(ws@8.22.0)(zod@4.6.7)
       '@hyzyla/pdfium':
         specifier: ^3.0.0
         version: 3.0.0
@@ -673,8 +673,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@getkimchi/kimchi-bridge@https://codeload.github.com/getkimchi/kimchi-bridge/tar.gz/0095a69b2119c9d6b21b5fad11c610788b6c11c1':
-    resolution: {tarball: https://codeload.github.com/getkimchi/kimchi-bridge/tar.gz/0095a69b2119c9d6b21b5fad11c610788b6c11c1}
+  '@getkimchi/kimchi-bridge@https://codeload.github.com/getkimchi/kimchi-bridge/tar.gz/185d64d3ea2d2f3e769c98fd2965c2df5317153f':
+    resolution: {tarball: https://codeload.github.com/getkimchi/kimchi-bridge/tar.gz/185d64d3ea2d2f3e769c98fd2965c2df5317153f}
     version: 0.1.0
     engines: {bun: '>=1.4.0'}
 
@@ -4020,7 +4020,7 @@ snapshots:
   '@esbuild/win32-x64@0.27.7':
     optional: true
 
-  '@getkimchi/kimchi-bridge@https://codeload.github.com/getkimchi/kimchi-bridge/tar.gz/0095a69b2119c9d6b21b5fad11c610788b6c11c1(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.12.3)(ws@8.22.0)(zod@4.6.7)':
+  '@getkimchi/kimchi-bridge@https://codeload.github.com/getkimchi/kimchi-bridge/tar.gz/185d64d3ea2d2f3e769c98fd2965c2df5317153f(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.12.3)(ws@8.22.0)(zod@4.6.7)':
     dependencies:
       '@openai/agents-core': 0.21.0(@aws-sdk/credential-provider-node@3.972.86)(@smithy/signature-v4@5.7.4)(supports-color@10.2.2)(undici@8.12.3)(ws@8.22.0)(zod@4.6.7)
       diff: 9.0.0

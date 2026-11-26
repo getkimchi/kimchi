@@ -32,7 +32,13 @@ it.each([
 				params: expect.objectContaining({ sessionId, message: expect.stringContaining(message) }),
 			})
 	}
-	await command("/pr-reporting status", `PR reporting   ${telemetry ? "Enabled" : "Disabled"} (SaaS default)`)
+	await command(
+		"/pr-reporting status",
+		`PR reporting   ${telemetry ? "Enabled" : "Disabled"} (from config, follows telemetry)`,
+	)
+	expect(JSON.parse(readFileSync(join(active.homeDir, ".config/kimchi/config.json"), "utf8"))).toMatchObject({
+		prReporting: "follow-telemetry",
+	})
 	if (!telemetry) expect(existsSync(path)).toBe(false)
 	await command("/pr-reporting on", "PR reporting on.")
 	expect(JSON.parse(readFileSync(path, "utf8")).enabled).toBe(true)

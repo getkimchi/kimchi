@@ -763,8 +763,8 @@ describe("readable work summaries", () => {
 			saveWorkSummary(dir, old)
 			backend.markDirty(workId)
 		})
-		expect(summary(workId).fileObservations).toEqual([])
-		expect(summary(workId).commits[0].fileMatches).toEqual([])
+		expect(backend.readLog(workId, "fileObservations")).toEqual([])
+		expect(backend.readLog(workId, "commits")[0]?.fileMatches).toEqual([])
 		const ledger = join(dir, "work-attribution", "parent.jsonl")
 		fs.mkdirSync(dirname(ledger), { recursive: true })
 		const ledgerBytes = `${authority.map((row) => row.body).join("\n")}\n`

@@ -1910,6 +1910,17 @@ async function summaryWriter(agent: string, json: string): Promise<void> {
 		beforeFlush?: boolean
 	}
 	const backend = backendFor(agent)
+	const originalTryCaptureTx = backend.tryCaptureTx?.bind(backend)
+	if (originalTryCaptureTx) {
+		backend.tryCaptureTx = (commit, busyMs) => {
+			// These barriers require the real writer lock, not the spool's early return.
+			const deadline = performance.now() + 5_000
+			for (;;) {
+				if (originalTryCaptureTx(commit, busyMs)) return true
+				if (performance.now() >= deadline) return false
+			}
+		}
+	}
 	const publish = backend.putHead
 	const cancelled = new Error("writer ownership cancelled before commit")
 	const gate = () => {
@@ -1962,6 +1973,7 @@ async function summaryWriter(agent: string, json: string): Promise<void> {
 		signal("flushed")
 	} finally {
 		backend.putHead = publish
+		backend.tryCaptureTx = originalTryCaptureTx
 		closeBackends()
 	}
 }
