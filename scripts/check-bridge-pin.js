@@ -40,6 +40,12 @@ export function parseBundledVersion(bundleScript) {
 	return version ? version : undefined
 }
 
+/** Read how bundle-bridge.sh obtains its payload. Untagged development packages are built from
+ *  the same pinned package.json commit as the inline library; release assets resolve by tag. */
+export function parseBundleSource(bundleScript) {
+	return bundleScript.match(/^SOURCE=(\S+)$/m)?.[1] ?? "release"
+}
+
 /**
  * The commit the package.json pin names. Only `github:getkimchi/kimchi-bridge#<full 40-hex sha>`
  * is a valid pin; anything else (link:, file:, a bare version, another host) is reported as
@@ -109,6 +115,11 @@ export function evaluate({ packageJsonSpec, bundleScript, runLsRemote = lsRemote
 			ok: false,
 			reason: `development link, not pinned: @getkimchi/kimchi-bridge points at a local checkout (${pin.location}); pin the release commit for ${version} with github:getkimchi/kimchi-bridge#<full-sha>`,
 		}
+	if (parseBundleSource(bundleScript) === "package")
+		return {
+			ok: true,
+			reason: `inline library and worker bundle both build from pinned commit ${pin.sha}`,
+		}
 	const tag = resolveTagCommit(version, runLsRemote)
 	if (tag.error) return { ok: false, reason: tag.error }
 	if (tag.sha !== pin.sha)
@@ -173,6 +184,17 @@ function runSelfTest() {
 			given: { packageJsonSpec: `github:getkimchi/kimchi-bridge#${PIN_B}`, bundleScript: BUNDLED },
 			lsRemote: () => `${PIN_A}\trefs/tags/v0.1.0-rc.30^{}\n`,
 			expect: (r) => r.ok === false && r.reason.includes("mismatch") && r.reason.includes(PIN_A),
+		},
+		{
+			name: "package source uses the library commit for the worker bundle too",
+			given: {
+				packageJsonSpec: `github:getkimchi/kimchi-bridge#${PIN_A}`,
+				bundleScript: "SOURCE=package\nVERSION=v0.1.0-rc.0\n",
+			},
+			lsRemote: () => {
+				throw new Error("package source must not resolve a release tag")
+			},
+			expect: (r) => r.ok === true && r.reason.includes(PIN_A),
 		},
 		{
 			name: "development link fails as not pinned",
