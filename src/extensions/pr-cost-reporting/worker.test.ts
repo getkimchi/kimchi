@@ -19,6 +19,7 @@ import * as eventBuilder from "./events.js"
 import { reportJournalProblems } from "./ledger/import.js"
 import * as outbox from "./ledger/outbox.js"
 import { backendFor, readRecords } from "./ledger/records.js"
+import type { Batch } from "./protocol.js"
 import * as queue from "./queue.js"
 import {
 	HOLD_EXPIRY_MS,
@@ -127,6 +128,48 @@ const capturedReport = () => vi.mocked(eventBuilder.buildEvents).mock.calls.at(-
 /** Every request each connected group of works passed to the producer. */
 const capturedRequests = () => vi.mocked(eventBuilder.buildEvents).mock.calls.flatMap(([, report]) => report.requests)
 const deliver = () => deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
+const eventUploads = () => http.mock.calls.filter(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))
+
+async function seedCoverageEvents(storedKey: string, count: number, alternates: readonly string[] = []): Promise<void> {
+	const actual = await vi.importActual<typeof outbox>("./ledger/outbox.js")
+	for (let index = 0; index < count; index++) {
+		const key = alternates[index % alternates.length] ?? storedKey
+		actual.observeEvents(
+			directory,
+			key,
+			[
+				{
+					entityId: `aaaaaaaa-aaaa-4aaa-8aaa-${index.toString(16).padStart(12, "0")}`,
+					source: "codex",
+					sourceVersion: "test",
+					deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+					observeTime: "2026-10-24T00:00:00.123456789Z",
+					coverage: { code: "observed", count: "1" },
+				},
+			],
+			[],
+			() => {},
+		)
+	}
+	vi.spyOn(outbox, "pendingBatch").mockImplementation(actual.pendingBatch)
+}
+
+function acceptEventBatches(
+	onBatch?: (attempt: number, batch: Batch) => Response | undefined | Promise<Response | undefined>,
+): void {
+	let attempts = 0
+	http.mockImplementation(async (input, init) => {
+		if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+		const batch: Batch = JSON.parse(String(init?.body)).batch
+		const intercepted = await onBatch?.(++attempts, batch)
+		if (intercepted) return intercepted
+		return Response.json({
+			batchId: batch.id,
+			receipts: batch.events.map((event) => ({ id: event.id, revision: event.revision, status: "accepted" })),
+		})
+	})
+}
+
 async function seedLinked(priced = true) {
 	const at = "2026-10-04T12:00:00.000Z"
 	const common = {
@@ -252,6 +295,31 @@ describe("account-fenced reporting delivery", () => {
 	it("makes no authentication request when the event outbox is empty", async () => {
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
 		expect(http).not.toHaveBeenCalled()
+	})
+	it("preserves cooperative journal-prefix verification during capture", async () => {
+		const importer = vi.spyOn(summary, "importWorkRecordsAsync")
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(importer).toHaveBeenCalledWith(directory, expect.any(Function), expect.any(Function), true)
+	})
+	it("stamps the gate from delivery-only status instead of historical aggregation", async () => {
+		await seedCoverageEvents(accountKey(content.account), 1)
+		acceptEventBatches()
+		const fullStatus = vi.spyOn(outbox, "readOutboxStatus").mockImplementation(() => {
+			throw new Error("historical aggregation must not gate delivery")
+		})
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(1)
+		expect(fullStatus).not.toHaveBeenCalled()
+	})
+	it("delivers from the projection rather than aggregating the full status", async () => {
+		await seedCoverageEvents(accountKey(content.account), 1)
+		acceptEventBatches()
+		const fullStatus = vi.spyOn(outbox, "readOutboxStatus").mockImplementation(() => {
+			throw new Error("full status aggregation must not run during delivery")
+		})
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(1)
+		expect(fullStatus).not.toHaveBeenCalled()
 	})
 	it.each([
 		"backoff",
@@ -429,6 +497,127 @@ describe("account-fenced reporting delivery", () => {
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
 		expect(posts()).toHaveLength(1)
 		expect(http.mock.calls.some(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))).toBe(true)
+	})
+
+	it("delivers canonical-equivalent legacy account keys and drains beyond the old attempt cap", async () => {
+		const legacyKey = accountKey({ ...content.account, apiUrl: "https://app.kimchi.dev/api" })
+		config.endpoint = "https://api.cast.ai"
+		await seedCoverageEvents(legacyKey, 400)
+		acceptEventBatches()
+		const statusCalls = vi.spyOn(outbox, "outboxDeliveryStatus")
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(4)
+		expect(statusCalls).toHaveBeenCalledTimes(1)
+		expect(http.mock.calls.filter(([url]) => String(url).endsWith("api-keys:verify"))).toHaveLength(1)
+		expect(outbox.readOutboxStatus(directory).find((status) => status.accountKey === legacyKey)).toMatchObject({
+			pending: 0,
+			acknowledged: 400,
+			batches: 0,
+		})
+		expect(
+			outbox.readOutboxStatus(directory).find((status) => status.accountKey === accountKey(content.account)),
+		).toBeUndefined()
+	})
+
+	it("does not treat a legacy URL belonging to another organization as the credential", async () => {
+		const foreignKey = accountKey({ ...content.account, apiUrl: "https://app.kimchi.dev/api", organizationId: user })
+		config.endpoint = "https://api.cast.ai"
+		await seedCoverageEvents(foreignKey, 1)
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(0)
+		expect(JSON.parse(backendFor(directory).getNote("pr-cost-delivery", foreignKey) ?? "{}").error).toBe(
+			"PR reporting is waiting for the original account",
+		)
+	})
+
+	it("stops draining event batches when the pass's deadline cancels the fourth upload", async () => {
+		const storedKey = accountKey(content.account)
+		await seedCoverageEvents(storedKey, 500)
+		const controller = new AbortController()
+		acceptEventBatches((attempt) => {
+			if (attempt === 4) controller.abort()
+			return undefined
+		})
+		await deliverEvents(directory, "/project", controller.signal, () => {})
+		expect(eventUploads()).toHaveLength(4)
+		expect(outbox.readOutboxStatus(directory).find((status) => status.accountKey === storedKey)).toMatchObject({
+			pending: 200,
+			acknowledged: 300,
+		})
+	})
+
+	it("delivers two canonical-equivalent own keys with one verification and status read", async () => {
+		const legacyKey = accountKey({ ...content.account, apiUrl: "https://app.kimchi.dev/api" })
+		const currentKey = accountKey({ ...content.account, apiUrl: "https://api.cast.ai" })
+		config.endpoint = "https://api.cast.ai"
+		await seedCoverageEvents(currentKey, 400, [legacyKey, currentKey])
+		acceptEventBatches()
+		const statusCalls = vi.spyOn(outbox, "outboxDeliveryStatus")
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(4)
+		expect(statusCalls).toHaveBeenCalledTimes(1)
+		expect(http.mock.calls.filter(([url]) => String(url).endsWith("api-keys:verify"))).toHaveLength(1)
+		for (const key of [legacyKey, currentKey])
+			expect(outbox.readOutboxStatus(directory).find((status) => status.accountKey === key)).toMatchObject({
+				pending: 0,
+				acknowledged: 200,
+				batches: 0,
+			})
+	})
+
+	it.each([
+		{
+			label: "a different user",
+			key: accountKey({ ...content.account, apiUrl: "https://app.kimchi.dev/api", userId: requestId }),
+		},
+		{
+			label: "a non-UUID user",
+			key: accountKey({ ...content.account, apiUrl: "https://app.kimchi.dev/api", userId: "not-a-uuid" }),
+		},
+		{ label: "a malformed stored key", key: "not-json" },
+	])("defers $label without sending its events", async ({ key }) => {
+		config.endpoint = "https://api.cast.ai"
+		await seedCoverageEvents(key, 1)
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(0)
+		expect(JSON.parse(backendFor(directory).getNote("pr-cost-delivery", key) ?? "{}").error).toBe(
+			"PR reporting is waiting for the original account",
+		)
+	})
+
+	it("retains pending events and backoff when a later batch is rate limited", async () => {
+		const storedKey = accountKey(content.account)
+		await seedCoverageEvents(storedKey, 500)
+		acceptEventBatches((attempt) =>
+			attempt === 4 ? new Response("rate-limited", { status: 429, headers: { "Retry-After": "120" } }) : undefined,
+		)
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(4)
+		expect(outbox.readOutboxStatus(directory).find((status) => status.accountKey === storedKey)).toMatchObject({
+			pending: 200,
+			acknowledged: 300,
+			batches: 1,
+		})
+		const retry = JSON.parse(backendFor(directory).getNote("pr-cost-delivery", storedKey) ?? "{}")
+		expect(retry).toMatchObject({ attempts: 1, error: "PR cost event upload returned HTTP 429" })
+		expect(retry.retryAt - Date.now()).toBeGreaterThan(60_000)
+		expect(backendFor(directory).getOutboxBatch(storedKey)).not.toBeUndefined()
+	})
+
+	it("stops after consent changes between batches and retains remaining events", async () => {
+		const storedKey = accountKey(content.account)
+		await seedCoverageEvents(storedKey, 500)
+		acceptEventBatches(async (attempt) => {
+			if (attempt === 2) await setReportingEnabled(directory, false)
+			return undefined
+		})
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(2)
+		expect(outbox.readOutboxStatus(directory).find((status) => status.accountKey === storedKey)).toMatchObject({
+			pending: 400,
+			acknowledged: 100,
+			batches: 1,
+		})
 	})
 
 	it("keeps an event batch without an error when the credential changes during its upload", async () => {

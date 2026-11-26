@@ -30,8 +30,8 @@ import {
 	effectiveClaimsAsync,
 	type Fact,
 	observeEvents,
+	outboxDeliveryStatus,
 	pendingBatch,
-	readOutboxStatus,
 } from "./ledger/outbox.js"
 import { backendFor, type OutboxBatch, type RecordBackend, type StoredRecord } from "./ledger/records.js"
 import { preludeStretch } from "./prelude.js"
@@ -68,7 +68,7 @@ import {
 	UPLOAD_INTERVAL_MS,
 	withReportingConsent,
 } from "./queue.js"
-import { accountKey, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
+import { accountKey, parseStoredWorkAccount, type ReportingRepository, type RepositoryIdentity } from "./snapshot.js"
 
 const PASS_MS = 5000
 /** Failed repository-identity lookups wait this long before retrying, inside and outside a pass. */
@@ -539,6 +539,12 @@ export function deliverSnapshots(
 	})
 }
 
+/** Compare a persisted account key without rewriting it: the API base is canonical, while org/user match exactly. */
+function sameStoredWorkAccount(storedKey: string, account: WorkAccount): boolean {
+	const parsed = parseStoredWorkAccount(storedKey)
+	return parsed !== null && sameWorkAccount(parsed, account)
+}
+
 /** Frozen delta batches use the existing reporting worker; inference and proxy metrics are not prerequisites. */
 export function deliverEvents(
 	agentDir: string,
@@ -551,190 +557,194 @@ export function deliverEvents(
 		const backend = backendFor(agentDir)
 		// Pass-scoped signature cache; details at the snapshots deliver path below the events loop.
 		let queueFile: FreshReportingState = {}
-		for (let attempt = 0; attempt < 3; attempt++) {
-			check()
-			const due = readOutboxStatus(agentDir).filter(
-				(status) => (status.sendable > 0 || status.batches > 0) && (status.retry?.retryAt ?? 0) <= Date.now(),
-			)
-			if (!due.length) return
-			const { token: key, organizationId } = resolveGatewayCredentials(loadConfig({ cwd }))
-			const apiUrl = platformApiUrl(cwd)
-			if (!key || !safeEndpoint(apiUrl)) return
-			const assertOwnership = () => {
-				assertLease()
-				if (resolveGatewayCredentials(loadConfig({ cwd })).token !== key || platformApiUrl(cwd) !== apiUrl)
-					throw new Error("PR reporting credentials changed")
-			}
-			const assertCurrent = () => {
-				assertOwnership()
-				combined.throwIfAborted()
-			}
-			let status: number | undefined
-			let retryAfterMs: number | null = null
-			let errorMessage = "PR cost event upload unavailable"
-			const readResponse = async (response: Response): Promise<Response> => {
-				assertCurrent()
-				status = response.status
-				retryAfterMs = parseRetryAfterMs(response)
-				if (!response.ok)
-					errorMessage =
-						response.status === 403
-							? "PR reporting is not allowed for this API key (HTTP 403)"
-							: `PR cost event upload returned HTTP ${response.status}`
-				const bounded = await boundedResponse(
-					response,
-					RESPONSE_BYTES,
-					combined,
-					"PR reporting response exceeds the size limit",
-				)
-				assertCurrent()
-				return bounded
-			}
-			const fetchBounded: typeof fetch = async (input, init) => {
-				assertCurrent()
-				const fresh = await readReportingStateFresh(agentDir, queueFile)
-				queueFile = fresh
-				const current = fresh.state
-				assertCurrent()
-				if (!current.enabled) throw new Error("PR reporting is disabled")
-				return readResponse(await fetch(input, { ...init, redirect: "error", signal: combined }))
-			}
-			const resume = backend.getNote("agent", "legacy-snapshot-resume")
-			/** Each waiting account backs off on its own schedule, as each legacy snapshot did. */
-			const defer = (accounts: typeof due, error: string) =>
-				backend.tx(() => {
-					assertOwnership()
-					for (const { accountKey: id, firstBatchId, retry } of accounts) {
-						const attempts = retry?.attempts ?? 0
-						const retryAt = Date.now() + retryDelay(status, attempts, retryAfterMs)
-						const body = { batchId: firstBatchId, attempts: attempts + 1, retryAt, resume, error }
-						backend.putNote("pr-cost-delivery", id, JSON.stringify(body))
-					}
-				})
-			let verified: Awaited<ReturnType<typeof verifyApiKey>> | undefined
-			try {
-				verified = await verifyApiKey(key, {
-					endpoint: apiUrl,
-					organizationId,
-					fetch: fetchBounded,
-					signal: combined,
-					retry: { maxRetries: 0 },
-				})
-			} catch {}
-			// Cancellation, an opt-out and changed credentials end the pass; a failed verification backs off below.
+		check()
+		const due = outboxDeliveryStatus(agentDir).filter(
+			(status) => (status.sendable || status.hasBatch) && (status.retry?.retryAt ?? 0) <= Date.now(),
+		)
+		if (!due.length) return
+		const { token: key, organizationId } = resolveGatewayCredentials(loadConfig({ cwd }))
+		const apiUrl = platformApiUrl(cwd)
+		if (!key || !safeEndpoint(apiUrl)) return
+		const assertOwnership = () => {
+			assertLease()
+			if (resolveGatewayCredentials(loadConfig({ cwd })).token !== key || platformApiUrl(cwd) !== apiUrl)
+				throw new Error("PR reporting credentials changed")
+		}
+		const assertCurrent = () => {
+			assertOwnership()
+			combined.throwIfAborted()
+		}
+		let status: number | undefined
+		let retryAfterMs: number | null = null
+		let errorMessage = "PR cost event upload unavailable"
+		const readResponse = async (response: Response): Promise<Response> => {
 			assertCurrent()
-			const account = verified && { apiUrl, ...verified }
-			if (!account || !isWorkAccount(account)) {
-				// A rejected or unreachable verification waits like a failed upload instead of repeating every pass.
-				defer(due, errorMessage)
-				await recordReportingError(agentDir, errorMessage)
-				return
-			}
-			const accountId = accountKey(account)
-			// Events captured under another account wait for its credential without verifying on every pass.
-			const others = due.filter((status) => status.accountKey !== accountId)
-			if (others.length) defer(others, "PR reporting is waiting for the original account")
-			const own = due.filter((status) => status.accountKey === accountId)
-			if (!own.length) return
-			let batch: OutboxBatch | undefined
-			const ready = await withReportingConsent(
-				agentDir,
-				(fence) => {
-					batch = pendingBatch(agentDir, accountId, fence)
-				},
-				assertCurrent,
+			status = response.status
+			retryAfterMs = parseRetryAfterMs(response)
+			if (!response.ok)
+				errorMessage =
+					response.status === 403
+						? "PR reporting is not allowed for this API key (HTTP 403)"
+						: `PR cost event upload returned HTTP ${response.status}`
+			const bounded = await boundedResponse(
+				response,
+				RESPONSE_BYTES,
+				combined,
+				"PR reporting response exceeds the size limit",
 			)
-			if (!ready || !batch) return
-			const sent = batch
-			const schedule = deliveryRetry(backend, accountId, sent.id)
-			if (schedule && schedule.retryAt > Date.now()) return
-			status = undefined
-			retryAfterMs = null
-			try {
-				let dispatched: Promise<Response> | undefined
-				if (
-					!(await withReportingConsent(
-						agentDir,
-						(fence) => {
-							const current = pendingBatch(agentDir, accountId, fence)
-							if (!current || current.id !== sent.id || !Buffer.from(current.body).equals(Buffer.from(sent.body)))
-								throw new Error("PR cost event batch changed")
-							fence()
-							// Launch under the old-writer lock; await network and body reads after releasing it.
-							dispatched = fetch(
-								`${apiUrl}/ai-optimizer/v1beta/organizations/${account.organizationId}/pr-cost-events:batchIngest`,
-								{
-									method: "POST",
-									body: Buffer.from(sent.body).toString("utf8"),
-									redirect: "error",
-									signal: combined,
-									headers: {
-										Authorization: `Bearer ${key}`,
-										...(organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: organizationId } : {}),
-										"Content-Type": "application/json",
-										Accept: "application/json",
-									},
-								},
-							)
-							void dispatched.catch(() => {})
-						},
-						assertCurrent,
-					))
+			assertCurrent()
+			return bounded
+		}
+		const fetchBounded: typeof fetch = async (input, init) => {
+			assertCurrent()
+			const fresh = await readReportingStateFresh(agentDir, queueFile)
+			queueFile = fresh
+			const current = fresh.state
+			assertCurrent()
+			if (!current.enabled) throw new Error("PR reporting is disabled")
+			return readResponse(await fetch(input, { ...init, redirect: "error", signal: combined }))
+		}
+		const resume = backend.getNote("agent", "legacy-snapshot-resume")
+		/** Each waiting account backs off on its own schedule, as each legacy snapshot did. */
+		const defer = (accounts: typeof due, error: string) =>
+			backend.tx(() => {
+				assertOwnership()
+				for (const { accountKey: id, firstBatchId, retry } of accounts) {
+					const attempts = retry?.attempts ?? 0
+					const retryAt = Date.now() + retryDelay(status, attempts, retryAfterMs)
+					const body = { batchId: firstBatchId, attempts: attempts + 1, retryAt, resume, error }
+					backend.putNote("pr-cost-delivery", id, JSON.stringify(body))
+				}
+			})
+		let verified: Awaited<ReturnType<typeof verifyApiKey>> | undefined
+		try {
+			verified = await verifyApiKey(key, {
+				endpoint: apiUrl,
+				organizationId,
+				fetch: fetchBounded,
+				signal: combined,
+				retry: { maxRetries: 0 },
+			})
+		} catch {}
+		// Cancellation, an opt-out and changed credentials end the pass; a failed verification backs off below.
+		assertCurrent()
+		const account = verified && { apiUrl, ...verified }
+		if (!account || !isWorkAccount(account)) {
+			// A rejected or unreachable verification waits like a failed upload instead of repeating every pass.
+			defer(due, errorMessage)
+			await recordReportingError(agentDir, errorMessage)
+			return
+		}
+		// URL forms compare canonically, exactly as snapshots do. Never rewrite the stored keys, though:
+		// old batches, events and ACKs remain related by their original persisted key.
+		const others = due.filter((status) => !sameStoredWorkAccount(status.accountKey, account))
+		if (others.length) defer(others, "PR reporting is waiting for the original account")
+		const own = due.filter((status) => sameStoredWorkAccount(status.accountKey, account))
+		if (!own.length) return
+		for (const { accountKey: accountId } of own) {
+			check()
+			for (;;) {
+				let batch: OutboxBatch | undefined
+				const ready = await withReportingConsent(
+					agentDir,
+					(fence) => {
+						batch = pendingBatch(agentDir, accountId, fence)
+					},
+					assertCurrent,
 				)
-					return
-				if (!dispatched) throw new Error("PR cost event batch was not dispatched")
-				const response = await readResponse(await dispatched)
-				assertCurrent()
-				if (!response.ok) throw new Error(errorMessage)
-				const ack: Acknowledgement = await response.json()
-				assertCurrent()
-				let acknowledged = false
-				if (
-					!(await withReportingConsent(
-						agentDir,
-						(fence) => {
-							backend.tx(() => {
-								acknowledged = acknowledgeBatch(agentDir, accountId, sent, ack, fence)
-								if (acknowledged) backend.deleteNote("pr-cost-delivery", accountId)
-								fence()
-							})
-						},
-						assertCurrent,
-					)) ||
-					!acknowledged
-				)
-					return
-				trackPRCostMetric({ kind: "delivery", outcome: "success" })
-			} catch {
-				trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
-				if (signal.aborted) return
+				if (!ready) return
+				if (!batch) break
+				const sent = batch
+				const schedule = deliveryRetry(backend, accountId, sent.id)
+				if (schedule && schedule.retryAt > Date.now()) break
+				status = undefined
+				retryAfterMs = null
 				try {
-					assertOwnership()
+					let dispatched: Promise<Response> | undefined
+					if (
+						!(await withReportingConsent(
+							agentDir,
+							(fence) => {
+								const current = pendingBatch(agentDir, accountId, fence)
+								if (!current || current.id !== sent.id || !Buffer.from(current.body).equals(Buffer.from(sent.body)))
+									throw new Error("PR cost event batch changed")
+								fence()
+								// Launch under the old-writer lock; await network and body reads after releasing it.
+								dispatched = fetch(
+									`${apiUrl}/ai-optimizer/v1beta/organizations/${account.organizationId}/pr-cost-events:batchIngest`,
+									{
+										method: "POST",
+										body: Buffer.from(sent.body).toString("utf8"),
+										redirect: "error",
+										signal: combined,
+										headers: {
+											Authorization: `Bearer ${key}`,
+											...(organizationId ? { [GATEWAY_ORGANIZATION_HEADER]: organizationId } : {}),
+											"Content-Type": "application/json",
+											Accept: "application/json",
+										},
+									},
+								)
+								void dispatched.catch(() => {})
+							},
+							assertCurrent,
+						))
+					)
+						return
+					if (!dispatched) throw new Error("PR cost event batch was not dispatched")
+					const response = await readResponse(await dispatched)
+					assertCurrent()
+					if (!response.ok) throw new Error(errorMessage)
+					const ack: Acknowledgement = await response.json()
+					assertCurrent()
+					let acknowledged = false
+					if (
+						!(await withReportingConsent(
+							agentDir,
+							(fence) => {
+								backend.tx(() => {
+									acknowledged = acknowledgeBatch(agentDir, accountId, sent, ack, fence)
+									if (acknowledged) backend.deleteNote("pr-cost-delivery", accountId)
+									fence()
+								})
+							},
+							assertCurrent,
+						)) ||
+						!acknowledged
+					)
+						return
+					trackPRCostMetric({ kind: "delivery", outcome: "success" })
 				} catch {
+					trackPRCostMetric({ kind: "delivery", outcome: combined.aborted ? "canceled" : "failed" })
+					if (signal.aborted) return
+					try {
+						assertOwnership()
+					} catch {
+						return
+					}
+					const attempts = Number(schedule?.attempts ?? 0)
+					backend.tx(() => {
+						assertOwnership()
+						if (backend.getOutboxBatch(accountId)?.id !== sent.id) return
+						// 409: the server holds other content under this batch ID, so its events go out in a new batch.
+						if (status === 409) backend.deleteOutboxBatch(accountId, sent.id)
+						else
+							backend.putNote(
+								"pr-cost-delivery",
+								accountId,
+								JSON.stringify({
+									batchId: sent.id,
+									attempts: attempts + 1,
+									retryAt: Date.now() + retryDelay(status, attempts, retryAfterMs),
+									resume,
+									error: errorMessage,
+								}),
+							)
+						assertOwnership()
+					})
+					await recordReportingError(agentDir, errorMessage)
 					return
 				}
-				const attempts = Number(schedule?.attempts ?? 0)
-				backend.tx(() => {
-					assertOwnership()
-					if (backend.getOutboxBatch(accountId)?.id !== sent.id) return
-					// 409: the server holds other content under this batch ID, so its events go out in a new batch.
-					if (status === 409) backend.deleteOutboxBatch(accountId, sent.id)
-					else
-						backend.putNote(
-							"pr-cost-delivery",
-							accountId,
-							JSON.stringify({
-								batchId: sent.id,
-								attempts: attempts + 1,
-								retryAt: Date.now() + retryDelay(status, attempts, retryAfterMs),
-								resume,
-								error: errorMessage,
-							}),
-						)
-					assertOwnership()
-				})
-				await recordReportingError(agentDir, errorMessage)
-				return
 			}
 		}
 	})
@@ -850,11 +860,11 @@ async function passGateStamp(
 		}
 	let eventsRetryAt: number | undefined
 	let unstampedOutbox = false
-	for (const status of readOutboxStatus(agentDir)) {
+	for (const status of outboxDeliveryStatus(agentDir)) {
+		const { retry } = status
 		// An open account without a backoff note says "attempt now": keep opening until one appears.
-		if ((status.sendable > 0 || status.batches > 0) && !status.retry) unstampedOutbox = true
-		if (status.retry && (eventsRetryAt === undefined || status.retry.retryAt < eventsRetryAt))
-			eventsRetryAt = status.retry.retryAt
+		if ((status.sendable || status.hasBatch) && !retry) unstampedOutbox = true
+		if (retry && (eventsRetryAt === undefined || retry.retryAt < eventsRetryAt)) eventsRetryAt = retry.retryAt
 	}
 	let nextHoldExpiryAt: number | undefined
 	// Only a hold with a parked body can wake something up; the freeze sweep releases those.
@@ -1127,9 +1137,14 @@ async function captureEvents(agentDir: string, signal: AbortSignal, assertLease:
 	}
 	check()
 	let historyComplete = true
-	await importWorkRecordsAsync(agentDir, check, () => {
-		historyComplete = false
-	})
+	await importWorkRecordsAsync(
+		agentDir,
+		check,
+		() => {
+			historyComplete = false
+		},
+		true,
+	)
 	if (!historyComplete) throw new Error("PR reporting is waiting for readable source records")
 	const backend = backendFor(agentDir)
 	const marked = new Map<string, Map<string, string>>()

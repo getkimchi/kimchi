@@ -83,6 +83,16 @@ export interface OutboxAccountStatus {
 	firstBatchId: string | null
 }
 
+/** Delivery-relevant account status: what the worker's delivery loop needs — the account, sendable
+ * presence, batch presence and first batch — without the full read's aggregation over all event
+ * history. */
+export interface DeliveryAccountStatus {
+	accountKey: string
+	sendable: boolean
+	hasBatch: boolean
+	firstBatchId: string | null
+}
+
 /** Primitive storage contract; see schema.ts for the SQL tables and memory-records.ts for the test double. */
 export interface RecordBackend {
 	/** Runs `fn` atomically; no await may happen inside. */
@@ -115,6 +125,8 @@ export interface RecordBackend {
 	insertOutboxEvent(event: OutboxEvent): void
 	pendingOutboxEvents(accountKey: string, limit: number): OutboxEvent[]
 	outboxStatus(): OutboxAccountStatus[]
+	/** Delivery-relevant account status for the worker's delivery loop; see DeliveryAccountStatus. */
+	outboxDeliveryStatus(): DeliveryAccountStatus[]
 	getOutboxBatch(accountKey: string): OutboxBatch | undefined
 	insertOutboxBatch(batch: OutboxBatch): void
 	ackOutboxEvent(accountKey: string, id: string, hash: string, at: number): boolean
@@ -670,6 +682,14 @@ function drainStatementPage<T, A extends unknown[]>(
 	return rows
 }
 
+const OUTBOX_CLAIM_COLUMNS =
+	"id, account_key AS accountKey, entity_id AS entityId, kind, body, hash, created_at AS createdAt, acked_at AS ackedAt, blocked"
+
+/** Pins the selective entity index; otherwise SQLite scans a whole account and sorts it per page. */
+export function outboxClaimsSql(entityPlaceholders: readonly string[], paged: boolean): string {
+	return `SELECT ${paged ? "rowid AS position, " : ""}${OUTBOX_CLAIM_COLUMNS} FROM outbox_events INDEXED BY outbox_entity WHERE account_key = ? AND entity_id IN (${entityPlaceholders.join(",")})${paged ? " AND rowid > ? ORDER BY rowid LIMIT ?" : " ORDER BY rowid"}`
+}
+
 function sqliteBackendFor(store: LedgerStore): RecordBackend {
 	const db = store.db
 	if (ensureProjectionVersion(store)) {
@@ -689,8 +709,7 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 	const marked = db.query<{ recordHash: string; workId: string; type: string }, []>(
 		"SELECT record_hash AS recordHash, work_id AS workId, type FROM pending_translation",
 	)
-	const eventColumns =
-		"id, account_key AS accountKey, entity_id AS entityId, kind, body, hash, created_at AS createdAt, acked_at AS ackedAt, blocked"
+	const eventColumns = OUTBOX_CLAIM_COLUMNS
 	const latestEvent = db.query<OutboxEvent, [string, string]>(
 		`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id = ? AND blocked = '' ORDER BY rowid DESC LIMIT 1`,
 	)
@@ -709,7 +728,10 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 			rows.push(
 				...db
 					.query<OutboxEvent, [string, ...string[]]>(
-						`SELECT ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id IN (${page.map(() => "?").join(",")}) ORDER BY rowid`,
+						outboxClaimsSql(
+							page.map(() => "?"),
+							false,
+						),
 					)
 					.all(accountKey, ...page),
 			)
@@ -726,7 +748,10 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 		// history ordered across pages because the caller consumes pages in order.
 		const positioned = db
 			.query<OutboxEvent & { position: number }, [string, ...string[], number, number]>(
-				`SELECT rowid AS position, ${eventColumns} FROM outbox_events WHERE account_key = ? AND entity_id IN (${entityIds.map(() => "?").join(",")}) AND rowid > ? ORDER BY rowid LIMIT ?`,
+				outboxClaimsSql(
+					entityIds.map(() => "?"),
+					true,
+				),
 			)
 			.all(accountKey, ...entityIds, after, limit)
 		const rows = positioned.map(({ position, ...event }) => event)
@@ -769,6 +794,22 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 			FROM outbox_events GROUP BY account_key) e USING (account_key)
 		LEFT JOIN (SELECT account_key, COUNT(*) AS batches FROM outbox_batches GROUP BY account_key) b
 			USING (account_key)
+		ORDER BY a.account_key
+	`)
+	// The sendable probe is fully covered by outbox_pending_cover (account_key, acked_at, blocked) and
+	// the first-batch lookup by outbox_batches_by_account (account_key, order_key, created_at): no
+	// aggregation over event history, no new index.
+	const outboxDeliveryRows = db.query<
+		{ accountKey: string; sendable: number; hasBatch: number; firstBatchId: string | null },
+		[]
+	>(`
+		SELECT a.account_key AS accountKey,
+			EXISTS(SELECT 1 FROM outbox_events e
+				WHERE e.account_key = a.account_key AND e.acked_at IS NULL AND e.blocked = '') AS sendable,
+			EXISTS(SELECT 1 FROM outbox_batches b WHERE b.account_key = a.account_key) AS hasBatch,
+			(SELECT id FROM outbox_batches WHERE account_key = a.account_key
+				ORDER BY order_key, created_at, rowid LIMIT 1) AS firstBatchId
+		FROM (SELECT account_key FROM outbox_events UNION SELECT account_key FROM outbox_batches) a
 		ORDER BY a.account_key
 	`)
 	const getRow = db.query<{ body: string }, [string, string, string]>(
@@ -903,6 +944,13 @@ function sqliteBackendFor(store: LedgerStore): RecordBackend {
 			),
 		pendingOutboxEvents: (accountKey, limit) => pendingEvents.all(accountKey, limit),
 		outboxStatus: () => outboxStatus.all(),
+		outboxDeliveryStatus: () =>
+			outboxDeliveryRows.all().map((row) => ({
+				accountKey: row.accountKey,
+				sendable: row.sendable === 1,
+				hasBatch: row.hasBatch === 1,
+				firstBatchId: row.firstBatchId,
+			})),
 		getOutboxBatch: (accountKey) => {
 			const batch = pendingBatch.get(accountKey)
 			return batch ? { ...batch, eventIds: JSON.parse(Buffer.from(batch.eventIds).toString("utf8")) } : undefined
