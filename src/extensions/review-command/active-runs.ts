@@ -3,6 +3,7 @@ import { link, mkdir, open, readFile, rename, rm, unlink } from "node:fs/promise
 import { dirname } from "node:path"
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui"
+import { lock as acquireDirectoryLock } from "proper-lockfile"
 import { ReviewTargetError } from "../review-targets/types.js"
 import { currentReviewHost, currentReviewOwnerIdentity, reviewProcessStartIdentity } from "./owner-identity.js"
 import type { LocalReviewRunDirectory } from "./run-directory.js"
@@ -109,6 +110,22 @@ async function processAlive(pid: number): Promise<boolean> {
 	}
 }
 
+/** Serialize the whole stale-read/reclaim/publish transaction. No acquirer can
+ * quarantine another acquirer's freshly published lock while it is delayed. */
+async function withReclaimGuard<T>(path: string, operation: () => Promise<T>): Promise<T> {
+	const release = await acquireDirectoryLock(`${path}.reclaim`, {
+		realpath: false,
+		stale: 2_000,
+		update: 1_000,
+		retries: { retries: 200, factor: 1, minTimeout: 25, maxTimeout: 50 },
+	})
+	try {
+		return await operation()
+	} finally {
+		await release()
+	}
+}
+
 async function acquirePersistentLock(
 	checkoutPath: string,
 	run: LocalReviewRunDirectory,
@@ -118,93 +135,95 @@ async function acquirePersistentLock(
 	// Identity can require an external process. Never create even an empty lock
 	// until that lookup has succeeded.
 	const owner = await ownerIdentity()
-	for (let attempt = 0; attempt < 2; attempt += 1) {
-		const token = randomUUID()
-		const temporary = `${path}.${process.pid}.${token}.tmp`
-		try {
-			await mkdir(dirname(path), { recursive: true })
-			const handle = await open(temporary, "wx", 0o600)
+	return withReclaimGuard(path, async () => {
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			const token = randomUUID()
+			const temporary = `${path}.${process.pid}.${token}.tmp`
 			try {
-				await handle.writeFile(
-					`${JSON.stringify({ token, pid: process.pid, checkoutPath, runDir: run.runDir, owner_host: owner.hostname, owner_start: owner.startIdentity })}\n`,
-					"utf8",
-				)
-				await handle.sync()
-			} finally {
-				await handle.close()
-			}
-			// A hard link publishes only complete contents and atomically loses to
-			// any existing owner without truncating or replacing its lock.
-			await link(temporary, path)
-			return { path, token }
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-			try {
-				let serialized: string
+				await mkdir(dirname(path), { recursive: true })
+				const handle = await open(temporary, "wx", 0o600)
 				try {
-					serialized = await readFile(path, "utf8")
-				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
-					throw error
-				}
-				const lock = JSON.parse(serialized) as {
-					pid?: unknown
-					owner_host?: unknown
-					owner_start?: unknown
-				}
-				if (
-					typeof lock.pid !== "number" ||
-					!Number.isSafeInteger(lock.pid) ||
-					lock.pid < 1 ||
-					typeof lock.owner_host !== "string" ||
-					typeof lock.owner_start !== "string"
-				) {
-					throw new ReviewTargetError(
-						"review_lock_invalid",
-						`Review lock ${path} is malformed; remove only this file after verifying the owner.`,
+					await handle.writeFile(
+						`${JSON.stringify({ token, pid: process.pid, checkoutPath, runDir: run.runDir, owner_host: owner.hostname, owner_start: owner.startIdentity })}\n`,
+						"utf8",
 					)
+					await handle.sync()
+				} finally {
+					await handle.close()
 				}
-				if (lock.owner_host !== currentReviewHost()) {
-					throw new ReviewTargetError(
-						"review_lock_untrusted",
-						`Review lock ${path} belongs to another host; it is preserved. Inspect the owner and remove only this file after confirmation.`,
-					)
-				}
-				if (await processAlive(lock.pid)) {
-					const currentStart = await reviewProcessStartIdentity(lock.pid)
-					if (currentStart === lock.owner_start) throw activeError(checkoutPath)
-					// This is PID reuse, not the original owner.
-				}
-				// Atomically move the stale candidate out of the acquisition path.
-				// A competing reclaimer sees ENOENT and retries against the new owner.
-				const stale = `${path}.${process.pid}.${token}.stale`
-				try {
-					await rename(path, stale)
-				} catch (error) {
-					if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
-					throw error
-				}
-				const renamed = await readFile(stale, "utf8")
-				if (renamed !== serialized) {
-					throw new ReviewTargetError(
-						"review_lock_changed",
-						`Review lock ${path} changed during stale-owner verification; preserved as ${stale}.`,
-					)
-				}
-				// Complete review artifacts are never deleted by this mechanism.
-				await unlink(stale)
+				// A hard link publishes only complete contents and atomically loses to
+				// any existing owner without truncating or replacing its lock.
+				await link(temporary, path)
+				return { path, token }
 			} catch (error) {
-				if (error instanceof ReviewTargetError) throw error
-				throw new ReviewTargetError(
-					"review_lock_unreadable",
-					`Cannot safely reclaim review lock ${path}: ${error instanceof Error ? error.message : String(error)}`,
-				)
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+				try {
+					let serialized: string
+					try {
+						serialized = await readFile(path, "utf8")
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
+						throw error
+					}
+					const lock = JSON.parse(serialized) as {
+						pid?: unknown
+						owner_host?: unknown
+						owner_start?: unknown
+					}
+					if (
+						typeof lock.pid !== "number" ||
+						!Number.isSafeInteger(lock.pid) ||
+						lock.pid < 1 ||
+						typeof lock.owner_host !== "string" ||
+						typeof lock.owner_start !== "string"
+					) {
+						throw new ReviewTargetError(
+							"review_lock_invalid",
+							`Review lock ${path} is malformed; remove only this file after verifying the owner.`,
+						)
+					}
+					if (lock.owner_host !== currentReviewHost()) {
+						throw new ReviewTargetError(
+							"review_lock_untrusted",
+							`Review lock ${path} belongs to another host; it is preserved. Inspect the owner and remove only this file after confirmation.`,
+						)
+					}
+					if (await processAlive(lock.pid)) {
+						const currentStart = await reviewProcessStartIdentity(lock.pid)
+						if (currentStart === lock.owner_start) throw activeError(checkoutPath)
+						// This is PID reuse, not the original owner.
+					}
+					// Atomically move the stale candidate out of the acquisition path.
+					// A competing reclaimer sees ENOENT and retries against the new owner.
+					const stale = `${path}.${process.pid}.${token}.stale`
+					try {
+						await rename(path, stale)
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
+						throw error
+					}
+					const renamed = await readFile(stale, "utf8")
+					if (renamed !== serialized) {
+						throw new ReviewTargetError(
+							"review_lock_changed",
+							`Review lock ${path} changed during stale-owner verification; preserved as ${stale}.`,
+						)
+					}
+					// Complete review artifacts are never deleted by this mechanism.
+					await unlink(stale)
+				} catch (error) {
+					if (error instanceof ReviewTargetError) throw error
+					throw new ReviewTargetError(
+						"review_lock_unreadable",
+						`Cannot safely reclaim review lock ${path}: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				}
+			} finally {
+				await rm(temporary, { force: true }).catch(() => {})
 			}
-		} finally {
-			await rm(temporary, { force: true }).catch(() => {})
 		}
-	}
-	return undefined
+		return undefined
+	})
 }
 
 export async function acquireReviewOperation(

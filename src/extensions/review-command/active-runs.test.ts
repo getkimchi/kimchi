@@ -253,6 +253,51 @@ describe("active local review runs", () => {
 		}
 	})
 
+	it("keeps a live lock in place when a reclaimer is delayed", async () => {
+		const { root } = sandbox()
+		const outputRoot = join(root, "out")
+		const lockPath = join(outputRoot, "active-review.json")
+		mkdirSync(join(outputRoot, "runs"), { recursive: true })
+		writeFileSync(
+			lockPath,
+			JSON.stringify({
+				token: "dead-owner",
+				pid: 999_999,
+				owner_host: currentReviewHost(),
+				owner_start: "dead-process-start",
+			}),
+		)
+		const owner = await currentReviewOwnerIdentity()
+		const ownerIdentity = async () => owner
+		const acquire = (id: string, identity = ownerIdentity) => {
+			const ctx = createCommandContext()
+			ctx.sessionManager.getSessionId = () => `delayed-${id}`
+			return acquireReviewOperation(ctx, join(root, id), { runDir: join(outputRoot, "runs", id), lockPath }, identity)
+		}
+		let releaseB!: () => void
+		const bGate = new Promise<void>((resolve) => {
+			releaseB = resolve
+		})
+
+		const b = acquire("b", async () => {
+			await bGate
+			return owner
+		})
+		const a = await acquire("a")
+		const published = JSON.parse(readFileSync(lockPath, "utf8")) as { token: string }
+		expect(published.token).not.toBe("dead-owner")
+
+		releaseB()
+		await expect(b).rejects.toMatchObject({ code: "review_in_progress" })
+		expect(JSON.parse(readFileSync(lockPath, "utf8")).token).toBe(published.token)
+		await expect(acquire("c")).rejects.toMatchObject({ code: "review_in_progress" })
+		expect(JSON.parse(readFileSync(lockPath, "utf8")).token).toBe(published.token)
+
+		await a.finish()
+		expect(existsSync(lockPath)).toBe(false)
+		expect(readdirSync(outputRoot).sort()).toEqual(["runs"])
+	})
+
 	it("honors cancellation that arrives while the target is still resolving", async () => {
 		const { root } = sandbox()
 		const ctx = createCommandContext()
