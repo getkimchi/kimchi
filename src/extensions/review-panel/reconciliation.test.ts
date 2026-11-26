@@ -12,8 +12,19 @@ import {
 import type { ResolvedReviewTarget } from "../review-targets/types.js"
 import { checkpointReviewPanelFallback, finalizeReviewPanel } from "./finalize.js"
 import { type ReviewLensId, resolveReviewPanel } from "./lenses.js"
-import { readFinalFindings, readFindingWriter, reviewPanelPaths, serializeFinalFindings } from "./output.js"
-import { parseSemanticReconciliation, validateSemanticReconciliation } from "./reconciliation.js"
+import {
+	buildFallbackCheckpoint,
+	capFinalReviewFindings,
+	readFinalFindings,
+	readFindingWriter,
+	reviewPanelPaths,
+	serializeFinalFindings,
+} from "./output.js"
+import {
+	parseSemanticReconciliation,
+	ReconciliationInvocationError,
+	validateSemanticReconciliation,
+} from "./reconciliation.js"
 import { assertReviewPanelIdentity, coverageFor, createInitialPanelState, ReviewPanelStateStore } from "./state.js"
 import {
 	REVIEW_RECONCILIATION_VERSION,
@@ -337,6 +348,58 @@ describe("review panel reconciliation and fallback", () => {
 		expect(result.state.reconciliation.reason).toContain("Cached semantic reconciliation failed validation")
 	})
 
+	it.each([
+		{ name: "verifier available", hasVerifier: true },
+		{ name: "verifier unavailable", hasVerifier: false },
+	])("recovers reloaded reconciled state without semantic payload with $name", async ({ hasVerifier }) => {
+		const source = candidate("spec", 1, { title: "Candidate title" })
+		const store = await makeStore([source])
+		await checkpointReviewPanelFallback(store, reviewPanelPaths(outputDir).findingsPath)
+		await store.update((state) => {
+			state.reconciliation.status = "reconciled"
+			state.reconciliation.reason = "Persisted reconciled state without its semantic payload."
+			state.reconciliation.semantic = undefined
+		})
+		await store.close()
+		const reloaded = await ReviewPanelStateStore.load(outputDir)
+		expect(reloaded.state.reconciliation.status).toBe("reconciled")
+		expect(reloaded.state.reconciliation.semantic).toBeUndefined()
+		let verifierCalls = 0
+
+		const result = await finalizeReviewPanel({
+			store: reloaded,
+			outputDir,
+			contextDir,
+			hasVerifier,
+			reconcile: async () => {
+				verifierCalls += 1
+				return semantic([reconciledFinding(source, { title: "Reconciled semantic title" })], [source])
+			},
+		})
+
+		if (hasVerifier) {
+			expect(verifierCalls).toBe(1)
+			expect(result.findings.map((finding) => [finding.id, finding.title, finding.derived_from])).toEqual([
+				["final-1", "Reconciled semantic title", ["spec-1"]],
+			])
+			expect(result.state.reconciliation).toMatchObject({
+				status: "reconciled",
+				reason: "Semantic reconciliation validated and published.",
+				provenance: { "final-1": ["spec-1"] },
+			})
+		} else {
+			expect(verifierCalls).toBe(0)
+			expect(result.findings.map((finding) => [finding.id, finding.title, finding.derived_from])).toEqual([
+				["final-1", "Candidate title", ["spec-1"]],
+			])
+			expect(result.state.reconciliation).toMatchObject({
+				status: "fallback",
+				reason: "Semantic reconciliation was unavailable; the deterministic fallback is final.",
+				provenance: { "final-1": ["spec-1"] },
+			})
+		}
+	})
+
 	it("rejects malformed fields in final serialization and final read-back", async () => {
 		const invalid = {
 			...candidate("spec", 1).finding,
@@ -605,6 +668,57 @@ describe("review panel reconciliation and fallback", () => {
 		).rejects.toThrow("may rewrite only title and priority")
 	})
 
+	it("normalizes preserved reconciliation fields before comparing and publishing them", async () => {
+		const source = candidate("spec", 1)
+		const output = semantic(
+			[
+				reconciledFinding(source, {
+					title: "  Normalized title  ",
+					description: ` \n${source.finding.description}\t `,
+					explanation: `\t${source.finding.explanation}\n`,
+					suggestion: ` \n${source.finding.suggestion}\t `,
+				}),
+			],
+			[source],
+		)
+		const validated = await validateSemanticReconciliation(output, [source], {
+			writer: "final",
+			contextDir,
+			outputDir,
+		})
+		expect(validated.semantic.findings[0]).toMatchObject({
+			title: "Normalized title",
+			description: source.finding.description,
+			explanation: source.finding.explanation,
+			suggestion: source.finding.suggestion,
+		})
+		expect(validated.findings[0]).toMatchObject({
+			title: "Normalized title",
+			description: source.finding.description,
+			explanation: source.finding.explanation,
+			suggestion: source.finding.suggestion,
+		})
+
+		const rewritten = structuredClone(output)
+		rewritten.findings[0].description = "A substantive rewrite of the preserved description."
+		await expect(
+			validateSemanticReconciliation(rewritten, [source], { writer: "final", contextDir, outputDir }),
+		).rejects.toThrow("may rewrite only title and priority")
+	})
+
+	it.each([
+		{ name: "LF", character: "\n" },
+		{ name: "CR", character: "\r" },
+		{ name: "tab", character: "\t" },
+		{ name: "U+2028", character: "\u2028" },
+	])("rejects $name around a reconciliation title before normalization", async ({ character }) => {
+		const source = candidate("spec", 1)
+		const output = semantic([reconciledFinding(source, { title: `${character}Concrete defect${character}` })], [source])
+		await expect(
+			validateSemanticReconciliation(output, [source], { writer: "final", contextDir, outputDir }),
+		).rejects.toThrow("title must be a single line and must not contain control characters.")
+	})
+
 	it("keeps interim checkpoints uncapped and caps fresh and reused fallback only at wrap-up", async () => {
 		const source = candidate("spec", 1, { title: "Convention cleanup", type: "convention", priority: "P1" })
 		const store = await makeStore([source])
@@ -622,6 +736,19 @@ describe("review panel reconciliation and fallback", () => {
 		const reused = await finalizeReviewPanel({ store, outputDir, contextDir, hasVerifier: false })
 		expect(reused.findings[0].priority).toBe("P4")
 		expect(reused.summary.coverage?.findings_by_priority.P4).toBe(1)
+	})
+
+	it("counts capped priorities in interim coverage without changing interim records", async () => {
+		const source = candidate("spec", 1, { title: "Convention cleanup", type: "convention", priority: "P1" })
+		const store = await makeStore([source])
+		await checkpointReviewPanelFallback(store, reviewPanelPaths(outputDir).findingsPath)
+		const interim = await readFinalFindings(reviewPanelPaths(outputDir).findingsPath)
+		expect(interim[0].priority).toBe("P1")
+		expect(store.state.coverage.findings_by_priority).toEqual({ P0: 0, P1: 0, P2: 0, P3: 0, P4: 1 })
+
+		const result = await finalizeReviewPanel({ store, outputDir, contextDir, hasVerifier: false })
+		expect(result.findings[0].priority).toBe("P4")
+		expect(result.summary.coverage?.findings_by_priority).toEqual(store.state.coverage.findings_by_priority)
 	})
 
 	it("caps semantic findings only at publication without mutating reconciliation provenance", async () => {
@@ -657,6 +784,155 @@ describe("review panel reconciliation and fallback", () => {
 		expect(result.findings.every((finding) => !("priority_capped_from" in finding))).toBe(true)
 		expect(result.summary.coverage?.findings_by_priority).toEqual({ P0: 0, P1: 0, P2: 0, P3: 1, P4: 3 })
 		expect(result.summary.body).toContain("P3=1, P4=3")
+	})
+
+	it("repairs provenance when capped fallback publication crashed before its state update", async () => {
+		const candidates = [
+			candidate("standards", 1, {
+				title: "Documentation cleanup",
+				description: "A documentation finding.",
+				type: "docs",
+				priority: "P1",
+			}),
+			candidate("spec", 1, {
+				title: "Runtime defect",
+				description: "A runtime finding.",
+				priority: "P2",
+			}),
+		]
+		const store = await makeStore(candidates)
+		const paths = reviewPanelPaths(outputDir)
+		await checkpointReviewPanelFallback(store, paths.findingsPath)
+		const checkpoint = buildFallbackCheckpoint(candidates)
+		expect(checkpoint.records.map((record) => [record.id, record.derived_from])).toEqual([
+			["final-1", ["standards-1"]],
+			["final-2", ["spec-1"]],
+		])
+		const published = capFinalReviewFindings(checkpoint)
+		await store.update((state) => {
+			state.reconciliation.status = "fallback"
+			state.reconciliation.reason = "Semantic reconciliation was unavailable; the deterministic fallback is final."
+		})
+		writeFileSync(paths.findingsPath, serializeFinalFindings(published.records))
+		// The capped file is durable, but state still has the pre-cap final-1/final-2 mapping.
+		const result = await finalizeReviewPanel({ store, outputDir, contextDir, hasVerifier: false })
+		expect(result.findings.map((record) => [record.id, record.priority, record.derived_from])).toEqual([
+			["final-1", "P2", ["spec-1"]],
+			["final-2", "P4", ["standards-1"]],
+		])
+		expect(result.state.reconciliation.provenance).toEqual({
+			"final-1": ["spec-1"],
+			"final-2": ["standards-1"],
+		})
+	})
+
+	it("throws when final capping is missing a record's complete provenance", async () => {
+		const packed = buildFallbackCheckpoint([candidate("spec", 1)])
+		expect(() => capFinalReviewFindings({ ...packed, provenance: {} })).toThrow(
+			"Missing complete provenance for final finding final-1.",
+		)
+	})
+
+	it("publishes capped candidate fallback when changed-history reconciliation fails", async () => {
+		writeFileSync(
+			join(contextDir, "comments.json"),
+			JSON.stringify({ schema_version: "review-comments/v1", threads: [] }),
+		)
+		const candidates = [
+			candidate("spec", 1, { title: "First candidate title", type: "convention", priority: "P1" }),
+			candidate("standards", 1, { title: "Second candidate title", type: "convention", priority: "P1" }),
+		]
+		const store = await makeStore(candidates)
+		const output = semantic(
+			[
+				reconciledFinding(candidates[0], {
+					id: "merged-semantic-finding",
+					title: "Merged semantic title",
+					candidate_ids: candidates.map((entry) => entry.id),
+				}),
+			],
+			candidates,
+		)
+		const first = await finalizeReviewPanel({
+			store,
+			outputDir,
+			contextDir,
+			hasVerifier: true,
+			reconcile: async () => output,
+		})
+		expect(first.state.reconciliation.status).toBe("reconciled")
+		expect(first.findings).toHaveLength(1)
+		expect(first.findings[0].derived_from).toEqual(["spec-1", "standards-1"])
+
+		writeFileSync(
+			join(contextDir, "comments.json"),
+			JSON.stringify({
+				schema_version: "review-comments/v1",
+				threads: [{ thread_id: "new-history", is_ours: false, mentions_bot: true }],
+			}),
+		)
+		const second = await finalizeReviewPanel({
+			store,
+			outputDir,
+			contextDir,
+			hasVerifier: true,
+			reconcile: async () => {
+				throw new ReconciliationInvocationError("Verifier unavailable for changed history.")
+			},
+		})
+		expect(second.state.reconciliation.status).toBe("fallback")
+		expect(second.state.reconciliation.reason).toContain("Verifier unavailable for changed history.")
+		expect(second.findings.map((record) => [record.id, record.title, record.priority, record.derived_from])).toEqual([
+			["final-1", "First candidate title", "P4", ["spec-1"]],
+			["final-2", "Second candidate title", "P4", ["standards-1"]],
+		])
+		expect(second.state.reconciliation.provenance).toEqual({
+			"final-1": ["spec-1"],
+			"final-2": ["standards-1"],
+		})
+	})
+
+	it("recovers consistently when semantic findings publication crashed before its state update", async () => {
+		const candidates = [
+			candidate("spec", 1, { title: "First candidate title", type: "convention", priority: "P1" }),
+			candidate("standards", 1, { title: "Second candidate title", type: "convention", priority: "P1" }),
+		]
+		const store = await makeStore(candidates)
+		const paths = reviewPanelPaths(outputDir)
+		await checkpointReviewPanelFallback(store, paths.findingsPath)
+		const output = semantic(
+			[
+				reconciledFinding(candidates[0], {
+					id: "merged-semantic-finding",
+					title: "Merged semantic title",
+					candidate_ids: candidates.map((entry) => entry.id),
+				}),
+			],
+			candidates,
+		)
+		const validated = await validateSemanticReconciliation(output, candidates, {
+			writer: "final",
+			contextDir,
+			outputDir,
+		})
+		const published = capFinalReviewFindings({
+			records: validated.findings,
+			provenance: validated.provenance,
+			provenanceTruncatedCount: validated.provenanceTruncatedCount,
+		})
+		writeFileSync(paths.findingsPath, serializeFinalFindings(published.records))
+		// State still contains only the awaiting candidate checkpoint and its provenance.
+		const result = await finalizeReviewPanel({ store, outputDir, contextDir, hasVerifier: false })
+		expect(result.state.reconciliation.status).toBe("fallback")
+		expect(result.state.reconciliation.semantic).toBeUndefined()
+		expect(result.findings.map((record) => [record.id, record.title, record.priority, record.derived_from])).toEqual([
+			["final-1", "First candidate title", "P4", ["spec-1"]],
+			["final-2", "Second candidate title", "P4", ["standards-1"]],
+		])
+		expect(result.state.reconciliation.provenance).toEqual({
+			"final-1": ["spec-1"],
+			"final-2": ["standards-1"],
+		})
 	})
 
 	it("preserves all 51 duplicate sources durably while capping published provenance", async () => {

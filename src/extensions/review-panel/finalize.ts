@@ -16,7 +16,6 @@ import { REVIEW_FINDING_CONTRACT_PROMPT } from "./finding-contract.js"
 import {
 	atomicWriteReviewFile,
 	buildFallbackCheckpoint,
-	buildFallbackFindings,
 	candidateInputDigest,
 	capFinalReviewFindings,
 	orderedCandidates,
@@ -333,9 +332,9 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 		} catch (error) {
 			validated = undefined
 			replyBatch = undefined
-			findings = buildFallbackFindings(candidates)
-			await writeFinalFindings(paths.findingsPath, findings)
 			const packed = buildFallbackCheckpoint(candidates)
+			findings = packed.records
+			await writeFinalFindings(paths.findingsPath, findings)
 			await store.update((state) => {
 				state.reconciliation = {
 					status: "fallback",
@@ -348,7 +347,7 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 				state.coverage = coverageFor(state, findings)
 			})
 		}
-	} else if (sameInput && !awaiting && sameThreadHistory) {
+	} else if (store.state.reconciliation.status === "fallback" && sameInput && !awaiting && sameThreadHistory) {
 		// A failed or unavailable reconciliation for this exact input is final;
 		// repeated wrap-up calls reuse the fallback instead of changing IDs.
 	} else if (candidates.length === 0 && !hasThreads) {
@@ -363,14 +362,16 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 			}
 		})
 	} else if (!options.hasVerifier || !options.reconcile) {
+		const packed = buildFallbackCheckpoint(candidates)
+		findings = packed.records
 		await store.update((state) => {
 			state.reconciliation = {
 				status: "fallback",
 				reason: "Semantic reconciliation was unavailable; the deterministic fallback is final.",
 				inputDigest: digest,
 				threadHistoryDigest,
-				provenance: state.reconciliation.provenance ?? {},
-				provenanceTruncatedCount: state.reconciliation.provenanceTruncatedCount ?? 0,
+				provenance: packed.provenance,
+				provenanceTruncatedCount: packed.provenanceTruncatedCount,
 			}
 		})
 	} else {
@@ -385,15 +386,16 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 			)
 		}
 		const fallback = async (reason: string) => {
-			findings = await readFinalFindings(paths.findingsPath)
+			const packed = buildFallbackCheckpoint(candidates)
+			findings = packed.records
 			await store.update((state) => {
 				state.reconciliation = {
 					status: "fallback",
 					reason,
 					inputDigest: digest,
 					threadHistoryDigest,
-					provenance: state.reconciliation.provenance ?? {},
-					provenanceTruncatedCount: state.reconciliation.provenanceTruncatedCount ?? 0,
+					provenance: packed.provenance,
+					provenanceTruncatedCount: packed.provenanceTruncatedCount,
 				}
 				state.coverage = coverageFor(state, findings)
 			})
@@ -435,17 +437,14 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 			threadHistoryDigest,
 		)
 	} else {
-		const published = capFinalReviewFindings({
-			records: findings,
-			provenance: store.state.reconciliation.provenance ?? {},
-			provenanceTruncatedCount: store.state.reconciliation.provenanceTruncatedCount ?? 0,
+		// Fallback records and complete provenance are one deterministic derivation.
+		// Always publish both so a rerun converges after a crash between either write.
+		const published = capFinalReviewFindings(buildFallbackCheckpoint(candidates))
+		await writeFinalFindings(paths.findingsPath, published.records)
+		await store.update((state) => {
+			state.reconciliation.provenance = published.provenance
+			state.reconciliation.provenanceTruncatedCount = published.provenanceTruncatedCount
 		})
-		if (JSON.stringify(published.records) !== JSON.stringify(findings)) {
-			await writeFinalFindings(paths.findingsPath, published.records)
-			await store.update((state) => {
-				state.reconciliation.provenance = published.provenance
-			})
-		}
 		findings = published.records
 	}
 	const hasReplies = replyBatch ? replyBatch.records.length > 0 : await fileExists(paths.repliesPath)

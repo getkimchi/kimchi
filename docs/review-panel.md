@@ -144,7 +144,8 @@ be anchored. New accepted candidates are persisted before a fallback write.
 `findings/final.jsonl` is created empty before reviewer launch. It is then
 atomically replaced as candidates arrive using only exact-duplicate collapsing.
 Provenance is emitted in `derived_from`. Interim checkpoints preserve the
-submitted priorities. Only final wrap-up publication, including reused fallback
+submitted priorities in their records, while structured coverage always counts
+their capped priorities. Only final wrap-up publication, including reused fallback
 and cached-reconciliation recovery, caps priorities in code: `convention` and
 `docs` become `P4`, while `test-gap` becomes at most `P3`. No cap metadata is
 added. Ranking uses the capped priority, path, line, type, title, description,
@@ -182,15 +183,20 @@ Code rejects the entire semantic result unless:
   `candidate_ids`;
 - group membership, fields, priorities, types, anchors, field/count/file limits
   and schema keys are valid against the original snapshot;
-- reconciliation changes only `title` and `priority`; `path`, `line`,
-  `description`, `explanation`, `suggestion`, and `type` exactly match one
-  best-supported source candidate;
+- reconciliation changes only `title` and `priority`; raw fields pass the same
+  validation as candidate submission before normalization, then `path`, `line`,
+  `description`, `explanation`, `suggestion`, and `type` match one
+  best-supported source candidate after the same input normalization;
+  substantive changes to those preserved fields are rejected;
 - equivalent re-review candidates are rejected and linked to their thread;
 - every thread passes stage 1's reply fields, supported verdicts, and producer-
   supplied `is_ours`/`mentions_bot` scope validation.
 
 Distinct defects on the same line stay separate. Invalid, cancelled, or expired
-verification leaves the current fallback untouched and records its reason.
+verification publishes the deterministic candidate fallback and records its
+reason. In particular, failed or unavailable re-reconciliation after thread
+history changes replaces any previous semantic findings with that fallback;
+rejections and merges based on the old history are never relabelled as fallback.
 Reply batches are deduplicated against existing records and prevalidated as one
 aggregate against the 30-reply and 1 MiB limits. Overflow rejects the semantic
 result before findings or semantic state change and retains fallback. The whole
@@ -203,7 +209,10 @@ thread replies are not appended again. A deadline-forced fallback is final for
 that candidate input and its evaluated thread history. A later wrap-up with the
 same candidate input and unchanged thread history reuses that fallback instead
 of retrying the verifier: published IDs remain stable, non-exact duplicates stay
-unmerged, and no thread replies are produced for that input.
+unmerged, and no thread replies are produced for that input. Every fallback
+publication deterministically rebuilds records and complete provenance from the
+saved candidates before capping, so rerunning wrap-up after a crash between the
+findings and panel-state writes converges to a consistent result.
 
 `summary/final.json` remains `review-summary/v1` with optional structured
 `coverage`, including capped-priority counts, and is written last. When its logical content is unchanged, the

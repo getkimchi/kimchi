@@ -271,9 +271,13 @@ export function capFinalReviewFindings(packed: PackedReviewFindings): PackedRevi
 		.sort(compareFinalRecords)
 	const provenance: Record<string, string[]> = {}
 	const records = capped.map((record, index) => {
+		const completeDerivedFrom = packed.provenance[record.id]
+		if (completeDerivedFrom === undefined) {
+			throw new Error(`Missing complete provenance for final finding ${record.id}.`)
+		}
 		const seq = index + 1
 		const id = `final-${seq}`
-		provenance[id] = packed.provenance[record.id] ?? record.derived_from ?? []
+		provenance[id] = completeDerivedFrom
 		return { ...record, id, seq }
 	})
 	return { records, provenance, provenanceTruncatedCount: packed.provenanceTruncatedCount }
@@ -296,10 +300,6 @@ export function buildFallbackCheckpoint(candidates: readonly ReviewPanelCandidat
 		}
 	}
 	return packGroups([...groups.values()])
-}
-
-export function buildFallbackFindings(candidates: readonly ReviewPanelCandidate[]): ReviewFindingRecord[] {
-	return buildFallbackCheckpoint(candidates).records
 }
 
 export function buildReconciledCheckpoint(

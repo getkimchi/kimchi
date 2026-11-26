@@ -1,5 +1,6 @@
 import {
 	DEFAULT_WRITER_LIMIT,
+	normalizeFindingInput,
 	REPLY_LIMIT,
 	type ReviewFindingRecord,
 	type ReviewSubmitContext,
@@ -128,8 +129,7 @@ export async function validateSemanticReconciliation(
 		if (candidateIds.length === 0 || new Set(candidateIds).size !== candidateIds.length) {
 			throw new Error(`Finding ${id} must reference each source candidate once and cannot be empty.`)
 		}
-		const finding: ReconciliationFinding = {
-			id,
+		const input = {
 			path: requireString(raw.path, `findings[${index}].path`),
 			line: raw.line as number,
 			title: requireString(raw.title, `findings[${index}].title`),
@@ -138,23 +138,15 @@ export async function validateSemanticReconciliation(
 			suggestion: requireString(raw.suggestion, `findings[${index}].suggestion`),
 			priority: raw.priority as ReconciliationFinding["priority"],
 			type: raw.type as ReconciliationFinding["type"],
+		}
+		const invalid = await validateReviewFindingInput(input, context)
+		if (invalid) throw new Error(`Finding ${id} failed field or anchor validation: ${invalid.message}`)
+		const finding: ReconciliationFinding = {
+			id,
+			...normalizeFindingInput(input),
 			candidate_ids: candidateIds,
 		}
 		findingGroups.set(id, finding)
-		const invalid = await validateReviewFindingInput(
-			{
-				path: finding.path,
-				line: finding.line,
-				title: finding.title,
-				description: finding.description,
-				explanation: finding.explanation,
-				suggestion: finding.suggestion,
-				priority: finding.priority,
-				type: finding.type,
-			},
-			context,
-		)
-		if (invalid) throw new Error(`Finding ${id} failed field or anchor validation: ${invalid.message}`)
 		const groupCandidates = candidateIds.map((candidateId) => {
 			const candidate = candidateById.get(candidateId)
 			if (!candidate) throw new Error(`Finding ${id} references unknown candidate ${candidateId}.`)
@@ -177,7 +169,7 @@ export async function validateSemanticReconciliation(
 		)
 		if (!source) {
 			throw new Error(
-				`Finding ${id} may rewrite only title and priority; path, line, description, explanation, suggestion, and type must exactly match one best-supported source candidate.`,
+				`Finding ${id} may rewrite only title and priority; after input normalization, path, line, description, explanation, suggestion, and type must match one best-supported source candidate.`,
 			)
 		}
 		semanticFindings.push(finding)

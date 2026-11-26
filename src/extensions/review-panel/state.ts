@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import {
+	capReviewFindingPriority,
 	REVIEW_FINDING_PRIORITIES,
 	type ReviewCoverage,
 	type ReviewFindingRecord,
@@ -141,7 +142,10 @@ export function coverageFor(state: ReviewPanelRunState, findings: readonly Revie
 		state.lenses.filter((lens) => lens.status === status).length
 	const unfinished = state.lenses.filter((lens) => lens.status !== "submitted").map((lens) => lens.id)
 	const findingsByPriority = { P0: 0, P1: 0, P2: 0, P3: 0, P4: 0 }
-	for (const finding of findings) findingsByPriority[finding.priority] += 1
+	for (const finding of findings) {
+		const priority = capReviewFindingPriority(finding.priority, finding.type)
+		findingsByPriority[priority] += 1
+	}
 	return {
 		status: unfinished.length === 0 ? "complete" : "partial",
 		unfinished_lenses: unfinished,
