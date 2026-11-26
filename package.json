@@ -70,7 +70,7 @@
 		"@earendil-works/pi-codemode": "1.3.0",
 		"@earendil-works/pi-coding-agent": "1.3.0",
 		"@earendil-works/pi-tui": "1.3.0",
-		"@getkimchi/kimchi-bridge": "github:getkimchi/kimchi-bridge#4988fd0afcd775a8b9320d162f0bb23ba9f99c1f",
+		"@getkimchi/kimchi-bridge": "github:getkimchi/kimchi-bridge#0095a69b2119c9d6b21b5fad11c610788b6c11c1",
 		"@hyzyla/pdfium": "^3.0.0",
 		"@kimchi-dev/kimchi-workflows": "0.0.10",
 		"@modelcontextprotocol/client": "2.3.1",

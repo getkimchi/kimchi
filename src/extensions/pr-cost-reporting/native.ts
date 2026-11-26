@@ -49,40 +49,6 @@ export interface UnresolvedNativeObservation {
 	reason: string
 }
 
-export interface NativeObservation {
-	requestId: string
-	workId: string
-	sessionId: string
-	scope: WorkScope
-	startedAt: string
-	dispatchedAt: string
-	observeTime: string
-	sourceVersion: string
-	api: string
-	schema: string
-	provider: string
-	reportedModel: string
-	actualModel?: string
-	responseId?: string
-	serviceTier?: string
-	region?: string
-	finalized?: boolean
-	responseStatus?: string
-	incompleteReason?: string
-	rawStopReason?: string
-	finalUsageObserved?: true
-	iterations?: { type?: string; model?: string; raw: RawUsage }[]
-	iterationsIncomplete?: true
-	raw: RawUsage
-	recordHashes: string[]
-}
-
-export interface UnresolvedNativeObservation {
-	requestId: string
-	recordHashes: string[]
-	reason: string
-}
-
 function instant(value: unknown): bigint | undefined {
 	if (typeof value !== "string" || value[4] !== "-" || value.startsWith("0000")) return
 	if (![...value.slice(0, 4)].every((character) => character >= "0" && character <= "9")) return

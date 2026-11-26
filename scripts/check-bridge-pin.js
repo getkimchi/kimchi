@@ -101,11 +101,38 @@ function lsRemote(ref, { git = "git", timeoutMs = LS_REMOTE_TIMEOUT_MS } = {}) {
 	})
 }
 
+/** Verify that a full-SHA package pin names a real public commit, with bounded network time. */
+async function resolvePackageCommit(sha, { fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
+	try {
+		const response = await fetchImpl(`https://api.github.com/repos/getkimchi/kimchi-bridge/commits/${sha}`, {
+			signal: AbortSignal.timeout(timeoutMs),
+			headers: { Accept: "application/vnd.github+json" },
+		})
+		if (!response.ok) return { error: `could not resolve pinned bridge commit ${sha}: HTTP ${response.status}` }
+		const body = await response.json()
+		if (body.sha !== sha) {
+			return {
+				error: `pinned bridge commit ${sha} resolved as a different commit ${body.sha}`,
+			}
+		}
+		return { sha }
+	} catch (error) {
+		return {
+			error: `could not resolve pinned bridge commit ${sha}: ${error instanceof Error ? error.message : String(error)}`,
+		}
+	}
+}
+
 /**
- * The one decision this check makes. Returns { ok: true } or
+ * The one decision this check makes. Resolves to { ok: true } or
  * { ok: false, reason } — reasons are printed verbatim by the CLI.
  */
-export function evaluate({ packageJsonSpec, bundleScript, runLsRemote = lsRemote }) {
+export async function evaluate({
+	packageJsonSpec,
+	bundleScript,
+	runLsRemote = lsRemote,
+	runCommitCheck = resolvePackageCommit,
+}) {
 	const version = parseBundledVersion(bundleScript)
 	if (!version) return { ok: false, reason: "scripts/bundle-bridge.sh has no VERSION pin" }
 	const pin = pinCommit(packageJsonSpec)
@@ -115,11 +142,19 @@ export function evaluate({ packageJsonSpec, bundleScript, runLsRemote = lsRemote
 			ok: false,
 			reason: `development link, not pinned: @getkimchi/kimchi-bridge points at a local checkout (${pin.location}); pin the release commit for ${version} with github:getkimchi/kimchi-bridge#<full-sha>`,
 		}
-	if (parseBundleSource(bundleScript) === "package")
+	if (parseBundleSource(bundleScript) === "package") {
+		const checked = await runCommitCheck(pin.sha)
+		if (checked.error) return { ok: false, reason: checked.error }
+		if (checked.sha !== pin.sha)
+			return {
+				ok: false,
+				reason: `pinned bridge commit ${pin.sha} resolved as a different commit ${checked.sha}`,
+			}
 		return {
 			ok: true,
 			reason: `inline library and worker bundle both build from pinned commit ${pin.sha}`,
 		}
+	}
 	const tag = resolveTagCommit(version, runLsRemote)
 	if (tag.error) return { ok: false, reason: tag.error }
 	if (tag.sha !== pin.sha)
@@ -130,7 +165,7 @@ export function evaluate({ packageJsonSpec, bundleScript, runLsRemote = lsRemote
 	return { ok: true, reason: `bridge pin matches release ${version} (${tag.sha})` }
 }
 
-function main() {
+async function main() {
 	const selfTest = process.argv.includes("--self-test")
 	if (process.argv.length > 2 && !selfTest) usage()
 	if (selfTest) return runSelfTest()
@@ -148,7 +183,7 @@ function main() {
 	} catch (error) {
 		fatal(`could not read scripts/bundle-bridge.sh: ${error.message}`, 2)
 	}
-	const result = evaluate({ packageJsonSpec: spec, bundleScript })
+	const result = await evaluate({ packageJsonSpec: spec, bundleScript })
 	if (result.ok) {
 		console.log(`check-bridge-pin: ${result.reason}`)
 		return 0
@@ -168,10 +203,10 @@ function fatal(message, code) {
 }
 
 const BUNDLED = "VERSION=v0.1.0-rc.30\nSHA256=abc\n"
-const PIN_A = "0123456789abcdef0123456789abcdef01234567"
-const PIN_B = "fedcba9876543210fedcba9876543210fedcba98"
+const PIN_A = "0000000000000000000000000000000000000000"
+const PIN_B = "ffffffffffffffffffffffffffffffffffffffff"
 
-function runSelfTest() {
+async function runSelfTest() {
 	const fixtures = [
 		{
 			name: "matching pin passes",
@@ -194,7 +229,42 @@ function runSelfTest() {
 			lsRemote: () => {
 				throw new Error("package source must not resolve a release tag")
 			},
+			runCommitCheck: (sha) => Promise.resolve({ sha }),
 			expect: (r) => r.ok === true && r.reason.includes(PIN_A),
+		},
+		{
+			name: "a nonexistent package commit fails closed",
+			given: {
+				packageJsonSpec: `github:getkimchi/kimchi-bridge#${PIN_A}`,
+				bundleScript: "SOURCE=package\nVERSION=v0.1.0-rc.0\n",
+			},
+			runCommitCheck: (sha) => Promise.resolve({ sha: PIN_B }),
+			expect: (r) => r.ok === false && r.reason.includes("resolved as a different commit"),
+		},
+		{
+			name: "package commit network failure fails closed",
+			given: {
+				packageJsonSpec: `github:getkimchi/kimchi-bridge#${PIN_A}`,
+				bundleScript: "SOURCE=package\nVERSION=v0.1.0-rc.0\n",
+			},
+			runCommitCheck: () => Promise.resolve({ error: "packagesource unreachable" }),
+			expect: (r) => r.ok === false && r.reason.includes("packagesource unreachable"),
+		},
+		{
+			name: "package commit lookup timeout fails closed",
+			given: {
+				packageJsonSpec: `github:getkimchi/kimchi-bridge#${PIN_A}`,
+				bundleScript: "SOURCE=package\nVERSION=v0.1.0-rc.0\n",
+			},
+			runCommitCheck: (sha) =>
+				resolvePackageCommit(sha, {
+					timeoutMs: 5,
+					fetchImpl: async (_url, options) =>
+						new Promise((_resolve, reject) => {
+							setTimeout(() => reject(options.signal.reason), 20)
+						}),
+				}),
+			expect: (r) => r.ok === false && r.reason.includes("could not resolve pinned bridge commit"),
 		},
 		{
 			name: "development link fails as not pinned",
@@ -263,7 +333,11 @@ function runSelfTest() {
 	]
 	let failures = 0
 	for (const fixture of fixtures) {
-		const result = evaluate({ ...fixture.given, runLsRemote: fixture.lsRemote })
+		const result = await evaluate({
+			...fixture.given,
+			runLsRemote: fixture.lsRemote,
+			runCommitCheck: fixture.runCommitCheck,
+		})
 		if (!fixture.expect(result)) {
 			failures++
 			console.error(`check-bridge-pin --self-test: fixture "${fixture.name}" failed: ${JSON.stringify(result)}`)
@@ -307,4 +381,4 @@ function assertLsRemoteTimeoutFailsClosed() {
 	}
 }
 
-process.exit(main())
+process.exit(await main())
