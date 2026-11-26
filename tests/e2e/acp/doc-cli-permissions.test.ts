@@ -43,6 +43,10 @@ async function driveDocCliCreate(
 ): Promise<{ fixture: Awaited<ReturnType<typeof startAcpFixture>>; sessionId: string }> {
 	const fixture = await startAcpFixture({
 		artifactName,
+		// The create must finish inside the tool call, as it does for users
+		// (product handoff is 15s). The 2s e2e default moved it to the
+		// background on loaded CI runners, so the PDF was not there yet.
+		bashHandoffSeconds: 15,
 		responses: [
 			{
 				toolCalls: [

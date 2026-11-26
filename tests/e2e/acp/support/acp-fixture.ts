@@ -130,6 +130,14 @@ export interface AcpFixtureOptions {
 	 * Defaults to `workDir` (the ACP protocol's session cwd).
 	 */
 	processCwd?: string
+	/**
+	 * Seconds a bash command may run before the tool moves it to the
+	 * background. Defaults to 2, so background-bash scenarios hand off fast.
+	 * Tests whose command must finish inside the tool call (real work, not a
+	 * scripted sleep) need more: under parallel CI load such a command can
+	 * take longer than 2s and then still runs when the turn ends.
+	 */
+	bashHandoffSeconds?: number
 }
 
 export interface StartAcpFixtureOptions extends AcpFixtureOptions {
@@ -528,7 +536,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				// Background-bash scenarios script short sleeps (3–6s) that must
 				// hand off; keep the e2e handoff at 2s instead of the 15s product
 				// default (covered by unit tests).
-				KIMCHI_E2E_BASH_HANDOFF_SECONDS: "2",
+				KIMCHI_E2E_BASH_HANDOFF_SECONDS: String(options.bashHandoffSeconds ?? 2),
 				// Keep the /v1/me identity lookup (telemetry pre-session) on the
 				// fake server; otherwise it would reach the real app API.
 				KIMCHI_REMOTE_ENDPOINT: fake.baseUrl,
