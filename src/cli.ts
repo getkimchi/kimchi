@@ -30,6 +30,7 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
 import { createGuidedCodemodeExtension } from "./extensions/codemode/guidance.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
+import { installOneShotHiddenMessageGuard } from "./one-shot-hidden-message-guard.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
 import { installThinkingLevelAdvisor } from "./thinking-selection.js"
@@ -351,6 +352,7 @@ async function cliMain(): Promise<void> {
 	const infrastructureErrorTracker = createInfrastructureErrorTracker()
 	// Detects print/json runs that end without a prompt or final answer.
 	const runOutcomeTracker = createRunOutcomeTracker()
+	installOneShotHiddenMessageGuard()
 	if (!IS_ACP_MODE) observeAgentSessionPrompts(AgentSession.prototype, runOutcomeTracker.notePrompt)
 
 	// --- Org policy ---
