@@ -3,10 +3,13 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent"
 import { type Component, visibleWidth } from "@earendil-works/pi-tui"
-import { describe, expect, it, onTestFinished, vi } from "vitest"
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest"
+import { setResourceOverride } from "../resources/store.js"
 import { createCommandContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { withExperimentalFeatures } from "./experimental.js"
+import { markFermentV2Loaded, resetFermentV2LoadedForTests } from "./ferment-v2/availability.js"
+import { FERMENT_V2_RESOURCE_ID } from "./ferment-v2/constants.js"
 import helpExtension from "./help.js"
 import { SLASH_COMMANDS } from "./slash-commands.js"
 
@@ -245,5 +248,43 @@ describe("help — slash command list", () => {
 			expect(text).toContain(`/${name}`)
 		}
 		expect(text).not.toContain("/multi-model")
+	})
+})
+
+describe("help — /ferment visibility", () => {
+	afterEach(() => {
+		resetFermentV2LoadedForTests()
+		setResourceOverride(FERMENT_V2_RESOURCE_ID, true)
+	})
+
+	async function helpText(): Promise<string> {
+		const handler = registerHelp()
+		const ctx = { ...createCommandContext(), mode: "print" as const }
+		await handler("", ctx)
+		const text = vi.mocked(ctx.ui.notify).mock.calls[0]?.[0]
+		// Guards the "hides" cases below against passing on an empty result.
+		expect(text).toContain("/help")
+		return text as string
+	}
+
+	it("hides /ferment when Ferment is not loaded", async () => {
+		expect(await helpText()).not.toMatch(/\/ferment\s/)
+	})
+
+	// Startup had Ferment off, then the user turned it on: still only a stub.
+	it("hides /ferment when Ferment is turned on after a start that did not load it", async () => {
+		setResourceOverride(FERMENT_V2_RESOURCE_ID, true)
+		expect(await helpText()).not.toMatch(/\/ferment\s/)
+	})
+
+	it("lists /ferment when Ferment is loaded and on", async () => {
+		markFermentV2Loaded()
+		expect(await helpText()).toMatch(/\/ferment\s+Work on one objective/)
+	})
+
+	it("hides /ferment after it is turned off mid-session", async () => {
+		markFermentV2Loaded()
+		setResourceOverride(FERMENT_V2_RESOURCE_ID, false)
+		expect(await helpText()).not.toMatch(/\/ferment\s/)
 	})
 })

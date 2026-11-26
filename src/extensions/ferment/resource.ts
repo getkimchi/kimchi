@@ -1,9 +1,5 @@
-import {
-	describeOrgLock,
-	getResourcePolicy,
-	getResourcePolicySource,
-	isResourceEnabled,
-} from "../../resources/store.js"
+import { resourceNotLoadedMessage, resourceOffMessage } from "../../resources/not-loaded-message.js"
+import { isResourceEnabled } from "../../resources/store.js"
 import { FERMENT_LEGACY_RESOURCE_ID } from "./resource-id.js"
 
 /**
@@ -42,34 +38,13 @@ export function resetFermentLegacyLoadedForTests(): void {
 /**
  * The one text that tells a user why legacy Ferment is off and what to do.
  * `subject` names what needed it, such as `--ferment-oneshot` or a command.
- * Returns undefined when legacy is on. An org lock cannot be lifted locally,
- * so that case names the policy entry instead of `kimchi resources enable`.
+ * Returns undefined when legacy is on.
  */
 export function fermentLegacyOffMessage(subject: string): string | undefined {
-	if (isFermentLegacyEnabled()) return undefined
-	const policy = getResourcePolicy(FERMENT_LEGACY_RESOURCE_ID)
-	if (policy === "FORCE_OFF") {
-		const source = getResourcePolicySource(FERMENT_LEGACY_RESOURCE_ID) ?? FERMENT_LEGACY_RESOURCE_ID
-		return `${subject} needs the legacy Ferment, which your organization turned off (${source} is ${describeOrgLock(policy)}). Ask your organization admin to change the policy.`
-	}
-	return `${subject} needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`
+	return resourceOffMessage(subject, FERMENT_LEGACY_RESOURCE_ID, "the legacy Ferment")
 }
 
-function isFermentLegacyOrgLocked(): boolean {
-	return getResourcePolicy(FERMENT_LEGACY_RESOURCE_ID) === "FORCE_OFF"
-}
-
-/**
- * For entry points that exist only when V1 loaded at startup, such as the
- * `/ferment-legacy` stub. A setting change needs a restart to load V1, so
- * every case the user can fix locally says so. An org lock cannot be fixed
- * locally, so a restart hint there would only mislead.
- */
+/** For entry points that exist only when V1 loaded at startup, such as the `/ferment-legacy` stub. */
 export function fermentLegacyNotLoadedMessage(subject: string): string {
-	const offMessage = fermentLegacyOffMessage(subject)
-	if (offMessage === undefined) {
-		return `${subject} needs the legacy Ferment. It is on now, but it loads only when kimchi starts. Restart kimchi to use it.`
-	}
-	if (isFermentLegacyOrgLocked()) return offMessage
-	return `${offMessage}\nThen restart kimchi to load it.`
+	return resourceNotLoadedMessage(subject, FERMENT_LEGACY_RESOURCE_ID, "the legacy Ferment")
 }

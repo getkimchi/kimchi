@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { resourceNotLoadedMessage } from "../../resources/not-loaded-message.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { FERMENT_V2_COMMAND_NAME, FERMENT_V2_RESOURCE_ID } from "./constants.js"
 
@@ -32,4 +33,9 @@ export function createFermentV2AvailabilityCheck(pi: ExtensionAPI): () => boolea
 		.getCommands()
 		.some((command) => command.name === FERMENT_V2_COMMAND_NAME && command.source === "extension")
 	return () => loaded && isResourceEnabled(FERMENT_V2_RESOURCE_ID)
+}
+
+/** Why `/ferment` does nothing yet, and the fix. Says "restart" when the setting is on but V2 did not load. */
+export function fermentNotLoadedMessage(subject: string): string {
+	return resourceNotLoadedMessage(subject, FERMENT_V2_RESOURCE_ID, "Ferment")
 }

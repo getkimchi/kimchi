@@ -3,6 +3,8 @@ import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-
 import { truncateLinesToWidth } from "../truncate-lines.js"
 import { isExperimentalFeaturesEnabled } from "./experimental.js"
 import { getRatingHelpEntries } from "./feedback/rating-keys.js"
+import { isFermentV2LoadedAndEnabled } from "./ferment-v2/availability.js"
+import { FERMENT_V2_COMMAND_NAME } from "./ferment-v2/constants.js"
 import { SLASH_COMMANDS } from "./slash-commands.js"
 
 type HelpRow = { kind: "heading"; text: string } | { kind: "entry"; key: string; desc: string } | { kind: "spacer" }
@@ -25,6 +27,8 @@ function buildHelpRows(): HelpRow[] {
 		{ kind: "heading", text: "Slash Commands" },
 		...Object.entries(SLASH_COMMANDS)
 			.filter(([key]) => key !== "review" || isExperimentalFeaturesEnabled())
+			// With Ferment off, `/ferment` is only a stub, so /help does not advertise it.
+			.filter(([key]) => key !== FERMENT_V2_COMMAND_NAME || isFermentV2LoadedAndEnabled())
 			.map(([key, { hint }]) => ({
 				kind: "entry" as const,
 				key: `/${key}`,
