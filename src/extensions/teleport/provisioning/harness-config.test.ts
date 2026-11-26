@@ -17,9 +17,15 @@ vi.mock("../../../config.js", () => ({
 	getAgentConfigDir: () => MOCK_CONFIG_DIR,
 }))
 
-import { SANDBOX_USER } from "./constants.js"
+import { SANDBOX_HOME, SANDBOX_USER } from "./constants.js"
 // Import after mocks are registered so the mocked modules are wired in.
-import { HARNESS_CONFIG_ALLOWLIST, provisionHarnessConfig, REMOTE_HARNESS_CONFIG_DIR } from "./harness-config.js"
+import {
+	buildRemoteEnvProbeCommand,
+	HARNESS_CONFIG_ALLOWLIST,
+	provisionHarnessConfig,
+	REMOTE_HARNESS_CONFIG_DIR,
+	resolveRemoteHarnessConfigDir,
+} from "./harness-config.js"
 import { runRsync } from "./rsync-runner.js"
 
 const mockedRunRsync = vi.mocked(runRsync)
@@ -33,11 +39,11 @@ function baseArgs(overrides: Partial<{ remoteHost: string; authToken: string; si
 }
 
 describe("provisionHarnessConfig", () => {
-	it("calls runRsync with the correct options", async () => {
+	it("calls runRsync with the correct options for a legacy remote", async () => {
 		mockedRunRsync.mockResolvedValueOnce({ fileCount: 0, totalBytes: 0, durationMs: 0 })
 		const signal = new AbortController().signal
 
-		await provisionHarnessConfig(baseArgs({ signal }))
+		await provisionHarnessConfig({ ...baseArgs({ signal }), _probe: async () => "legacy" })
 
 		expect(mockedRunRsync).toHaveBeenCalledTimes(1)
 		expect(mockedRunRsync).toHaveBeenCalledWith({
@@ -51,6 +57,20 @@ describe("provisionHarnessConfig", () => {
 			deleteExtraneous: false,
 			signal,
 		})
+	})
+
+	it("targets the remote's envs/default harness for a fresh or unprobed remote", async () => {
+		mockedRunRsync.mockResolvedValueOnce({ fileCount: 0, totalBytes: 0, durationMs: 0 })
+
+		for (const probe of [async () => "fresh", async () => undefined]) {
+			mockedRunRsync.mockClear()
+			await provisionHarnessConfig({ ...baseArgs(), _probe: probe })
+			expect(mockedRunRsync).toHaveBeenCalledWith(
+				expect.objectContaining({
+					remotePath: `${SANDBOX_HOME}/.config/kimchi/envs/default/harness`,
+				}),
+			)
+		}
 	})
 
 	it("returns { ok: true } on success", async () => {
@@ -86,5 +106,28 @@ describe("HARNESS_CONFIG_ALLOWLIST", () => {
 		// mode a bare `themes` syncs as an empty dir (still exit 0) on both
 		// GNU rsync and macOS openrsync.
 		expect([...HARNESS_CONFIG_ALLOWLIST]).toEqual(["settings.json", "keybindings.json", "themes/", "models.json"])
+	})
+})
+
+describe("remote default-env probe helpers", () => {
+	it("buildRemoteEnvProbeCommand mirrors resolveKimchiEnv's probe", () => {
+		const cmd = buildRemoteEnvProbeCommand()
+		// Both visible and dotfile entries of the remote kimchi dir are scanned.
+		expect(cmd).toContain("/.config/kimchi/*")
+		expect(cmd).toContain("/.config/kimchi/.[!.]*")
+		// Only envs/ is exempt — anything else means legacy state.
+		expect(cmd).toContain('[ "$b" = envs ] || { echo legacy; exit 0; }')
+		expect(cmd.trim().endsWith("echo fresh")).toBe(true)
+	})
+
+	it("resolveRemoteHarnessConfigDir targets the legacy dir only for an explicit legacy probe", () => {
+		const envsDefault = `${SANDBOX_HOME}/.config/kimchi/envs/default/harness`
+		expect(resolveRemoteHarnessConfigDir("legacy\n")).toBe(REMOTE_HARNESS_CONFIG_DIR)
+		// Fresh remote, probe failure, or noisy output all fall back to
+		// envs/default — the non-destructive direction: creating envs/ never
+		// flips a remote that already resolved legacy.
+		expect(resolveRemoteHarnessConfigDir("fresh")).toBe(envsDefault)
+		expect(resolveRemoteHarnessConfigDir(undefined)).toBe(envsDefault)
+		expect(resolveRemoteHarnessConfigDir("ssh warning\nfresh")).toBe(envsDefault)
 	})
 })

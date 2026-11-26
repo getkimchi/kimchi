@@ -7,7 +7,6 @@
  */
 
 import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import { resolveSkillRoots } from "../../../shared/skill-discovery/resolve-skill-roots.js"
@@ -42,8 +41,8 @@ export interface SkillListEntry {
  * precedence. Discovered skills are still loaded per-directory with
  * loadSkillsFromDir; later dirs override earlier ones on name collisions.
  */
-export function resolveSkillPaths(cwd: string, home = homedir()): string[] {
-	return resolveSkillRoots({ cwd, homeDir: home }).map((root) => root.dir)
+export function resolveSkillPaths(cwd: string, home?: string): string[] {
+	return resolveSkillRoots({ cwd, ...(home !== undefined ? { homeDir: home } : {}) }).map((root) => root.dir)
 }
 
 /**

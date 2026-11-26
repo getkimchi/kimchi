@@ -28,6 +28,11 @@ describe("loadConfig merging", () => {
 			...(await importOriginal<typeof import("node:os")>()),
 			homedir: () => tmpCwd,
 		}))
+		// USER_CONFIG_PATH derives from the env-root helpers (KIMCHI_CODING_AGENT_DIR
+		// first, env-root fallback), and the isolated-home setup pins the agent dir
+		// elsewhere — route both at the mocked home's legacy layout like the mock above.
+		vi.stubEnv("KIMCHI_ENV_ROOT", join(tmpCwd, ".config", "kimchi"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", join(tmpCwd, ".config", "kimchi", "harness"))
 		vi.resetModules()
 		try {
 			const isolatedConfig = await import("./config.js")
@@ -40,6 +45,7 @@ describe("loadConfig merging", () => {
 			expect(isolatedConfig.loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(12000)
 		} finally {
 			vi.doUnmock("node:os")
+			vi.unstubAllEnvs()
 			vi.resetModules()
 		}
 	})

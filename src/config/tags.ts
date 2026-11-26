@@ -1,5 +1,5 @@
-import { homedir } from "node:os"
 import { join } from "node:path"
+import { envRootOrLegacy } from "../env-root.js"
 import { isProjectScopeAllowed } from "../project-scope-trust.js"
 import { findNearestAncestorPath } from "../utils/find-nearest-ancestor.js"
 import { readJsonCached } from "./json.js"
@@ -78,12 +78,16 @@ function parseEnvTags(envTags: string): string[] {
  * sorted for determinism.
  */
 export function resolveDefaultTags(options?: { cwd?: string; homeDir?: string; envTags?: string }): TagTierDefaults {
-	const home = options?.homeDir ?? homedir()
 	const envTags = options?.envTags ?? process.env.KIMCHI_TAGS
 
-	const tiers: Array<{ tier: TagTier; tags: string[] }> = [
-		{ tier: "global", tags: readTagFile(join(home, GLOBAL_TAGS_FILE_REL)) },
-	]
+	// Global tier: env-scoped when no explicit homeDir is injected — the
+	// active env's tags.json; an injected homeDir keeps the legacy
+	// home-relative path (tests, custom setups).
+	const globalTagsFile = options?.homeDir
+		? join(options.homeDir, GLOBAL_TAGS_FILE_REL)
+		: join(envRootOrLegacy(), "tags.json")
+
+	const tiers: Array<{ tier: TagTier; tags: string[] }> = [{ tier: "global", tags: readTagFile(globalTagsFile) }]
 
 	// Project tier — nearest-ancestor lookup from cwd, gated on project trust:
 	// an untrusted repo's .kimchi/tags.json must not spoof telemetry

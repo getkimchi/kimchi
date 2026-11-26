@@ -11,9 +11,9 @@
 
 import { execSync } from "node:child_process"
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { v7 as uuidv7 } from "uuid"
+import { envRootOrLegacy } from "../env-root.js"
 import { isProjectScopeAllowed } from "../project-scope-trust.js"
 import { activateSinglePhase, settleAfterPhaseTerminal } from "./lifecycle.js"
 import { normalizeSuccessCriteria, successCriteriaToAnswer } from "./success-criteria.js"
@@ -84,7 +84,11 @@ export function detectProjectRoot(cwd: string = process.cwd()): string {
 }
 
 export function getGlobalFermentsDir(): string {
-	return resolve(homedir(), ".config", "kimchi", "ferments")
+	// Env-scoped with the ferment locks (extensions/ferment/state.ts):
+	// keeping records and locks in the same tree is what preserves mutual
+	// exclusion between environments running the same ferment id. The
+	// legacy default keeps its historical location via envRootOrLegacy().
+	return resolve(envRootOrLegacy(), "ferments")
 }
 
 export function resolveFermentsDir(cwd?: string): string {

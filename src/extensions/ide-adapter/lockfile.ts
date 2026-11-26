@@ -1,12 +1,10 @@
 import { readdirSync, readFileSync, realpathSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
+import { envRootOrLegacy } from "../../env-root.js"
 import type { LockfileData } from "./types.js"
 
-const DEFAULT_LOCKFILE_DIR = join(homedir(), ".config", "kimchi", "ide")
-
 export function getLockfileDir(): string {
-	return process.env.KIMCHI_IDE_LOCKFILE_DIR ?? DEFAULT_LOCKFILE_DIR
+	return process.env.KIMCHI_IDE_LOCKFILE_DIR ?? join(envRootOrLegacy(), "ide")
 }
 
 /** Return all absolute paths to *.lock files in the lockfile directory. */

@@ -51,7 +51,13 @@ export const ENV_VARS: EnvVarDef[] = [
 	},
 	{
 		name: "KIMCHI_CODING_AGENT_DIR",
-		description: "Override the kimchi config/session directory (default: ~/.config/kimchi/harness)",
+		description:
+			"Internal: the active environment's agent dir (<envRoot>/harness; default env: ~/.config/kimchi/harness). Set at startup — inherited values are preserved, not honored",
+	},
+	{
+		name: "KIMCHI_ENV",
+		description:
+			"Harness environment for this invocation: named envs live under ~/.config/kimchi/envs/<name>/ (same as --env)",
 	},
 	{
 		name: "KIMCHI_ENABLE_RESOURCES",
@@ -133,6 +139,7 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_DEBUG_SESSION",
 	// set by kimchi for child processes, hooks, and pi-mono
 	"KIMCHI_ORIGINAL_PI_CODING_AGENT_DIR",
+	"KIMCHI_ORIGINAL_CODING_AGENT_DIR",
 	"KIMCHI_DISABLE_BUILTIN_PROVIDERS",
 	"KIMCHI_OAUTH_TEMPLATE_DIR",
 	"KIMCHI_PARENT_SESSION_ID",
@@ -265,6 +272,11 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_DISABLE_REDACTION_EVENTS",
 	// hand-registered: set by kimchi for child processes (update/install, bridge)
 	"KIMCHI_BIN",
+	// harness-environment plumbing (src/env-root.ts): set by src/entry.ts at
+	// startup; read back by readResolvedKimchiEnv(). User-facing selection is
+	// KIMCHI_ENV / --env above.
+	"KIMCHI_ENV_ROOT",
+	"KIMCHI_ENV_LEGACY_DEFAULT",
 	// OAuth dev/mock endpoint overrides (src/oauth-config.ts)
 	"KIMCHI_OAUTH_CLIENT_ID",
 	"KIMCHI_OAUTH_AUTHORIZE_URL",

@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import type { PackageSource } from "@earendil-works/pi-coding-agent"
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent"
+import { envAgentDir } from "../../env-root.js"
 
 export const PI_PACKAGE_LOOKUP_RESOURCE_ID = "extensions.pi-package-lookup"
 
@@ -239,9 +240,7 @@ function isOriginalPiAgentDirSameAsKimchi(): boolean {
 }
 
 function getKimchiAgentDir(): string {
-	return process.env.KIMCHI_CODING_AGENT_DIR
-		? resolve(process.env.KIMCHI_CODING_AGENT_DIR)
-		: join(homedir(), ".config", "kimchi", "harness")
+	return resolve(envAgentDir())
 }
 
 function isKimchiAgentDir(path: string): boolean {

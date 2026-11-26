@@ -7,6 +7,7 @@ import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
 import { readJsonCached } from "../config/json.js"
 import { readStatusLineConfig } from "../config/status-line-config.js"
 import { parseTag } from "../config/tags.js"
+import { envAgentDir } from "../env-root.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { isAutoRoutedModel } from "../extensions/auto-model/constants.js"
 import { getBillingStatusLine } from "../extensions/billing/status.js"
@@ -85,7 +86,7 @@ interface CompactionContext {
 	semantic: (color: string, s: string) => string
 }
 
-const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
+const HARNESS_SETTINGS_PATH = join(envAgentDir(), "settings.json")
 
 // ── Assistant-usage totals memoization ─────────────────────────────────────
 // The session journal is append-only and its entries are immutable

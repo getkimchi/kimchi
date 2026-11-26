@@ -256,3 +256,7 @@ The complete record schema and representative Grafana queries live in `src/exten
 - `pnpm run memory:check` — PART A is offline SQLite work. PARTS B and C require configured gateway credentials and may incur remote embedding costs; run that command only with explicit approval. For offline maintenance acceptance, use `bun run src/extensions/memory/maintenance.check.ts` (vectors, mem0 history, dedupe, rollback, and checksum preflight).
 - `pnpm run memory:measure` — value-gate injection/no-injection rates over a sample session.
 - `pnpm run memory:queue-scale` — offline Bun migration/restart/downgrade drill: 100,000 pending jobs, 1,000,000 captured hashes, two failed jobs, and a corrupt legacy file, with indexed reads, requeue/poison checks, and a 300-second bound. `KIMCHI_QUEUE_SCALE_JOBS` and `KIMCHI_QUEUE_SCALE_HASHES` support smaller dry runs. `KIMCHI_QUEUE_PRESERVE=1` preserves the temporary scale report.
+
+## See also
+
+- [Harness environments](environments.md) — the memory store is scoped per environment (`--env <name>`).

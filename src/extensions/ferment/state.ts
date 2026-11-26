@@ -10,10 +10,10 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
+import { envAgentDir } from "../../env-root.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import type { Ferment } from "../../ferment/types.js"
 import { pinWorkContext, type WorkContext } from "../work-attribution.js"
@@ -126,7 +126,7 @@ const SAFE_FERMENT_ID = /^[A-Za-z0-9._-]+$/
 function getFermentLockDir(): string {
 	const override = process.env.KIMCHI_FERMENT_LOCK_DIR?.trim()
 	if (override) return override
-	return join(homedir(), ".config", "kimchi", "harness", "ferment-locks")
+	return join(envAgentDir(), "ferment-locks")
 }
 
 export function getFermentLockPath(fermentId: string): string {

@@ -1,13 +1,13 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { envAgentDir } from "../../env-root.js"
 import { parseThinkingMode } from "./parse.js"
 import type { PersistedThinkingStepsPreferenceScope, ThinkingStepsMode } from "./types.js"
 
 const PREFERENCE_FILE_NAME = "thinking-steps.json"
 
 function getAgentDir(): string {
-	return process.env.KIMCHI_CODING_AGENT_DIR ?? join(homedir(), ".config", "kimchi", "harness")
+	return envAgentDir()
 }
 
 function getPreferencePath(scope: PersistedThinkingStepsPreferenceScope, cwd: string): string {

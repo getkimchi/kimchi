@@ -1,10 +1,10 @@
-import { homedir } from "node:os"
 import { join } from "node:path"
+import { envAgentDir } from "../env-root.js"
 import { readJson, readJsonCached, writeJson } from "./json.js"
 
 type Satisfies<T> = (value: unknown) => value is T
 
-const HARNESS_CONFIG_BASE_DIR = join(homedir(), ".config", "kimchi", "harness")
+const HARNESS_CONFIG_BASE_DIR = envAgentDir()
 const HARNESS_SETTINGS_PATH = join(HARNESS_CONFIG_BASE_DIR, "settings.json")
 
 export function getConfigSetting<T>(

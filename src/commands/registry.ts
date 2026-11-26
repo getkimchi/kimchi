@@ -47,7 +47,11 @@ export const COMMANDS: CommandDefinition[] = [
 	{ name: "resources", summary: "Enable or disable Kimchi hooks, tools, extensions, and plugins", run: runResources },
 	{ name: "mcp", summary: "MCP server utilities (probe and diagnostics)", run: runMcp },
 	{ name: "memory", summary: "Manage persistent memory (list, search, delete, reset)", run: runMemory },
-	{ name: "env", summary: "List environment variables recognised by kimchi", run: runEnv },
+	{
+		name: "env",
+		summary: "Manage harness environments (list|which|create); `env vars` lists recognised environment variables",
+		run: runEnv,
+	},
 	{ name: "version", summary: "Print the kimchi version", run: runVersion },
 ]
 

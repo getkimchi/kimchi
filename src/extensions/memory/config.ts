@@ -4,8 +4,8 @@
  * backend.ts stays the import leaf (backend imports config, never the
  * reverse).
  */
-import { homedir } from "node:os"
 import { join } from "node:path"
+import { envRootOrLegacy } from "../../env-root.js"
 
 /** The personal scope id — the always-present global store. Project scopes are keyed by owner/name (scope.ts). */
 export const MEMORY_SCOPE_ID = "personal"
@@ -413,7 +413,7 @@ export function digestDbPath(): string {
 }
 
 export function defaultMemoryDir(): string {
-	return join(homedir(), ".config", "kimchi", "memory")
+	return join(envRootOrLegacy(), "memory")
 }
 
 /** Scope ids interpolate into filesystem paths — allowlist strictly. */

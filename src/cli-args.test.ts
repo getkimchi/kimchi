@@ -19,6 +19,7 @@ import {
 	parseCliArgs,
 	populateCliArgs,
 	resolveBashProcessLimitSeconds,
+	stripEnvArg,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
@@ -390,5 +391,35 @@ describe("cacheable option coverage", () => {
 		// miss, so the invariant is enforced here.
 		const missing = CACHEABLE_OPTION_NAMES.filter((name) => !CLI_OPTIONS[name])
 		expect(missing).toEqual([])
+	})
+})
+
+describe("stripEnvArg", () => {
+	it("drops --env <name> and --env=<name> pairs", () => {
+		expect(stripEnvArg(["--env", "test"])).toEqual([])
+		expect(stripEnvArg(["--env=test"])).toEqual([])
+		expect(stripEnvArg(["-p", "--env", "test", "--model", "x"])).toEqual(["-p", "--model", "x"])
+		expect(stripEnvArg(["-p", "--env=test", "--model", "x"])).toEqual(["-p", "--model", "x"])
+	})
+
+	it("drops only the flag when the value looks like another flag", () => {
+		// The pair is unreachable in practice (entry.ts already exited), but the
+		// stripping must never eat a value that belongs to another flag.
+		expect(stripEnvArg(["--env", "--model"])).toEqual(["--model"])
+		expect(stripEnvArg(["--env"])).toEqual([])
+	})
+
+	it("leaves non-env args untouched, including lookalikes", () => {
+		expect(stripEnvArg([])).toEqual([])
+		expect(stripEnvArg(["--environment", "x"])).toEqual(["--environment", "x"])
+		expect(stripEnvArg(["--envelope=1"])).toEqual(["--envelope=1"])
+		expect(stripEnvArg(["-e", "env"])).toEqual(["-e", "env"])
+	})
+
+	it("stops at the -- separator: prompt text is never altered", () => {
+		expect(stripEnvArg(["--", "--env", "test"])).toEqual(["--", "--env", "test"])
+		expect(stripEnvArg(["--", "--env=test"])).toEqual(["--", "--env=test"])
+		// Before the separator the flag is stripped; after it stays verbatim.
+		expect(stripEnvArg(["--env", "test", "--", "--env", "x"])).toEqual(["--", "--env", "x"])
 	})
 })
