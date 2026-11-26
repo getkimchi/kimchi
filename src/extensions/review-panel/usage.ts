@@ -77,26 +77,29 @@ export class ReviewPanelUsageBuffer {
 		const entries = [...this.totals.entries()].sort(([left], [right]) => left.localeCompare(right))
 		for (const [key, entry] of entries) {
 			if (this.closed) return
+			// Message events may mutate entry while delivery is pending. Only advance
+			// through this attempted snapshot so later usage remains a separate delta.
+			const snapshot = { ...entry, usage: { ...entry.usage } }
 			const prior = this.flushed.get(key) ?? zeroUsage()
 			const delta: Usage = {
-				input: entry.usage.input - prior.input,
-				output: entry.usage.output - prior.output,
-				cacheRead: entry.usage.cacheRead - prior.cacheRead,
-				cacheWrite: entry.usage.cacheWrite - prior.cacheWrite,
+				input: snapshot.usage.input - prior.input,
+				output: snapshot.usage.output - prior.output,
+				cacheRead: snapshot.usage.cacheRead - prior.cacheRead,
+				cacheWrite: snapshot.usage.cacheWrite - prior.cacheWrite,
 			}
 			if (Object.values(delta).every((value) => value === 0)) continue
 			const remaining = cutoff === undefined ? undefined : Math.max(0, cutoff - Date.now())
 			if (this.deliveryController.signal.aborted) {
-				this.drop(key, entry, delta)
+				this.drop(key, snapshot, delta)
 				continue
 			}
-			const delivery = this.emit({ ...entry, usage: delta }, this.deliveryController.signal)
+			const delivery = this.emit({ ...snapshot, usage: delta }, this.deliveryController.signal)
 			if (delivery instanceof Promise) {
 				if (remaining === 0) {
 					// A synchronously emitted record is already safe, but a pending
 					// callback must not be allowed to extend this coordinator past D.
 					this.abortDelivery("Review usage delivery deadline expired")
-					this.drop(key, entry, delta)
+					this.drop(key, snapshot, delta)
 					void delivery.catch(() => {})
 					continue
 				}
@@ -109,11 +112,11 @@ export class ReviewPanelUsageBuffer {
 				if (delivered === "timeout") {
 					// The pending callback is intentionally not awaited and is lost. A fresh
 					// wrap-up never replays it or charges this delta twice.
-					this.drop(key, entry, delta)
+					this.drop(key, snapshot, delta)
 					continue
 				}
 			}
-			this.flushed.set(key, { ...entry.usage })
+			this.flushed.set(key, { ...snapshot.usage })
 		}
 	}
 

@@ -125,6 +125,12 @@ describe("review panel reconciliation and fallback", () => {
 		expect(() => parseSemanticReconciliation(`\`\`\`json\n${json}\n${json}\n\`\`\``)).toThrow(SyntaxError)
 	})
 
+	it("rejects a second Markdown fence containing another JSON block", () => {
+		const json = '{"schema_version":"review-reconciliation/v1","findings":[],"decisions":[],"threads":[]}'
+		const fenced = `\`\`\`json\n${json}\n\`\`\``
+		expect(() => parseSemanticReconciliation(`${fenced}\n${fenced}`)).toThrow(SyntaxError)
+	})
+
 	async function makeStore(candidates: ReviewPanelCandidate[]): Promise<ReviewPanelStateStore> {
 		const lenses = [...new Set(candidates.map((entry) => entry.lens))]
 		const selected = lenses.length > 0 ? lenses : (["spec"] as ReviewLensId[])
