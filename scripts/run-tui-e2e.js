@@ -76,6 +76,12 @@ function runTui(runArgs, stem) {
 		maxBuffer: 16 * 1024 * 1024,
 	})
 	if (result.stdout) process.stdout.write(result.stdout)
+	const flakyCount = parseTuiFlakyCount(result.stdout ?? "")
+	if (!result.error && flakyCount === undefined) {
+		process.stderr.write(
+			`[tui-e2e] warning: no tui-test summary found for ${stem}; retry recovery will not be marked as flaky\n`,
+		)
+	}
 	const stop = Date.now()
 	const status = result.status ?? 1
 	if (stem && process.env.ALLURE_RESULTS) {
@@ -88,7 +94,7 @@ function runTui(runArgs, stem) {
 				start,
 				stop,
 				failLogPaths,
-				flakyCount: parseTuiFlakyCount(result.stdout ?? ""),
+				flakyCount: flakyCount ?? 0,
 				failureMessage: result.error ? `spawn failed: ${result.error.message}` : undefined,
 			})
 		} catch (error) {

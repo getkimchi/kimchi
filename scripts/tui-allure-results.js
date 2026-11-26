@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, join } from "node:path"
+import { stripVTControlCharacters } from "node:util"
 
 const MAX_ATTACHMENT_BYTES = 1024 * 1024
 const TRUNCATION_MARKER = "\n\n[log truncated to 1 MiB]\n"
@@ -18,13 +19,14 @@ export function newFailLogs(before, after) {
 }
 
 export function parseTuiFlakyCount(output) {
-	for (const line of output.split(/\r?\n/)) {
+	for (const rawLine of output.split(/\r?\n/)) {
+		const line = stripVTControlCharacters(rawLine)
 		const summary = /^\s*tests:\s*(.*),\s*\d+\s+total\s*$/.exec(line)
 		if (!summary) continue
 		const flaky = /(?:^|,\s*)(\d+)\s+flaky(?=,|$)/.exec(summary[1])
 		return flaky ? Number(flaky[1]) : 0
 	}
-	return 0
+	return undefined
 }
 
 /** Write one native Allure result for an entire test file, not for its individual test cases. */

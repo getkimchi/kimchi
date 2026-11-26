@@ -48,11 +48,13 @@ function createTuiRunnerFixture({
 	failureLogs = {},
 	exitCodes = { beta: 1 },
 	testSummaries = {},
+	showSummary = true,
 }: {
 	missingRunner?: boolean
 	failureLogs?: Record<string, FakeFailureLog[]>
 	exitCodes?: Record<string, number>
 	testSummaries?: Record<string, string>
+	showSummary?: boolean
 } = {}) {
 	const root = mkdtempSync(join(tmpdir(), "kimchi-tui-allure-test-"))
 	mkdirSync(join(root, "scripts"), { recursive: true })
@@ -92,8 +94,7 @@ function createTuiRunnerFixture({
 				`\twriteFileSync(join(${JSON.stringify(root)}, name), log.content ?? "x".repeat(log.size ?? 0))`,
 				"}",
 				"const defaultSummary = (failureLogs[stem] ?? []).length > 0 ? '1 flaky, 1 total' : '1 passed, 1 total'",
-				// biome-ignore lint/suspicious/noTemplateCurlyInString: placeholders belong to emitted fake-runner source
-				"console.log(`  tests: ${testSummaries[stem] ?? defaultSummary}`)",
+				`if (${JSON.stringify(showSummary)}) console.log(\`  tests: \${testSummaries[stem] ?? defaultSummary}\`)`,
 				"process.exit(exitCodes[stem] ?? 0)",
 			].join("\n"),
 		)
@@ -104,7 +105,7 @@ function createTuiRunnerFixture({
 		resultsDir(relative: string) {
 			return join(root, relative)
 		},
-		run(resultsDir?: string, environment: NodeJS.ProcessEnv = {}) {
+		run(resultsDir?: string, environment: NodeJS.ProcessEnv = {}, fileFilter?: string) {
 			const env = { ...process.env }
 			for (const name of [
 				"ALLURE_RESULTS",
@@ -117,7 +118,9 @@ function createTuiRunnerFixture({
 			}
 			if (resultsDir) env.ALLURE_RESULTS = resultsDir
 			Object.assign(env, environment)
-			return spawnSync(process.execPath, [join(root, "scripts", "run-tui-e2e.js")], {
+			const args = [join(root, "scripts", "run-tui-e2e.js")]
+			if (fileFilter) args.push(fileFilter)
+			return spawnSync(process.execPath, args, {
 				cwd: root,
 				env,
 				encoding: "utf8",
@@ -224,6 +227,43 @@ describe("successful TUI results", () => {
 			expect(result.attachments.map((attachment) => readFileSync(join(resultsDir, attachment.source), "utf8"))).toEqual(
 				[firstLog, secondLog],
 			)
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true })
+		}
+	})
+
+	it.skipIf(process.platform === "win32")("parses flaky summaries that contain ANSI color escapes", () => {
+		const fixture = createTuiRunnerFixture({
+			exitCodes: {},
+			failureLogs: { alpha: [{ content: "Error: first attempt failed" }] },
+			testSummaries: { alpha: "\u001b[33m1 flaky, 1 total\u001b[0m" },
+		})
+		try {
+			const resultsDir = fixture.resultsDir("allure-colored-flaky")
+			expect(fixture.run(resultsDir).status).toBe(0)
+			const result = requireResult(
+				readResults(resultsDir).find((candidate) => candidate.name === "alpha"),
+				"alpha",
+			)
+			expect(result.statusDetails).toEqual({ flaky: true, message: "passed after 1 failed attempt" })
+		} finally {
+			rmSync(fixture.root, { recursive: true, force: true })
+		}
+	})
+
+	it.skipIf(process.platform === "win32")("warns once when tui-test produces no summary", () => {
+		const fixture = createTuiRunnerFixture({ exitCodes: {}, showSummary: false })
+		try {
+			const resultsDir = fixture.resultsDir("allure-missing-summary")
+			const execution = fixture.run(resultsDir, {}, "alpha.test.ts")
+			expect(execution.status).toBe(0)
+			expect(execution.stderr.match(/no tui-test summary found/g)).toHaveLength(1)
+			const result = requireResult(
+				readResults(resultsDir).find((candidate) => candidate.name === "alpha"),
+				"alpha",
+			)
+			expect(result.status).toBe("passed")
+			expect(result.statusDetails).toBeUndefined()
 		} finally {
 			rmSync(fixture.root, { recursive: true, force: true })
 		}
