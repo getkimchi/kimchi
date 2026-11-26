@@ -19,16 +19,20 @@ const PROCESS_TREE_ENV = "KIMCHI_REVIEW_PROCESS_TREE"
 const TERM_GRACE_MS = 50
 const KILL_SETTLE_MS = 150
 
-type OwnedProcessDiscovery = (owner: string) => Promise<number[]>
+type OwnedProcessDiscovery = (owner: string, rootPid?: number) => Promise<number[]>
 
-async function ownedProcessIds(owner: string): Promise<number[]> {
+async function ownedProcessIds(owner: string, rootPid?: number): Promise<number[]> {
 	const marker = `${PROCESS_TREE_ENV}=${owner}`
 	if (process.platform === "darwin") {
 		const { stdout } = await execFileAsync("ps", ["-A", "-E", "-o", "pid=,command="], {
 			encoding: "utf8",
 			maxBuffer: 8 * 1024 * 1024,
 		})
-		return outputProcessIds(stdout, marker)
+		const identified = outputProcessIds(stdout, marker)
+		if (rootPid === undefined) return identified
+		// Apple platform binaries do not expose their environment through ps.
+		// The direct shell child roots an independent parent/child ownership proof.
+		return [...new Set([...identified, ...(await darwinDescendantProcessIds(rootPid))])]
 	}
 	if (process.platform === "linux") return linuxOwnedProcessIds(marker)
 	// Other Unix platforms retain their existing ps compatibility path.
@@ -45,6 +49,40 @@ function outputProcessIds(output: string, marker: string): number[] {
 		.filter((line) => line.includes(marker))
 		.map((line) => Number.parseInt(line.trimStart(), 10))
 		.filter((pid) => Number.isSafeInteger(pid) && pid > 0)
+}
+
+async function darwinDescendantProcessIds(rootPid: number): Promise<number[]> {
+	const { stdout } = await execFileAsync("ps", ["-A", "-o", "pid=,ppid=,stat="], {
+		encoding: "utf8",
+		maxBuffer: 8 * 1024 * 1024,
+	})
+	const children = new Map<number, number[]>()
+	const live = new Set<number>()
+	for (const line of stdout.split("\n")) {
+		const [pidText, parentText, state] = line.trim().split(/\s+/)
+		const pid = Number(pidText)
+		const parent = Number(parentText)
+		if (state?.startsWith("Z")) continue
+		if (!Number.isSafeInteger(pid) || pid < 1 || !Number.isSafeInteger(parent) || parent < 0) continue
+		live.add(pid)
+		children.set(parent, [...(children.get(parent) ?? []), pid])
+	}
+	const owned = new Set<number>()
+	const pending: number[] = []
+	if (live.has(rootPid)) {
+		owned.add(rootPid)
+		pending.push(rootPid)
+	}
+	while (pending.length) {
+		const parent = pending.shift()
+		if (parent === undefined) break
+		for (const child of children.get(parent) ?? []) {
+			if (owned.has(child)) continue
+			owned.add(child)
+			pending.push(child)
+		}
+	}
+	return [...owned]
 }
 
 async function linuxOwnedProcessIds(marker: string): Promise<number[]> {
@@ -122,7 +160,13 @@ async function signalOwned(owner: string, signal: NodeJS.Signals, discovery: Own
 		const survivors = await waitForOwnedExit(owner, deadline, discovery, new Set(pids))
 		if (survivors.length === 0) continue
 		if (signal === "SIGTERM") {
-			for (const pid of survivors) process.kill(pid, "SIGKILL")
+			for (const pid of survivors) {
+				try {
+					process.kill(pid, "SIGKILL")
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error
+				}
+			}
 			const remaining = await waitForOwnedExit(owner, Date.now() + KILL_SETTLE_MS, discovery, new Set(survivors))
 			if (remaining.length > 0)
 				throw new Error(`Could not terminate review command processes (${remaining.join(", ")}).`)
@@ -155,7 +199,7 @@ async function reapProcessTree(
 ): Promise<void> {
 	const listOwned = async (): Promise<number[]> => {
 		try {
-			return await discovery(owner)
+			return await discovery(owner, child.pid)
 		} catch (error) {
 			// A missing ps or procfs must not escape cancellation. Preserve the old
 			// direct-child fallback, but make the reduced guarantee explicit.

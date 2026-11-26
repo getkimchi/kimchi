@@ -144,6 +144,27 @@ await new Promise((resolve) => setTimeout(resolve, 75))
 		}
 	})
 
+	it.skipIf(process.platform !== "darwin")(
+		"cancels Apple platform binaries whose environment ps cannot read",
+		async () => {
+			const root = mkdtempSync(join(tmpdir(), "review-cancel-platform-binary-"))
+			temporaryDirectories.push(root)
+			const operations = reviewInheritedProcessOperations("headless")
+			if (!operations) throw new Error("Missing headless process adapter")
+			const controller = new AbortController()
+			const started = Date.now()
+			const abort = setTimeout(() => controller.abort(), 300)
+			try {
+				await expect(
+					operations.exec("/bin/sleep 4", root, { onData: () => {}, signal: controller.signal }),
+				).rejects.toThrow("aborted")
+				expect(Date.now() - started).toBeLessThan(2_000)
+			} finally {
+				clearTimeout(abort)
+			}
+		},
+	)
+
 	it.skipIf(process.platform === "win32")(
 		"warns and terminates the direct child when discovery is unavailable",
 		async () => {

@@ -93,7 +93,8 @@ async function pathExists(path: string): Promise<boolean> {
 
 async function ownerIsLive(manifest: WorktreeManifest): Promise<boolean> {
 	if (manifest.ownerPid === undefined && manifest.ownerHost === undefined && manifest.ownerStart === undefined) {
-		return false
+		// Unknown ownership is not proof that reclamation is safe.
+		return true
 	}
 	if (
 		typeof manifest.ownerPid !== "number" ||
@@ -106,7 +107,9 @@ async function ownerIsLive(manifest: WorktreeManifest): Promise<boolean> {
 	) {
 		throw new Error("Reviewer worktree manifest has an unsafe owner identity.")
 	}
-	if (manifest.ownerHost !== currentReviewHost() || manifest.ownerPid === process.pid) return false
+	// Hostnames can change with the network. A foreign or unverifiable owner
+	// belongs to another review namespace and must never be reclaimed locally.
+	if (manifest.ownerHost !== currentReviewHost()) return true
 	try {
 		process.kill(manifest.ownerPid, 0)
 	} catch (error) {
