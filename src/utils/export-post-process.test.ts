@@ -770,6 +770,18 @@ describe("postProcessHtmlExportOnce", () => {
 		expect(data.entries).toHaveLength(1)
 		expect(data.entries[0].type).toBe("custom")
 		expect(data.entries[0].customType).toBe("subagents:record")
+		expect(data.entries[0].data).toHaveProperty("status", "completed")
+		expect(data.entries[0].data).not.toHaveProperty("transcript")
+
+		const tabMatch = result.match(/id="subagent-data-agent-001">([\s\S]*?)<\/script>/)
+		expect(tabMatch).not.toBeNull()
+		if (!tabMatch) throw new Error("subagent data not found")
+		const tabData = JSON.parse(Buffer.from(tabMatch[1], "base64").toString("utf-8")) as {
+			entries: Array<{ message: unknown }>
+		}
+		expect(tabData.entries.map((entry) => entry.message)).toEqual(
+			sessionData.entries[0].data.transcript.map((entry) => entry.message),
+		)
 	})
 
 	it("sub-agent iframe CSS preserves system prompt while hiding header chrome", async () => {
