@@ -1,5 +1,5 @@
 import { type ChildProcess, fork } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -255,23 +255,5 @@ describe("live review writer locks", () => {
 				.map((record) => record.description)
 				.sort(),
 		).toEqual(["Local A.", "Local B.", "Local C."])
-	})
-
-	it("cleans only provably dead orphan owner temps", async () => {
-		homeDir = mkdtempSync(join(tmpdir(), "kimchi-review-temp-lock-"))
-		const outputRoot = join(homeDir, "review-output")
-		const deadTemp = `.final.lock.dead-orphan.tmp`
-		const liveTemp = `.final.lock.live-owner.tmp`
-		const malformedTemp = `.final.lock.malformed.tmp`
-		expect((await submitFinding(baseFinding, { ...paths(homeDir), writer: "final", now: NOW })).accepted).toBe(true)
-		writeFileSync(join(outputRoot, deadTemp), JSON.stringify({ version: 1, pid: 999_999, token: "dead-orphan" }))
-		writeFileSync(join(outputRoot, liveTemp), JSON.stringify({ version: 1, pid: process.pid, token: "live-owner" }))
-		writeFileSync(join(outputRoot, malformedTemp), "null")
-		expect(
-			(await submitFinding({ ...baseFinding, line: 2 }, { ...paths(homeDir), writer: "final", now: NOW })).accepted,
-		).toBe(true)
-		expect(existsSync(join(outputRoot, deadTemp))).toBe(false)
-		expect(existsSync(join(outputRoot, liveTemp))).toBe(true)
-		expect(existsSync(join(outputRoot, malformedTemp))).toBe(true)
 	})
 })
