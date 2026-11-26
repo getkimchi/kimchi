@@ -17,11 +17,13 @@ export interface ReviewDirectories {
 /** Resolve flag paths against the current session project. An absent flag uses
  * the project-local runtime directory; no home-directory fallback is allowed. */
 export function resolveReviewDirectories(cwd: string, overrides: ReviewPathOverrides = {}): ReviewDirectories {
+	const contextDirIsDefault = !overrides.contextDir
+	const outputDirIsDefault = !overrides.outputDir
 	return {
 		projectDir: cwd,
 		contextDir: resolve(cwd, overrides.contextDir || ".kimchi/review-context"),
 		outputDir: resolve(cwd, overrides.outputDir || ".kimchi/review-output"),
-		contextDirIsDefault: overrides.contextDir === undefined,
-		outputDirIsDefault: overrides.outputDir === undefined,
+		contextDirIsDefault,
+		outputDirIsDefault,
 	}
 }

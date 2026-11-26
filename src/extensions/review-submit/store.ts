@@ -407,6 +407,27 @@ async function loadCommentableLines(
 			),
 		}
 	}
+	const files = Object.values(map.files)
+	if (
+		files.some((file) => {
+			if (file === null || typeof file !== "object" || Array.isArray(file)) return true
+			const ranges: unknown = file.ranges
+			return (
+				ranges !== undefined &&
+				(!Array.isArray(ranges) ||
+					ranges.some((range) => range === null || typeof range !== "object" || Array.isArray(range)))
+			)
+		})
+	) {
+		return {
+			absent: false,
+			error: rejected(
+				"invalid_context",
+				"review-context/commentable-lines.json files must be objects whose ranges are arrays of objects.",
+				{ field: "files" },
+			),
+		}
+	}
 	return { map, absent: false }
 }
 

@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync,
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { resolveReviewDirectories } from "./paths.js"
 import { runSubmissionProcess, stripExpectedNodeSqliteWarning } from "./process-test-utils.js"
 import { submitFinding, submitReply, submitSummary } from "./store.js"
 
@@ -98,6 +99,26 @@ describe("review output process and path safety", () => {
 					: await submitReply({ thread_id: "thread-1", body: "Reply.", action: "none" }, context)
 		expect(result).toMatchObject({ accepted: false, reason: "output_path" })
 		expect(readdirSync(external)).toEqual([])
+	})
+
+	it.each([{ ranges: {} }, { ranges: [null] }])("returns invalid_context for malformed ranges %j", async (file) => {
+		writeFileSync(
+			join(homeDir, "review-context", "commentable-lines.json"),
+			JSON.stringify({ schema_version: "commentable-lines/v1", files: { [finding.path]: file } }),
+		)
+		const context = { ...paths(homeDir), writer: "final" }
+		await expect(submitFinding(finding, context)).resolves.toMatchObject({ accepted: false, reason: "invalid_context" })
+	})
+
+	it("treats an empty --review-output-dir like the default and rejects a symlinked .kimchi", async () => {
+		const project = join(homeDir, "project")
+		const outside = join(homeDir, "outside")
+		mkdirSync(project)
+		mkdirSync(outside)
+		symlinkSync(outside, join(project, ".kimchi"))
+		const context = { ...resolveReviewDirectories(project, { outputDir: "" }), writer: "final" }
+		await expect(submitFinding(finding, context)).resolves.toMatchObject({ accepted: false, reason: "output_path" })
+		expect(readdirSync(outside)).toEqual([])
 	})
 
 	it.each([
