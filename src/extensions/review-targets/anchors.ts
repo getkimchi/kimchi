@@ -1,9 +1,8 @@
-import { gitBytes, gitText } from "./git.js"
+import { gitBytes, gitText, OBJECT_ID } from "./git.js"
 import type { CommentableFile, ProviderAnchorMap, ReviewLimitation } from "./types.js"
 import { ReviewTargetError } from "./types.js"
 
 const COMMENTABLE_LINES_VERSION = "commentable-lines/v1"
-const OBJECT_ID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/
 
 interface ParsedPatchFile {
 	file: CommentableFile

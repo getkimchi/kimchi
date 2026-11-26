@@ -750,7 +750,9 @@ describe("review target resolution", () => {
 		await target.cleanup()
 
 		git(nested, "-c", "filter.evil.clean=", "commit", "--allow-empty", "-m", "bump submodule")
-		await expect(resolve({ kind: "working-tree", fetch: false }, { contextDir: join(sandbox, "bump-context") })).rejects.toMatchObject({
+		await expect(
+			resolve({ kind: "working-tree", fetch: false }, { contextDir: join(sandbox, "bump-context") }),
+		).rejects.toMatchObject({
 			code: "unsupported_submodule",
 			message: expect.stringContaining("sub"),
 		})

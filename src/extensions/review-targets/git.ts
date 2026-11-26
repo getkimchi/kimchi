@@ -7,6 +7,7 @@ import { ReviewTargetError } from "./types.js"
 
 const MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024
 const GIT_TIMEOUT_MS = 120_000
+export const OBJECT_ID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/
 const resolutionFetchAuthorization = new AsyncLocalStorage<boolean>()
 
 /** Keep network authorization local to one resolution, including its concurrent object reads. */
@@ -112,7 +113,7 @@ function runRaw(
 	})
 }
 
-function filterOverrides(output: Buffer): string[] {
+export function parseConfiguredFilterDrivers(output: Buffer): Set<string> {
 	const drivers = new Set<string>()
 	for (const key of output.toString("utf8").split("\0")) {
 		if (!key.startsWith("filter.")) continue
@@ -123,7 +124,11 @@ function filterOverrides(output: Buffer): string[] {
 			drivers.add(key.slice("filter.".length, suffix))
 		}
 	}
-	return [...drivers]
+	return drivers
+}
+
+function filterOverrides(output: Buffer): string[] {
+	return [...parseConfiguredFilterDrivers(output)]
 		.sort()
 		.flatMap((driver) => [
 			"-c",
@@ -135,7 +140,7 @@ function filterOverrides(output: Buffer): string[] {
 		])
 }
 
-/** Run Git with process-owned empty hooks, forced conversion failures, and no implicit object fetching. */
+/** Run Git with process-owned empty hooks, disabled configured content filters, and no implicit object fetching. */
 export async function gitBytes(cwd: string, args: readonly string[], options: GitRunOptions = {}): Promise<GitResult> {
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
@@ -163,7 +168,7 @@ export async function gitBytes(cwd: string, args: readonly string[], options: Gi
 	try {
 		// Config inspection cannot invoke hooks or content conversion. Discover driver
 		// names so actual commands override every configured executable with an empty,
-		// failing command, even if a call site forgets preflight.
+		// pass-through value instead of running it, even if a call site forgets preflight.
 		const filters = await runRaw(
 			cwd,
 			["config", "--name-only", "--null", "--get-regexp", "^filter\\."],
@@ -193,7 +198,7 @@ export async function gitText(cwd: string, args: readonly string[], options: Git
 export async function resolveCommit(cwd: string, ref: string, signal?: AbortSignal): Promise<string> {
 	try {
 		const value = await gitText(cwd, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], { signal })
-		if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value)) throw new Error("unexpected object ID")
+		if (!OBJECT_ID.test(value)) throw new Error("unexpected object ID")
 		return value
 	} catch (error) {
 		if (error instanceof ReviewTargetError && error.code === "missing_object") throw error
@@ -210,7 +215,7 @@ export async function optionalCommit(cwd: string, ref: string, signal?: AbortSig
 		return undefined
 	}
 	const value = result.stdout.toString("utf8").trim()
-	return /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value) ? value : undefined
+	return OBJECT_ID.test(value) ? value : undefined
 }
 
 export async function repositoryRoot(cwd: string, signal?: AbortSignal): Promise<string> {

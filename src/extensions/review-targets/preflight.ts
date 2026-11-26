@@ -1,6 +1,6 @@
 import { lstat } from "node:fs/promises"
 import { join } from "node:path"
-import { gitBytes, gitResultError, gitText } from "./git.js"
+import { gitBytes, gitResultError, parseConfiguredFilterDrivers } from "./git.js"
 import { ReviewTargetError } from "./types.js"
 
 const DISPLAY_PATH_LIMIT = 20
@@ -18,20 +18,11 @@ function unsupported(detail: string): never {
 }
 
 async function configuredFilterDrivers(root: string, signal?: AbortSignal): Promise<Set<string>> {
-	const output = await gitText(root, ["config", "--name-only", "--null", "--get-regexp", "^filter\\."], {
+	const output = await gitBytes(root, ["config", "--name-only", "--null", "--get-regexp", "^filter\\."], {
 		signal,
 		allowFailure: true,
 	})
-	const drivers = new Set<string>()
-	for (const key of output.split("\0")) {
-		if (!key.startsWith("filter.")) continue
-		const suffix = key.lastIndexOf(".")
-		const capability = key.slice(suffix + 1)
-		if (capability === "clean" || capability === "smudge" || capability === "process") {
-			drivers.add(key.slice("filter.".length, suffix))
-		}
-	}
-	return drivers
+	return parseConfiguredFilterDrivers(output.stdout)
 }
 
 /** Changed/staged/untracked paths discovered without content conversion. */
@@ -55,7 +46,7 @@ export async function workingTreeCandidatePaths(root: string, signal?: AbortSign
 	}
 	// ls-files --modified compares cached stat data, including racily-clean stat
 	// data, rather than running clean filters over contents. The central empty
-	// filter overrides still make any unexpected conversion fail closed.
+	// filter overrides disable configured drivers instead of executing them.
 	const selected = await gitBytes(
 		root,
 		["ls-files", "-z", "--modified", "--deleted", "--others", "--exclude-standard"],

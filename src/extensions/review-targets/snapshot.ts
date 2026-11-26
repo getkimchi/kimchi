@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { gitBytes, gitResultError, gitText } from "./git.js"
+import { gitBytes, gitResultError, gitText, OBJECT_ID } from "./git.js"
 import { assertNoConversionDrivers, workingTreeCandidatePaths } from "./preflight.js"
 import type { RemovedReviewSnapshot, WorkingTreeStatus } from "./types.js"
 import { ReviewTargetError } from "./types.js"
@@ -295,7 +295,7 @@ export async function freezeWorkingTree(
 				signal: options.signal,
 			})
 		).trim()
-		if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(headSha)) {
+		if (!OBJECT_ID.test(headSha)) {
 			throw new ReviewTargetError("snapshot_capture", "Git returned an invalid snapshot commit ID.")
 		}
 		const snapshotRef = `${REVIEW_SNAPSHOT_REF_PREFIX}${randomUUID()}`
@@ -355,7 +355,7 @@ export async function removeStaleSnapshots(
 	for (const line of output.split("\n")) {
 		if (!line) continue
 		const [ref, headSha, timestamp, ...extra] = line.split("\0")
-		if (extra.length || !ref || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(headSha)) {
+		if (extra.length || !ref || !OBJECT_ID.test(headSha)) {
 			throw new ReviewTargetError("stale_snapshot_scan", "Git returned malformed snapshot ref metadata.")
 		}
 		if (!/^\d+$/.test(timestamp) || Number(timestamp) >= cutoff) continue

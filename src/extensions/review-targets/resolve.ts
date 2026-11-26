@@ -9,6 +9,7 @@ import {
 	gitBytes,
 	gitResultError,
 	gitText,
+	OBJECT_ID,
 	optionalCommit,
 	repositoryRoot,
 	resolveCommit,
@@ -187,7 +188,7 @@ async function mergeBase(root: string, baseSha: string, tipSha: string, signal?:
 	if (result.exitCode !== 0 && (result.exitCode !== 1 || result.failure?.code !== 1)) {
 		throw gitResultError(args, result)
 	}
-	if (result.exitCode !== 0 || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha)) {
+	if (result.exitCode !== 0 || !OBJECT_ID.test(sha)) {
 		throw new ReviewTargetError(
 			"no_merge_base",
 			`The selected base and branch have no usable merge base${result.stderr.trim() ? `: ${result.stderr.trim()}` : "."}`,

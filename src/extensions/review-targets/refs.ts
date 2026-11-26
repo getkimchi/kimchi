@@ -1,7 +1,5 @@
-import { gitBytes, gitResultError, resolveCommit } from "./git.js"
+import { gitBytes, gitResultError, OBJECT_ID, resolveCommit } from "./git.js"
 import { ReviewTargetError } from "./types.js"
-
-const OBJECT_ID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/
 
 export interface ResolvedRevision {
 	ref: string
