@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import ts from "typescript"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
 	applyDebugPromptsOptOut,
 	CACHEABLE_OPTION_NAMES,
@@ -791,15 +791,16 @@ describe("fermentLegacyFlagError", () => {
 		// Isolate the resource settings path so a developer's real settings.json
 		// can never flip the default-off legacy resource on.
 		agentDir = mkdtempSync(join(tmpdir(), "cli-args-legacy-"))
-		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
-		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+		// stubEnv records the values from the isolated-home setup, so
+		// unstubAllEnvs puts them back for any later test in this file.
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", undefined)
 		resetOrgPolicyForTests()
 	})
 
 	afterEach(() => {
 		resetOrgPolicyForTests()
-		Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
-		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+		vi.unstubAllEnvs()
 		rmSync(agentDir, { recursive: true, force: true })
 	})
 
