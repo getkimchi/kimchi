@@ -223,7 +223,7 @@ interface ExposureHarness {
 	/** Fire an event where handlers receive the event object (e.g. tool_result,
 	 *  whose handlers read event.toolName — `fire` passes the name string as the
 	 *  first arg, which only suits name-only handlers like session_start). */
-	fireEvent: (event: string, eventObject: unknown) => Promise<void>
+	fireEvent: (event: string, eventObject: unknown, payload: ExtensionContext) => Promise<void>
 }
 
 function createExposureHarness(): ExposureHarness & { pi: ExtensionAPI } {
@@ -275,9 +275,9 @@ function createExposureHarness(): ExposureHarness & { pi: ExtensionAPI } {
 		}
 	}
 
-	const fireEvent = async (event: string, eventObject: unknown) => {
+	const fireEvent = async (event: string, eventObject: unknown, payload: ExtensionContext) => {
 		for (const handler of handlers.get(event) ?? []) {
-			await handler(eventObject as never, undefined)
+			await handler(eventObject as never, payload)
 		}
 	}
 
@@ -568,11 +568,15 @@ describe("tool exposure at session start", () => {
 		expect(launchTool).toBeDefined()
 		if (!launchTool) throw new Error("debug_launch not registered")
 		await launchTool.execute("call-1", { program: "app.ts" }, undefined, undefined, sessionStartPayload())
-		await harness.fireEvent("tool_result", {
-			toolName: "debug_launch",
-			toolCallId: "call-1",
-			isError: false,
-		})
+		await harness.fireEvent(
+			"tool_result",
+			{
+				toolName: "debug_launch",
+				toolCallId: "call-1",
+				isError: false,
+			},
+			sessionStartPayload(),
+		)
 
 		for (const name of DAP_SESSION_TOOL_NAMES) {
 			expect(harness.active.has(name), `${name} visible after session start`).toBe(true)
@@ -582,11 +586,15 @@ describe("tool exposure at session start", () => {
 
 		// Second launch: guard prevents a second visibility transition.
 		await launchTool.execute("call-2", { program: "app.ts" }, undefined, undefined, sessionStartPayload())
-		await harness.fireEvent("tool_result", {
-			toolName: "debug_launch",
-			toolCallId: "call-2",
-			isError: false,
-		})
+		await harness.fireEvent(
+			"tool_result",
+			{
+				toolName: "debug_launch",
+				toolCallId: "call-2",
+				isError: false,
+			},
+			sessionStartPayload(),
+		)
 		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
 	})
 
@@ -599,14 +607,18 @@ describe("tool exposure at session start", () => {
 
 		// Background handles must not change the advertised
 		// tool set (cache-stable surface).
-		await harness.fireEvent("tool_result", {
-			toolName: "bash",
-			toolCallId: "c1",
-			input: { command: "long build" },
-			content: [{ type: "text", text: "still running" }],
-			isError: false,
-			details: { handle: "h1", handoff: true, exited: false },
-		})
+		await harness.fireEvent(
+			"tool_result",
+			{
+				toolName: "bash",
+				toolCallId: "c1",
+				input: { command: "long build" },
+				content: [{ type: "text", text: "still running" }],
+				isError: false,
+				details: { handle: "h1", handoff: true, exited: false },
+			},
+			sessionStartPayload(),
+		)
 		expect(harness.active.has("bash_control")).toBe(true)
 		expect(harness.activeTransitions.length).toBe(transitionsAtStart)
 
@@ -625,25 +637,33 @@ describe("tool exposure at session start", () => {
 
 		// An errored Agent result (spawn failure / budget rejection) leaves no
 		// subagent in the session — it must NOT reveal the continuation tools.
-		await harness.fireEvent("tool_result", {
-			toolName: "Agent",
-			toolCallId: "a0",
-			input: { prompt: "fails", description: "test", subagent_type: "General-Purpose" },
-			content: [{ type: "text", text: "spawn failed" }],
-			isError: true,
-		})
+		await harness.fireEvent(
+			"tool_result",
+			{
+				toolName: "Agent",
+				toolCallId: "a0",
+				input: { prompt: "fails", description: "test", subagent_type: "General-Purpose" },
+				content: [{ type: "text", text: "spawn failed" }],
+				isError: true,
+			},
+			sessionStartPayload(),
+		)
 		for (const name of AGENT_CONTINUATION_TOOLS) {
 			expect(harness.active.has(name), `${name} stays hidden after an errored Agent result`).toBe(false)
 		}
 
-		await harness.fireEvent("tool_result", {
-			toolName: "Agent",
-			toolCallId: "a1",
-			input: { prompt: "do the thing", description: "test", subagent_type: "General-Purpose" },
-			content: [{ type: "text", text: "agent result" }],
-			isError: false,
-			details: { agentId: "agent-1", status: "completed" },
-		})
+		await harness.fireEvent(
+			"tool_result",
+			{
+				toolName: "Agent",
+				toolCallId: "a1",
+				input: { prompt: "do the thing", description: "test", subagent_type: "General-Purpose" },
+				content: [{ type: "text", text: "agent result" }],
+				isError: false,
+				details: { agentId: "agent-1", status: "completed" },
+			},
+			sessionStartPayload(),
+		)
 
 		for (const name of AGENT_CONTINUATION_TOOLS) {
 			expect(harness.active.has(name), `${name} visible after the first Agent result`).toBe(true)
@@ -651,14 +671,18 @@ describe("tool exposure at session start", () => {
 		const transitionsAfterReveal = harness.activeTransitions.length
 
 		// Second Agent result: reveal is one-way, no further transition.
-		await harness.fireEvent("tool_result", {
-			toolName: "Agent",
-			toolCallId: "a2",
-			input: { prompt: "more", description: "test", subagent_type: "General-Purpose" },
-			content: [{ type: "text", text: "agent result" }],
-			isError: false,
-			details: { agentId: "agent-2", status: "completed" },
-		})
+		await harness.fireEvent(
+			"tool_result",
+			{
+				toolName: "Agent",
+				toolCallId: "a2",
+				input: { prompt: "more", description: "test", subagent_type: "General-Purpose" },
+				content: [{ type: "text", text: "agent result" }],
+				isError: false,
+				details: { agentId: "agent-2", status: "completed" },
+			},
+			sessionStartPayload(),
+		)
 		expect(harness.activeTransitions.length).toBe(transitionsAfterReveal)
 
 		// Per-session lifecycle: a second session_start (e.g. /new in the same
@@ -676,13 +700,17 @@ describe("tool exposure at session start", () => {
 		expect(harness.active.has("web_fetch"), "web_fetch visible from session start").toBe(true)
 		const transitionsAtStart = harness.activeTransitions.length
 
-		await harness.fireEvent("tool_result", {
-			toolName: "web_search",
-			toolCallId: "w1",
-			input: { query: "test" },
-			content: [{ type: "text", text: "results" }],
-			isError: false,
-		})
+		await harness.fireEvent(
+			"tool_result",
+			{
+				toolName: "web_search",
+				toolCallId: "w1",
+				input: { query: "test" },
+				content: [{ type: "text", text: "results" }],
+				isError: false,
+			},
+			sessionStartPayload(),
+		)
 		expect(harness.activeTransitions.length).toBe(transitionsAtStart)
 
 		// Per-session lifecycle: a second session_start keeps it visible.

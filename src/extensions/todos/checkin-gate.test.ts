@@ -5,6 +5,8 @@ import {
 	CHECKIN_STALENESS_OPENINGS_PER_REQUEST,
 	canOpenStalenessGate,
 	claimGateBlockedWork,
+	consumeCheckinDeferral,
+	deferCheckinForToolCall,
 	disposeCheckinGateSession,
 	dropIrrelevantPending,
 	getEffectivePendingCheckins,
@@ -243,6 +245,25 @@ describe("gate-blocked tool call registry", () => {
 
 		expect(isGateBlockedToolCall("call-1")).toBe(false)
 		expect(isGateBlockedToolCall("call-2")).toBe(true)
+	})
+
+	it("consumes expensive-call reminders once and clears them with their owning session", () => {
+		deferCheckinForToolCall("s1", "call-1")
+		deferCheckinForToolCall("s1", "call-2")
+		deferCheckinForToolCall("s2", "call-1")
+
+		expect(consumeCheckinDeferral("s1", "call-1")).toBe(true)
+		expect(consumeCheckinDeferral("s1", "call-1")).toBe(false)
+		expect(consumeCheckinDeferral("s2", "call-1")).toBe(true)
+
+		handleCheckinReplay("s1")
+		expect(consumeCheckinDeferral("s1", "call-2")).toBe(false)
+
+		deferCheckinForToolCall("s1", "call-3")
+		deferCheckinForToolCall("s2", "call-3")
+		disposeCheckinGateSession("s1")
+		expect(consumeCheckinDeferral("s1", "call-3")).toBe(false)
+		expect(consumeCheckinDeferral("s2", "call-3")).toBe(true)
 	})
 
 	it("replay clears the registry with the rest of the volatile gate state", () => {

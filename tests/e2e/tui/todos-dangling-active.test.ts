@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { expect, Key, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, viewText, waitForText, waitForTurnToSettle } from "./support/assertions.js"
 import type { FakeResponseScript } from "./support/fake-openai-server.js"
@@ -198,6 +200,42 @@ test("check-in gate: unchanged plan confirms without a write, then work proceeds
 			expect(viewText(terminal)).toContain("Publish after approval")
 			expect(viewText(terminal)).toContain("0/1")
 			trace.step("unchanged-plan input: confirm → work; bounded closure after work")
+		},
+	)
+})
+
+test("check-in gate: expensive write executes before reconciliation without being re-issued", async ({ terminal }) => {
+	const content = "expensive write payload\n".repeat(50)
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "todo-checkin-expensive-write",
+			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 1_000_000, maxTokens: 4096 }],
+			responses: [
+				tool("create_todos", { todos: [{ content: "Write the payload", status: "pending" }] }),
+				{ stream: ["Pending work is recorded."] },
+				tool("write", { path: "expensive.txt", content }),
+				tool("confirm_todos", { inputRevision: 2, expected: [{ id: 1, status: "pending" }] }),
+				{ stream: ["Write completed once."] },
+			],
+		},
+		async (fixture, trace) => {
+			const chat = () => fixture.fake.requests.filter((request) => request.url === "/openai/v1/chat/completions")
+			terminal.submit("Create the pending work list")
+			await waitForText(terminal, "Pending work is recorded.")
+			await waitForTurnToSettle(fixture.fake.requests)
+
+			terminal.submit("Write the long payload and then reconcile the list")
+			await waitForText(terminal, "Write completed once.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForTurnToSettle(fixture.fake.requests)
+
+			expect(readFileSync(join(fixture.workDir, "expensive.txt"), "utf8")).toBe(content)
+			expect(chat()).toHaveLength(5)
+			const requestBeforeReconciliation = chat()[2].body as { messages: unknown[] }
+			expect(JSON.stringify(requestBeforeReconciliation.messages)).toContain("Write the long payload")
+			const requestAfterWrite = chat()[3].body as { messages: unknown[] }
+			expect(JSON.stringify(requestAfterWrite.messages)).toContain("This expensive tool call was admitted")
+			trace.step("one executed long write → deferred reminder → confirmation → final response")
 		},
 	)
 })

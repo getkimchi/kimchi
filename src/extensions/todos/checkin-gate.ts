@@ -80,6 +80,9 @@ interface SessionGateState {
 	 *  kept for the session (their transcript rows stay collapsed) and
 	 *  disposed with it. */
 	blockedToolCalls: Set<string>
+	/** Expensive calls admitted while a check remains pending. Each marker is
+	 * consumed by that call's tool_result so its reminder is delivered once. */
+	deferredToolCalls: Set<string>
 	/** One-line descriptions of work calls blocked while checks were
 	 *  pending, drained into the re-issue reminder when the gate closes
 	 *  (all checks resolved). Kept separate from blockedToolCalls: that set
@@ -102,6 +105,7 @@ function sessionState(sessionId: string): SessionGateState {
 			stalenessOpeningsRevision: 0,
 			enforcementActive: true,
 			blockedToolCalls: new Set(),
+			deferredToolCalls: new Set(),
 			blockedWork: [],
 		}
 		gateStates.set(sessionId, state)
@@ -345,7 +349,22 @@ export function recordStalenessOpening(sessionId: string, inputRevision: number)
 	state.stalenessOpenings += 1
 }
 
-// ── Gate-blocked tool call registry ──────────────────────────────────────────
+// ── Gate-blocked and deferred tool call registries ──────────────────────────
+
+/** Admit a generated expensive call without losing the still-pending check. */
+export function deferCheckinForToolCall(sessionId: string, toolCallId: string): void {
+	sessionState(sessionId).deferredToolCalls.add(toolCallId)
+}
+
+/** Consume the result-time reminder for an expensive admitted call. */
+export function consumeCheckinDeferral(sessionId: string, toolCallId: string): boolean {
+	return gateStates.get(sessionId)?.deferredToolCalls.delete(toolCallId) ?? false
+}
+
+/** Reclaim markers whose calls did not produce a result before the turn ended. */
+export function clearCheckinDeferrals(sessionId: string): void {
+	gateStates.get(sessionId)?.deferredToolCalls.clear()
+}
 
 /** Record a tool call the gate blocked. Written only from the gate's
  *  tool_call hook — harness knowledge the transcript renderer can trust.
