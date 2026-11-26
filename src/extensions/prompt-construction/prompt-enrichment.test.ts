@@ -1752,7 +1752,7 @@ describe("continuation nudge turn_end handler", () => {
 		expect(sendMessageCalls.length).toBe(1) // no new nudge
 	})
 
-	it("falls through to second nudge when model responds with non-stop stopReason", async () => {
+	it("does not add a competing nudge after output truncation", async () => {
 		const { fire, sendMessageCalls } = buildNudgeHandlers()
 
 		await fire("tool_execution_start", {})
@@ -1764,13 +1764,11 @@ describe("continuation nudge turn_end handler", () => {
 		})
 		expect(sendMessageCalls.length).toBe(1)
 
-		// Model responds with stopReason "length" (e.g. output truncated).
-		// The handler should allow a second nudge since the model did not
-		// intentionally stop.
+		// Generic length recovery owns the single continuation.
 		await fire("turn_end", {
 			message: makeAssistantWithStop([{ type: "text", text: "I was going to say..." }], "length"),
 		})
-		expect(sendMessageCalls.length).toBe(2)
+		expect(sendMessageCalls.length).toBe(1)
 	})
 
 	it("does not send an empty-turn nudge after tools were called this agent run", async () => {
@@ -2208,20 +2206,18 @@ describe("nudge response pending cleanup", () => {
 		expect((later.content[0] as { text: string }).text).toBe("Ferment wake-up.")
 	})
 
-	it("budget exhaustion after two nudges leaves pending false", async () => {
+	it("truncated turns do not re-arm a spent nudge", async () => {
 		const { fire, sentMessages } = buildCleanupHandlers()
 		await armPendingNudge(fire)
 		expect(sentMessages()).toHaveLength(1)
 
-		// First recovery response is truncated (stopReason "length") — a
-		// second nudge is still eligible, and it re-arms pending.
+		// The first nudge was already spent; length recovery owns the new attempt.
 		await fire("turn_end", { message: withStop([{ type: "text", text: "I was going to say..." }], "length") })
-		expect(sentMessages()).toHaveLength(2)
+		expect(sentMessages()).toHaveLength(1)
 
-		// Second recovery response is also truncated — budget exhausted, and
-		// the pending state armed by the second nudge is consumed.
+		// A repeated truncation is terminal, so no additional nudge is queued either.
 		await fire("turn_end", { message: withStop([{ type: "text", text: "Still going..." }], "length") })
-		expect(sentMessages()).toHaveLength(2)
+		expect(sentMessages()).toHaveLength(1)
 
 		const later = makeAssistant([{ type: "text", text: "Unrelated follow-up." }])
 		await fire("message_update", textDeltaEvent(later, "Unrelated follow-up."))

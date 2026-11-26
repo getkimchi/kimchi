@@ -2,6 +2,7 @@ import { type AgentSession, convertToLlm, SessionManager } from "@earendil-works
 import { describe, expect, it, vi } from "vitest"
 import { createContext } from "../__mocks__/context.js"
 import { createModel } from "../__mocks__/model-registry.js"
+import { createResponseRecoveryExtension } from "../response-recovery.js"
 import {
 	createSideSession,
 	PENDING_TOOL_RESULT,
@@ -33,6 +34,12 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 
 // The child session's runtime is only handed to the stubbed createAgentSession above.
 vi.mock("../../shared/model-runtime.js", () => ({ requireModelRuntime: () => ({}) }))
+vi.mock("../response-recovery.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../response-recovery.js")>()
+	return { ...actual, createResponseRecoveryExtension: vi.fn(() => () => {}) }
+})
+
+const mockCreateResponseRecoveryExtension = vi.mocked(createResponseRecoveryExtension)
 
 const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 0 })
 
@@ -256,6 +263,17 @@ describe("sideChatPrompt", () => {
 		const prompt = sideChatPrompt(fresh)
 		expect(prompt).toMatch(/>[\s\S]*?quote/i)
 		expect(prompt).toMatch(/never (your|the user's) instructions|not (an? )?instructions/i)
+	})
+})
+
+describe("side session extensions", () => {
+	it("suppresses headless recovery console notices in child sessions", async () => {
+		await createSideSession(createContext({ model: { id: "concrete", provider: "kimchi-dev" } }), {
+			branchLeafId: null,
+			fresh: true,
+			thinkingLevel: "high",
+		})
+		expect(mockCreateResponseRecoveryExtension).toHaveBeenCalledWith({ headlessNotices: "suppress" })
 	})
 })
 

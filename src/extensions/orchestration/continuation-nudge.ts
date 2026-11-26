@@ -51,14 +51,15 @@
 
 import type { AssistantMessage } from "@earendil-works/pi-ai"
 import type { ContextEvent } from "@earendil-works/pi-coding-agent"
-import { isHarnessSteer, markHarnessSteer } from "../steer-marker.js"
-
 /**
  * Message-array shape passed through `context` events. Derived from
  * `ContextEvent` because `AgentMessage` lives in `@earendil-works/pi-agent-core`,
  * which is only a transitive dep — importing it directly works under npm's
  * flat install but breaks under pnpm's strict resolution (and thus CI).
  */
+import { isAcpSessionHost } from "../../modes/acp/state.js"
+import { isHarnessSteer, markHarnessSteer } from "../steer-marker.js"
+
 export type OrchestratorMessages = ContextEvent["messages"]
 
 export const DONE_SIGNAL = "<done>"
@@ -76,15 +77,15 @@ export const EMPTY_TURN_NUDGE_TEXT = markHarnessSteer(
 	"If you have finished, please summarize the result for the user. Otherwise, continue with the next tool call.",
 )
 
-/** Stop reasons that should never trigger a nudge. Both `aborted` (user
- *  cancelled) and `error` (provider failure) are terminal for this turn —
- *  nudging would either disrespect the user's intent or re-queue a followUp
- *  message that keeps the agent loop alive on a non-retryable error. */
-const NON_NUDGE_STOP_REASONS = new Set(["aborted", "error"])
+/** Stop reasons that should never trigger a nudge. `length` belongs to the
+ *  single lower-effort recovery in response-recovery instead. */
+const NON_NUDGE_STOP_REASONS = new Set(["aborted", "error", "length"])
 
 /** Returns true when the message's stop reason means the turn is terminal
- *  and must not be nudged (user abort or provider error). */
+ *  and must not be nudged (user abort or provider error). Interactive surfaces
+ *  use lower-effort recovery; ACP retains its native recovery and nudges. */
 function isNonNudgeStopReason(message: AssistantMessage): boolean {
+	if (message.stopReason === "length" && isAcpSessionHost()) return false
 	return NON_NUDGE_STOP_REASONS.has(message.stopReason)
 }
 

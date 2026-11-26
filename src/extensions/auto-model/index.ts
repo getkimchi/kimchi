@@ -17,6 +17,7 @@ import { readModelDeprecations } from "../../model-deprecation.js"
 import { getSettingsManager } from "../../settings-watcher.js"
 import { syncAutoCapabilities } from "./capabilities.js"
 import { AUTO_MODEL_NAME, AUTO_MODEL_PROVIDER, GATED_DEFAULT_MODEL_CANDIDATES, isAutoRoutedModel } from "./constants.js"
+import { beginRoutedEffort, captureRoutedEffort, clearRoutedEffort, takeRoutedEffort } from "./routed-effort.js"
 import { type RoutedModelRegistry, type RoutedModelResolution, resolveRoutedModel } from "./routed-model.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "./state.js"
 
@@ -309,6 +310,17 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 		// Fallback for non-streamed responses that never emit `message_update`.
 		pi.on("message_end", (event: MessageEndEvent, ctx) => {
 			applyRoutedResolution(pi, event.message, ctx, ctx.sessionManager.getSessionId())
+			if (event.message.role !== "assistant") return
+			const actual = takeRoutedEffort(ctx.sessionManager, event.message)
+			if (isAutoRoutedModel({ provider: event.message.provider, id: event.message.model })) {
+				event.message.thinkingLevel = actual
+			}
+		})
+
+		pi.on("before_provider_headers", (_event, ctx) => beginRoutedEffort(ctx.sessionManager, ctx.model))
+		pi.on("after_provider_response", (event, ctx) => captureRoutedEffort(event, ctx.sessionManager))
+		pi.on("cache_warming_decision", (_event, ctx) => {
+			if (isAutoRoutedModel(ctx.model)) return { action: "stop" }
 		})
 
 		pi.on("session_start", async (event, ctx) => {
@@ -540,6 +552,7 @@ export function createAutoModelRoutingExtension(options: AutoModelRoutingExtensi
 			const sessionId = ctx.sessionManager.getSessionId()
 			resetLastNotified(sessionId)
 			clearAutoRoutingState(sessionId)
+			clearRoutedEffort(ctx.sessionManager)
 		})
 	}
 }

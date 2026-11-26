@@ -128,3 +128,11 @@ virtual id and stores the concrete pick in `responseModel`. Requests are
 always sent as the virtual id (never the concrete pick), while the transcript
 records which concrete model served each response. This keeps attribution
 honest and makes resume work without extra bookkeeping.
+
+## Actual reasoning effort and output-length recovery
+
+If a response carries `x-auto-reasoning-effort`, its canonical value is recorded on the final assistant message for this session. The header is evidence about the actual request; a preference for automatic model routing or automatic thinking never implies maximum effort. Virtual-routed cache warming is stopped because its auxiliary responses could otherwise be mistaken for the user's real request. Direct-model warming is unchanged.
+
+Any model can produce a truncated response. At actual `high`, `xhigh`, or `max`, the harness may queue one continuation at the next lower supported effort on the same model. For a partial answer, only its visible text remains in future provider context so the continuation has the unfinished text without the failed reasoning. Blank responses are omitted entirely, and every raw journal entry is preserved. Tool-bearing truncation is never replayed. A successful continuation keeps the lower effort. Setup, enqueue, or execution failure and cancellation restore the original preference unless a deliberate user selection supersedes it. Repeated truncation, unknown or already-low effort, and models without a lower selectable level produce a warning instead of another retry.
+
+ACP keeps native/manual continuation handling and its existing nudge; the harness deliberately does not run this lower-effort continuation there. Opting into nothing therefore changes no main-turn, between-turn, or replay behavior, and no capability or setting is needed.

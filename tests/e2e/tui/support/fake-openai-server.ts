@@ -43,7 +43,7 @@ export interface FakeResponseScript {
 	rawDeltas?: { delta: Record<string, unknown>; delayMs?: number }[]
 	/** Final streamed finish reason. Defaults to the existing tool-call-aware value.
 	 *  `content_filter` simulates a gateway guardrail refusing the request. */
-	finishReason?: "stop" | "tool_calls" | "content_filter"
+	finishReason?: "stop" | "length" | "tool_calls" | "content_filter"
 	/** Guardrail stop details written flat on the content_filter finish chunk —
 	 *  the guardrail proxy's refusal shape (guardrail_name, flagged_checks). */
 	guardrailRefusal?: { guardrail_name: string; flagged_checks: string[] }

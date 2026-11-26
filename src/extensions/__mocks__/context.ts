@@ -129,6 +129,7 @@ export function createContext(
 		scopedModels: [],
 		isIdle: vi.fn(),
 		hasPendingMessages: vi.fn(() => false),
+		abort: vi.fn(),
 		getContextUsage: vi.fn().mockReturnValue(undefined),
 		// Production contexts always expose the effective system prompt
 		// (pi's ExtensionContext.getSystemPrompt); the empty default keeps
@@ -171,14 +172,17 @@ export function createContext(
 			}),
 			...overrides?.ui,
 		} as unknown as ExtensionUIContext,
-		sessionManager: {
-			getSessionId: () => "test-session",
-			getSessionDir: () => "",
-			getSessionFile: () => undefined,
-			getEntries: () => [],
-			getBranch: () => [],
-			getHeader: () => null,
-			...overrides?.sessionManager,
-		} as SessionManager,
+		sessionManager:
+			typeof overrides?.sessionManager?.appendContextEdit === "function"
+				? overrides.sessionManager
+				: ({
+						getSessionId: () => "test-session",
+						getSessionDir: () => "",
+						getSessionFile: () => undefined,
+						getEntries: () => [],
+						getBranch: () => [],
+						getHeader: () => null,
+						...overrides?.sessionManager,
+					} as SessionManager),
 	} as unknown as ExtensionContext
 }

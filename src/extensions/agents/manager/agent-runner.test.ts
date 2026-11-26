@@ -149,6 +149,11 @@ vi.mock("../../auto-model/index.js", () => ({
 	createAutoModelRoutingExtension: vi.fn(() => () => {}),
 }))
 
+vi.mock("../../response-recovery.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../response-recovery.js")>()
+	return { ...actual, createResponseRecoveryExtension: vi.fn(actual.createResponseRecoveryExtension) }
+})
+
 // Partial mocks: real extension behaviour with an identity spy on top, so the
 // buildInlineExtensionFactories composition tests can assert factory wiring
 // without changing what the factories do.
@@ -199,6 +204,7 @@ import { createKimchiMcpAdapterExtension } from "../../mcp/index.js"
 import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import requestTimingExtension from "../../request-timing.js"
+import { createResponseRecoveryExtension } from "../../response-recovery.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { createInteractiveTimeBudget } from "../interactive-time-budget.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
@@ -227,6 +233,7 @@ const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
 const mockScanBriefSkills = vi.mocked(scanBriefSkills)
 const mockBuildRoleGuidelinesSection = vi.mocked(buildRoleGuidelinesSection)
 const mockCreateAutoModelRoutingExtension = vi.mocked(createAutoModelRoutingExtension)
+const mockCreateResponseRecoveryExtension = vi.mocked(createResponseRecoveryExtension)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
@@ -458,7 +465,7 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(7)
+		expect(ctorArg?.extensionFactories).toHaveLength(8)
 		expect(ctorArg?.extensionFactories).toContain(codexCorrelationExtension)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
@@ -584,7 +591,7 @@ describe("runAgent — telemetry extension", () => {
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(ctorArg).toHaveProperty("extensionFactories")
 		expect(Array.isArray(ctorArg?.extensionFactories)).toBe(true)
-		expect(ctorArg?.extensionFactories).toHaveLength(7)
+		expect(ctorArg?.extensionFactories).toHaveLength(8)
 		expect(ctorArg?.extensionFactories).not.toContain(dapExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
@@ -642,7 +649,7 @@ describe("runAgent — telemetry extension", () => {
 		})
 
 		const ctorArg = mockDefaultResourceLoader.mock.calls[0]?.[0]
-		expect(ctorArg?.extensionFactories).toHaveLength(8)
+		expect(ctorArg?.extensionFactories).toHaveLength(9)
 		expect(ctorArg?.extensionFactories).toContain(dapExtension)
 		// The debug tool names must flow into the child session's tool allowlist so the
 		// SDK activates them once the dap extension registers them on session_start.
@@ -700,10 +707,10 @@ describe("runAgent — telemetry extension", () => {
 		const loaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		expect(loaderOptions?.noExtensions).toBe(true)
 		expect(loaderOptions?.noSkills).toBe(true)
-		// Six host-installed factories plus the worker permission gate: no web
+		// Seven host-installed factories plus the worker permission gate: no web
 		// or MCP factories, and no caller-provided inline factories in this
 		// focused profile run.
-		expect(loaderOptions?.extensionFactories).toHaveLength(7)
+		expect(loaderOptions?.extensionFactories).toHaveLength(8)
 		expect(mockScanBriefSkills).not.toHaveBeenCalled()
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
 	})
@@ -762,10 +769,10 @@ describe("runAgent — telemetry extension", () => {
 
 		const linkedLoaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
 		const ordinaryLoaderOptions = mockDefaultResourceLoader.mock.calls[1]?.[0]
-		// Counts include the two bundled web-tool factories appended after the
+		// Counts include recovery and the two bundled web-tool factories appended after the
 		// builder's list (extensions: true → inherited via registration).
-		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(11)
-		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(10)
+		expect(linkedLoaderOptions?.extensionFactories).toHaveLength(12)
+		expect(ordinaryLoaderOptions?.extensionFactories).toHaveLength(11)
 		expect(linkedSession.setActiveToolsByName).toHaveBeenCalledWith(["submit_agent_report"])
 		expect(ordinarySession.setActiveToolsByName).toHaveBeenCalledWith([])
 	})
@@ -3466,6 +3473,7 @@ describe("buildInlineExtensionFactories", () => {
 			requestTimingExtension,
 			autoRoutingFactory,
 			expect.any(Function), // auto-model prompt rebuild
+			mockCreateResponseRecoveryExtension.mock.results[0].value,
 			clampFactory,
 			infrastructureBreakerExtension,
 			codexCorrelationExtension,
@@ -3477,6 +3485,7 @@ describe("buildInlineExtensionFactories", () => {
 		expect(mockReadTelemetryConfig).toHaveBeenCalledTimes(1)
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0].value)
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith("work-1", segment)
+		expect(mockCreateResponseRecoveryExtension).toHaveBeenCalledWith({ headlessNotices: "suppress" })
 		expect(mockCreateSubagentBashClampExtension).toHaveBeenCalledWith(
 			900,
 			expect.any(Number),
@@ -3491,11 +3500,11 @@ describe("buildInlineExtensionFactories", () => {
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledTimes(1)
 		expect(mockCreateWorkAttributionExtension).toHaveBeenCalledWith(null, undefined)
 		const attributionFactory = mockCreateWorkAttributionExtension.mock.results[0].value
-		expect(enabled).toHaveLength(8)
+		expect(enabled).toHaveLength(9)
 		expect(enabled).toContain(attributionFactory)
 
 		const disabled = buildInlineExtensionFactories(makeDeps({ costPerPrEnabled: false }))
-		expect(disabled).toHaveLength(7)
+		expect(disabled).toHaveLength(8)
 		expect(disabled).not.toContain(attributionFactory)
 	})
 
@@ -3522,13 +3531,13 @@ describe("buildInlineExtensionFactories", () => {
 		const routed = buildInlineExtensionFactories(makeDeps({ model: AUTO_MODEL }))
 		expect(mockCreateAutoModelRoutingExtension).toHaveBeenCalledWith()
 		expect(routed).toContain(autoRoutingFactory)
-		expect(routed).toHaveLength(9)
+		expect(routed).toHaveLength(10)
 
 		mockCreateAutoModelRoutingExtension.mockClear()
 		const concrete = buildInlineExtensionFactories(makeDeps({ model: CONCRETE_MODEL }))
 		expect(mockCreateAutoModelRoutingExtension).not.toHaveBeenCalled()
 		expect(concrete).not.toContain(autoRoutingFactory)
-		expect(concrete).toHaveLength(7)
+		expect(concrete).toHaveLength(8)
 	})
 
 	it("registers the dap extension exactly when shouldRegisterDapForTools admits the tool names", () => {
@@ -3585,7 +3594,7 @@ describe("buildInlineExtensionFactories", () => {
 		const factories = buildInlineExtensionFactories(makeDeps({ mcpAppsEnabled: false }))
 
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(factories).toHaveLength(6)
+		expect(factories).toHaveLength(7)
 	})
 
 	it("omits the MCP adapter factory for allowlists that exclude MCP", () => {
@@ -3593,21 +3602,21 @@ describe("buildInlineExtensionFactories", () => {
 		// servers) only to filter its tool out afterwards.
 		const unrelated = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: ["unrelated"] }))
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(unrelated).toHaveLength(6) // core factories + lazy worker permission gate
+		expect(unrelated).toHaveLength(7) // core factories + lazy worker permission gate
 
 		// The worker-report edge: workerReport + extensions:false resolves to
 		// [], which no longer registers the adapter either.
 		mockCreateKimchiMcpAdapterExtension.mockClear()
 		const emptyArray = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: [] }))
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(emptyArray).toHaveLength(6)
+		expect(emptyArray).toHaveLength(7)
 	})
 
 	it("omits the MCP adapter factory for isolated children (effectiveExtensions false)", () => {
 		const factories = buildInlineExtensionFactories(makeDeps({ effectiveExtensions: false }))
 
 		expect(mockCreateKimchiMcpAdapterExtension).not.toHaveBeenCalled()
-		expect(factories).toHaveLength(6) // core factories + lazy worker permission gate
+		expect(factories).toHaveLength(7) // core factories + lazy worker permission gate
 	})
 
 	it("passes the effective cwd to the MCP adapter factory", () => {
