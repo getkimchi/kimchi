@@ -7,6 +7,7 @@ import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { setResourceOverride } from "../../resources/store.js"
 import { parseFermentCommand } from "../ferment/command-parser.js"
 import { getFermentArgumentCompletions } from "../ferment/commands.js"
+import { markFermentLegacyLoaded, resetFermentLegacyLoadedForTests } from "../ferment/resource.js"
 import { FERMENT_LEGACY_RESOURCE_ID } from "../ferment/resource-id.js"
 import {
 	FERMENT_LEGACY_WORDS,
@@ -238,6 +239,33 @@ describe("legacy Ferment words typed into /ferment", () => {
 	})
 
 	it.each([
+		["delete old-auth", "delete", "old-auth"],
+		['delete "Old Auth"', "delete", '"Old Auth"'],
+		["switch abc123", "switch", "abc123"],
+		['switch "Build Tetris" --force', "switch", '"Build Tetris" --force'],
+		["switch --force abc123", "switch", "--force abc123"],
+		["revise goal", "revise", "goal"],
+		["revise GOAL", "revise", "GOAL"],
+		["revise constraints", "revise", "constraints"],
+		['new "Build Tetris"', "new", '"Build Tetris"'],
+		["new 'X'", "new", "'X'"],
+		['abandon "no longer needed"', "abandon", '"no longer needed"'],
+		['one-shot "fix the build"', "one-shot", '"fix the build"'],
+	])("returns a hint for the V1 argument form %j", (input, word, args) => {
+		expect(parseFermentV2Command(input)).toEqual({ action: "legacy-hint", word, args })
+	})
+
+	it.each([
+		"revise the README goal",
+		"new Build Tetris",
+		"abandon this approach",
+		"delete --tokens 5k",
+		'switch to "pnpm" now',
+	])("still starts a run for text that only looks like a V1 form: %j", (input) => {
+		expect(parseFermentV2Command(input).action).toBe("set")
+	})
+
+	it.each([
 		"list all todos in the repo",
 		"exit early when the build fails",
 		"new landing page",
@@ -290,12 +318,14 @@ describe("legacy Ferment words typed into /ferment", () => {
 
 		afterEach(() => {
 			resetOrgPolicyForTests()
+			resetFermentLegacyLoadedForTests()
 			Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
 			rmSync(agentDir, { recursive: true, force: true })
 		})
 
 		it("points to /ferment-legacy when legacy is on", () => {
 			setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+			markFermentLegacyLoaded()
 			expect(formatFermentLegacyWordHint("list")).toBe(
 				[
 					"/ferment list is a legacy Ferment command. Use /ferment-legacy list.",
@@ -306,6 +336,7 @@ describe("legacy Ferment words typed into /ferment", () => {
 
 		it("shows the argument for legacy words that need one", () => {
 			setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+			markFermentLegacyLoaded()
 			expect(formatFermentLegacyWordHint("switch")).toContain("Use /ferment-legacy switch <id-or-name>.")
 			expect(formatFermentLegacyWordHint("delete")).toContain("Use /ferment-legacy delete <id-or-name>.")
 			expect(formatFermentLegacyWordHint("revise")).toContain("Use /ferment-legacy revise goal|criteria|constraints.")
@@ -315,10 +346,41 @@ describe("legacy Ferment words typed into /ferment", () => {
 			expect(formatFermentLegacyWordHint("exit")).toBe(
 				[
 					"/ferment exit is a legacy Ferment command. Use /ferment-legacy exit.",
-					"/ferment-legacy exit needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable extensions.ferment-legacy",
+					"/ferment-legacy exit needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable extensions.ferment-legacy\nThen restart kimchi to load it.",
+					"To stop the current Ferment, use /ferment pause or /ferment clear.",
 					'To start a Ferment with "exit" as the objective, write a longer objective.',
 				].join("\n"),
 			)
+		})
+
+		it("says to restart when legacy is on but not loaded", () => {
+			setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+			expect(formatFermentLegacyWordHint("list")).toContain("It is on now, but it loads only when kimchi starts.")
+		})
+
+		it("shows the typed arguments", () => {
+			setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+			markFermentLegacyLoaded()
+			expect(formatFermentLegacyWordHint("delete", "old-auth")).toBe(
+				[
+					"/ferment delete old-auth is a legacy Ferment command. Use /ferment-legacy delete old-auth.",
+					"To start a Ferment with this as the objective, rephrase it as a sentence.",
+				].join("\n"),
+			)
+		})
+
+		it.each(["exit", "abandon"] as const)("points to pause and clear for %s", (word) => {
+			setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+			markFermentLegacyLoaded()
+			expect(formatFermentLegacyWordHint(word)).toContain(
+				"To stop the current Ferment, use /ferment pause or /ferment clear.",
+			)
+		})
+
+		it("does not add the stop line for list", () => {
+			setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+			markFermentLegacyLoaded()
+			expect(formatFermentLegacyWordHint("list")).not.toContain("To stop the current Ferment")
 		})
 
 		it("names the org policy when the organization turned legacy off", async () => {

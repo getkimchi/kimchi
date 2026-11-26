@@ -9,6 +9,7 @@ import type {
 } from "@earendil-works/pi-coding-agent"
 import { buildSessionContext } from "@earendil-works/pi-coding-agent"
 import { type Static, Type } from "typebox"
+import { notifyUser } from "../../utils/notify-user.js"
 import { isAgentWorker } from "../agent-worker-context.js"
 import { formatCount, formatDuration } from "../format.js"
 import { ASSISTANT_OUTPUT_WITHHELD } from "../orchestration/continuation-nudge.js"
@@ -1724,7 +1725,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					return
 				}
 				if (command.action === "legacy-hint") {
-					ctx.ui.notify(formatFermentLegacyWordHint(command.word), "warning")
+					notifyUser(ctx, formatFermentLegacyWordHint(command.word, command.args), "warning")
 					return
 				}
 				if (command.action === "set") await handleSetFermentV2(command.objective, command.tokenBudget, ctx)

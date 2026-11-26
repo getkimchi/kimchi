@@ -225,6 +225,32 @@ describe("Ferment V2 extension", () => {
 		)
 	})
 
+	it("prints the legacy hint in print mode", async () => {
+		const headless = createHarness({ hasUI: false })
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			await headless.command("list")
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining("Use /ferment-legacy list."))
+			expect(headless.currentFermentV2()).toBeUndefined()
+			expect(headless.sendMessage).not.toHaveBeenCalled()
+		} finally {
+			warn.mockRestore()
+		}
+	})
+
+	it("shows the hint and starts no run for delete old-auth", async () => {
+		const modeBefore = getPermissionMode(TEST_SESSION_ID)
+		await harness.command("delete old-auth")
+
+		expect(harness.currentFermentV2()).toBeUndefined()
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual(modeBefore)
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(
+			expect.stringContaining("Use /ferment-legacy delete old-auth."),
+			"warning",
+		)
+	})
+
 	it("keeps the current run and asks nothing when a legacy word is typed during a run", async () => {
 		await harness.command("ship feature A")
 		const first = harness.currentFermentV2()

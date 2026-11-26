@@ -110,7 +110,7 @@ Ferment (formerly Ferment V2) is the branch-scoped objective controller behind `
 
 Ferment is on by default. Its resource is `extensions.ferment`; turn it off under `/resources` if you do not want it. The previous Ferment (V1) is now the legacy Ferment under `/ferment-legacy` (see below).
 
-> **Old V1 commands now start a run.** `/ferment` no longer understands V1 subcommands. `/ferment list`, `/ferment exit`, `/ferment auto`, or `/ferment new "X"` are treated as a new objective and start an autonomous Ferment run. To use V1, enable `extensions.ferment-legacy`, restart, and use `/ferment-legacy`.
+> **Old V1 commands.** `/ferment` no longer runs V1 subcommands. A V1 command such as `/ferment list` or `/ferment delete <name>` shows a hint and starts nothing. Any other text is a new objective and starts an autonomous run. To use V1, enable `extensions.ferment-legacy`, restart, and use `/ferment-legacy`.
 
 | Command | Description |
 |---------|-------------|
