@@ -82,6 +82,11 @@ import {
 } from "../prompt-construction/tool-visibility.js"
 import { buildRemotePlanPromptWithIntent } from "../remote-run/prompt-builder.js"
 import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
+import {
+	type ReviewAuthorizationResult,
+	type ReviewPermissionPolicy,
+	reviewApprovalPresentation,
+} from "../review-runner/execution.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
 import { markHarnessSteer } from "../steer-marker.js"
@@ -321,6 +326,8 @@ export interface WorkerPermissionsOptions extends PermissionsExtensionOptions {
 	 * that they never prompt. Defaults to asking.
 	 */
 	askParent?: boolean
+	/** Review-local execution controls. Inherited mode, trust and org policy still run first. */
+	reviewExecution?: ReviewPermissionPolicy
 }
 
 type GateOptions = ({ role: "main" } & PermissionsExtensionOptions) | ({ role: "worker" } & WorkerPermissionsOptions)
@@ -467,6 +474,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		input: Record<string, unknown>,
 		subtitle: string,
 		riskScore?: RiskScore,
+		signal?: AbortSignal,
 	): Promise<{ result: PromptOutcome } | undefined> {
 		if (options.role !== "worker" || options.askParent === false) return undefined
 		const requestPermission = getParentSurface(options.parentSessionId)?.requestPermission
@@ -488,7 +496,9 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 			const result = await handleConfirm(event, {
 				ctx,
 				pi,
+				input,
 				subtitle,
+				signal,
 				riskScore,
 				session,
 				activeAborts: activeAbortControllers,
@@ -510,6 +520,43 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		} finally {
 			releaseHold()
 		}
+	}
+
+	function reviewBashPolicy(command: string): ReviewAuthorizationResult {
+		const { mode } = getRuntimePermissionMode()
+		const decision = sharedBashPolicy(command, mode, allRules(), isDangerBypass(), true)
+		if (decision.kind !== "block") return undefined
+		return {
+			block: true,
+			reason: decision.reason,
+			...(mode !== "yolo" && decision.source === "hard-block" ? { deferToReviewApproval: true } : {}),
+		}
+	}
+
+	if (options.role === "worker" && options.reviewExecution) {
+		options.reviewExecution.bindApprover(async (request, execution) => {
+			if (!execution.event || !execution.ctx) return "unavailable"
+			const input: Record<string, unknown> = { ...reviewApprovalPresentation(request) }
+			const subtitle = isHardBlockedBash(request.command)
+				? `Hard-blocked command; explicit approval is required to run it: ${request.intendedCheck}`
+				: request.kind === "offline-unavailable"
+					? `Offline network access cannot be enforced here; approve this command online: ${request.intendedCheck}`
+					: `${request.kind === "direct-install" ? "Review package installation" : "Review online command rerun"}: ${request.intendedCheck}`
+			const escalated = await requestWorkerApproval(
+				execution.event,
+				execution.ctx,
+				getRuntimePermissionMode().mode,
+				request.toolName ?? "bash",
+				input,
+				subtitle,
+				undefined,
+				execution.signal,
+			)
+			if (!escalated) return "unavailable"
+			if (escalated.result === "aborted") return "aborted"
+			return escalated.result === undefined ? "approved" : "declined"
+		})
+		options.reviewExecution.bindCommandAuthorizer(async (command) => reviewBashPolicy(command))
 	}
 
 	const builtinRules: Rule[] = parseRules(BUILTIN_DENY, "deny", "builtin")
@@ -1981,6 +2028,9 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 
 	async function gateToolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<GateResult> {
 		refreshWorkerPolicy(ctx)
+		if (options.role === "worker") {
+			options.reviewExecution?.captureExecution(event, ctx, getRuntimePermissionMode().mode)
+		}
 		const toolName = event.toolName.toLowerCase()
 		const input = event.input as Record<string, unknown>
 
@@ -2086,6 +2136,64 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				refreshWorkerPolicy(ctx)
 				const { mode } = getRuntimePermissionMode()
 
+				const reviewApproval =
+					options.role === "worker" && mode !== "plan" && !isDangerBypass()
+						? options.reviewExecution?.approvalFor(toolName, input)
+						: undefined
+				if (reviewApproval && options.role === "worker" && options.reviewExecution) {
+					// Local review approval never overrides the inherited deny rules or
+					// hard blocks. Plan mode returned no request above, so its ordinary
+					// read-only gate below still rejects every script before this point.
+					const command = typeof input.command === "string" ? input.command : ""
+					if (!reviewBashPolicy(command)) {
+						const status = await options.reviewExecution.requestApproval(
+							{ ...reviewApproval, toolCallId: event.toolCallId },
+							{ event, ctx, mode },
+						)
+						options.reviewExecution.settleBashApproval(event.toolCallId, status, {
+							...reviewApproval,
+							toolCallId: event.toolCallId,
+							toolName,
+						})
+						if (status === "aborted" && ctx.signal?.aborted) {
+							emitToolDecision(pi, event, mode, "reject", "abort")
+							return { block: true, reason: "Subagent was stopped before the review approval was answered." }
+						}
+						if (status === "aborted") continue
+						if (status === "approved") {
+							emitToolDecision(pi, event, mode, "accept", "allow_once")
+							return undefined
+						}
+						emitToolDecision(pi, event, mode, "reject", status === "unavailable" ? "no_ui" : "deny")
+						return {
+							block: true,
+							reason:
+								status === "unavailable"
+									? "Review online work needs explicit approval, but no approver is available. The command was not run; record it in review coverage."
+									: "The user declined this review's online command. The command was not run; record it in review coverage.",
+						}
+					}
+				}
+
+				if (toolName === "bash") {
+					const command = typeof input.command === "string" ? input.command : ""
+					const decision = sharedBashPolicy(command, mode, allRules(), isDangerBypass())
+					if (decision.kind !== "continue") {
+						const sourceDetail =
+							decision.source === "plan"
+								? decision.kind === "block"
+									? "plan_gate"
+									: "plan_readonly"
+								: decision.source === "compound"
+									? "compound_rule"
+									: decision.source === "hard-block"
+										? "yolo_hard_block"
+										: ruleSourceDetail(decision.rule)
+						emitToolDecision(pi, event, mode, decision.kind === "block" ? "reject" : "accept", sourceDetail)
+						return decision.kind === "block" ? { block: true, reason: decision.reason } : undefined
+					}
+				}
+
 				// YOLO mode: skip approval prompts and the classifier — but the user's
 				// blocklist still wins. Deny rules (and the allow rules that can override
 				// builtin denies) are evaluated first, then the hard-block net for bash
@@ -2094,7 +2202,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				// that flag's documented use case, and those sessions enter yolo via
 				// the ACP client with no flag of their own) — keeps the full bypass.
 				if (mode === "yolo") {
-					if (!isDangerBypass()) {
+					if (!isDangerBypass() && toolName !== "bash") {
 						const match = evaluateRules(allRules(), toolName, input)
 						if (match.decision === "deny") {
 							emitToolDecision(pi, event, mode, "reject", ruleSourceDetail(match.rule))
@@ -2107,41 +2215,12 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 							emitToolDecision(pi, event, mode, "accept", ruleSourceDetail(match.rule))
 							return undefined
 						}
-						if (toolName === "bash") {
-							const command = typeof input.command === "string" ? input.command : ""
-							if (isHardBlockedBash(command)) {
-								emitToolDecision(pi, event, mode, "reject", "yolo_hard_block")
-								return {
-									block: true,
-									reason: `Blocked in yolo mode (hard-blocked command): ${command}`,
-								}
-							}
-						}
 					}
 					emitToolDecision(pi, event, mode, "accept", "yolo_bypass")
 					return undefined
 				}
 
 				if (mode === "plan") {
-					if (toolName === "bash") {
-						const command = typeof input.command === "string" ? input.command : ""
-						// Read-only doc-cli verbs count as read-only here too, but only
-						// through the strict single-segment gate (bundled-skill-cli.ts) —
-						// the generic matcher stays unaware of the route, so a compound
-						// like `… doc-cli pdf read x && echo done` keeps failing the
-						// plan read-only check and rejects, mirroring the classifier
-						// contract in default/auto.
-						if (!isReadOnlyBashCommand(command) && !isReadOnlyDocCliCommand(command)) {
-							emitToolDecision(pi, event, mode, "reject", "plan_gate")
-							return {
-								block: true,
-								reason:
-									"Blocked: the session is in plan mode (read-only). Do not retry writes — present the plan to the user; if they want it executed now, they can switch mode (/permissions mode default or auto).",
-							}
-						}
-						emitToolDecision(pi, event, mode, "accept", "plan_readonly")
-						return undefined
-					}
 					if (!isPlanModeTool(event.toolName)) {
 						emitToolDecision(pi, event, mode, "reject", "plan_gate")
 						return {
@@ -2174,37 +2253,16 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					return undefined
 				}
 
-				// Compound bash commands: early gate for deny/allow only.
-				// If the check returns "prompt", fall through to
-				// evaluateRules → auto-mode/classifier → prompt site below.
-				if (toolName === "bash") {
-					const command = typeof input.command === "string" ? input.command : ""
-					if (isCompoundCommand(command)) {
-						const compoundCheck = checkCompoundCommand(command, allRules())
-						if (compoundCheck.decision === "deny") {
-							emitToolDecision(pi, event, mode, "reject", "compound_rule")
-							return {
-								block: true,
-								reason: compoundCheck.deniedReason ?? "Subcommand denied",
-							}
-						}
-						if (compoundCheck.decision === "allow") {
-							emitToolDecision(pi, event, mode, "accept", "compound_rule")
-							return undefined
-						}
-						// "prompt" → fall through to existing flow
-					}
-				}
-
-				const match = evaluateRules(allRules(), toolName, input)
-				if (match.decision === "deny") {
+				// Bash rule and compound decisions were settled by sharedBashPolicy above.
+				const match = toolName === "bash" ? undefined : evaluateRules(allRules(), toolName, input)
+				if (match?.decision === "deny") {
 					emitToolDecision(pi, event, mode, "reject", ruleSourceDetail(match.rule))
 					return {
 						block: true,
 						reason: `Denied by rule ${formatRule(match.rule)}`,
 					}
 				}
-				if (match.decision === "allow") {
+				if (match?.decision === "allow") {
 					emitToolDecision(pi, event, mode, "accept", ruleSourceDetail(match.rule))
 					return undefined
 				}
@@ -2241,7 +2299,10 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 						return undefined
 					}
 				}
-				if (options.preApproved?.(toolName, input)) {
+				if (
+					options.preApproved?.(toolName, input) ||
+					(options.role === "worker" && options.reviewExecution?.preApproved(toolName))
+				) {
 					emitToolDecision(pi, event, mode, "accept", "preapproved")
 					return undefined
 				}
@@ -2512,9 +2573,13 @@ type GateResult = Exclude<PromptOutcome, "aborted">
 interface ConfirmOptions {
 	ctx: ExtensionContext
 	session: SessionMemory
+	/** Presentation override for host approvals that include extra review evidence. */
+	input?: Record<string, unknown>
 	subtitle?: string
 	/** Risk score from the classifier LLM, for display in the prompt. */
 	riskScore?: RiskScore
+	/** Additional cancellation supplied by review execution. */
+	signal?: AbortSignal
 	activeAborts: Set<AbortController>
 	/** Associates open prompts with their tool call for mode-change dismissal
 	 *  attribution (mode-flap diagnostics). */
@@ -2566,6 +2631,7 @@ function createConfirmAbort(
 } {
 	const controller = new AbortController()
 	const unlinkAbort = linkAbortSignal(opts.ctx.signal, controller)
+	const unlinkExecutionAbort = linkAbortSignal(opts.signal, controller)
 	opts.activeAborts.add(controller)
 	opts.promptToolCalls.set(controller, toolCallId ?? "")
 	const unregister = opts.prompter ? undefined : opts.registerParentAbort?.(controller, toolCallId ?? "")
@@ -2573,6 +2639,7 @@ function createConfirmAbort(
 		controller,
 		cleanup: () => {
 			unregister?.()
+			unlinkExecutionAbort()
 			unlinkAbort()
 			opts.activeAborts.delete(controller)
 			opts.promptToolCalls.delete(controller)
@@ -2613,7 +2680,7 @@ async function handleConfirm(
 				classifierReason: opts.subtitle,
 			})
 
-			const input = event.input
+			const input = opts.input ?? event.input
 			const outcome = await runQueuedPrompt(
 				opts.promptQueue ?? sharedPromptQueue,
 				() =>
@@ -2907,6 +2974,77 @@ function splitFlag(raw: boolean | string | undefined): string[] {
 
 function formatRule(rule: Rule): string {
 	return `${stringifyRule(rule)} [${rule.source}]`
+}
+
+type SharedBashPolicyDecision =
+	| { kind: "continue" }
+	| { kind: "allow"; source: "plan" | "compound" | "rule"; rule?: Rule }
+	| { kind: "block"; source: "plan" | "compound" | "hard-block" | "rule"; reason: string; rule?: Rule }
+
+/** Deterministic bash policy shared by the ordinary gate and review execution. */
+function sharedBashPolicy(
+	command: string,
+	mode: PermissionMode,
+	rules: Rule[],
+	dangerBypass: boolean,
+	reviewExecution = false,
+): SharedBashPolicyDecision {
+	if (mode === "plan") {
+		if (!isReadOnlyBashCommand(command) && !isReadOnlyDocCliCommand(command)) {
+			return {
+				kind: "block",
+				source: "plan",
+				reason: reviewExecution
+					? "Blocked: the session is in plan mode (read-only); review commands cannot run scripts."
+					: "Blocked: the session is in plan mode (read-only). Do not retry writes — present the plan to the user; if they want it executed now, they can switch mode (/permissions mode default or auto).",
+			}
+		}
+		return { kind: "allow", source: "plan" }
+	}
+
+	if (mode === "yolo") {
+		if (dangerBypass) return { kind: "continue" }
+		const match = evaluateRules(rules, "bash", { command })
+		if (match.decision === "deny") {
+			return { kind: "block", source: "rule", rule: match.rule, reason: `Denied by rule ${formatRule(match.rule)}` }
+		}
+		if (match.decision === "allow") return { kind: "allow", source: "rule", rule: match.rule }
+		if (reviewExecution && isCompoundCommand(command)) {
+			const compound = checkCompoundCommand(command, rules)
+			if (compound.decision === "deny") {
+				return { kind: "block", source: "compound", reason: compound.deniedReason ?? "Subcommand denied" }
+			}
+		}
+		if (isHardBlockedBash(command)) {
+			return {
+				kind: "block",
+				source: "hard-block",
+				reason: `Blocked in yolo mode (hard-blocked command): ${command}`,
+			}
+		}
+		return { kind: "continue" }
+	}
+
+	if (isCompoundCommand(command)) {
+		const compound = checkCompoundCommand(command, rules)
+		if (compound.decision === "deny") {
+			return { kind: "block", source: "compound", reason: compound.deniedReason ?? "Subcommand denied" }
+		}
+		if (compound.decision === "allow") return { kind: "allow", source: "compound" }
+	}
+
+	const match = evaluateRules(rules, "bash", { command })
+	if (match.decision === "deny") {
+		return { kind: "block", source: "rule", rule: match.rule, reason: `Denied by rule ${formatRule(match.rule)}` }
+	}
+	if (match.decision === "allow") return { kind: "allow", source: "rule", rule: match.rule }
+
+	// Review wrappers cannot pause their already-authorized inner command for
+	// the ordinary prompt/classifier. Fail closed instead of dropping that gate.
+	if (reviewExecution && !dangerBypass && isHardBlockedBash(command)) {
+		return { kind: "block", source: "hard-block", reason: `Hard-blocked program in command: ${command}` }
+	}
+	return { kind: "continue" }
 }
 
 interface CompoundCheckResult {

@@ -25,27 +25,30 @@
 // `tools` allowlist) and extensions disabled (`noExtensions: true` +
 // `tools` allowlist).
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { execFileSync } from "node:child_process"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import {
+	CONFIG_DIR_NAME,
 	createAgentSession,
 	createEventBus,
 	defineTool,
 	type ExtensionAPI,
 	type InlineExtension,
 	type ModelRuntime,
+	type PackageManager,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createToolContext } from "../../__mocks__/context.js"
 import { getConfig, getToolNamesForType, registerAgents } from "../personas/agent-types.js"
 import { AGENT_RESEARCHER } from "../personas/types.js"
 import { textResult } from "../tool-result.js"
-import { getActiveSubagentToolNames } from "./agent-runner.js"
+import { createSubagentSettingsManager, getActiveSubagentToolNames } from "./agent-runner.js"
 import { SubagentResourceLoader } from "./subagent-resource-loader.js"
 import { subagentWebToolFactories } from "./subagent-web-tools.js"
 
@@ -457,5 +460,120 @@ describe("subagent web tools — real-session registration", () => {
 		expect(session.getActiveToolNames()).toContain("web_search")
 		expect(session.getActiveToolNames()).toContain("web_fetch")
 		expect(dropped).toEqual([])
+	})
+})
+
+describe("review checkout package/settings isolation", () => {
+	for (const sessionMode of ["read-only", "normal"] as const) {
+		it(`runs zero checkout npmCommand markers in a ${sessionMode} session`, async () => {
+			const root = makeTmpDir()
+			const checkout = join(root, "review-checkout")
+			const invokingCwd = join(root, "invoking-session")
+			const agentDir = join(root, "agent")
+			mkdirSync(checkout, { recursive: true })
+			mkdirSync(invokingCwd, { recursive: true })
+			mkdirSync(agentDir, { recursive: true })
+			const markers: string[] = []
+			for (const directory of [CONFIG_DIR_NAME, ".kimchi", ".claude"]) {
+				const marker = join(root, `${directory.replaceAll(".", "")}-marker`)
+				markers.push(marker)
+				mkdirSync(join(checkout, directory), { recursive: true })
+				writeFileSync(
+					join(checkout, directory, "settings.json"),
+					JSON.stringify({
+						npmCommand: ["/bin/sh", "-c", `printf executed > ${marker}`],
+						packages: ["npm:stage3-definitely-not-installed-probe@1.0.0"],
+					}),
+				)
+			}
+			execFileSync("git", ["init", "--initial-branch=main"], { cwd: checkout, stdio: "ignore" })
+			execFileSync("git", ["config", "user.name", "Isolation Test"], { cwd: checkout, stdio: "ignore" })
+			execFileSync("git", ["config", "user.email", "isolation@localhost"], { cwd: checkout, stdio: "ignore" })
+			execFileSync("git", ["add", "--all"], { cwd: checkout, stdio: "ignore" })
+			execFileSync("git", ["commit", "-m", "malicious checkout settings"], { cwd: checkout, stdio: "ignore" })
+
+			const settingsManager = createSubagentSettingsManager(invokingCwd, agentDir)
+			const loader = new SubagentResourceLoader({
+				cwd: checkout,
+				agentDir,
+				settingsManager,
+				skipPackageResolution: true,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				noContextFiles: true,
+				readSystemPrompt: () => "review",
+				appendSystemPromptOverride: () => [],
+			})
+			await loader.reload()
+
+			for (const marker of markers) expect(existsSync(marker)).toBe(false)
+		})
+	}
+
+	it("keeps package resolution enabled on a normal loader when another loader skips it", async () => {
+		const root = makeTmpDir()
+		const agentDir = join(root, "agent")
+		mkdirSync(agentDir, { recursive: true })
+		const makeLoader = (skipPackageResolution: boolean) =>
+			new SubagentResourceLoader({
+				cwd: root,
+				agentDir,
+				skipPackageResolution,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				noContextFiles: true,
+				readSystemPrompt: () => "review",
+				appendSystemPromptOverride: () => [],
+			})
+		const normal = makeLoader(false)
+		const skipping = makeLoader(true)
+		const normalPackageManager = (normal as unknown as { packageManager: PackageManager }).packageManager
+		const skippingPackageManager = (skipping as unknown as { packageManager: PackageManager }).packageManager
+		const normalResolve = vi.spyOn(normalPackageManager, "resolve")
+		const skippingResolve = vi.spyOn(skippingPackageManager, "resolve")
+
+		await normal.reload()
+		await skipping.reload()
+
+		expect(normalPackageManager).not.toBe(skippingPackageManager)
+		expect(normalResolve).toHaveBeenCalledTimes(1)
+		expect(skippingResolve).toHaveBeenCalledTimes(1)
+		expect(normalPackageManager.resolve).not.toBe(skippingPackageManager.resolve)
+	})
+
+	it("skips invoking-user global package resolution before permission checks", async () => {
+		const root = makeTmpDir()
+		const invokingCwd = join(root, "invoking-session")
+		const agentDir = join(root, "agent")
+		const marker = join(root, "global-package-marker")
+		mkdirSync(invokingCwd, { recursive: true })
+		mkdirSync(agentDir, { recursive: true })
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({
+				npmCommand: ["/bin/sh", "-c", `printf executed > ${marker}`],
+				packages: ["npm:stage3-recheck-global-package@1.0.0"],
+			}),
+		)
+		const settingsManager = createSubagentSettingsManager(invokingCwd, agentDir)
+		const loader = new SubagentResourceLoader({
+			cwd: invokingCwd,
+			agentDir,
+			settingsManager,
+			skipPackageResolution: true,
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			readSystemPrompt: () => "review",
+			appendSystemPromptOverride: () => [],
+		})
+		await loader.reload()
+		expect(existsSync(marker)).toBe(false)
 	})
 })
