@@ -30,10 +30,10 @@ in unlocked deployments and as the settings-error degrade fallback
   strictly more dangerous than one holding identities, and coherence gains
   for secrets are nil.
 - **Detection unchanged.** Token mode changes only rendering. What is
-  found, what is excluded (`redaction.excludedEntities`), and what the
-  precision defaults drop are byte-identical to marker mode. Telemetry
-  tallies both shapes under the same entity key, so marker and token
-  modes report indistinguishable counts.
+  found, what is excluded (the `redaction` block in settings.json), and
+  what the precision defaults drop are byte-identical to marker mode.
+  Telemetry tallies both shapes under the same entity key, so marker and
+  token modes report indistinguishable counts.
 
 ## Agent editing and redacted spans
 
@@ -44,10 +44,12 @@ model never sees the PII while moving it.
 
 Marker mode stays uneditable by design: exact-match editing needs bytes the
 model never receives, and there is no vault to dereference. A "Could not
-find" failure there gains a note naming the cause and the escape hatch,
-`redaction.excludedEntities` in settings.json (or disabling redaction for
-the session). The same note fires in token mode when the span is a literal
-unknown token or the vault is gone.
+find" failure there gains a note naming the cause and the escape hatch:
+turning the entity type off via `redaction.entities` in settings.json, or
+disabling redaction for the session. A settings file that still has the
+legacy `redaction.excludedEntities` list takes the type in that list
+instead, since the two cannot be combined. The same note fires in token
+mode when the span is a literal unknown token or the vault is gone.
 
 ## The vault
 
