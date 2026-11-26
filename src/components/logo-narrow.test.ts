@@ -179,6 +179,7 @@ describe("LogoHeader — narrow terminals", () => {
 					.render(width)
 					.map(strip)
 					.find((line) => line.split("│").length === 4)
+				expect(row).toBeDefined()
 				const left = (row ?? "").split("│")[1] ?? ""
 				expect(left.length).toBeLessThanOrEqual(56)
 			}

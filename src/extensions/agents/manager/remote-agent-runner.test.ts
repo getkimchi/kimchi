@@ -371,6 +371,7 @@ describe("runRemoteAgent", () => {
 		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
 
 		expect(mockClose).toHaveBeenCalledOnce()
+		expect(deleteSession).toHaveBeenCalledOnce()
 		expect(deleteSession).toHaveBeenCalledWith(expect.anything(), expect.stringMatching(/^acp-/))
 	})
 
