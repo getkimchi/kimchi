@@ -117,7 +117,7 @@ export async function validateSemanticReconciliation(
 		const raw = requireObject(value, `findings[${index}]`)
 		requireKeys(
 			raw,
-			["id", "path", "line", "severity", "type", "description", "suggestion", "candidate_ids"],
+			["id", "path", "line", "title", "description", "explanation", "suggestion", "priority", "type", "candidate_ids"],
 			`findings[${index}]`,
 		)
 		const id = requireString(raw.id, `findings[${index}].id`)
@@ -132,10 +132,12 @@ export async function validateSemanticReconciliation(
 			id,
 			path: requireString(raw.path, `findings[${index}].path`),
 			line: raw.line as number,
-			severity: raw.severity as ReconciliationFinding["severity"],
-			type: requireString(raw.type, `findings[${index}].type`),
+			title: requireString(raw.title, `findings[${index}].title`),
 			description: requireString(raw.description, `findings[${index}].description`),
-			suggestion: requireString(raw.suggestion, `findings[${index}].suggestion`, true),
+			explanation: requireString(raw.explanation, `findings[${index}].explanation`),
+			suggestion: requireString(raw.suggestion, `findings[${index}].suggestion`),
+			priority: raw.priority as ReconciliationFinding["priority"],
+			type: raw.type as ReconciliationFinding["type"],
 			candidate_ids: candidateIds,
 		}
 		findingGroups.set(id, finding)
@@ -143,10 +145,12 @@ export async function validateSemanticReconciliation(
 			{
 				path: finding.path,
 				line: finding.line,
-				severity: finding.severity,
-				type: finding.type,
+				title: finding.title,
 				description: finding.description,
+				explanation: finding.explanation,
 				suggestion: finding.suggestion,
+				priority: finding.priority,
+				type: finding.type,
 			},
 			context,
 		)
@@ -166,8 +170,18 @@ export async function validateSemanticReconciliation(
 			}
 			return candidate
 		})
+		const orderedSources = orderedCandidates(groupCandidates)
+		const preservedFields = ["path", "line", "description", "explanation", "suggestion", "type"] as const
+		const source = orderedSources.find((candidate) =>
+			preservedFields.every((field) => candidate.finding[field] === finding[field]),
+		)
+		if (!source) {
+			throw new Error(
+				`Finding ${id} may rewrite only title and priority; path, line, description, explanation, suggestion, and type must exactly match one best-supported source candidate.`,
+			)
+		}
 		semanticFindings.push(finding)
-		groups.push({ candidates: orderedCandidates(groupCandidates), finding })
+		groups.push({ candidates: orderedSources, finding })
 	}
 	for (const [candidateId, decision] of decisions) {
 		if (decision.disposition === "rejected") continue

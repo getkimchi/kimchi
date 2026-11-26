@@ -68,10 +68,8 @@ describe("ACP review command", () => {
 				expect(messages).toContain("spec (Selected with --lens.)")
 				expect(messages).toContain("Effective concurrency: 1")
 				if (scenario.finding) {
-					expect(messages).toContain("WARNING value.ts:2")
-					expect(messages).toContain(
-						"The new export changes behavior without a guard; revision head inspection confirmed it.",
-					)
+					expect(messages).toContain("P1 value.ts:2")
+					expect(messages).toContain("New export changes behavior without a guard")
 				} else {
 					expect(messages).toContain("No findings.")
 				}

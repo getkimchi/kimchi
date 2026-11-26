@@ -196,6 +196,21 @@ function agentName(context: TranscriptContext): string {
 	return match[1]
 }
 
+const SPEC_DESCRIPTION = "spec: revision head; command not needed; code inspection observed a concrete regression."
+
+function panelFinding(description: string, suggestion: string, priority: "P0" | "P2" = "P2") {
+	return {
+		path: "value.ts",
+		line: 2,
+		title: "Scripted review finding",
+		description,
+		explanation: `Static inspection of the pinned value.ts change supports this finding: ${description}`,
+		suggestion,
+		priority,
+		type: "bug" as const,
+	}
+}
+
 function retainedReconciliation(requestPath: string): ScriptTurn {
 	const request = JSON.parse(readFileSync(requestPath, "utf8")) as {
 		candidates: Array<{
@@ -203,10 +218,12 @@ function retainedReconciliation(requestPath: string): ScriptTurn {
 			finding: {
 				path: string
 				line: number
-				severity: string
-				type: string
+				title: string
 				description: string
+				explanation: string
 				suggestion: string
+				priority: "P0" | "P1" | "P2" | "P3" | "P4"
+				type: "bug" | "security" | "reliability" | "performance" | "convention" | "test-gap" | "docs"
 			}
 		}>
 	}
@@ -217,10 +234,12 @@ function retainedReconciliation(requestPath: string): ScriptTurn {
 				id: `finding-${candidate.id}`,
 				path: candidate.finding.path,
 				line: candidate.finding.line,
-				severity: candidate.finding.severity,
-				type: candidate.finding.type,
+				title: candidate.finding.title,
 				description: candidate.finding.description,
+				explanation: candidate.finding.explanation,
 				suggestion: candidate.finding.suggestion,
+				priority: candidate.finding.priority,
+				type: candidate.finding.type,
 				candidate_ids: [candidate.id],
 			})),
 			decisions: request.candidates.map((candidate) => ({
@@ -245,14 +264,10 @@ function defaultScript(call: ScriptCall): ScriptTurn {
 			toolCalls: [
 				{
 					name: "submit_finding",
-					arguments: {
-						path: "value.ts",
-						line: 2,
-						severity: "warning",
-						type: "bug",
-						description: `${call.agent}: revision head; command not needed; code inspection observed a concrete regression.`,
-						suggestion: "Add the missing guard and cover the changed path.",
-					},
+					arguments: panelFinding(
+						`${call.agent}: revision head; command not needed; code inspection observed a concrete regression.`,
+						"Add the missing guard and cover the changed path.",
+					),
 				},
 			],
 		}
@@ -277,12 +292,7 @@ function reconciliationToolArguments(_requestPath: string, alias?: "action" | "d
 		findings: [
 			{
 				id: "changed-export",
-				path: "value.ts",
-				line: 2,
-				severity: "warning",
-				type: "bug",
-				description: "The changed export introduces a concrete correctness regression.",
-				suggestion: "Add the missing guard and cover the changed path.",
+				...panelFinding(SPEC_DESCRIPTION, "Add the missing guard and cover the changed path."),
 				candidate_ids: ["spec-1"],
 			},
 		],
@@ -323,12 +333,7 @@ function validVerifierResponse(candidateId = "spec-1"): string {
 		findings: [
 			{
 				id: "late-semantic-finding",
-				path: "value.ts",
-				line: 2,
-				severity: "warning",
-				type: "bug",
-				description: "A valid semantic result that must not arrive after closure.",
-				suggestion: "Never publish this late change.",
+				...panelFinding(SPEC_DESCRIPTION, "Add the missing guard and cover the changed path."),
 				candidate_ids: [candidateId],
 			},
 		],
@@ -680,14 +685,10 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 						}
 					}
 					await submitFinding(
-						{
-							path: "value.ts",
-							line: 2,
-							severity: "warning",
-							type: "bug",
-							description: "A valid candidate forces reconciliation while repair remains impossible.",
-							suggestion: "Preserve the deterministic fallback outside the repair window.",
-						},
+						panelFinding(
+							"A valid candidate forces reconciliation while repair remains impossible.",
+							"Preserve the deterministic fallback outside the repair window.",
+						),
 						{ writer: "spec", contextDir, outputDir },
 					)
 					return completedRunResult()
@@ -712,14 +713,11 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 						toolCalls: [
 							{
 								name: "submit_finding",
-								arguments: {
-									path: "value.ts",
-									line: 2,
-									severity: "critical",
-									type: "bug",
-									description: "Revision head; code inspection observed the submitted reserve finding.",
-									suggestion: "Retain this available finding during wrap-up.",
-								},
+								arguments: panelFinding(
+									"Revision head; code inspection observed the submitted reserve finding.",
+									"Retain this available finding during wrap-up.",
+									"P0",
+								),
 							},
 						],
 					}
@@ -795,10 +793,12 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 				{
 					path: "value.ts",
 					line: 2,
-					severity: "warning",
-					type: "bug",
+					title: `${writer} finding`,
 					description: `${writer} finding`,
-					suggestion: "",
+					explanation: "Fixture-generated finding from static inspection.",
+					suggestion: "Address the fixture finding.",
+					priority: "P2",
+					type: "bug",
 				},
 				{ writer, contextDir, outputDir },
 			)
@@ -968,14 +968,11 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		await waitForDelay(Math.max(0, deadline - Date.now() + 25), undefined)
 		expect(Date.now()).toBeGreaterThan(deadline)
 		const late = await submitFinding(
-			{
-				path: "value.ts",
-				line: 2,
-				severity: "critical",
-				type: "bug",
-				description: "Late reviewer submission after coordinator closure.",
-				suggestion: "Recover this through the next wrap-up.",
-			},
+			panelFinding(
+				"Late reviewer submission after coordinator closure.",
+				"Recover this through the next wrap-up.",
+				"P0",
+			),
 			{ writer: "spec", contextDir, outputDir },
 		)
 		expect(late.accepted).toBe(true)
@@ -1004,7 +1001,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(recovered.findings).toHaveLength(1)
 		expect(recovered.findings[0]).toMatchObject({
 			id: "final-1",
-			severity: "critical",
+			priority: "P0",
 			description: "Late reviewer submission after coordinator closure.",
 		})
 		expect(recovered.summary.coverage?.candidate_count).toBe(1)
@@ -1037,14 +1034,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 							expect(
 								(
 									await submitFinding(
-										{
-											path: "value.ts",
-											line: 2,
-											severity: "critical",
-											type: "bug",
-											description: "Original fallback finding.",
-											suggestion: "Keep the deterministic fallback.",
-										},
+										panelFinding("Original fallback finding.", "Keep the deterministic fallback.", "P0"),
 										{ writer: "spec", contextDir, outputDir },
 									)
 								).accepted,
@@ -1065,7 +1055,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(abortObserved).toBe(true)
 		expect(Date.now()).toBeLessThan(deadline)
 		expect(result.state.reconciliation.status).toBe("fallback")
-		expect(result.findings[0]).toMatchObject({ severity: "critical", description: "Original fallback finding." })
+		expect(result.findings[0]).toMatchObject({ priority: "P0", description: "Original fallback finding." })
 		const paths = reviewPanelPaths(outputDir)
 		const artifacts = [paths.findingsPath, paths.summaryPath, paths.statePath].map((path) => readFileSync(path, "utf8"))
 		const usageCount = usageEvents.length
@@ -1129,14 +1119,11 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(
 			(
 				await submitFinding(
-					{
-						path: "value.ts",
-						line: 2,
-						severity: "critical",
-						type: "bug",
-						description: "Accepted after wrap-up's initial scan but before publication.",
-						suggestion: "Include this in the same wrap-up.",
-					},
+					panelFinding(
+						"Accepted after wrap-up's initial scan but before publication.",
+						"Include this in the same wrap-up.",
+						"P0",
+					),
 					{ writer: "spec", contextDir, outputDir },
 				)
 			).accepted,

@@ -3,13 +3,20 @@ import { lstat, open, readFile, rename, rm } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { checkReviewDirectory } from "../review-submit/directory-safety.js"
 import {
+	capReviewFindingPriority,
 	DEFAULT_WRITER_LIMIT,
 	FINDING_SCHEMA_VERSION,
+	type FindingInput,
 	MAX_DERIVED_FROM_IDS,
 	MAX_OUTPUT_FILE_BYTES,
+	normalizeFindingInput,
+	REVIEW_FINDING_PRIORITIES,
+	type ReviewFindingPriority,
 	type ReviewFindingRecord,
 	type ReviewSubmitContext,
+	validateReviewFindingIdentity,
 	validateReviewFindingInput,
+	validateStoredReviewFinding,
 } from "../review-submit/store.js"
 import { REVIEW_LENSES } from "./lenses.js"
 import type { ReviewPanelCandidate } from "./types.js"
@@ -52,6 +59,12 @@ export async function writeReviewJson(path: string, value: unknown): Promise<voi
 }
 
 export function serializeFinalFindings(records: readonly ReviewFindingRecord[]): string {
+	for (const [index, record] of records.entries()) {
+		const invalid =
+			validateStoredReviewFinding(record as unknown as Record<string, unknown>) ??
+			validateReviewFindingIdentity(record as unknown as Record<string, unknown>, "final", index + 1)
+		if (invalid) throw new Error(`Final finding ${record.id} failed validation: ${invalid.message}`)
+	}
 	const contents = records.map((record) => `${JSON.stringify(record)}\n`).join("")
 	if (records.length > DEFAULT_WRITER_LIMIT || Buffer.byteLength(contents, "utf8") > MAX_OUTPUT_FILE_BYTES) {
 		throw new Error("Final review findings exceed the shared count or file-size limit.")
@@ -79,34 +92,27 @@ export async function writeFinalFindings(path: string, records: readonly ReviewF
 	await atomicWriteReviewFile(path, serializeFinalFindings(records))
 }
 
-function findingFields(record: ReviewFindingRecord) {
+function findingFields(record: ReviewFindingRecord): FindingInput {
 	return {
 		path: record.path,
 		line: record.line,
-		severity: record.severity,
-		type: record.type,
+		title: record.title,
 		description: record.description,
+		explanation: record.explanation,
 		suggestion: record.suggestion,
+		priority: record.priority,
+		type: record.type,
 		...(record.derived_from === undefined ? {} : { derived_from: record.derived_from }),
 	}
 }
 
 function parseRecord(value: unknown, writer: string, expectedSeq: number): ReviewFindingRecord {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Finding is not an object.")
-	const record = value as ReviewFindingRecord
-	if (
-		record.schema_version !== FINDING_SCHEMA_VERSION ||
-		record.writer !== writer ||
-		record.seq !== expectedSeq ||
-		record.id !== `${writer}-${expectedSeq}` ||
-		typeof record.created_at !== "string" ||
-		!record.created_at ||
-		record.created_at.includes("\0") ||
-		Buffer.byteLength(record.created_at, "utf8") > 64
-	) {
-		throw new Error(`Writer ${writer} has an invalid finding identity or sequence at ${expectedSeq}.`)
-	}
-	return record
+	const invalid =
+		validateStoredReviewFinding(value as Record<string, unknown>) ??
+		validateReviewFindingIdentity(value as Record<string, unknown>, writer, expectedSeq)
+	if (invalid) throw new Error(`Finding ${expectedSeq} failed field or identity validation: ${invalid.message}`)
+	return value as ReviewFindingRecord
 }
 
 export async function readFindingWriter(
@@ -158,12 +164,12 @@ export function candidateInputDigest(candidates: readonly ReviewPanelCandidate[]
 }
 
 function exactKey(candidate: ReviewPanelCandidate): string {
-	const { path, line, severity, type, description, suggestion } = candidate.finding
-	return JSON.stringify({ path, line, severity, type, description, suggestion })
+	const { path, line, title, description, explanation, suggestion, priority, type } = candidate.finding
+	return JSON.stringify({ path, line, title, description, explanation, suggestion, priority, type })
 }
 
-function rankSeverity(severity: string): number {
-	return severity === "critical" ? 0 : severity === "warning" ? 1 : 2
+function rankPriority(priority: ReviewFindingPriority): number {
+	return REVIEW_FINDING_PRIORITIES.indexOf(priority)
 }
 
 function compareText(left: string, right: string): number {
@@ -172,15 +178,7 @@ function compareText(left: string, right: string): number {
 
 interface FindingGroup {
 	candidates: ReviewPanelCandidate[]
-	finding: {
-		id: string
-		path: string
-		line: number
-		severity: string
-		type: string
-		description: string
-		suggestion: string
-	}
+	finding: { id: string } & Omit<FindingInput, "derived_from">
 }
 
 export interface PackedReviewFindings {
@@ -192,11 +190,13 @@ export interface PackedReviewFindings {
 
 function compareGroups(left: FindingGroup, right: FindingGroup): number {
 	return (
-		rankSeverity(left.finding.severity) - rankSeverity(right.finding.severity) ||
+		rankPriority(left.finding.priority) - rankPriority(right.finding.priority) ||
 		compareText(left.finding.path, right.finding.path) ||
 		left.finding.line - right.finding.line ||
 		compareText(left.finding.type, right.finding.type) ||
+		compareText(left.finding.title, right.finding.title) ||
 		compareText(left.finding.description, right.finding.description) ||
+		compareText(left.finding.explanation, right.finding.explanation) ||
 		compareText(left.finding.suggestion, right.finding.suggestion) ||
 		compareText(left.finding.id, right.finding.id) ||
 		compareText(orderedCandidates(left.candidates)[0]?.id ?? "", orderedCandidates(right.candidates)[0]?.id ?? "")
@@ -204,6 +204,9 @@ function compareGroups(left: FindingGroup, right: FindingGroup): number {
 }
 
 function packGroups(groups: FindingGroup[]): PackedReviewFindings {
+	for (const group of groups) {
+		group.finding = { id: group.finding.id, ...normalizeFindingInput(group.finding) }
+	}
 	groups.sort(compareGroups)
 	const records: ReviewFindingRecord[] = []
 	const provenance: Record<string, string[]> = {}
@@ -219,7 +222,7 @@ function packGroups(groups: FindingGroup[]): PackedReviewFindings {
 		].sort(compareText)
 		const derivedFrom = completeDerivedFrom.slice(0, MAX_DERIVED_FROM_IDS)
 		const seq = records.length + 1
-		const { path, line, severity, type, description, suggestion } = group.finding
+		const { path, line, title, description, explanation, suggestion, priority, type } = group.finding
 		const record: ReviewFindingRecord = {
 			schema_version: FINDING_SCHEMA_VERSION,
 			id: `final-${seq}`,
@@ -228,10 +231,12 @@ function packGroups(groups: FindingGroup[]): PackedReviewFindings {
 			created_at: sources.map((candidate) => candidate.finding.created_at).sort(compareText)[0],
 			path,
 			line,
-			severity,
-			type,
+			title,
 			description,
+			explanation,
 			suggestion,
+			priority,
+			type,
 			derived_from: derivedFrom,
 		}
 		const next = [...records, record]
@@ -244,6 +249,36 @@ function packGroups(groups: FindingGroup[]): PackedReviewFindings {
 	return { records, provenance, provenanceTruncatedCount }
 }
 
+function compareFinalRecords(left: ReviewFindingRecord, right: ReviewFindingRecord): number {
+	return (
+		rankPriority(left.priority) - rankPriority(right.priority) ||
+		compareText(left.path, right.path) ||
+		left.line - right.line ||
+		compareText(left.type, right.type) ||
+		compareText(left.title, right.title) ||
+		compareText(left.description, right.description) ||
+		compareText(left.explanation, right.explanation) ||
+		compareText(left.suggestion, right.suggestion) ||
+		compareText(left.id, right.id)
+	)
+}
+
+/** Apply type-based caps only at final publication and keep final IDs and
+ * durable provenance aligned after the capped-priority ranking changes. */
+export function capFinalReviewFindings(packed: PackedReviewFindings): PackedReviewFindings {
+	const capped = packed.records
+		.map((record) => ({ ...record, priority: capReviewFindingPriority(record.priority, record.type) }))
+		.sort(compareFinalRecords)
+	const provenance: Record<string, string[]> = {}
+	const records = capped.map((record, index) => {
+		const seq = index + 1
+		const id = `final-${seq}`
+		provenance[id] = packed.provenance[record.id] ?? record.derived_from ?? []
+		return { ...record, id, seq }
+	})
+	return { records, provenance, provenanceTruncatedCount: packed.provenanceTruncatedCount }
+}
+
 /** Exact-duplicate fallback. The source ID set is stable and semantic fields are
  * never merged merely because anchors or descriptions look similar. */
 export function buildFallbackCheckpoint(candidates: readonly ReviewPanelCandidate[]): PackedReviewFindings {
@@ -253,10 +288,10 @@ export function buildFallbackCheckpoint(candidates: readonly ReviewPanelCandidat
 		const group = groups.get(key)
 		if (group) group.candidates.push(candidate)
 		else {
-			const { path, line, severity, type, description, suggestion } = candidate.finding
+			const { path, line, title, description, explanation, suggestion, priority, type } = candidate.finding
 			groups.set(key, {
 				candidates: [candidate],
-				finding: { id: key, path, line, severity, type, description, suggestion },
+				finding: { id: key, path, line, title, description, explanation, suggestion, priority, type },
 			})
 		}
 	}

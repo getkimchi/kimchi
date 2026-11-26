@@ -14,6 +14,7 @@ const CHECKOUT_PATH = `/tmp/${"checkout-path-segment/".repeat(16)}repository`
 const RUN_DIRECTORY = `${CHECKOUT_PATH}/.kimchi/review-output/runs/${"run-segment-".repeat(16)}`
 const LONG_REASON_SUFFIX =
 	"because an explicitly verbose policy requires additional context that must remain available without repeating during progress refreshes"
+const FINDING_TITLE = "The new export lacks a behavior guard"
 const FINDING_DESCRIPTION = "The new export changes behavior without a guard."
 const WIDTHS = [60, 80, 120] as const
 
@@ -60,6 +61,7 @@ function coverage(lensCount: number): ReviewPanelProgress["coverage"] {
 		candidate_count: lensCount,
 		final_finding_count: 1,
 		provenance_truncated_count: 0,
+		findings_by_priority: { P0: 0, P1: 0, P2: 1, P3: 0, P4: 0 },
 	}
 }
 
@@ -102,10 +104,12 @@ function result(
 				created_at: "2026-11-25T12:00:00Z",
 				path: `${CHECKOUT_PATH}/src/value.ts`,
 				line: 2,
-				severity: "warning",
-				type: "bug",
+				title: FINDING_TITLE,
 				description: FINDING_DESCRIPTION,
+				explanation: "Static inspection of the changed export shows the missing guard.",
 				suggestion: "Guard the changed behavior.",
+				priority: "P2",
+				type: "bug",
 				derived_from: ["candidate-1"],
 			},
 		],
@@ -168,7 +172,7 @@ describe("review command reporter", () => {
 				}
 				expect(transcript).toContain(`Effective concurrency: ${selected.slotCount}`)
 				expect(transcript).toContain("Complete review coverage.")
-				expect(transcript).toContain(FINDING_DESCRIPTION)
+				expect(transcript).toContain(FINDING_TITLE)
 				expect(transcript).toContain(`Report: ${RUN_DIRECTORY}/summary/final.json`)
 			})
 		}

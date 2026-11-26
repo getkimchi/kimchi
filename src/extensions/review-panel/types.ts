@@ -9,6 +9,7 @@ import type {
 } from "../review-runner/index.js"
 import type {
 	EnvironmentGap,
+	FindingInput,
 	ReviewCoverage,
 	ReviewFindingRecord,
 	ReviewSummaryRecord,
@@ -48,14 +49,8 @@ export interface ReconciliationDecision {
 	reason: string
 }
 
-export interface ReconciliationFinding {
+export interface ReconciliationFinding extends Omit<FindingInput, "derived_from"> {
 	id: string
-	path: string
-	line: number
-	severity: "critical" | "warning" | "info"
-	type: string
-	description: string
-	suggestion: string
 	candidate_ids: string[]
 }
 

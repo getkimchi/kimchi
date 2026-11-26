@@ -23,6 +23,19 @@ import { cleanupStaleReviewSnapshots, getReviewTargetChoices, resolveReviewTarge
 import { REVIEW_SNAPSHOT_REF_PREFIX } from "./snapshot.js"
 import type { ExplicitReviewRequest, ProviderAnchorMap, ResolveReviewTargetOptions } from "./types.js"
 
+function reviewFinding(path: string, line: number, description: string) {
+	return {
+		path,
+		line,
+		title: description,
+		description,
+		explanation: `Static inspection of ${path}:${line} supports this target fixture finding.`,
+		suggestion: "Fix the reviewed behavior.",
+		priority: "P2" as const,
+		type: "bug" as const,
+	}
+}
+
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", ["-C", cwd, ...args], {
 		encoding: "utf8",
@@ -233,26 +246,12 @@ describe("review target resolution", () => {
 		const outputDir = join(sandbox, "review-output")
 		const storeContext = { contextDir: scope.contextDir, outputDir, writer: "spec" }
 		const accepted = await submitFinding(
-			{
-				path: "both.txt",
-				line: 1,
-				severity: "warning",
-				type: "correctness",
-				description: "The final working-tree content is reviewed.",
-				suggestion: "",
-			},
+			reviewFinding("both.txt", 1, "The final working-tree content is reviewed."),
 			storeContext,
 		)
 		expect(accepted).toMatchObject({ accepted: true, id: "spec-1", seq: 1 })
 		const rejected = await submitFinding(
-			{
-				path: "both.txt",
-				line: 99,
-				severity: "warning",
-				type: "correctness",
-				description: "This line is outside the local hunk.",
-				suggestion: "",
-			},
+			reviewFinding("both.txt", 99, "This line is outside the local hunk."),
 			storeContext,
 		)
 		expect(rejected).toMatchObject({ accepted: false, reason: "line_outside_hunks" })
@@ -537,27 +536,10 @@ describe("review target resolution", () => {
 		const dirtyMap = JSON.parse(readFileSync(dirty.scope.commentableLinesPath, "utf8")) as ProviderAnchorMap
 		expect(dirtyMap.files["file.txt"].ranges).toEqual([{ start_line: 2, end_line: 2 }])
 		const store = { contextDir: dirty.scope.contextDir, outputDir: join(sandbox, "dirty-output"), writer: "spec" }
-		const localLine = await submitFinding(
-			{
-				path: "file.txt",
-				line: 2,
-				severity: "warning",
-				type: "correctness",
-				description: "The snapshot line is valid locally.",
-				suggestion: "",
-			},
-			store,
-		)
+		const localLine = await submitFinding(reviewFinding("file.txt", 2, "The snapshot line is valid locally."), store)
 		expect(localLine.accepted).toBe(true)
 		const providerOnlyLine = await submitFinding(
-			{
-				path: "file.txt",
-				line: 100,
-				severity: "warning",
-				type: "correctness",
-				description: "The provider-only line must not transfer to the snapshot.",
-				suggestion: "",
-			},
+			reviewFinding("file.txt", 100, "The provider-only line must not transfer to the snapshot."),
 			store,
 		)
 		expect(providerOnlyLine).toMatchObject({ accepted: false, reason: "line_outside_hunks" })
@@ -1266,14 +1248,7 @@ describe("review target resolution", () => {
 			expect(map.files[name]).toEqual({ ranges: [{ start_line: 1, end_line: 2 }] })
 		}
 		const accepted = await submitFinding(
-			{
-				path: "__proto__",
-				line: 2,
-				severity: "warning",
-				type: "correctness",
-				description: "A prototype-named path retains its local source anchor.",
-				suggestion: "",
-			},
+			reviewFinding("__proto__", 2, "A prototype-named path retains its local source anchor."),
 			{ contextDir: target.scope.contextDir, outputDir: join(sandbox, "prototype-output"), writer: "spec" },
 		)
 		expect(accepted).toMatchObject({ accepted: true, id: "spec-1" })

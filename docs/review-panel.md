@@ -126,7 +126,8 @@ Atomic `review-output/state/panel.json` uses `review-panel/v1`:
   SHA-256 digest, complete ordered provenance per final finding, truncated-source
   count, and validated semantic output when applicable;
 - `coverage`: complete/partial, unfinished lenses, selected/submitted/failed/
-  cancelled lens counts, accepted candidate count, final finding count, and
+  cancelled lens counts, accepted candidate count, final finding count,
+  `findings_by_priority` (`P0` through `P4`, after caps), and
   `provenance_truncated_count` for IDs emitted only in durable provenance.
 
 Every update is serialized and written to a mode-0600 temp file followed by
@@ -142,14 +143,19 @@ be anchored. New accepted candidates are persisted before a fallback write.
 
 `findings/final.jsonl` is created empty before reviewer launch. It is then
 atomically replaced as candidates arrive using only exact-duplicate collapsing.
-Provenance is emitted in `derived_from`. Ranking uses the published finding's
-severity (`critical`, `warning`, `info`), path, line, type, description, and
-suggestion, then semantic/source-ID tie-breaks before applying the finding cap.
-Rank assigns contiguous `seq` and deterministic `final-<seq>` IDs, replacing
-provisional ranks as new candidates arrive. The same finalized input produces
-the same bytes, including deterministic earliest-source `created_at`.
-Checkpoint packing enforces 50 findings, 16 KiB description/suggestion fields,
-50 provenance IDs, NUL-free validated fields, and 1 MiB total output. When more
+Provenance is emitted in `derived_from`. Interim checkpoints preserve the
+submitted priorities. Only final wrap-up publication, including reused fallback
+and cached-reconciliation recovery, caps priorities in code: `convention` and
+`docs` become `P4`, while `test-gap` becomes at most `P3`. No cap metadata is
+added. Ranking uses the capped priority, path, line, type, title, description,
+explanation, suggestion, then semantic/source-ID tie-breaks before applying the
+finding cap. Rank assigns contiguous `seq` and deterministic
+`final-<seq>` IDs, replacing provisional ranks as new candidates arrive. The
+same finalized input produces the same bytes, including deterministic
+earliest-source `created_at`. Checkpoint packing enforces 50 findings, the
+Unicode code-point limits (80 title, 250 description, 2000 explanation, 500
+suggestion), 50 provenance IDs, and 1 MiB total output. Stored and final records
+are revalidated without truncation. When more
 than 50 sources support one finding, only the first 50 sorted IDs appear in
 `derived_from`; the complete list remains in durable panel state and the
 remainder is counted in structured coverage. One defect is never split just to
@@ -174,8 +180,11 @@ Code rejects the entire semantic result unless:
 - every candidate occurs exactly once as retained, merged, or rejected with a
   reason, and decisions have exact bidirectional agreement with each finding's
   `candidate_ids`;
-- group membership, fields, severities, anchors, field/count/file limits and
-  schema keys are valid against the original snapshot;
+- group membership, fields, priorities, types, anchors, field/count/file limits
+  and schema keys are valid against the original snapshot;
+- reconciliation changes only `title` and `priority`; `path`, `line`,
+  `description`, `explanation`, `suggestion`, and `type` exactly match one
+  best-supported source candidate;
 - equivalent re-review candidates are rejected and linked to their thread;
 - every thread passes stage 1's reply fields, supported verdicts, and producer-
   supplied `is_ours`/`mentions_bot` scope validation.
@@ -197,7 +206,7 @@ of retrying the verifier: published IDs remain stable, non-exact duplicates stay
 unmerged, and no thread replies are produced for that input.
 
 `summary/final.json` remains `review-summary/v1` with optional structured
-`coverage` and is written last. When its logical content is unchanged, the
+`coverage`, including capped-priority counts, and is written last. When its logical content is unchanged, the
 coordinator preserves the existing file rather than refreshing `created_at`.
 Findings, summaries, and replies are therefore byte-stable across wrap-up.
 The coordinator merges its own structured environment gaps with reviewer

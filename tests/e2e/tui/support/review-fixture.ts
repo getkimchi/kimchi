@@ -93,6 +93,17 @@ function lensResponse(lens: string, partial: boolean): FakeResponseScript[] {
 	]
 }
 
+const FIXTURE_FINDING = {
+	path: REVIEW_VALUE_FILE,
+	line: 2,
+	title: "New export changes behavior without a guard",
+	description: "Consumers of the changed export can observe unintended behavior on the main path.",
+	explanation: "Static inspection of value.ts:2 at the head revision confirmed that the new export has no guard.",
+	suggestion: "Guard the changed behavior and add a focused regression test.",
+	priority: "P1",
+	type: "bug",
+} as const
+
 export function reviewResponseScripts(options: { partial?: boolean; finding?: boolean } = {}): FakeResponseScript[] {
 	const scripts = options.finding ? [] : lensResponse("spec", options.partial === true)
 	if (options.finding) {
@@ -106,14 +117,7 @@ export function reviewResponseScripts(options: { partial?: boolean; finding?: bo
 						id: "call_spec_finding",
 						function: {
 							name: "submit_finding",
-							arguments: JSON.stringify({
-								path: REVIEW_VALUE_FILE,
-								line: 2,
-								severity: "warning",
-								type: "bug",
-								description: "The new export changes behavior without a guard; revision head inspection confirmed it.",
-								suggestion: "Guard the changed behavior and add a focused regression test.",
-							}),
+							arguments: JSON.stringify(FIXTURE_FINDING),
 						},
 					},
 				],
@@ -151,12 +155,7 @@ function reconciliation(withFinding: boolean): Record<string, unknown> {
 		findings: [
 			{
 				id: "changed-export",
-				path: REVIEW_VALUE_FILE,
-				line: 2,
-				severity: "warning",
-				type: "bug",
-				description: "The new export changes behavior without a guard; revision head inspection confirmed it.",
-				suggestion: "Guard the changed behavior and add a focused regression test.",
+				...FIXTURE_FINDING,
 				candidate_ids: ["spec-1"],
 			},
 		],
