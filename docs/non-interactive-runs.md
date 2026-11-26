@@ -1,6 +1,6 @@
 # Non-interactive runs
 
-`kimchi --print` and `kimchi --print --mode json` run one prompt and exit. Two guards make sure a run that produced nothing does not look like a success.
+`kimchi --print` and `kimchi --print --mode json` run one prompt and exit. This page covers how the prompt and boolean flags are read, and the two guards that make sure a run that produced nothing does not look like a success.
 
 The guards apply to every non-interactive run. pi also runs in print mode when stdin or stdout is not a terminal, so `kimchi "question" > answer.txt` and `echo question | kimchi` are guarded too.
 
@@ -15,6 +15,29 @@ The prompt can come from any of these:
 An empty positional prompt (`kimchi --print ""`) or an empty `@file` is not a prompt, and the run exits `2`.
 
 A slash command from any of these sources, such as `echo /language | kimchi --print`, counts as a prompt. It exits `0` when the agent does not run.
+
+## Boolean flag syntax
+
+Kimchi boolean flags never take a separate value. `--auto`, `--yolo`, `--plan` and the other booleans are on/off switches, so a following token is always a different argument, such as the prompt.
+
+Before pi parses argv, `normalizeBooleanFlagArgs` (`src/cli-args.ts`) rewrites a bare Kimchi-only boolean flag to `--flag=true`. Without this, pi treats the next non-flag token as the flag's value and the positional prompt is lost. Normalization is skipped after `--`.
+
+For Kimchi-only boolean flags, both explicit forms are valid. `--flag=true` turns the flag on, and `--flag=false` keeps it off. pi turns any value of a boolean extension flag into `true`, so the normalizer drops `--flag=false` for Kimchi-only booleans before pi sees it. This matters most for `--dangerously-skip-permissions=false`, which would otherwise leave permissions in a mixed state. `--debug-prompts=false` also clears `KIMCHI_DEBUG_PROMPTS` and `KIMCHI_DEBUG_SESSION` for the run, so it wins over the environment. `--enable-experimental-features` works only in its bare form. pi flags such as `--print` accept only the bare form. `--print=true` fails with `Unknown option`.
+
+```sh
+kimchi --print --auto=true "do the work"
+kimchi --print --auto=false "do the work"
+kimchi --print --auto "do the work"       # same as --auto=true
+kimchi --print "do the work" --auto       # prompt before flags also works
+```
+
+## Catalog governance
+
+`CLI_OPTIONS` in `src/cli-args.ts` is the single catalog of Kimchi flags, with their names and types. Every flag an extension registers with `registerFlag` must have a `CLI_OPTIONS` entry with the same name and type. A flag that only extensions know about can be missing from the catalog, and then normalization cannot protect its prompt.
+
+Flags that should parse but not appear in `--help` set `hidden: true` in the catalog.
+
+`src/cli-args.test.ts` enforces this. The "extension flag registration parity" test fails if any `registerFlag` call lacks a matching catalog entry, or its type differs. The flag name must be a string literal or a constant listed in `FLAG_NAME_CONSTANTS` in that test. When you add a flag, add it to `CLI_OPTIONS` in the same change.
 
 ## What counts as an answer
 
@@ -58,7 +81,7 @@ This is a change for existing automation: a JSON run with no prompt or no final 
 
 ## Troubleshooting
 
-- Exit `2`: a flag such as `--auto` may have taken the prompt as its value, or the prompt was empty. Put the prompt before the flags, or write the flag as `--auto=true`.
+- Exit `2`: the prompt was empty, or a flag that needs a value, such as `--model`, took the prompt as its value. Give each such flag its own value, or put the prompt before the flags. Kimchi boolean flags such as `--auto` never take the prompt (see [Boolean flag syntax](#boolean-flag-syntax)).
 - Exit `3` with a blocked tool: a permission rule, the permission mode, a hook or a disabled resource blocked a tool, and the model gave no answer after that. Allow the tool, then rerun.
 - Exit `3` because an extension handled the prompt: a hook or an extension stopped the prompt before the agent ran. Check your hooks, or rerun with `--mode json`.
 - Exit `3` after an empty answer: open the session file, or rerun with `--mode json`, to see the steps.

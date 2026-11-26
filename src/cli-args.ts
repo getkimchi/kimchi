@@ -30,6 +30,8 @@ const PRE_DISPATCH_VALUE_FLAG_SHORTS: Record<string, string | undefined> = {
 	skill: undefined,
 	"prompt-template": undefined,
 	theme: undefined,
+	name: "n",
+	"session-id": undefined,
 }
 
 const PRE_DISPATCH_VALUE_FLAGS = new Set(
@@ -55,6 +57,8 @@ export interface CliOptionDef {
 	short?: string
 	/** Whether the option can be specified multiple times. */
 	multiple?: boolean
+	/** Parsed normally but omitted from generated help. */
+	hidden?: boolean
 }
 
 /**
@@ -65,6 +69,26 @@ export interface CliOptionDef {
  * parser uses the subset of flags with `type: "string" | "boolean"`.
  */
 export const CLI_OPTIONS: Record<string, CliOptionDef> = {
+	memory: {
+		type: "boolean",
+		// Registered so pi accepts it, but nothing reads it yet; keep it out of help until something does.
+		hidden: true,
+		description:
+			"Enable persistent personal memory (capture + recall across sessions; facts stored locally, extraction and embedding via the kimchi gateway).",
+	},
+	"debug-prompts": {
+		type: "boolean",
+		hidden: true,
+		description: "Print enriched prompts in the UI (default: hidden)",
+	},
+	"ferment-oneshot": {
+		type: "boolean",
+		description: "Bootstrap the initial prompt as an automated one-shot ferment.",
+	},
+	"init-git": {
+		type: "boolean",
+		description: "When the ferment cwd is not a git repo, run `git init` instead of skipping.",
+	},
 	provider: {
 		type: "string",
 		description: "Provider (default: kimchi-dev)",
@@ -219,6 +243,7 @@ export interface SessionCliArgs {
 		model?: string
 		models?: string
 		memory?: boolean
+		"debug-prompts"?: boolean
 		thinking?: string
 		mode?: string
 		print?: boolean
@@ -299,6 +324,8 @@ export const CACHEABLE_OPTION_NAMES = [
 	"provider",
 	"model",
 	"models",
+	// Cached because applyDebugPromptsOptOut reads the parsed false value before normalization and flag registration.
+	"debug-prompts",
 	"thinking",
 	"mode",
 	"print",
@@ -327,19 +354,22 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 		strict: false,
 		allowPositionals: true,
 	})
+	// node:util parseArgs with strict:false returns the raw string for
+	// `--flag=value` even when the flag is declared boolean. Validate every
+	// catalogued boolean, not only cached ones, so a typo such as
+	// --ferment-oneshot=junk fails early instead of reaching a gate that
+	// does not parse it.
+	for (const [name, def] of Object.entries(CLI_OPTIONS)) {
+		const value = values[name]
+		if (def.type === "boolean" && typeof value === "string" && value !== "true" && value !== "false") {
+			throw new Error(`--${name} expects a boolean (=true or =false); got --${name}=${JSON.stringify(value)}`)
+		}
+	}
 	const options: SessionCliArgs["options"] = {}
 	for (const key of CACHEABLE_OPTION_NAMES) {
 		let value = values[key]
 		if (value === undefined) continue
-		// node:util parseArgs with strict:false returns the raw string for
-		// `--flag=value` even when the flag is declared boolean. For boolean
-		// flags, accept only the explicit =true/=false forms — anything else
-		// (e.g. --memory=1) would store a string into a boolean-typed option,
-		// making `=== true` and truthiness checks disagree.
 		if (CLI_OPTIONS[key]?.type === "boolean" && typeof value === "string") {
-			if (value !== "true" && value !== "false") {
-				throw new Error(`--${key} expects a boolean (=true or =false); got --${key}=${JSON.stringify(value)}`)
-			}
 			value = value === "true"
 		}
 		;(options as Record<string, unknown>)[key] = value
@@ -447,4 +477,61 @@ export function dropRetiredMultiModelArg(args: string[]): string[] {
 		kept.push(args[i])
 	}
 	return kept
+}
+
+// Kimchi-only booleans are registered with pi as unknown extension flags, and pi's
+// parser treats the next non-flag token as their value, swallowing a positional prompt.
+// Rewriting the bare token to `--name=true` keeps the prompt positional.
+// pi also turns any value of a boolean extension flag into `true`, so `--name=false`
+// would read as on. Dropping it makes the flag off on both sides.
+// A token in another option's value slot is left alone so it stays that option's value.
+// Remove when pi keeps positional arguments after boolean extension flags.
+let rewritableBooleanFlags: ReadonlySet<string> | undefined
+
+function getRewritableBooleanFlags(): ReadonlySet<string> {
+	rewritableBooleanFlags ??= new Set(
+		Object.keys(CLI_OPTIONS).filter(
+			(name) => CLI_OPTIONS[name].type === "boolean" && parsePiArgs([`--${name}`]).unknownFlags.has(name),
+		),
+	)
+	return rewritableBooleanFlags
+}
+
+// Probe with pi's own parser so value-taking options stay in sync with pi.
+const PI_SLOT_PROBE = "__kimchi_slot_probe__"
+function isPiOptionValueSlot(precedingArgs: readonly string[]): boolean {
+	return !parsePiArgs([...precedingArgs, `--${PI_SLOT_PROBE}`]).unknownFlags.has(PI_SLOT_PROBE)
+}
+
+// normalizeBooleanFlagArgs drops "=false", so without this the env default in
+// prompt-enrichment.ts would turn debugging back on.
+export function applyDebugPromptsOptOut(args: readonly string[], env: NodeJS.ProcessEnv): void {
+	if (parseCliArgs([...args]).options["debug-prompts"] !== false) return
+	// biome-ignore lint/performance/noDelete: assigning undefined to process.env stores the string "undefined"
+	delete env.KIMCHI_DEBUG_PROMPTS
+	// biome-ignore lint/performance/noDelete: assigning undefined to process.env stores the string "undefined"
+	delete env.KIMCHI_DEBUG_SESSION
+}
+
+export function normalizeBooleanFlagArgs(args: string[]): string[] {
+	const rewritable = getRewritableBooleanFlags()
+	const result: string[] = []
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]
+		if (arg === "--") {
+			result.push(...args.slice(i))
+			break
+		}
+		if (!arg.startsWith("--") || isPiOptionValueSlot(result)) {
+			result.push(arg)
+			continue
+		}
+		if (rewritable.has(arg.slice(2))) {
+			result.push(`${arg}=true`)
+			continue
+		}
+		if (arg.endsWith("=false") && rewritable.has(arg.slice(2, -"=false".length))) continue
+		result.push(arg)
+	}
+	return result
 }
