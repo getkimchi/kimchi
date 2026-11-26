@@ -4,6 +4,7 @@ import { flushRawStdout, writeRawStdout } from "./print-output.js"
 
 export const REVIEW_PRINT_GRACE_MS = 60_000
 export const REVIEW_PRINT_EXIT_MARGIN_MS = 3_000
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1
 
 let jsonEnabled = false
 let settled = false
@@ -93,24 +94,29 @@ export class ReviewPrintTermination {
 			this.options.deadlineMs +
 			(this.options.graceMs ?? REVIEW_PRINT_GRACE_MS) -
 			(this.options.exitMarginMs ?? REVIEW_PRINT_EXIT_MARGIN_MS)
-		this.timer = setTimeout(
-			() => {
-				if (this.finished) return
-				this.forced = true
-				this.terminated = true
-				this.options.abort(new Error("Review print finalization grace expired."))
-				this.abortController.abort(new Error("Review print finalization grace expired."))
-				emitReviewAgentSettled()
-				void flushReviewPrintEvents().finally(() => {
-					process.exitCode = 143
-					// Last-resort watchdog only. Normal and TERM finalization return through
-					// the ordinary print host and never need an immediate process.exit.
-					process.exit(143)
-				})
-			},
-			Math.max(0, exitAt - Date.now()),
-		)
-		this.timer.unref?.()
+		const expire = () => {
+			if (this.finished) return
+			if (Date.now() < exitAt) {
+				arm()
+				return
+			}
+			this.forced = true
+			this.terminated = true
+			this.options.abort(new Error("Review print finalization grace expired."))
+			this.abortController.abort(new Error("Review print finalization grace expired."))
+			emitReviewAgentSettled()
+			void flushReviewPrintEvents().finally(() => {
+				process.exitCode = 143
+				// Last-resort watchdog only. Normal and TERM finalization return through
+				// the ordinary print host and never need an immediate process.exit.
+				process.exit(143)
+			})
+		}
+		const arm = () => {
+			this.timer = setTimeout(expire, Math.min(Math.max(0, exitAt - Date.now()), MAX_TIMER_DELAY_MS))
+			this.timer.unref?.()
+		}
+		arm()
 	}
 
 	private terminate(): void {

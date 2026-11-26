@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto"
-import { mkdir, open, readFile, rm, unlink } from "node:fs/promises"
+import { link, mkdir, open, readFile, rename, rm, unlink } from "node:fs/promises"
 import { dirname } from "node:path"
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui"
 import { ReviewTargetError } from "../review-targets/types.js"
+import { claimRawInputCapture } from "../shared-input.js"
 import { currentReviewHost, currentReviewOwnerIdentity, reviewProcessStartIdentity } from "./owner-identity.js"
 import type { LocalReviewRunDirectory } from "./run-directory.js"
 
@@ -18,6 +20,7 @@ interface ActiveReview {
 
 const activeBySession = new Map<string, ActiveReview>()
 const activeByCheckout = new Map<string, ActiveReview>()
+const pendingBySession = new Map<string, { controller: AbortController; finish: () => void }>()
 
 export interface ReviewOperation {
 	signal: AbortSignal
@@ -25,6 +28,56 @@ export interface ReviewOperation {
 	readonly cancelled: boolean
 	readonly completion: Promise<void>
 	finish: () => Promise<void>
+}
+
+function captureTerminalCancellation(ctx: ExtensionCommandContext, controller: AbortController): () => void {
+	if (!ctx.hasUI) return () => {}
+	const releaseCapture = claimRawInputCapture()
+	const detach = ctx.ui.onTerminalInput((data) => {
+		if (isKeyRelease(data) || (!matchesKey(data, Key.escape) && !matchesKey(data, Key.ctrl("c")))) {
+			return undefined
+		}
+		if (!controller.signal.aborted) controller.abort(new Error("Review interrupted by the user."))
+		return { consume: true }
+	})
+	let released = false
+	return () => {
+		if (released) return
+		released = true
+		detach()
+		releaseCapture()
+	}
+}
+
+export interface PendingReviewOperation {
+	signal: AbortSignal
+	captureInput: () => void
+	finish: () => void
+}
+
+/** Register before any asynchronous setup so ACP cancellation is never lost. */
+export function registerPendingReview(ctx: ExtensionCommandContext): PendingReviewOperation {
+	const sessionId = ctx.sessionManager.getSessionId()
+	if (activeBySession.has(sessionId) || pendingBySession.has(sessionId)) throw activeError(ctx.cwd)
+	const controller = new AbortController()
+	let detachInput: (() => void) | undefined
+	let finished = false
+	const finish = () => {
+		if (finished) return
+		finished = true
+		if (pendingBySession.get(sessionId)?.controller === controller) pendingBySession.delete(sessionId)
+		detachInput?.()
+		detachInput = undefined
+	}
+	pendingBySession.set(sessionId, { controller, finish })
+	return {
+		signal: controller.signal,
+		captureInput: () => {
+			if (finished || detachInput || !ctx.hasUI) return
+			detachInput = captureTerminalCancellation(ctx, controller)
+		},
+		finish,
+	}
 }
 
 function activeError(checkoutPath: string): ReviewTargetError {
@@ -47,15 +100,19 @@ async function processAlive(pid: number): Promise<boolean> {
 async function acquirePersistentLock(
 	checkoutPath: string,
 	run: LocalReviewRunDirectory,
+	ownerIdentity: typeof currentReviewOwnerIdentity,
 ): Promise<{ path: string; token: string } | undefined> {
 	const path = run.lockPath
+	// Identity can require an external process. Never create even an empty lock
+	// until that lookup has succeeded.
+	const owner = await ownerIdentity()
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		const token = randomUUID()
+		const temporary = `${path}.${process.pid}.${token}.tmp`
 		try {
 			await mkdir(dirname(path), { recursive: true })
-			const handle = await open(path, "wx", 0o600)
+			const handle = await open(temporary, "wx", 0o600)
 			try {
-				const owner = await currentReviewOwnerIdentity()
 				await handle.writeFile(
 					`${JSON.stringify({ token, pid: process.pid, checkoutPath, runDir: run.runDir, owner_host: owner.hostname, owner_start: owner.startIdentity })}\n`,
 					"utf8",
@@ -64,11 +121,21 @@ async function acquirePersistentLock(
 			} finally {
 				await handle.close()
 			}
+			// A hard link publishes only complete contents and atomically loses to
+			// any existing owner without truncating or replacing its lock.
+			await link(temporary, path)
 			return { path, token }
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
 			try {
-				const lock = JSON.parse(await readFile(path, "utf8")) as {
+				let serialized: string
+				try {
+					serialized = await readFile(path, "utf8")
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
+					throw error
+				}
+				const lock = JSON.parse(serialized) as {
 					pid?: unknown
 					owner_host?: unknown
 					owner_start?: unknown
@@ -96,17 +163,33 @@ async function acquirePersistentLock(
 					if (currentStart === lock.owner_start) throw activeError(checkoutPath)
 					// This is PID reuse, not the original owner.
 				}
-				// Dead PID or a provably different process start. Complete review
-				// artifacts are never deleted by this mechanism.
-				await unlink(path)
+				// Atomically move the stale candidate out of the acquisition path.
+				// A competing reclaimer sees ENOENT and retries against the new owner.
+				const stale = `${path}.${process.pid}.${token}.stale`
+				try {
+					await rename(path, stale)
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") continue
+					throw error
+				}
+				const renamed = await readFile(stale, "utf8")
+				if (renamed !== serialized) {
+					throw new ReviewTargetError(
+						"review_lock_changed",
+						`Review lock ${path} changed during stale-owner verification; preserved as ${stale}.`,
+					)
+				}
+				// Complete review artifacts are never deleted by this mechanism.
+				await unlink(stale)
 			} catch (error) {
-				if (error instanceof ReviewTargetError && error.code === "review_in_progress") throw error
 				if (error instanceof ReviewTargetError) throw error
 				throw new ReviewTargetError(
 					"review_lock_unreadable",
 					`Cannot safely reclaim review lock ${path}: ${error instanceof Error ? error.message : String(error)}`,
 				)
 			}
+		} finally {
+			await rm(temporary, { force: true }).catch(() => {})
 		}
 	}
 	return undefined
@@ -116,6 +199,8 @@ export async function acquireReviewOperation(
 	ctx: ExtensionCommandContext,
 	checkoutPath: string,
 	run: LocalReviewRunDirectory,
+	ownerIdentity: typeof currentReviewOwnerIdentity = currentReviewOwnerIdentity,
+	pendingSignal?: AbortSignal,
 ): Promise<ReviewOperation> {
 	const sessionId = ctx.sessionManager.getSessionId()
 	if (activeBySession.has(sessionId) || activeByCheckout.has(checkoutPath)) throw activeError(checkoutPath)
@@ -126,18 +211,13 @@ export async function acquireReviewOperation(
 	const controller = new AbortController()
 	const active: ActiveReview = { checkoutPath, controller, completion, complete: resolveCompletion }
 	try {
-		const lock = await acquirePersistentLock(checkoutPath, run)
+		const lock = await acquirePersistentLock(checkoutPath, run, ownerIdentity)
 		if (!lock)
 			throw new ReviewTargetError("review_lock_failed", `Could not acquire the active-review lock for ${checkoutPath}.`)
 		active.lockPath = lock.path
 		active.lockToken = lock.token
-		if (ctx.hasUI) {
-			active.detachInput = ctx.ui.onTerminalInput((data) => {
-				if (data !== "\u001b" && data !== "\u0003") return undefined
-				if (!controller.signal.aborted) controller.abort(new Error("Review interrupted by the user."))
-				return { consume: true }
-			})
-		}
+		if (pendingSignal?.aborted) controller.abort(pendingSignal.reason)
+		active.detachInput = captureTerminalCancellation(ctx, controller)
 		activeBySession.set(sessionId, active)
 		activeByCheckout.set(checkoutPath, active)
 		return {
@@ -181,9 +261,13 @@ export async function acquireReviewOperation(
 /** Called by ACP session/cancel. Resolves only after finalization and cleanup. */
 export async function cancelActiveReview(sessionId: string, reason = "Review cancelled by the client"): Promise<void> {
 	const active = activeBySession.get(sessionId)
-	if (!active) return
-	if (!active.controller.signal.aborted) active.controller.abort(new Error(reason))
-	await active.completion
+	if (active) {
+		if (!active.controller.signal.aborted) active.controller.abort(new Error(reason))
+		await active.completion
+		return
+	}
+	const pending = pendingBySession.get(sessionId)
+	if (pending && !pending.controller.signal.aborted) pending.controller.abort(new Error(reason))
 }
 
 export function activeReviewForTest(sessionId: string): { checkoutPath: string; lockPath?: string } | undefined {

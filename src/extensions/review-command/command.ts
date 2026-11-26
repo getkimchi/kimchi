@@ -24,7 +24,7 @@ import {
 	resolveReviewTarget,
 } from "../review-targets/index.js"
 import { ReviewTargetError } from "../review-targets/types.js"
-import { acquireReviewOperation, type ReviewOperation } from "./active-runs.js"
+import { acquireReviewOperation, type ReviewOperation, registerPendingReview } from "./active-runs.js"
 import { headlessEnvironmentGaps } from "./environment-gaps.js"
 import {
 	loadPreparedReviewManifest,
@@ -139,6 +139,16 @@ function showDetails(ctx: ExtensionCommandContext, pi: ExtensionAPI, message: st
 	notify(ctx, message)
 }
 
+function reviewResultSummary(result: Pick<ReviewPanelResult, "progress" | "findings" | "summaryPath">): string[] {
+	const coverage = result.progress.coverage
+	return [
+		`Review ${coverage.status}: ${result.findings.length} final finding${result.findings.length === 1 ? "" : "s"}.`,
+		coverage.unfinished_lenses.length
+			? `Partial coverage; unfinished lenses: ${coverage.unfinished_lenses.join(", ")}.`
+			: "Complete review coverage.",
+	]
+}
+
 export function reporter(ctx: ExtensionCommandContext, visible: boolean, pi: ExtensionAPI): Reporter {
 	let scopeLines: string[] = []
 	let selectionLines: string[] = []
@@ -195,19 +205,12 @@ export function reporter(ctx: ExtensionCommandContext, visible: boolean, pi: Ext
 		},
 		result(result) {
 			if (!visible) return
-			const coverage = result.progress.coverage
 			const findings = result.findings.length
 				? result.findings.map(
 						(finding) => `${finding.severity.toUpperCase()} ${finding.path}:${finding.line} ${finding.description}`,
 					)
 				: ["No findings."]
-			const partial = coverage.unfinished_lenses.length
-				? `Partial coverage; unfinished lenses: ${coverage.unfinished_lenses.join(", ")}.`
-				: "Complete review coverage."
-			const summary = [
-				`Review ${coverage.status}: ${result.findings.length} final finding${result.findings.length === 1 ? "" : "s"}.`,
-				partial,
-			]
+			const summary = reviewResultSummary(result)
 			// Keep complete findings in scrollback; the live widget shrinks to a summary.
 			scopeLines = []
 			selectionLines = []
@@ -241,10 +244,12 @@ export async function selectBareTarget(
 	request: BareReviewRequest,
 	ctx: ExtensionCommandContext,
 	deps: Pick<ReviewCommandDependencies, "choices">,
+	signal?: AbortSignal,
 ): Promise<BareTargetSelection> {
 	const choices = await deps.choices(request, {
 		root: ctx.cwd,
 		excludedDirectories: reviewOwnedDirectories(cliDirectories(ctx)),
+		signal,
 	})
 	const branch = choices.choices[1]
 	if (branch?.kind !== "branch") {
@@ -279,7 +284,8 @@ export async function selectBareTarget(
 	const branchRef = await ctx.ui.input("Branch ref to review", "feature or origin/feature")
 	if (!branchRef?.trim()) return {}
 	const baseRef = await ctx.ui.input("Base ref", branch.baseSuggestion?.ref ?? "--base is required")
-	if (!baseRef?.trim() && !branch.baseSuggestion?.ref) return {}
+	if (baseRef === undefined) return {}
+	if (!baseRef.trim() && !branch.baseSuggestion?.ref) return {}
 	return {
 		request: {
 			kind: "branch",
@@ -443,56 +449,72 @@ async function runLocal(
 	if (parsed.kind !== "bare" && args.some((arg) => arg === "--manifest" || arg.startsWith("--manifest="))) {
 		throw invalid("--manifest is available only in a --review print JSON session.")
 	}
-	await staleSweep(ctx.cwd, deps)
-	let request: ExplicitReviewRequest
-	if (parsed.kind === "bare") {
-		const selected = await selectBareTarget(parsed, ctx, deps)
-		if (selected.message) {
-			if (isPrintModeEnabled()) throw invalid(selected.message)
-			notify(ctx, selected.message)
-			return
-		}
-		if (!selected.request) return
-		request = selected.request
-	} else {
-		request = parsed
-	}
-	const settings = deps.readSettings(pi)
-	const directories = cliDirectories(ctx)
-	const target = await deps.resolveTarget(request, {
-		root: ctx.cwd,
-		contextDir: directories.contextDir,
-		excludedDirectories: reviewOwnedDirectories(directories),
-	})
-	const report = reporter(ctx, true, pi)
-	let operation: ReviewOperation | undefined
+	const pending = registerPendingReview(ctx)
+	if (parsed.kind !== "bare") pending.captureInput()
 	try {
-		const run = await createLocalReviewRunDirectory(directories.outputDir)
-		operation = await acquireReviewOperation(ctx, target.scope.checkoutPath, run)
-		report.scope(target, run.runDir)
-		const selection = deps.resolvePanel({ ...request.panel, requiredLenses: settings.requiredLenses })
-		report.selection(selection)
-		const result = await deps.runPanel({
-			ctx,
-			pi,
-			target,
-			outputDir: run.runDir,
-			...request.panel,
-			requiredLenses: settings.requiredLenses,
-			checkDefinitions: settings.checkDefinitions,
-			signal: operation.signal,
-			submitGraceMs: 1_000,
-			onProgress: report.progress,
-		})
-		report.result(result)
-	} catch (error) {
-		report.error(error)
-	} finally {
-		try {
-			await target.cleanup().catch(() => {})
-		} finally {
-			await operation?.finish()
+		await staleSweep(ctx.cwd, deps, pending.signal)
+		let request: ExplicitReviewRequest
+		if (parsed.kind === "bare") {
+			const selected = await selectBareTarget(parsed, ctx, deps, pending.signal)
+			if (selected.message) {
+				if (isPrintModeEnabled()) throw invalid(selected.message)
+				notify(ctx, selected.message)
+				return
+			}
+			if (!selected.request) return
+			request = selected.request
+		} else {
+			request = parsed
 		}
+		// Bare pickers own Esc themselves; begin review cancellation once the
+		// picker is gone and before target snapshots or lock acquisition.
+		pending.captureInput()
+		const settings = deps.readSettings(pi)
+		const directories = cliDirectories(ctx)
+		const target = await deps.resolveTarget(request, {
+			root: ctx.cwd,
+			contextDir: directories.contextDir,
+			excludedDirectories: reviewOwnedDirectories(directories),
+			signal: pending.signal,
+		})
+		const report = reporter(ctx, !isPrintModeEnabled(), pi)
+		let operation: ReviewOperation | undefined
+		try {
+			pending.signal.throwIfAborted()
+			const run = await createLocalReviewRunDirectory(directories.outputDir)
+			operation = await acquireReviewOperation(ctx, target.scope.checkoutPath, run, undefined, pending.signal)
+			operation.signal.throwIfAborted()
+			report.scope(target, run.runDir)
+			const selection = deps.resolvePanel({ ...request.panel, requiredLenses: settings.requiredLenses })
+			report.selection(selection)
+			const result = await deps.runPanel({
+				ctx,
+				pi,
+				target,
+				outputDir: run.runDir,
+				...request.panel,
+				requiredLenses: settings.requiredLenses,
+				checkDefinitions: settings.checkDefinitions,
+				signal: operation.signal,
+				submitGraceMs: 1_000,
+				onProgress: report.progress,
+			})
+			report.result(result)
+			if (isPrintModeEnabled()) {
+				console.log([...reviewResultSummary(result), `Report: ${result.summaryPath}`].join("\n"))
+			}
+		} catch (error) {
+			if (isPrintModeEnabled()) throw error
+			report.error(error)
+		} finally {
+			try {
+				await target.cleanup().catch(() => {})
+			} finally {
+				await operation?.finish()
+			}
+		}
+	} finally {
+		pending.finish()
 	}
 }
 
@@ -500,14 +522,16 @@ export async function runReviewCommand(
 	rawArgs: string,
 	ctx: ExtensionCommandContext,
 	pi: ExtensionAPI,
-	options: { resumed?: boolean; dependencies?: Partial<ReviewCommandDependencies> } = {},
+	options: { resumed?: boolean; allowLocal?: boolean; dependencies?: Partial<ReviewCommandDependencies> } = {},
 ): Promise<void> {
 	const deps = { ...dependencies, ...options.dependencies }
 	try {
 		const args = tokenize(rawArgs)
 		const headless = ["wrap-up", "--manifest"].includes(args[0] ?? "") || Boolean(args[0]?.startsWith("--manifest="))
 		if (headless) await runHeadless(args, ctx, pi, deps, options.resumed === true)
-		else await runLocal(args, ctx, pi, deps)
+		else if (options.allowLocal === false) {
+			throw invalid("Local /review targets require --enable-experimental-features; use --manifest or wrap-up.")
+		} else await runLocal(args, ctx, pi, deps)
 	} catch (error) {
 		if (isPrintModeEnabled()) {
 			printReviewError(error)

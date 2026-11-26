@@ -109,6 +109,20 @@ describe("review print termination", () => {
 		expect(settledEvents()).toEqual([{ type: "agent_settled", aborted: false }])
 	})
 
+	it("re-arms instead of overflowing for a deadline more than 24.8 days away", async () => {
+		const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as typeof process.exit)
+		const abort = vi.fn()
+		startTermination({ deadlineMs: Date.now() + 30 * 86_400_000, graceMs: 0, exitMarginMs: 0, abort })
+
+		await vi.advanceTimersByTimeAsync(10)
+		expect(abort).not.toHaveBeenCalled()
+		expect(exit).not.toHaveBeenCalled()
+
+		await vi.advanceTimersByTimeAsync(30 * 86_400_000)
+		expect(abort).toHaveBeenCalledTimes(1)
+		expect(exit).toHaveBeenCalledExactlyOnceWith(143)
+	})
+
 	it("cancels the watchdog and never exits after finish", async () => {
 		const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as typeof process.exit)
 		const termination = startTermination()

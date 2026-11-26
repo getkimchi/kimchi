@@ -33,8 +33,9 @@ export default function reviewCommandExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", (_event, ctx) =>
 		cancelActiveReview(ctx.sessionManager.getSessionId(), "Review session shutting down"),
 	)
+	const experimental = isExperimentalFeaturesEnabled()
 	const enabled = isReviewCommandEnabled({
-		experimental: isExperimentalFeaturesEnabled(),
+		experimental,
 		review: getParsedCliArgs().options.review === true,
 		print: isPrintModeEnabled(),
 	})
@@ -43,7 +44,7 @@ export default function reviewCommandExtension(pi: ExtensionAPI): void {
 		description:
 			"Review a pinned working-tree or branch comparison with a configurable panel; print JSON sessions accept --manifest and resumed wrap-up",
 		handler: async (args, ctx) => {
-			await runReviewCommand(args, ctx, pi, { resumed })
+			await runReviewCommand(args, ctx, pi, { resumed, allowLocal: experimental })
 		},
 	})
 }

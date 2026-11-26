@@ -31,6 +31,7 @@ async function psStartIdentity(pid: number): Promise<string> {
 		encoding: "utf8",
 		timeout: 5_000,
 		maxBuffer: 16 * 1024,
+		env: { ...process.env, LC_ALL: "C" },
 	})
 	const identity = Date.parse(stdout.trim())
 	if (!stdout.trim() || !Number.isFinite(identity)) {

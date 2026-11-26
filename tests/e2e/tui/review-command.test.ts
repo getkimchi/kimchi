@@ -80,61 +80,64 @@ test("review command publishes final findings to the transcript", async ({ termi
 	)
 })
 
-test("review command interruption terminates commands, finalizes partial coverage, and cleans resources", async ({
-	terminal,
-}) => {
-	let interruption: ReviewInterruptionFixture | undefined
-	let pid: number | undefined
-	let grandchildPid: number | undefined
-	const requiredInterruption = () => {
-		if (!interruption) throw new Error("Interruption fixture was not initialized")
-		return interruption
-	}
-	await runKimchiSession(
+for (const cancellationKey of ["Escape", "Ctrl+C"] as const) {
+	test(`review command ${cancellationKey} interruption terminates commands, finalizes partial coverage, and cleans resources`, async ({
 		terminal,
-		{
-			artifactName: "review-command-interrupt",
-			gitInit: true,
-			extraArgs: ["--yolo", "--no-approve", "--plan=false", "--enable-experimental-features"],
-			seedHome: (homeDir, workDir) => {
-				interruption = createReviewInterruptionFixture(homeDir)
-				seedReviewRepository(workDir)
+	}) => {
+		let interruption: ReviewInterruptionFixture | undefined
+		let pid: number | undefined
+		let grandchildPid: number | undefined
+		const requiredInterruption = () => {
+			if (!interruption) throw new Error("Interruption fixture was not initialized")
+			return interruption
+		}
+		await runKimchiSession(
+			terminal,
+			{
+				artifactName: `review-command-interrupt-${cancellationKey === "Escape" ? "escape" : "ctrl-c"}`,
+				gitInit: true,
+				extraArgs: ["--yolo", "--no-approve", "--plan=false", "--enable-experimental-features"],
+				seedHome: (homeDir, workDir) => {
+					interruption = createReviewInterruptionFixture(homeDir)
+					seedReviewRepository(workDir)
+				},
+				responses: [reviewInterruptionResponseScript(() => requiredInterruption().toolArguments)],
 			},
-			responses: [reviewInterruptionResponseScript(() => requiredInterruption().toolArguments)],
-		},
-		async (fixture) => {
-			try {
-				terminal.submit("/review working-tree --lens spec")
-				await poll(() => existsSync(requiredInterruption().started), 100, 15_000).then((seen) =>
-					expect(seen).toBe(true),
-				)
-				pid = Number(readFileSync(requiredInterruption().pidFile, "utf8"))
-				grandchildPid = Number(readFileSync(requiredInterruption().grandchildPidFile, "utf8"))
-				terminal.keyPress(Key.Escape)
-				await waitForText(terminal, "Review partial: 0 final findings.", { timeoutMs: 20_000 })
-				await waitForText(terminal, "unfinished lenses: spec")
-				await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_100))
-				expect(existsSync(requiredInterruption().survived)).toBe(false)
-				if (pid === undefined || grandchildPid === undefined) throw new Error("Missing reviewer command PID")
-				expect(() => process.kill(pid, 0)).toThrow()
-				expect(() => process.kill(grandchildPid, 0)).toThrow()
-				expect(existsSync(join(fixture.workDir, ".kimchi", "review-output", "active-review.json"))).toBe(false)
-				const runsRoot = join(fixture.workDir, ".kimchi", "review-output", "runs")
-				const [run] = readdirSync(runsRoot)
-				if (run === undefined) throw new Error("Missing cancellation run directory")
-				const state = JSON.parse(readFileSync(join(runsRoot, run, "state", "panel.json"), "utf8"))
-				expect(state.lenses[0].status).toBe("cancelled")
-				expect(git(fixture.workDir, "for-each-ref", "--format=%(refname)", "refs/kimchi/review/snapshots/")).toBe("")
-				expect(git(fixture.workDir, "worktree", "list", "--porcelain")).not.toContain("kimchi-review-worktrees")
-			} finally {
-				for (const processId of [pid, grandchildPid]) {
-					if (processId) {
-						try {
-							process.kill(processId, "SIGKILL")
-						} catch {}
+			async (fixture) => {
+				try {
+					terminal.submit("/review working-tree --lens spec")
+					await poll(() => existsSync(requiredInterruption().started), 100, 15_000).then((seen) =>
+						expect(seen).toBe(true),
+					)
+					pid = Number(readFileSync(requiredInterruption().pidFile, "utf8"))
+					grandchildPid = Number(readFileSync(requiredInterruption().grandchildPidFile, "utf8"))
+					if (cancellationKey === "Escape") terminal.keyPress(Key.Escape)
+					else terminal.keyCtrlC()
+					await waitForText(terminal, "Review partial: 0 final findings.", { timeoutMs: 20_000 })
+					await waitForText(terminal, "unfinished lenses: spec")
+					await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_100))
+					expect(existsSync(requiredInterruption().survived)).toBe(false)
+					if (pid === undefined || grandchildPid === undefined) throw new Error("Missing reviewer command PID")
+					expect(() => process.kill(pid, 0)).toThrow()
+					expect(() => process.kill(grandchildPid, 0)).toThrow()
+					expect(existsSync(join(fixture.workDir, ".kimchi", "review-output", "active-review.json"))).toBe(false)
+					const runsRoot = join(fixture.workDir, ".kimchi", "review-output", "runs")
+					const [run] = readdirSync(runsRoot)
+					if (run === undefined) throw new Error("Missing cancellation run directory")
+					const state = JSON.parse(readFileSync(join(runsRoot, run, "state", "panel.json"), "utf8"))
+					expect(state.lenses[0].status).toBe("cancelled")
+					expect(git(fixture.workDir, "for-each-ref", "--format=%(refname)", "refs/kimchi/review/snapshots/")).toBe("")
+					expect(git(fixture.workDir, "worktree", "list", "--porcelain")).not.toContain("kimchi-review-worktrees")
+				} finally {
+					for (const processId of [pid, grandchildPid]) {
+						if (processId) {
+							try {
+								process.kill(processId, "SIGKILL")
+							} catch {}
+						}
 					}
 				}
-			}
-		},
-	)
-})
+			},
+		)
+	})
+}

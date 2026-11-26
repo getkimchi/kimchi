@@ -64,6 +64,43 @@ describe("bare review picker exclusions", () => {
 		expect(vi.mocked(ctx.ui.select).mock.calls[0]?.[1]).toEqual(["Working tree (default)", "Branch"])
 	})
 
+	it("cancels branch selection instead of using the suggested base after Esc", async () => {
+		const ctx = createCommandContext()
+		const choices = vi.fn(
+			async () =>
+				({
+					syntax: [],
+					choices: [
+						{ kind: "working-tree", preselected: false },
+						{ kind: "branch", preselected: true, baseSuggestion: { ref: "origin/main" } },
+					],
+				}) as unknown as ReviewTargetChoices,
+		)
+		vi.mocked(ctx.ui.select).mockResolvedValue("Branch (default)")
+		vi.mocked(ctx.ui.input).mockResolvedValueOnce("feature").mockResolvedValueOnce(undefined)
+
+		await expect(selectBareTarget(bare(), ctx, { choices })).resolves.toEqual({})
+	})
+
+	it("uses the suggested base only when the submitted base is empty", async () => {
+		const ctx = createCommandContext()
+		const choices = vi.fn(
+			async () =>
+				({
+					syntax: [],
+					choices: [
+						{ kind: "working-tree", preselected: false },
+						{ kind: "branch", preselected: true, baseSuggestion: { ref: "origin/main" } },
+					],
+				}) as unknown as ReviewTargetChoices,
+		)
+		vi.mocked(ctx.ui.select).mockResolvedValue("Branch (default)")
+		vi.mocked(ctx.ui.input).mockResolvedValueOnce("feature").mockResolvedValueOnce("")
+
+		const selection = await selectBareTarget(bare(), ctx, { choices })
+		expect(selection.request).toMatchObject({ kind: "branch", branch: "feature", base: "origin/main" })
+	})
+
 	it("rejects malformed choices without a branch entry", async () => {
 		const ctx = createCommandContext()
 		ctx.hasUI = false
