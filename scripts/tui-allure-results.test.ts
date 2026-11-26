@@ -396,7 +396,7 @@ it("offers non-blocking Allure uploads with visible failures in the reusable tes
 	expect(warning.run).toContain("GITHUB_STEP_SUMMARY")
 })
 
-it("uses merge-queue unit and ACP reporting and always uploads TUI logs", () => {
+it("uses merge-queue and experiment unit and ACP reporting and always uploads TUI logs", () => {
 	const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8"))
 	expect(workflow.on.push).toBeUndefined()
 	expect(workflow.jobs.unit.secrets.ALLURE_TOKEN).toBe(githubExpression("secrets.ALLURE_TOKEN"))
@@ -404,14 +404,22 @@ it("uses merge-queue unit and ACP reporting and always uploads TUI logs", () => 
 	expect(workflow.jobs["tui-e2e"].secrets.ALLURE_TOKEN).toBe(githubExpression("secrets.ALLURE_TOKEN"))
 	expect(workflow.jobs.unit.with).toMatchObject({
 		"allure-launch": "Vitest",
-		"allure-upload": githubExpression("github.event_name == 'merge_group'"),
-		"allure-kind": "merge_queue",
+		"allure-upload": githubExpression(
+			"github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment'))",
+		),
+		"allure-kind": githubExpression(
+			"github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment') && 'experiment' || 'merge_queue'",
+		),
 		iteration: "1",
 	})
 	expect(workflow.jobs["acp-e2e"].with).toMatchObject({
 		"allure-launch": "ACP E2E",
-		"allure-upload": githubExpression("github.event_name == 'merge_group'"),
-		"allure-kind": "merge_queue",
+		"allure-upload": githubExpression(
+			"github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment'))",
+		),
+		"allure-kind": githubExpression(
+			"github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment') && 'experiment' || 'merge_queue'",
+		),
 		iteration: "1",
 	})
 	expect(workflow.jobs["tui-e2e"].with).toMatchObject({
