@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs"
 import { raceWithTimeout } from "../../shared/race-with-timeout.js"
 
 interface LiveReviewChild {
@@ -25,18 +26,19 @@ export function trackLiveReviewChild<T>(
 	run: Promise<T>,
 	cancel: () => void,
 ): Promise<T> {
+	const outputDirKey = realpathSync(outputDir)
 	const lease = Symbol(id)
 	const entry: LiveReviewChild = {
 		lease,
 		promise: run,
 		cancel,
 	}
-	children(outputDir).set(lease, entry)
+	children(outputDirKey).set(lease, entry)
 	const remove = () => {
-		const entries = liveByOutputDir.get(outputDir)
+		const entries = liveByOutputDir.get(outputDirKey)
 		if (entries?.get(lease) === entry) {
 			entries.delete(lease)
-			if (entries.size === 0) liveByOutputDir.delete(outputDir)
+			if (entries.size === 0) liveByOutputDir.delete(outputDirKey)
 		}
 	}
 	void run.then(remove, remove)
@@ -47,7 +49,8 @@ export function trackLiveReviewChild<T>(
  * wait. Deadline expiry never deletes live entries; a publication-boundary
  * rescan remains responsible for their source-file submissions. */
 export async function cancelAndWaitForReviewChildren(outputDir: string, timeoutMs: number): Promise<void> {
-	const entries = [...(liveByOutputDir.get(outputDir)?.values() ?? [])]
+	const outputDirKey = realpathSync(outputDir)
+	const entries = [...(liveByOutputDir.get(outputDirKey)?.values() ?? [])]
 	if (entries.length === 0) return
 	for (const entry of entries) {
 		try {

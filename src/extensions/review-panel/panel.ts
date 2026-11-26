@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises"
+import { lstat, readFile, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { raceWithTimeout } from "../../shared/race-with-timeout.js"
 import { runAgent } from "../agents/manager/agent-runner.js"
@@ -72,8 +72,8 @@ async function exists(path: string): Promise<boolean> {
 async function hasValidSummary(outputDir: string, lens: ReviewLensId): Promise<boolean> {
 	const path = join(outputDir, "summary", `${lens}.json`)
 	try {
-		const metadata = await stat(path)
-		if (!metadata.isFile() || metadata.size > MAX_OUTPUT_FILE_BYTES) return false
+		const metadata = await lstat(path)
+		if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_OUTPUT_FILE_BYTES) return false
 		const value = JSON.parse(await readFile(path, "utf8")) as {
 			schema_version?: unknown
 			writer?: unknown
@@ -283,10 +283,29 @@ async function ingestLensCandidateFile(
 	await checkpointReviewPanelFallback(store, reviewPanelPaths(outputDir).findingsPath)
 }
 
+async function ingestLensCandidateFileOrMarkFailed(
+	store: ReviewPanelStateStore,
+	outputDir: string,
+	lens: ReviewLensId,
+): Promise<void> {
+	try {
+		await ingestLensCandidateFile(store, outputDir, lens)
+	} catch (error) {
+		const path = join(outputDir, "findings", `${lens}.jsonl`)
+		await store.update((state) => {
+			const current = state.lenses.find((entry) => entry.id === lens)
+			if (current) {
+				current.status = "failed"
+				current.error = `Saved candidate ingest failed for ${path}: ${error instanceof Error ? error.message : String(error)}`
+			}
+		})
+	}
+}
+
 class StaleCandidateInputError extends Error {}
 
 async function rescanAllWriters(store: ReviewPanelStateStore, outputDir: string): Promise<void> {
-	for (const lens of store.state.lenses) await ingestLensCandidateFile(store, outputDir, lens.id)
+	for (const lens of store.state.lenses) await ingestLensCandidateFileOrMarkFailed(store, outputDir, lens.id)
 }
 
 async function finalizeWithWriterRescan(
@@ -572,17 +591,7 @@ export async function wrapUpReviewPanel(options: WrapUpReviewPanelOptions): Prom
 	const store = await ReviewPanelStateStore.load(outputDir, (state) => options.onProgress?.(progressFor(state, phase)))
 	await assertReviewPanelIdentity(store.state, options.expected)
 	for (const lens of store.state.lenses) {
-		try {
-			await ingestLensCandidateFile(store, outputDir, lens.id)
-		} catch (error) {
-			await store.update((state) => {
-				const current = state.lenses.find((entry) => entry.id === lens.id)
-				if (current) {
-					current.status = "failed"
-					current.error = `Saved candidate ingest failed: ${error instanceof Error ? error.message : String(error)}`
-				}
-			})
-		}
+		await ingestLensCandidateFileOrMarkFailed(store, outputDir, lens.id)
 	}
 	// No reviewer launch is possible during wrap-up, including crashed running entries.
 	await store.update((state) => {

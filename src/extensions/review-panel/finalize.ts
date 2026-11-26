@@ -184,7 +184,12 @@ async function collectEnvironmentGaps(store: ReviewPanelStateStore, outputDir: s
 	for (const lens of store.state.lenses) {
 		if (lens.status !== "submitted") continue
 		try {
-			const summary = JSON.parse(await readFile(join(outputDir, "summary", `${lens.writer}.json`), "utf8")) as {
+			const path = join(outputDir, "summary", `${lens.writer}.json`)
+			const metadata = await lstat(path)
+			if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_OUTPUT_FILE_BYTES) {
+				throw new Error("The reviewer summary is not a regular file within the 1 MiB output limit.")
+			}
+			const summary = JSON.parse(await readFile(path, "utf8")) as {
 				environment_gaps?: EnvironmentGap[]
 			}
 			for (const gap of summary.environment_gaps ?? []) {

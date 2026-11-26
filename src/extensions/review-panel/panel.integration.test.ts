@@ -628,6 +628,68 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(requests).toHaveLength(requestCountBeforeWrap)
 	})
 
+	it("one bad writer line still publishes other lenses and later wrap-ups", async () => {
+		const { ctx } = await scriptedContext(defaultScript)
+		const spawnAgent: RunReviewPanelOptions["spawnAgent"] = async (request) => {
+			const writer = request.options.description?.replace("Review writer ", "") ?? ""
+			await submitFinding(
+				{
+					path: "value.ts",
+					line: 2,
+					severity: "warning",
+					type: "bug",
+					description: `${writer} finding`,
+					suggestion: "",
+				},
+				{ writer, contextDir, outputDir },
+			)
+			// Stands in for any corrupt record: a shell write, manual edit, or disk issue.
+			if (writer === "spec") {
+				writeFileSync(join(outputDir, "findings", "spec.jsonl"), "{not json}\n", { flag: "a" })
+			}
+			return completedRunResult()
+		}
+		const result = await runReviewPanel(runOptions(ctx, await target(), { lenses: ["spec", "standards"], spawnAgent }))
+		expect(result.summary.coverage?.status).toBe("partial")
+		expect(result.state.candidates.map((candidate) => candidate.id)).toEqual(["standards-1"])
+		expect(result.state.lenses.find((lens) => lens.id === "spec")).toMatchObject({
+			status: "failed",
+			error: expect.stringContaining(join(outputDir, "findings", "spec.jsonl")),
+		})
+		expect(existsSync(reviewPanelPaths(outputDir).summaryPath)).toBe(true)
+
+		const wrapped = await wrapUpReviewPanel({
+			ctx,
+			pi: createExtensionApi().api,
+			outputDir,
+			rootDir: join(sandbox, "bad-writer-wrap-worktrees"),
+			checkDefinitions: [],
+			executionPolicy: { mode: "headless" },
+		})
+		expect(wrapped.summary.coverage?.status).toBe("partial")
+	})
+
+	it("a symlinked reviewer summary is not a valid submission", async () => {
+		const { ctx } = await scriptedContext(defaultScript)
+		const spawnAgent: RunReviewPanelOptions["spawnAgent"] = async () => {
+			const outside = join(sandbox, "outside-summary.json")
+			writeFileSync(
+				outside,
+				JSON.stringify({
+					schema_version: "review-summary/v1",
+					writer: "spec",
+					body: "from outside",
+					environment_gaps: [],
+				}),
+			)
+			execFileSync("mkdir", ["-p", join(outputDir, "summary")])
+			symlinkSync(outside, join(outputDir, "summary", "spec.json"))
+			return completedRunResult()
+		}
+		const result = await runReviewPanel(runOptions(ctx, await target(), { lenses: ["spec"], spawnAgent }))
+		expect(result.state.lenses[0].status).toBe("failed")
+	})
+
 	it("marks terminal provider errors as failed lenses with partial coverage", async () => {
 		const { ctx } = await scriptedContext(() => {
 			throw new Error("terminal scripted provider failure")
@@ -925,6 +987,47 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(result.findings[0].derived_from).toEqual(["spec-1"])
 		expect(verifierCalls).toBeGreaterThanOrEqual(2)
 		abandoned.resolve(completedRunResult())
+	})
+
+	it.each([
+		{ name: "same spelling", alias: false },
+		{ name: "symlink alias", alias: true },
+	])("overlapping wrap-up cancels the running reviewer ($name)", async ({ alias }) => {
+		const { ctx } = await scriptedContext(defaultScript)
+		const started = deferred<AbortSignal | undefined>()
+		const runController = new AbortController()
+		const running = runReviewPanel(
+			runOptions(ctx, await target(), {
+				lenses: ["spec"],
+				signal: runController.signal,
+				submitGraceMs: 50,
+				cancellationGraceMs: 50,
+				spawnAgent: (request) => {
+					started.resolve(request.options.signal)
+					return new Promise<RunResult>((resolve) => {
+						request.options.signal?.addEventListener("abort", () => {
+							resolve({ ...completedRunResult(), aborted: true })
+						})
+					})
+				},
+			}),
+		)
+		const reviewerSignal = await started.promise
+		const outputAlias = join(sandbox, "review-output-alias")
+		symlinkSync(outputDir, outputAlias, "dir")
+		await wrapUpReviewPanel({
+			ctx,
+			pi: createExtensionApi().api,
+			outputDir: alias ? outputAlias : outputDir,
+			rootDir: join(sandbox, "overlap-worktrees"),
+			checkDefinitions: [],
+			executionPolicy: { mode: "headless" },
+			cancellationGraceMs: 50,
+		}).catch(() => {})
+		const cancelledByWrapUp = reviewerSignal?.aborted === true
+		runController.abort()
+		await running.catch(() => {})
+		expect(cancelledByWrapUp).toBe(true)
 	})
 
 	it("drains cleanup usage once, detaches subscriptions, and does not replay it on wrap-up", async () => {
