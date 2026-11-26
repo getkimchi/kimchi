@@ -1,5 +1,5 @@
 // Real-SDK integration tests for the non-ACP additional-skill-roots
-// extension (`--additionalSkillsPaths`).
+// extension (`--additional-skill-paths`).
 //
 // Chunk 4 superseded the Chunk 3 `--skill` rewrite: non-ACP modes must
 // contribute the roots additively through the inline `resources_discover`

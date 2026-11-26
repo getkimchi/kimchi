@@ -420,7 +420,7 @@ export interface RunAcpOptions {
 	 * tests can stub it; production uses the upstream-adapter-backed probe.
 	 */
 	mcpProbe?: McpProbe
-	/** Process-scoped extra roots supplied by --additionalSkillsPaths. */
+	/** Process-scoped extra roots supplied by --additional-skill-paths. */
 	additionalSkillPaths?: string[]
 }
 
@@ -602,7 +602,7 @@ export class KimchiAcpAgent {
 		this.sso = ssoManager ?? new SsoFlowManager(SSO_FLOW_MANAGER_DEPS)
 		this.skillWatcher = createSkillWatcher({
 			agentDir: options.agentDir,
-			// Union (deduplicated) of the process-scoped --additionalSkillsPaths
+			// Union (deduplicated) of the process-scoped --additional-skill-paths
 			// roots and the latest kimchi-config skillPaths, re-read per event so
 			// mid-process config edits are still picked up.
 			getExtraSkillPaths: () => [
@@ -4409,7 +4409,7 @@ async function createSessionSettings(
 	// snapshots that skill refreshes recompute without extension reloads, and
 	// computes the append prompt per call so a committed skills snapshot is
 	// reflected on the next prompt rebuild (see session-resource-loader.ts).
-	// The process-scoped --additionalSkillsPaths roots are handed to BOTH
+	// The process-scoped --additional-skill-paths roots are handed to BOTH
 	// loaders as one copied snapshot (an effective empty array when the flag is
 	// absent, so no later mutation of the caller's array can change what
 	// either loader sees): the main loader's initial scan and every adapter

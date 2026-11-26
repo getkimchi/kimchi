@@ -922,14 +922,14 @@ async function cliMain(): Promise<void> {
 			// decides per client at initialize instead (server.ts). See
 			// extensions/bash-background/session-policy.ts.
 			if (getCliModeArg(rawArgs) === "rpc") setBackgroundRunsPermitted(true)
-			// Process-scoped additional skill roots from --additionalSkillsPaths,
+			// Process-scoped additional skill roots from --additional-skill-paths,
 			// already validated by populateCliArgs. Non-ACP modes contribute them
 			// through the inline additional-skill-roots extension below (upstream
 			// main() has no additionalSkillPaths parameter); ACP consumes them
 			// directly through RunAcpOptions, so it must not load this factory too.
 			const additionalSkillRoots = resolveAdditionalSkillPaths()
 			const extensionFactories = [
-				// --additionalSkillsPaths roots, non-ACP only, and FIRST among
+				// --additional-skill-paths roots, non-ACP only, and FIRST among
 				// skill-contributing factories: upstream's loader appends extension
 				// contributions after settings/native additionalSkillPaths, with
 				// first-named-skill-wins, so prepending lands the additional roots
@@ -1142,17 +1142,17 @@ async function cliMain(): Promise<void> {
 				await runAcpMode({
 					extensionFactories,
 					agentDir,
-					// Process-scoped skill roots from --additionalSkillsPaths. Only the
+					// Process-scoped skill roots from --additional-skill-paths. Only the
 					// ACP mode consumes them; the existing --skill behavior stays on
 					// upstream pi and is deliberately not forwarded here.
-					additionalSkillPaths: getParsedCliArgs().options.additionalSkillsPaths,
+					additionalSkillPaths: getParsedCliArgs().options["additional-skill-paths"],
 					...(mcpAdapterExtensions.length > 0
 						? {
 								mcpExtensionFactory: createKimchiMcpAdapterExtension,
 								mcpProbe: new UpstreamMcpProbe(),
 							}
 						: {}),
-					// Same strip as the non-ACP branch: --additionalSkillsPaths is a
+					// Same strip as the non-ACP branch: --additional-skill-paths is a
 					// Kimchi-local flag, so even this appendSystemPrompt-only parse must
 					// not feed the raw token to upstream pi (lenient today, strict
 					// tomorrow). Stripping first leaves pi parsing only flags it knows,
@@ -1162,7 +1162,7 @@ async function cliMain(): Promise<void> {
 				})
 			} else {
 				// Delegate to pi-mono's CLI main function, injecting the kimchi extension.
-				// --additionalSkillsPaths is Kimchi-local: strip it so non-ACP modes
+				// --additional-skill-paths is Kimchi-local: strip it so non-ACP modes
 				// never see the raw flag; its roots are contributed additively by the
 				// prepended additional-skill-roots inline extension instead (never
 				// rewritten to --skill).

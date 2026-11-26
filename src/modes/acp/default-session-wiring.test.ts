@@ -155,7 +155,7 @@ describe("default session factory/loader _meta wiring", () => {
 		const factory = defaultSessionFactory(makeOptions())
 		await factory({ cwd, mcpServers: [] })
 		expect(capturedLoaderOptions).toHaveLength(1)
-		// An absent --additionalSkillsPaths yields an effective empty array,
+		// An absent --additional-skill-paths yields an effective empty array,
 		// never a fabricated root (e.g. the shared harness skills dir).
 		expect(capturedLoaderOptions[0].additionalSkillPaths).toEqual([])
 	})

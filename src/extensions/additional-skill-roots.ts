@@ -2,7 +2,7 @@ import { resolve } from "node:path"
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent"
 
 /**
- * Non-ACP contribution of `--additionalSkillsPaths` roots.
+ * Non-ACP contribution of `--additional-skill-paths` roots.
  *
  * Upstream pi's `main()` has no `additionalSkillPaths` parameter (only
  * `DefaultResourceLoader` does), so non-ACP modes surface the roots through

@@ -111,7 +111,7 @@ interface Harness {
 interface HarnessOptions {
 	parkDiscovery?: () => Promise<boolean>
 	lateContributedDir?: string
-	/** Process-scoped --additionalSkillsPaths roots for BOTH loaders. */
+	/** Process-scoped --additional-skill-paths roots for BOTH loaders. */
 	additionalSkillPaths?: string[]
 }
 
@@ -256,7 +256,7 @@ describe("AcpSessionResourceLoader — real-loader skill refresh", () => {
 	})
 
 	it("retains additional-path skills across refreshes and reflects add/edit/delete there", async () => {
-		// Process-private root supplied via --additionalSkillsPaths: the main
+		// Process-private root supplied via --additional-skill-paths: the main
 		// loader scans it initially, and every refresh's throwaway discovery
 		// loader must scan the SAME root or the skills vanish on first refresh.
 		const privateSkills = makeTmpDir()

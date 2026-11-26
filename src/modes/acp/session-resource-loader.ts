@@ -46,7 +46,7 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 	private readonly discoveryCwd: string
 	private readonly discoveryAgentDir: string
 	private readonly discoverySettingsManager: SettingsManager
-	/** Process-scoped skill roots (--additionalSkillsPaths): handed to every
+	/** Process-scoped skill roots (--additional-skill-paths): handed to every
 	 *  throwaway discovery loader so refreshes never drop them. */
 	private readonly additionalSkillPaths: string[]
 	private readonly baseAppend: () => string[]
@@ -73,7 +73,7 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 		cwd: string
 		agentDir: string
 		settingsManager: SettingsManager
-		/** Process-scoped skill roots from --additionalSkillsPaths — the same
+		/** Process-scoped skill roots from --additional-skill-paths — the same
 		 *  array the main loader was constructed with. Required so no future
 		 *  call site can silently drop the paths from the refresh scan. */
 		additionalSkillPaths: string[]
