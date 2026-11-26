@@ -1,0 +1,142 @@
+name: flaky-triage
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+    inputs:
+      window_hours:
+        description: "Lookback window in hours"
+        required: false
+        default: "48"
+      events:
+        description: "Comma-separated TestOps launch event tags"
+        required: false
+        default: "merge_queue,nightly"
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flaky-triage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    name: flaky-triage
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'testops-experiment')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ALLURE_ENDPOINT: https://castai.testops.cloud
+      ALLURE_PROJECT_ID: ${{ vars.ALLURE_PROJECT_ID }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      ALLURE_TOKEN_AVAILABLE: ${{ secrets.ALLURE_TOKEN != '' }}
+      FLAKY_WINDOW_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.window_hours || '48' }}
+      FLAKY_EVENTS: ${{ github.event_name == 'pull_request' && 'master,merge_queue,nightly,experiment' || github.event_name == 'workflow_dispatch' && inputs.events || 'merge_queue,nightly' }}
+      FLAKY_OUT_DIR: flaky-report
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+
+      - name: Check TestOps configuration
+        id: config
+        run: |
+          if [[ "$ALLURE_TOKEN_AVAILABLE" != "true" || -z "$ALLURE_PROJECT_ID" ]]; then
+            echo "testops configuration missing; flaky triage skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Probe TestOps read API
+        if: steps.config.outputs.skip == 'false'
+        continue-on-error: true
+        run: node scripts/flaky-report.js --probe
+
+      - name: Build flaky test report
+        if: steps.config.outputs.skip == 'false'
+        run: node scripts/flaky-report.js
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flaky-report
+          path: ${{ env.FLAKY_OUT_DIR }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+  fix:
+    name: flaky-fix
+    needs: triage
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'testops-experiment')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      ALLURE_ENDPOINT: https://castai.testops.cloud
+      ALLURE_PROJECT_ID: ${{ vars.ALLURE_PROJECT_ID }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
+      KIMCHI_API_KEY_AVAILABLE: ${{ secrets.KIMCHI_API_KEY != '' }}
+      FLAKY_REPORT: flaky-report/flaky-report.json
+      FLAKY_FIX_OUT_DIR: flaky-fix
+      FLAKY_FIX_MODEL: kimi-k3.1-pro
+    steps:
+      - uses: actions/checkout@v4
+        if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
+        with:
+          submodules: true
+
+      - name: Report missing Kimchi authentication
+        if: env.KIMCHI_API_KEY_AVAILABLE != 'true'
+        run: echo "KIMCHI_API_KEY is missing; AI flaky-fix triage skipped" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: ./.github/actions/setup
+        if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
+        with:
+          bun: "true"
+          go: "true"
+          search-tools: "true"
+
+      - name: Install and verify latest Kimchi release for the triage agent
+        if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          agent_dir="$RUNNER_TEMP/kimchi-agent"
+          export KIMCHI_BIN="$agent_dir/bin/kimchi"
+          echo "KIMCHI_BIN=$KIMCHI_BIN" >> "$GITHUB_ENV"
+          mkdir -p "$agent_dir"
+          gh release download --repo getkimchi/kimchi --dir "$agent_dir" \
+            --pattern 'kimchi_linux_amd64.tar.gz' --pattern checksums.txt
+          (cd "$agent_dir" && grep 'kimchi_linux_amd64.tar.gz$' checksums.txt | sha256sum --check -)
+          tar -xzf "$agent_dir/kimchi_linux_amd64.tar.gz" -C "$agent_dir"
+          chmod +x "$KIMCHI_BIN" "$agent_dir/share/kimchi/bin/proxy-helper"
+          "$KIMCHI_BIN" --version
+
+      - uses: actions/download-artifact@v4
+        if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
+        with:
+          name: flaky-report
+          path: flaky-report
+
+      - name: Diagnose and verify top flaky tests
+        if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
+        run: node scripts/flaky-fix.js
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flaky-fix
+          path: ${{ env.FLAKY_FIX_OUT_DIR }}
+          if-no-files-found: ignore
+          retention-days: 7

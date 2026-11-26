@@ -132,6 +132,8 @@
 		"@types/turndown": "^5.0.6",
 		"@types/ws": "^8.18.1",
 		"@types/yauzl": "^3.4.0",
+		"@vitest/runner": "4.1.12",
+		"allure-vitest": "^3.15.0",
 		"dejavu-fonts-ttf": "2.37.3",
 		"husky": "^9.1.7",
 		"node-pty": "^1.1.0",

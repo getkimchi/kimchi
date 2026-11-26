@@ -3,11 +3,14 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath, URL } from "node:url"
 import { defineConfig } from "vitest/config"
+import { withAllureReporter } from "./tests/setup/allure-vitest.js"
 
 const stubPath = fileURLToPath(new URL("./src/__mocks__/earendil-clipboard-image.js", import.meta.url))
 
-export default defineConfig({
+const config = defineConfig({
 	test: {
+		// Retry only in CI so TestOps can identify passes recovered by a retry.
+		retry: process.env.CI ? 2 : 0,
 		// Ignore git worktree copies used for bench/repro runs so targeted test
 		// commands don't execute the same suite multiple times.
 		exclude: [
@@ -83,3 +86,5 @@ export default defineConfig({
 		maxWorkers: 4,
 	},
 })
+
+export default withAllureReporter(config)

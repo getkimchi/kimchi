@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { inflateSync } from "node:zlib"
 import { SKIPPED_TUI_TESTS } from "../tests/e2e/tui/skip-list.js"
+import { listFailLogs, newFailLogs, parseTuiFlakyCount, writeTuiAllureResult } from "./tui-allure-results.js"
 import { exactFileFilter } from "./tui-e2e/file-filter.js"
 import { planShards, shardDriftWarning } from "./tui-e2e/shards.js"
 
@@ -46,7 +47,7 @@ if (dryRun) {
 	}
 	process.exit(0)
 }
-const status = hasTestFilter ? runTui(args) : runEach(stems)
+const status = hasTestFilter ? runTui(args, testStemFromArgs(args)) : runEach(stems)
 
 if (traceEnabled) {
 	process.stderr.write(`[tui-e2e] traces written to ${traceFolder}\n`)
@@ -60,13 +61,57 @@ if (debugEnabled) {
 
 process.exit(status)
 
-function runTui(runArgs) {
-	const result = spawnSync(tuiTest, runArgs, { cwd: tuiCwd, stdio: "inherit", env })
+function runTui(runArgs, stem) {
+	const start = Date.now()
+	// Artifact names are unique per attempt, so a before/after snapshot avoids
+	// both stale logs and same-millisecond mtime boundary errors.
+	const failLogsBefore = stem ? listFailLogs(repoRoot) : []
+	// tui-test injects only terminal, not testInfo, into fixtures. Capture and replay
+	// stdout so its authoritative summary (not expected-failure artifacts) drives Allure.
+	const result = spawnSync(tuiTest, runArgs, {
+		cwd: tuiCwd,
+		stdio: ["inherit", "pipe", "inherit"],
+		env,
+		encoding: "utf8",
+		maxBuffer: 16 * 1024 * 1024,
+	})
+	if (result.stdout) process.stdout.write(result.stdout)
+	const flakyCount = parseTuiFlakyCount(result.stdout ?? "")
+	if (!result.error && flakyCount === undefined) {
+		process.stderr.write(
+			`[tui-e2e] warning: no tui-test summary found for ${stem}; retry recovery will not be marked as flaky\n`,
+		)
+	}
+	const stop = Date.now()
+	const status = result.status ?? 1
+	if (stem && process.env.ALLURE_RESULTS) {
+		try {
+			const failLogPaths = newFailLogs(failLogsBefore, listFailLogs(repoRoot))
+			writeTuiAllureResult({
+				resultsDir: process.env.ALLURE_RESULTS,
+				stem,
+				exitCode: status,
+				start,
+				stop,
+				failLogPaths,
+				flakyCount: flakyCount ?? 0,
+				failureMessage: result.error ? `spawn failed: ${result.error.message}` : undefined,
+			})
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error)
+			console.error(`allure result write failed: ${stem}: ${message}`)
+		}
+	}
 	if (result.error) {
 		console.error(result.error)
 		process.exit(1)
 	}
-	return result.status ?? 1
+	return status
+}
+
+function testStemFromArgs(runArgs) {
+	const filter = runArgs.find((arg) => !arg.startsWith("-"))
+	return filter ? basename(filter).replace(/\.test\.ts$/, "") : undefined
 }
 
 // KIMCHI_TUI_TIMINGS_OUT=<file> records the seconds per file, so CI can
@@ -76,7 +121,7 @@ function runEach(stems) {
 	const seconds = {}
 	for (const stem of stems) {
 		const started = Date.now()
-		const code = runTui([...args, exactFileFilter(stem)])
+		const code = runTui([...args, exactFileFilter(stem)], stem)
 		seconds[stem] = Math.round((Date.now() - started) / 100) / 10
 		if (code !== 0) status = code
 	}

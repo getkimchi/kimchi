@@ -7,33 +7,37 @@
 // They run after the parallel group, one file at a time.
 
 import { defineConfig } from "vitest/config"
+import { withAllureReporter } from "../../setup/allure-vitest.js"
 
 const SERIAL = ["tests/e2e/acp/mcp*.test.ts", "tests/e2e/acp/oauth*.test.ts"]
 
-export default defineConfig({
-	test: {
-		testTimeout: 120_000,
-		projects: [
-			{
-				extends: true,
-				test: {
-					name: "acp-parallel",
-					include: ["tests/e2e/acp/**/*.test.ts"],
-					exclude: SERIAL,
-					// The runner has 4 vCPUs. Every test also runs a kimchi process.
-					maxWorkers: 3,
-					sequence: { groupOrder: 0 },
+export default withAllureReporter(
+	defineConfig({
+		test: {
+			retry: process.env.CI ? 2 : 0,
+			testTimeout: 120_000,
+			projects: [
+				{
+					extends: true,
+					test: {
+						name: "acp-parallel",
+						include: ["tests/e2e/acp/**/*.test.ts"],
+						exclude: SERIAL,
+						// The runner has 4 vCPUs. Every test also runs a kimchi process.
+						maxWorkers: 3,
+						sequence: { groupOrder: 0 },
+					},
 				},
-			},
-			{
-				extends: true,
-				test: {
-					name: "acp-serial",
-					include: SERIAL,
-					fileParallelism: false,
-					sequence: { groupOrder: 1 },
+				{
+					extends: true,
+					test: {
+						name: "acp-serial",
+						include: SERIAL,
+						fileParallelism: false,
+						sequence: { groupOrder: 1 },
+					},
 				},
-			},
-		],
-	},
-})
+			],
+		},
+	}),
+)

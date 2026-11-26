@@ -60,12 +60,18 @@ jobs:
 
   unit:
     uses: ./.github/workflows/_test-suite.yml
+    secrets:
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
     with:
       name: unit
       shards: "[1, 2, 3, 4]"
       search-tools: true
       playwright: true
       command: pnpm run test --shard="$SHARD_INDEX/$SHARD_TOTAL"
+      allure-launch: Vitest
+      allure-upload: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment')) }}
+      allure-kind: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment') && 'experiment' || 'merge_queue' }}
+      iteration: "1"
 
   # Builds the binary and proxy-helper once. Every suite that runs the binary
   # downloads this artifact, so it is not rebuilt per suite.
@@ -123,6 +129,8 @@ jobs:
     needs: [changes, build]
     if: github.event_name != 'merge_group' && needs.changes.outputs.tui == 'true'
     uses: ./.github/workflows/_test-suite.yml
+    secrets:
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
     with:
       name: tui-e2e
       # Shards are balanced by tests/e2e/tui/timings.json to about 7 minutes each.
@@ -130,9 +138,13 @@ jobs:
       timeout-minutes: 15
       use-build: true
       search-tools: true
+      allure-launch: TUI E2E
+      allure-upload: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment') }}
+      allure-kind: experiment
       # The timings file feeds pnpm run test:e2e:tui:timings (docs/ci.md).
       command: KIMCHI_TUI_TIMINGS_OUT="$PWD/tui-e2e-timings.json" pnpm run test:e2e:tui:ci --shard "$SHARD_INDEX/$SHARD_TOTAL"
       report-artifacts: tui-e2e-timings.json
+      always-artifacts: true
       failure-artifacts: |
         *.tui-e2e.log
         **/tui-traces/**
@@ -144,12 +156,18 @@ jobs:
     needs: [changes, build]
     if: needs.changes.outputs.acp == 'true'
     uses: ./.github/workflows/_test-suite.yml
+    secrets:
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
     with:
       name: acp-e2e
       timeout-minutes: 15
       use-build: true
       search-tools: true
       command: pnpm run test:e2e:acp:ci
+      allure-launch: ACP E2E
+      allure-upload: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment')) }}
+      allure-kind: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'testops-experiment') && 'experiment' || 'merge_queue' }}
+      iteration: "1"
       failure-artifacts: |
         *.acp-e2e.log
         **/acp-traces/**

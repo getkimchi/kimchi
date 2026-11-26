@@ -43,6 +43,29 @@ on:
         description: "Paths to upload after every run, for example timings"
         type: string
         default: ""
+      always-artifacts:
+        description: "Upload failure-artifacts after every run, including retry-recovered flakes"
+        type: boolean
+        default: false
+      allure-launch:
+        description: "Allure TestOps launch name prefix; empty with allure-upload=false disables reporting"
+        type: string
+        default: ""
+      allure-upload:
+        description: "Upload suite results to Allure TestOps"
+        type: boolean
+        default: false
+      allure-kind:
+        description: "TestOps launch kind and event tag"
+        type: string
+        default: "other"
+      iteration:
+        description: "Optional TestOps iteration tag"
+        type: string
+        default: ""
+    secrets:
+      ALLURE_TOKEN:
+        required: false
 
 permissions:
   contents: read
@@ -57,6 +80,11 @@ jobs:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(inputs.shards) }}
+    env:
+      ALLURE_ENDPOINT: https://castai.testops.cloud
+      ALLURE_PROJECT_ID: ${{ vars.ALLURE_PROJECT_ID }}
+      ALLURE_RESULTS: ${{ inputs.allure-upload && format('allure-results/{0}', inputs.name) || '' }}
+      ALLURE_TOKEN_AVAILABLE: ${{ secrets.ALLURE_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -84,6 +112,37 @@ jobs:
           SHARD_TOTAL: ${{ strategy.job-total }}
         run: ${{ inputs.command }}
 
+      - name: Install and configure allurectl
+        id: allurectl
+        if: always() && inputs.allure-upload && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''
+        continue-on-error: true
+        uses: allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db # v1.0.3
+        with:
+          allure-endpoint: ${{ env.ALLURE_ENDPOINT }}
+          allure-project-id: ${{ env.ALLURE_PROJECT_ID }}
+          allure-token: ${{ secrets.ALLURE_TOKEN }}
+
+      - name: Upload results to Allure TestOps
+        id: allure-upload
+        if: always() && steps.allurectl.outcome == 'success'
+        continue-on-error: true
+        run: >-
+          allurectl upload
+          --job-run-uid "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${{ inputs.name }}-shard-${{ matrix.shard }}"
+          --launch-name "${{ inputs.allure-launch }} ${{ inputs.allure-kind }} shard ${{ matrix.shard }}/${{ strategy.job-total }}"
+          --launch-tags "commit=$GITHUB_SHA,event=${{ inputs.allure-kind }},run_id=$GITHUB_RUN_ID,run_attempt=$GITHUB_RUN_ATTEMPT,shard=${{ matrix.shard }},suite=${{ inputs.name }}${{ inputs.iteration != '' && format(',iteration={0}', inputs.iteration) || '' }}"
+          "$ALLURE_RESULTS"
+
+      - name: Report TestOps upload failure
+        if: always() && inputs.allure-upload && (steps.allurectl.outcome != 'success' || steps.allure-upload.outcome != 'success')
+        run: |
+          reason="See the Allure step log for details"
+          if [[ "$ALLURE_TOKEN_AVAILABLE" != "true" || -z "$ALLURE_PROJECT_ID" ]]; then
+            reason="ALLURE_TOKEN or ALLURE_PROJECT_ID is missing, so the upload was skipped"
+          fi
+          echo "::warning::Allure TestOps result delivery failed or was skipped for ${{ inputs.name }} shard ${{ matrix.shard }}. $reason"
+          echo "Allure TestOps result delivery failed or was skipped for ${{ inputs.name }} shard ${{ matrix.shard }}. $reason" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload report
         if: always() && inputs.report-artifacts != ''
         uses: actions/upload-artifact@v4
@@ -94,7 +153,7 @@ jobs:
           retention-days: 7
 
       - name: Upload logs
-        if: failure() && inputs.failure-artifacts != ''
+        if: (failure() || inputs.always-artifacts) && inputs.failure-artifacts != ''
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.name }}-logs-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
