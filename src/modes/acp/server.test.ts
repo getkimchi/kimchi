@@ -74,6 +74,7 @@ import {
 	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
 	type BashBackgroundSettleData,
 } from "../../shared/bash-background-settle.js"
+import { thinkingSelection } from "../../thinking-selection.js"
 
 // Palette tests can inject file-change notifications without OS startup races.
 // Other tests keep native watching; skill-watcher.test.ts covers disk events.
@@ -11254,6 +11255,9 @@ describe("setSessionConfigOption", () => {
 				configId: "model",
 				value: "kimchi-dev/family",
 			})
+			// The routed model is reasoning-capable; it is routing ownership,
+			// not a no-level selection, that must suppress its Effort editor.
+			expect(thinkingSelection(fake.model).mode).toBe("levels")
 			expect(selectedFamily.configOptions.find((option) => option.id === "reasoning_effort")).toBeUndefined()
 			await expect(
 				agent.setSessionConfigOption({

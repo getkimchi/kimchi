@@ -4130,8 +4130,11 @@ export function buildThinkingConfigOption(
 	category: "model_config" | "thought_level" = "thought_level",
 ): SessionConfigOption | null {
 	if (!session.model) return null
-	// The negotiated routed-row contract has no concrete Effort editor. Keep
-	// legacy clients' existing Auto behavior unchanged.
+	// thinkingSelection describes a concrete model's reasoning levels, not
+	// routing identity. A routed alias can have selectable levels while its
+	// concrete model varies per request, so model_config must not offer an
+	// alias-owned Effort editor. This is a negotiated ACP gate, not a change
+	// to shared selection or legacy clients' existing Auto behavior.
 	if (category === "model_config" && modelVirtualIdentity(session.model)) return null
 	const selection = thinkingSelection(session.model)
 	if (selection.mode !== "levels" || selection.selectable.length === 0) return null
