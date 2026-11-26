@@ -2,6 +2,7 @@ import { parseArgs } from "node:util"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import { type CliMode, getCliModeArg, PROTOCOL_MODES } from "./cli-modes.js"
 import { FERMENT_LEGACY_RESOURCE_ID, isFermentLegacyEnabled } from "./extensions/ferment/resource.js"
+import { describeOrgLock, getResourcePolicy } from "./resources/store.js"
 
 // Re-export the shared leaf-module helpers so existing callers can keep
 // importing them from cli-args.ts without touching their import paths.
@@ -505,11 +506,17 @@ export function hasInitGitArg(args: readonly string[]): boolean {
 
 /** Error text for a V1-only flag used while the legacy Ferment is off. Returns
  * `undefined` when legacy is on (including an org FORCE_ON lock) or when no
- * V1-only flag is present, so callers can gate without re-checking the flags. */
+ * V1-only flag is present, so callers can gate without re-checking the flags.
+ * An org FORCE_OFF lock cannot be lifted locally, so that case names the
+ * organization instead of suggesting `kimchi resources enable`. */
 export function fermentLegacyFlagError(args: readonly string[]): string | undefined {
 	if (isFermentLegacyEnabled()) return undefined
 	const flag = hasFermentOneshotArg(args) ? "--ferment-oneshot" : hasInitGitArg(args) ? "--init-git" : undefined
 	if (flag === undefined) return undefined
+	const policy = getResourcePolicy(FERMENT_LEGACY_RESOURCE_ID)
+	if (policy === "FORCE_OFF") {
+		return `${flag} needs the legacy Ferment, which your organization turned off (${FERMENT_LEGACY_RESOURCE_ID} is ${describeOrgLock(policy)}). Ask your organization admin to change the policy.`
+	}
 	return `${flag} needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`
 }
 

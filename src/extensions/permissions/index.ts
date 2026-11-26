@@ -1782,14 +1782,10 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				await executeLocally()
 			} else if (payload.decision === "start_ferment") {
 				// Legacy-off gate: V1 "Start as ferment" is inert unless the user opted
-				// into the legacy Ferment. Send the notice, dispatch no follow-up turn,
+				// into the legacy Ferment. Warn the user, dispatch no follow-up turn,
 				// and create no ferment artifact.
 				if (!isFermentLegacyEnabled()) {
-					safeSendMessage(pi, {
-						customType: "ferment_breadcrumb",
-						content: "Start as ferment needs the legacy Ferment. Use Execute instead.",
-						display: true,
-					})
+					notifyUser(ctx, "Start as ferment needs the legacy Ferment. Use Execute instead.", "warning")
 					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
 					return
 				}

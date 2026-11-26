@@ -29,7 +29,7 @@ import { join } from "node:path"
 import { expect, Key, test } from "@microsoft/tui-test"
 import { fullText, INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import type { FakeResponseRequest } from "./support/fake-openai-server.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { readWorkRecords } from "./support/work-summary.js"
 
 test.use(TUI_TEST_CONFIG)
@@ -43,7 +43,7 @@ test("plan-to-ferment promotion — Start as ferment (legacy) immediately contin
 		{
 			artifactName: "plan-to-ferment-promo",
 			gitInit: true,
-			env: { KIMCHI_ENABLE_RESOURCES: "extensions.ferment-legacy" },
+			env: FERMENT_LEGACY_ENV,
 			responses: [
 				{
 					stream: [

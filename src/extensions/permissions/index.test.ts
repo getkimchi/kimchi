@@ -3256,7 +3256,7 @@ describe("plan mode assumption detection", () => {
 		expect(options).not.toContain("Start as ferment (legacy)")
 	})
 
-	it("start_ferment with legacy off sends the notice and writes no ferment file", async () => {
+	it("start_ferment with legacy off warns the user and writes no ferment file", async () => {
 		isResourceEnabledMock.mockImplementation((id) => id === COST_PER_PR_RESOURCE_ID)
 		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 		await harness.fire("session_start", {}, createMockContext([]))
@@ -3266,9 +3266,18 @@ describe("plan mode assumption detection", () => {
 			// so the start_ferment decision still dispatches and hits the legacy gate.
 			const ctx = createMockContext(["Start as ferment (legacy)"])
 			ctx.cwd = tmpDir
+			// Trust the project so V1's store path would be writable: the absent
+			// ferments dir then proves the legacy gate, not the trust gate.
+			setProjectScopeTrusted(tmpDir, true)
 			await submitPlan(harness, "# Plan\n\n## Goal\nAdd caching layer.\n\n## Chunks\n- Chunk 1\nImplement cache.", ctx)
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				"Start as ferment needs the legacy Ferment. Use Execute instead.",
+				"warning",
+			)
+			// A warning toast, not a V1 ferment breadcrumb in the transcript.
 			const sent = vi.mocked(harness.pi.sendMessage).mock.calls.map((c) => JSON.stringify(c[0]))
-			expect(sent.some((s) => s.includes("Start as ferment needs the legacy Ferment. Use Execute instead."))).toBe(true)
+			expect(sent.some((s) => s.includes("Start as ferment needs the legacy Ferment"))).toBe(false)
+			expect(sent.some((s) => s.includes("ferment_breadcrumb"))).toBe(false)
 			expect(existsSync(join(tmpDir, ".kimchi", "ferments"))).toBe(false)
 		} finally {
 			rmSync(tmpDir, { recursive: true, force: true })

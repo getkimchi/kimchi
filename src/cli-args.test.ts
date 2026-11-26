@@ -828,6 +828,35 @@ describe("fermentLegacyFlagError", () => {
 		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toBeUndefined()
 	})
 
+	it("says the organization turned legacy off, without a resources enable hint, under FORCE_OFF", async () => {
+		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "FORCE_OFF" } })
+		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toBe(
+			`--ferment-oneshot needs the legacy Ferment, which your organization turned off (${FERMENT_LEGACY_RESOURCE_ID} is locked off). Ask your organization admin to change the policy.`,
+		)
+		expect(fermentLegacyFlagError(["--init-git"])).toBe(
+			`--init-git needs the legacy Ferment, which your organization turned off (${FERMENT_LEGACY_RESOURCE_ID} is locked off). Ask your organization admin to change the policy.`,
+		)
+		expect(fermentLegacyFlagError(["--ferment-oneshot"])).not.toContain("resources enable")
+	})
+
+	it("FORCE_OFF beats a local env enable and still reports the org lock", async () => {
+		process.env.KIMCHI_ENABLE_RESOURCES = FERMENT_LEGACY_RESOURCE_ID
+		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "FORCE_OFF" } })
+		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toContain("your organization turned off")
+	})
+
+	it("keeps the ordinary enable hint under a soft org OFF the user can override", async () => {
+		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "OFF" } })
+		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toBe(
+			`--ferment-oneshot needs the legacy Ferment, which is off. Turn it on with: kimchi resources enable ${FERMENT_LEGACY_RESOURCE_ID}`,
+		)
+	})
+
+	it("returns undefined when no V1-only flag is present even under FORCE_OFF", async () => {
+		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "FORCE_OFF" } })
+		expect(fermentLegacyFlagError(["-p", "hello"])).toBeUndefined()
+	})
+
 	it("returns undefined when org policy FORCE_ON locks legacy on", async () => {
 		await setOrgPolicyForTests({ resources: { [FERMENT_LEGACY_RESOURCE_ID]: "FORCE_ON" } })
 		expect(fermentLegacyFlagError(["--ferment-oneshot"])).toBeUndefined()
