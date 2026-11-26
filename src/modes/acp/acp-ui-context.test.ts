@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { resetCommandReplyScopesForTests, withCommandReplyScope } from "../../shared/command-reply-scope.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
-import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
+import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_NOTIFICATIONS, CAPABILITIES_KEY } from "./capabilities.js"
 
 type ExtMethod = (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>
 type ExtNotification = (method: string, params: Record<string, unknown>) => Promise<void>
@@ -927,7 +927,7 @@ describe("createAcpUIContext — command replies as agent text", () => {
 			content: { type: "text", text: "No Ferment is currently set.\n\n" },
 		})
 		expect(extNotification).toHaveBeenCalledTimes(1)
-		expect(extNotification.mock.calls[0][0]).toBe("_kimchi.dev/pi_notify")
+		expect(extNotification.mock.calls[0][0]).toBe(AVAILABLE_EXT_NOTIFICATIONS.pi_notify)
 		expect(extNotification.mock.calls[0][1]).toMatchObject({
 			method: "notify",
 			message: "No Ferment is currently set.",

@@ -6,6 +6,7 @@
 // agent_message_chunk. Notifies from a turn the command started are not.
 
 import { afterEach, describe, expect, it } from "vitest"
+import { AVAILABLE_EXT_NOTIFICATIONS } from "../../../src/modes/acp/capabilities.js"
 import { chatRequests } from "../tui/support/wire-requests.js"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, waitFor } from "./support/scenarios.js"
@@ -20,7 +21,7 @@ function agentTextChunks(fixture: AcpFixture, sessionId: string): string[] {
 
 function notifyMessages(fixture: AcpFixture, sessionId: string): string[] {
 	return fixture.client.extNotifications.flatMap(({ method, params }) => {
-		if (method !== "_kimchi.dev/pi_notify") return []
+		if (method !== AVAILABLE_EXT_NOTIFICATIONS.pi_notify) return []
 		const payload = params as { method?: string; message?: unknown; sessionId?: string }
 		return payload.method === "notify" && payload.sessionId === sessionId && typeof payload.message === "string"
 			? [payload.message]
