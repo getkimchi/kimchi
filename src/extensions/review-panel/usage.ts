@@ -61,13 +61,14 @@ export class ReviewPanelUsageBuffer {
 		this.subscriptions.set(session, detach)
 	}
 
-	private drop(entry: ReviewPanelChildUsage): void {
-		const dropped: ReviewPanelDroppedUsage = { ...entry, usage: { ...entry.usage }, reason: "deadline" }
+	private drop(key: string, entry: ReviewPanelChildUsage, delta: Usage): void {
+		const dropped: ReviewPanelDroppedUsage = { ...entry, usage: { ...delta }, reason: "deadline" }
 		this.onDrop?.(dropped)
 		console.warn(
 			`[review-panel] Dropped child usage at the deadline: ${entry.writer}/${entry.provider}/${entry.model} ` +
-				`input=${entry.usage.input} output=${entry.usage.output} cacheRead=${entry.usage.cacheRead} cacheWrite=${entry.usage.cacheWrite}`,
+				`input=${delta.input} output=${delta.output} cacheRead=${delta.cacheRead} cacheWrite=${delta.cacheWrite}`,
 		)
+		this.flushed.set(key, { ...entry.usage })
 	}
 
 	async flush(options: ReviewUsageFlushOptions = {}): Promise<void> {
@@ -86,7 +87,7 @@ export class ReviewPanelUsageBuffer {
 			if (Object.values(delta).every((value) => value === 0)) continue
 			const remaining = cutoff === undefined ? undefined : Math.max(0, cutoff - Date.now())
 			if (this.deliveryController.signal.aborted) {
-				this.drop(entry)
+				this.drop(key, entry, delta)
 				continue
 			}
 			const delivery = this.emit({ ...entry, usage: delta }, this.deliveryController.signal)
@@ -95,7 +96,7 @@ export class ReviewPanelUsageBuffer {
 					// A synchronously emitted record is already safe, but a pending
 					// callback must not be allowed to extend this coordinator past D.
 					this.abortDelivery("Review usage delivery deadline expired")
-					this.drop({ ...entry, usage: delta })
+					this.drop(key, entry, delta)
 					void delivery.catch(() => {})
 					continue
 				}
@@ -108,7 +109,7 @@ export class ReviewPanelUsageBuffer {
 				if (delivered === "timeout") {
 					// The pending callback is intentionally not awaited and is lost. A fresh
 					// wrap-up never replays it or charges this delta twice.
-					this.drop({ ...entry, usage: delta })
+					this.drop(key, entry, delta)
 					continue
 				}
 			}
