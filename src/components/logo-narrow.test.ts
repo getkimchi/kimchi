@@ -49,7 +49,7 @@ describe("LogoHeader — narrow terminals", () => {
 	// like a 1- or 2-column terminal.
 	for (const width of [1, 2, 3, 4, 5, 8, 10, 16, 20, 30, 39, 40, 46, 50, 54, 60, 80, 109, 120]) {
 		it(`never emits a line wider than ${width}`, () => {
-			const header = new LogoHeader(createMockTheme())
+			const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => true })
 			const lines = header.render(width)
 			expect(lines.length).toBeGreaterThan(0)
 			for (const line of lines) {
@@ -67,7 +67,7 @@ describe("LogoHeader — narrow terminals", () => {
 
 		for (const width of [11, 20, 30, 39, 46, 49]) {
 			it(`uses the pepper-only mark at width ${width}`, () => {
-				const header = new LogoHeader(createMockTheme())
+				const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => true })
 				const lines = header.render(width).map(strip)
 				const pepperRow = lines.find((line) => line.includes("███"))
 				expect(pepperRow).toBeDefined()
@@ -84,7 +84,7 @@ describe("LogoHeader — narrow terminals", () => {
 
 		for (const width of [50, 54, 55, 60, 80, 109, 120]) {
 			it(`uses the full word-art at width ${width}`, () => {
-				const header = new LogoHeader(createMockTheme())
+				const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => true })
 				const text = header.render(width).map(strip).join("\n")
 				expect(text).toContain("▀█▀")
 				expect(text).toContain("███")
@@ -92,7 +92,7 @@ describe("LogoHeader — narrow terminals", () => {
 		}
 
 		it("switches back to the full logo after invalidate", () => {
-			const header = new LogoHeader(createMockTheme())
+			const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => true })
 			header.invalidate()
 			const narrow = header.render(30).map(strip).join("\n")
 			expect(narrow).not.toContain("▀█▀")
@@ -152,7 +152,7 @@ describe("LogoHeader — narrow terminals", () => {
 		it("right column grows monotonically in compact regime (width 26..49)", () => {
 			let prev = -Infinity
 			for (let w = 26; w <= 49; w++) {
-				const lines = new LogoHeader(createMockTheme()).render(w).map(strip)
+				const lines = new LogoHeader(createMockTheme(), { isFermentAvailable: () => true }).render(w).map(strip)
 				const rightLen = rightSeg(lines)
 				// Right cell is CELL_PAD + rightColWidth + CELL_PAD. Allow a
 				// 1-col notch when gutters step up.
@@ -164,7 +164,7 @@ describe("LogoHeader — narrow terminals", () => {
 		it("right column grows monotonically in full regime (width 50..200)", () => {
 			let prev = -Infinity
 			for (let w = 50; w <= 200; w++) {
-				const lines = new LogoHeader(createMockTheme()).render(w).map(strip)
+				const lines = new LogoHeader(createMockTheme(), { isFermentAvailable: () => true }).render(w).map(strip)
 				const rightLen = rightSeg(lines)
 				expect(rightLen).toBeGreaterThanOrEqual(prev - 1)
 				prev = rightLen
@@ -200,7 +200,7 @@ describe("LogoHeader — narrow terminals", () => {
 
 		for (const width of [30, 38, 46]) {
 			it(`centers pepper + info lines within the left span at width ${width}`, () => {
-				const lines = new LogoHeader(createMockTheme()).render(width).map(strip)
+				const lines = new LogoHeader(createMockTheme(), { isFermentAvailable: () => true }).render(width).map(strip)
 				assertCentered(findRow(lines, "▄  ▄███"))
 				assertCentered(findRow(lines, "v1.0.0"))
 				assertCentered(findRow(lines, "main"))
@@ -212,7 +212,7 @@ describe("LogoHeader — narrow terminals", () => {
 	describe("vertical padding", () => {
 		it("keeps the top and bottom borders intact and renders at least the minimum box", () => {
 			for (const width of [55, 69, 80, 109, 120]) {
-				const lines = new LogoHeader(createMockTheme()).render(width)
+				const lines = new LogoHeader(createMockTheme(), { isFermentAvailable: () => true }).render(width)
 				expect(lines.length).toBeGreaterThanOrEqual(11)
 			}
 		})
