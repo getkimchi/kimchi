@@ -141,28 +141,41 @@ export async function getReviewTargetChoices(
 ): Promise<ReviewTargetChoices> {
 	return withReviewTargetFetchAuthorization(request.fetch, async () => {
 		const root = await repositoryRoot(options.root, options.signal)
-		await assertNoConversionDrivers(root, options.signal)
+		let unavailableReason: string | undefined
+		try {
+			await assertNoConversionDrivers(root, options.signal)
+		} catch (error) {
+			if (!(error instanceof ReviewTargetError) || error.code !== "unsupported_content_filter") throw error
+			unavailableReason = error.message
+		}
 		const remote = await selectedRemote(root, options)
 		if (request.fetch) await fetchRemote(root, remote.name, options.signal)
 		const [inspection, baseSuggestion] = await Promise.all([
-			inspectWorkingTree(root, options.signal),
+			unavailableReason === undefined ? inspectWorkingTree(root, options.signal) : Promise.resolve(undefined),
 			suggestBase(root, options, remote.name, remote.configured),
 		])
-		const dirty = inspection.status !== "clean"
+		const available = unavailableReason === undefined
+		const dirty = inspection ? inspection.status !== "clean" : false
 		return {
 			choices: [
-				{ kind: "working-tree", preselected: dirty },
+				{
+					kind: "working-tree",
+					available,
+					preselected: available && dirty,
+					...(unavailableReason === undefined ? {} : { unavailableReason }),
+				},
 				{
 					kind: "branch",
-					preselected: !dirty,
+					available: true,
+					preselected: !available || !dirty,
 					baseSuggestion,
 					requiresExplicitBase: baseSuggestion === undefined,
 				},
 			],
 			syntax: REVIEW_TARGET_SYNTAX,
-			workingTreeStatus: inspection.status,
-			flaggedPaths: inspection.flaggedPaths,
-			flaggedPathCount: inspection.flaggedPathCount,
+			workingTreeStatus: inspection?.status ?? "possible-edits",
+			flaggedPaths: inspection?.flaggedPaths ?? [],
+			flaggedPathCount: inspection?.flaggedPathCount ?? 0,
 		}
 	})
 }
@@ -257,7 +270,15 @@ export async function resolveReviewTarget(
 		} else {
 			const remote = await selectedRemote(root, options)
 			if (request.fetch) await fetchRemote(root, remote.name, options.signal)
-			tipSha = await resolveCommit(root, "HEAD", options.signal)
+			try {
+				tipSha = await resolveCommit(root, "HEAD", options.signal)
+			} catch (error) {
+				if (!(error instanceof ReviewTargetError) || error.code !== "unknown_revision") throw error
+				throw new ReviewTargetError(
+					"no_commits",
+					"No commits yet. Make a first commit before running a working-tree review.",
+				)
+			}
 			baseSha = tipSha
 		}
 

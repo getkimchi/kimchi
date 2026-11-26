@@ -14,7 +14,7 @@ cleanupStaleReviewSnapshots(options: CleanupStaleReviewSnapshotsOptions): Promis
 
 `parseReviewTargetArgs` accepts tokens after `/review` for a bare invocation, `working-tree`, and `branch <ref>` with `--base <ref>`, `--include-working-tree`, and `--fetch`. A branch base may be omitted only when base suggestion can resolve it. Panel-selection options are explicitly reserved for their later parser, not silently accepted by stage 2. Ref values beginning with an option prefix are rejected.
 
-The bare-choice result always contains Working tree followed by Branch and includes explicit command syntax for clients without a picker. Working tree is preselected when non-ignored or potentially hidden edits exist; Branch is preselected otherwise. `workingTreeStatus` is `clean`, `edits`, or `possible-edits`. The last state reports capped `flaggedPaths` plus their total count for index entries with assume-unchanged or skip-worktree. Rendering and dispatch remain surface concerns.
+The bare-choice result always contains Working tree followed by Branch and includes explicit command syntax for clients without a picker. Every choice has an `available` flag. An available Working tree is preselected when non-ignored or potentially hidden edits exist; Branch is preselected otherwise. If working-tree preflight finds an applicable content filter or working-tree encoding, Working tree instead has `available: false`, an `unavailableReason`, and no preselection, while Branch stays available so users can choose a committed comparison. `workingTreeStatus` is `clean`, `edits`, or `possible-edits`. The last state reports capped `flaggedPaths` plus their total count for index entries with assume-unchanged or skip-worktree, and also covers preflight checks stopped before status inspection. Rendering and dispatch remain surface concerns.
 
 `ResolvedReviewScope` contains the original ref spellings and selected fully qualified base ref, immutable base/tip/head object IDs, target kind, whether the head is a snapshot, changed/anchorable/unanchorable file counts, context paths, anchor source, and structured limitations. `ResolvedReviewTarget.cleanup`, the standalone cleanup function, and stale cleanup remove only private snapshot refs that still match their expected head.
 
@@ -38,7 +38,7 @@ Without provider metadata the resolver reads the symbolic ref `refs/remotes/<rem
 
 No fetch, promisor hydration, or provider call occurs implicitly. `--fetch` runs `git fetch --no-tags --no-recurse-submodules <remote>` for the selected configured remote before refs are resolved and pinned, and permits subsequent object reads in the same resolution to fetch promised missing objects. Tests use local filesystem transports only. `--fetch` intentionally changes `FETCH_HEAD` and may change that remote's tracking refs; all other operations are read-only with respect to user refs except the private snapshot ref below.
 
-Branch refs never use Git's tag-aware shorthand precedence. A ref already qualified under `refs/heads/` or `refs/remotes/` resolves only itself. Otherwise the candidates are `refs/heads/<name>` followed by `refs/remotes/<name>`. Multiple existing candidates are an error, and any unqualified same-named tag makes a branch request ambiguous even when no branch candidate exists. The error names the candidates. Option-like refs are rejected.
+Branch refs never use Git's tag-aware shorthand precedence. A ref already qualified under `refs/heads/` or `refs/remotes/` resolves only itself. Otherwise the candidates are `refs/heads/<name>` followed by `refs/remotes/<name>`. Multiple existing candidates are an error, and an unqualified same-named tag alongside a branch or remote candidate also makes a branch request ambiguous. The error names the candidates. A name that exists only as a tag instead reports that it is a tag, not a branch, and suggests using it as `--base`. Option-like refs are rejected.
 
 A base follows the same local/remote disambiguation, but may also be an unqualified or fully qualified lightweight or annotated tag, or a full object ID. A base name collision remains an error; qualification disambiguates it. A tag alone is not silently used as a branch.
 
@@ -66,6 +66,7 @@ The following inputs fail explicitly rather than dropping content:
 
 - unmerged paths;
 - staged, unstaged, untracked, or differently captured submodule revisions;
+- working-tree requests before the first commit (`no_commits`);
 - sparse checkouts;
 - an applicable configured filter or working-tree encoding on an in-scope working-tree path;
 - assume-unchanged or skip-worktree index paths;

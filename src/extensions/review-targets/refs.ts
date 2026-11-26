@@ -47,6 +47,12 @@ export async function resolveTargetRevision(
 	if (!fullRef && kind === "branch") candidates.push(tagRef)
 	const existing: string[] = []
 	for (const candidate of candidates) if (await refExists(root, candidate, signal)) existing.push(candidate)
+	if (kind === "branch" && existing.length === 1 && existing[0] === tagRef) {
+		throw new ReviewTargetError(
+			"unknown_revision",
+			`"${input}" is a tag, not a branch. Use a branch ref, or pass the tag as --base.`,
+		)
+	}
 	if (existing.length !== 1 || (kind === "branch" && existing.includes(tagRef))) {
 		if (existing.length > 0) {
 			throw new ReviewTargetError(

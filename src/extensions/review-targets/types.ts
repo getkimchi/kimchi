@@ -36,7 +36,10 @@ export interface ReviewBaseSuggestion {
 
 export interface ReviewTargetChoice {
 	kind: "working-tree" | "branch"
+	available: boolean
 	preselected: boolean
+	/** Explains the target's unavailable state when available is false. */
+	unavailableReason?: string
 	baseSuggestion?: ReviewBaseSuggestion
 	/** Branch can still be chosen, but its command must include --base. */
 	requiresExplicitBase?: boolean

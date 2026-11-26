@@ -316,6 +316,42 @@ describe("review target resolution", () => {
 		expect(choices.choices[1].preselected).toBe(false)
 	})
 
+	it("keeps branch choices usable when a filtered working-tree edit is present", async () => {
+		initialize({ ".gitattributes": "*.bin filter=lfs\n", "a.txt": "base\n" })
+		git(repo, "config", "filter.lfs.clean", "git-lfs clean -- %f")
+		git(repo, "checkout", "-b", "feature")
+		write(repo, "a.txt", "branch change\n")
+		git(repo, "commit", "-am", "change")
+		git(repo, "checkout", "main")
+		write(repo, "x.bin", "blob\n")
+
+		const choices = await getReviewTargetChoices({ kind: "bare", fetch: false }, { root: repo })
+		expect(choices.choices[0]).toMatchObject({
+			kind: "working-tree",
+			available: false,
+			preselected: false,
+			unavailableReason: expect.stringContaining("x.bin (filter=lfs)"),
+		})
+		expect(choices.choices[1]).toMatchObject({ kind: "branch", available: true, preselected: true })
+		const branch = await resolve({
+			kind: "branch",
+			branch: "feature",
+			base: "main",
+			includeWorkingTree: false,
+			fetch: false,
+		})
+		expect(branch.scope.files).toEqual({ changed: 1, anchorable: 1, unanchorable: 0 })
+		await branch.cleanup()
+	})
+
+	it("explains working-tree review before the first commit", async () => {
+		write(repo, "file.txt", "untracked\n")
+		await expect(resolve({ kind: "working-tree", fetch: false })).rejects.toMatchObject({
+			code: "no_commits",
+			message: "No commits yet. Make a first commit before running a working-tree review.",
+		})
+	})
+
 	it("pins a remote tracking comparison at the merge base and suggests remote HEAD or a known target", async () => {
 		const base = initialize()
 		git(repo, "checkout", "-b", "feature")
@@ -868,7 +904,7 @@ describe("review target resolution", () => {
 	it.each([
 		"choices",
 		"resolution",
-	] as const)("rejects executable conversion filters before %s can invoke them", async (operation) => {
+	] as const)("handles executable conversion filters safely before %s", async (operation) => {
 		initialize({ ".gitattributes": "*.txt filter=probe\n", "file.txt": "base\n" })
 		const marker = join(sandbox, `filter-${operation}.log`)
 		const filter = join(sandbox, `filter-${operation}.sh`)
@@ -881,11 +917,19 @@ describe("review target resolution", () => {
 		const index = readFileSync(indexPath)
 		const head = git(repo, "rev-parse", "HEAD")
 		const files = fileDigests(repo)
-		const pending =
-			operation === "choices"
-				? getReviewTargetChoices({ kind: "bare", fetch: false }, { root: repo })
-				: resolve({ kind: "working-tree", fetch: false })
-		await expect(pending).rejects.toMatchObject({ code: "unsupported_content_filter" })
+		if (operation === "choices") {
+			const choices = await getReviewTargetChoices({ kind: "bare", fetch: false }, { root: repo })
+			expect(choices.choices[0]).toMatchObject({
+				available: false,
+				preselected: false,
+				unavailableReason: expect.stringContaining("file.txt (filter=probe)"),
+			})
+			expect(choices.choices[1]).toMatchObject({ available: true, preselected: true })
+		} else {
+			await expect(resolve({ kind: "working-tree", fetch: false })).rejects.toMatchObject({
+				code: "unsupported_content_filter",
+			})
+		}
 		expect(existsSync(marker)).toBe(false)
 		expect(readFileSync(indexPath).equals(index)).toBe(true)
 		expect(git(repo, "rev-parse", "HEAD")).toBe(head)
@@ -926,6 +970,17 @@ describe("review target resolution", () => {
 		expect(existsSync(marker)).toBe(false)
 		await target.cleanup()
 		expect(existsSync(marker)).toBe(false)
+	})
+
+	it("reports a tag-only name as a tag rather than an ambiguous branch", async () => {
+		initialize()
+		git(repo, "tag", "v1")
+		await expect(
+			resolve({ kind: "branch", branch: "v1", base: "main", includeWorkingTree: false, fetch: false }),
+		).rejects.toMatchObject({
+			code: "unknown_revision",
+			message: '"v1" is a tag, not a branch. Use a branch ref, or pass the tag as --base.',
+		})
 	})
 
 	it("rejects ambiguous branch names while allowing qualified branches and tag or commit bases", async () => {
