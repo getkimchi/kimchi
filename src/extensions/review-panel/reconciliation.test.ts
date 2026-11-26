@@ -13,7 +13,7 @@ import type { ResolvedReviewTarget } from "../review-targets/types.js"
 import { checkpointReviewPanelFallback, finalizeReviewPanel } from "./finalize.js"
 import { type ReviewLensId, resolveReviewPanel } from "./lenses.js"
 import { readFinalFindings, readFindingWriter, reviewPanelPaths, serializeFinalFindings } from "./output.js"
-import { validateSemanticReconciliation } from "./reconciliation.js"
+import { parseSemanticReconciliation, validateSemanticReconciliation } from "./reconciliation.js"
 import { assertReviewPanelIdentity, coverageFor, createInitialPanelState, ReviewPanelStateStore } from "./state.js"
 import { REVIEW_RECONCILIATION_VERSION, type ReviewPanelCandidate, type SemanticReconciliation } from "./types.js"
 
@@ -116,6 +116,14 @@ describe("review panel reconciliation and fallback", () => {
 	})
 
 	afterEach(() => rmSync(sandbox, { recursive: true, force: true }))
+
+	it("accepts one surrounding markdown fence but rejects prose and a second JSON value", () => {
+		const json = '{"schema_version":"review-reconciliation/v1","findings":[],"decisions":[],"threads":[]}'
+		expect(parseSemanticReconciliation(`\`\`\`json\n${json}\n\`\`\``)).toEqual(JSON.parse(json))
+		expect(parseSemanticReconciliation(`\`\`\`\n${json}\n\`\`\``)).toEqual(JSON.parse(json))
+		expect(() => parseSemanticReconciliation(`Result:\n\`\`\`json\n${json}\n\`\`\``)).toThrow(SyntaxError)
+		expect(() => parseSemanticReconciliation(`\`\`\`json\n${json}\n${json}\n\`\`\``)).toThrow(SyntaxError)
+	})
 
 	async function makeStore(candidates: ReviewPanelCandidate[]): Promise<ReviewPanelStateStore> {
 		const lenses = [...new Set(candidates.map((entry) => entry.lens))]

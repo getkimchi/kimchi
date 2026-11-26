@@ -44,9 +44,11 @@ function requireKeys(value: Record<string, unknown>, keys: readonly string[], la
 }
 
 export function parseSemanticReconciliation(responseText: string): unknown {
-	// Deliberately strict: explanatory prose or a second JSON value makes the
-	// verifier output invalid and leaves the deterministic fallback intact.
-	return JSON.parse(responseText.trim())
+	// One complete Markdown fence is transport formatting. Explanatory prose,
+	// additional fences, or a second JSON value still select the deterministic fallback.
+	const trimmed = responseText.trim()
+	const fenced = /^```(?:json)?[\t ]*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed)
+	return JSON.parse(fenced?.[1] ?? trimmed)
 }
 
 export interface ValidatedReconciliation {
