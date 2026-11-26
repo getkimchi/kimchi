@@ -74,7 +74,7 @@ function writeAttachment(resultsDir, logPath) {
 	return { name: basename(logPath), source, type: "text/plain" }
 }
 
-function githubRunUrl() {
+export function githubRunUrl() {
 	const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT } = process.env
 	if (!GITHUB_SERVER_URL || !GITHUB_REPOSITORY || !GITHUB_RUN_ID || !GITHUB_RUN_ATTEMPT) return undefined
 	return `${GITHUB_SERVER_URL.replace(/\/$/, "")}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}`

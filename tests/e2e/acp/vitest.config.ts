@@ -14,6 +14,7 @@ const SERIAL = ["tests/e2e/acp/mcp*.test.ts", "tests/e2e/acp/oauth*.test.ts"]
 export default withAllureReporter(
 	defineConfig({
 		test: {
+			retry: process.env.CI ? 2 : 0,
 			testTimeout: 120_000,
 			projects: [
 				{

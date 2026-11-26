@@ -9,6 +9,8 @@ const stubPath = fileURLToPath(new URL("./src/__mocks__/earendil-clipboard-image
 
 const config = defineConfig({
 	test: {
+		// Retry only in CI so TestOps can identify passes recovered by a retry.
+		retry: process.env.CI ? 2 : 0,
 		// Ignore git worktree copies used for bench/repro runs so targeted test
 		// commands don't execute the same suite multiple times.
 		exclude: [

@@ -1,12 +1,12 @@
-import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { defineConfig, mergeConfig, type ViteUserConfig } from "vitest/config"
 
 type VitestConfig = ViteUserConfig
 
 /**
- * Keep ordinary test runs unchanged; add TestOps-supported JUnit output only when requested.
- * Prefer Vitest's built-in reporter over allure-vitest's setup and custom runner: it preserves
- * test identity, timing, and failure output without those extra worker-lifecycle integrations.
+ * Keep ordinary test runs unchanged; add native Allure results only when requested.
+ * Vitest 4's public onTestCaseResult API preserves retry diagnostics without
+ * allure-vitest's worker setup files or custom runner.
  */
 export function withAllureReporter(config: VitestConfig, resultsDir = process.env.ALLURE_RESULTS): VitestConfig {
 	if (!resultsDir) return config
@@ -14,7 +14,13 @@ export function withAllureReporter(config: VitestConfig, resultsDir = process.en
 		config,
 		defineConfig({
 			test: {
-				reporters: ["default", ["junit", { outputFile: join(resultsDir, "junit.xml") }]],
+				reporters: [
+					"default",
+					[
+						fileURLToPath(new URL("./allure-vitest-reporter.js", import.meta.url)),
+						{ resultsDir },
+					],
+				],
 			},
 		}),
 	)

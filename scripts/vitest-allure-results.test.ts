@@ -15,11 +15,14 @@ it("leaves Vitest config unchanged when Allure reporting is not requested", () =
 	expect(withAllureReporter(config, "")).toBe(config)
 })
 
-it("adds JUnit output without registering the native Allure runner or setup", () => {
+it("adds native Allure output without registering the native Allure runner or setup", () => {
 	const config = defineConfig({ test: { setupFiles: ["./tests/setup/existing.ts"] } })
 	const enabled = withAllureReporter(config, "allure-results/unit")
 	expect(enabled.test?.setupFiles).toEqual(["./tests/setup/existing.ts"])
-	expect(enabled.test?.reporters).toEqual(["default", ["junit", { outputFile: "allure-results/unit/junit.xml" }]])
+	expect(enabled.test?.reporters).toEqual([
+		"default",
+		[fileURLToPath(new URL("../tests/setup/allure-vitest-reporter.js", import.meta.url)), { resultsDir: "allure-results/unit" }],
+	])
 })
 
 it.each([
