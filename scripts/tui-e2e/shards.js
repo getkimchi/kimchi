@@ -11,7 +11,7 @@ export function planShards(stems, timings, total) {
 	const cost = (stem) => (typeof timings[stem] === "number" ? timings[stem] : fallback)
 
 	const shards = Array.from({ length: total }, () => ({ stems: [], seconds: 0 }))
-	const ordered = [...stems].sort((a, b) => cost(b) - cost(a) || a.localeCompare(b))
+	const ordered = [...stems].sort((a, b) => cost(b) - cost(a) || (a < b ? -1 : 1))
 	for (const stem of ordered) {
 		const lightest = shards.reduce((best, shard) => (shard.seconds < best.seconds ? shard : best))
 		lightest.stems.push(stem)

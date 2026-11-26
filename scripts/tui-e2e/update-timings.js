@@ -55,37 +55,35 @@ export function runIdsWithReports(artifacts) {
 		.map((artifact) => String(artifact.workflow_run.id))
 }
 
-function fail(message) {
-	console.error(`[tui-timings] ${message}`)
-	process.exit(1)
-}
+class TimingsError extends Error {}
 
 function gh(args) {
 	const result = spawnSync("gh", args, { cwd: repoRoot, encoding: "utf8" })
 	if (result.error?.code === "ENOENT") {
-		fail("needs the GitHub CLI. Install it from https://cli.github.com, then run: gh auth login")
+		throw new TimingsError("needs the GitHub CLI. Install it from https://cli.github.com, then run: gh auth login")
 	}
-	if (result.status !== 0) fail(`gh ${args[0]} ${args[1]} failed:\n${result.stderr.trim()}`)
+	if (result.status !== 0) throw new TimingsError(`gh ${args[0]} ${args[1]} failed:\n${result.stderr.trim()}`)
 	return result.stdout
 }
 
 // A run that is still going, or was cancelled early, has only some reports.
+// A run that gh cannot show (for example a deleted one) is skipped.
 function latestFinishedRun() {
 	const artifacts = JSON.parse(
 		gh(["api", `repos/{owner}/{repo}/actions/artifacts?name=${FIRST_REPORT}&per_page=20`]),
 	).artifacts
 	for (const runId of runIdsWithReports(artifacts)) {
-		const { status } = JSON.parse(gh(["run", "view", runId, "--json", "status"]))
-		if (status === "completed") return runId
+		try {
+			const { status } = JSON.parse(gh(["run", "view", runId, "--json", "status"]))
+			if (status === "completed") return runId
+		} catch (error) {
+			if (!(error instanceof TimingsError)) throw error
+			console.error(`[tui-timings] skipping run ${runId}: ${error.message}`)
+		}
 	}
-	fail("no finished CI run has TUI timing reports. Reports are kept for 7 days. Run CI on a PR that changes code.")
-}
-
-function download(runId) {
-	const folder = mkdtempSync(join(tmpdir(), "tui-timings-"))
-	console.log(`[tui-timings] downloading reports from CI run ${runId}`)
-	gh(["run", "download", runId, "--pattern", "tui-e2e-report-*", "--dir", folder])
-	return folder
+	throw new TimingsError(
+		"no finished CI run has TUI timing reports. Reports are kept for 7 days. Run CI on a PR that changes code.",
+	)
 }
 
 function jsonFilesIn(folder) {
@@ -96,26 +94,46 @@ function jsonFilesIn(folder) {
 	})
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-	const target = parseTarget(process.argv[2])
-	if (target.kind === "folder" && !existsSync(target.folder)) fail(`folder not found: ${target.folder}`)
+function updateFrom(folder) {
+	const measurements = jsonFilesIn(folder).map((path) => JSON.parse(readFileSync(path, "utf8")))
+	if (measurements.length === 0) throw new TimingsError(`no TUI timing reports found in ${folder}`)
+	const current = JSON.parse(readFileSync(timingsPath, "utf8"))
+	const stems = readdirSync(tuiDir)
+		.filter((name) => name.endsWith(".test.ts"))
+		.map((name) => name.replace(/\.test\.ts$/, ""))
+	const merged = mergeTimings(current.files, measurements, stems)
+	const { updated, added, removed } = describeChanges(current.files, merged)
+	current.files = merged
+	writeFileSync(timingsPath, `${JSON.stringify(current, null, "\t")}\n`)
+	console.log(
+		`[tui-timings] ${measurements.length} report(s): ${updated} updated, ${added} added, ${removed} removed. Commit tests/e2e/tui/timings.json.`,
+	)
+}
+
+function main(arg) {
+	const target = parseTarget(arg)
+	if (target.kind === "folder") {
+		if (!existsSync(target.folder)) throw new TimingsError(`folder not found: ${target.folder}`)
+		updateFrom(target.folder)
+		return
+	}
 	const runId = target.kind === "latest" ? latestFinishedRun() : target.runId
-	const folder = target.kind === "folder" ? target.folder : download(runId)
+	const folder = mkdtempSync(join(tmpdir(), "tui-timings-"))
 	try {
-		const measurements = jsonFilesIn(folder).map((path) => JSON.parse(readFileSync(path, "utf8")))
-		if (measurements.length === 0) fail(`no TUI timing reports found in ${folder}`)
-		const current = JSON.parse(readFileSync(timingsPath, "utf8"))
-		const stems = readdirSync(tuiDir)
-			.filter((name) => name.endsWith(".test.ts"))
-			.map((name) => name.replace(/\.test\.ts$/, ""))
-		const merged = mergeTimings(current.files, measurements, stems)
-		const { updated, added, removed } = describeChanges(current.files, merged)
-		current.files = merged
-		writeFileSync(timingsPath, `${JSON.stringify(current, null, "\t")}\n`)
-		console.log(
-			`[tui-timings] ${measurements.length} report(s): ${updated} updated, ${added} added, ${removed} removed. Commit tests/e2e/tui/timings.json.`,
-		)
+		console.log(`[tui-timings] downloading reports from CI run ${runId}`)
+		gh(["run", "download", runId, "--pattern", "tui-e2e-report-*", "--dir", folder])
+		updateFrom(folder)
 	} finally {
-		if (target.kind !== "folder") rmSync(folder, { recursive: true, force: true })
+		rmSync(folder, { recursive: true, force: true })
+	}
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+	try {
+		main(process.argv[2])
+	} catch (error) {
+		if (!(error instanceof TimingsError)) throw error
+		console.error(`[tui-timings] ${error.message}`)
+		process.exitCode = 1
 	}
 }

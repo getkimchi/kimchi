@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process"
+import { mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 import { describeChanges, mergeTimings, parseTarget, runIdsWithReports } from "./update-timings.js"
 
@@ -81,5 +85,42 @@ describe("runIdsWithReports", () => {
 
 	it("returns nothing when no run has reports", () => {
 		expect(runIdsWithReports([])).toEqual([])
+	})
+})
+
+describe("update-timings CLI errors", () => {
+	const cli = resolve(import.meta.dirname, "update-timings.js")
+
+	function run(args: string[], env: NodeJS.ProcessEnv) {
+		return spawnSync(process.execPath, [cli, ...args], { encoding: "utf8", env: { ...process.env, ...env } })
+	}
+
+	it("explains a missing GitHub CLI and leaves no temp folder behind", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "timings-cli-test-"))
+		try {
+			const result = run(["123"], { PATH: "/nonexistent", TMPDIR: tmp })
+			expect(result.status).toBe(1)
+			expect(result.stderr).toContain("needs the GitHub CLI")
+			expect(readdirSync(tmp)).toEqual([])
+		} finally {
+			rmSync(tmp, { recursive: true, force: true })
+		}
+	})
+
+	it("reports an empty folder without changing the timings", () => {
+		const empty = mkdtempSync(join(tmpdir(), "timings-cli-empty-"))
+		try {
+			const result = run([empty], {})
+			expect(result.status).toBe(1)
+			expect(result.stderr).toContain("no TUI timing reports found")
+		} finally {
+			rmSync(empty, { recursive: true, force: true })
+		}
+	})
+
+	it("reports a missing folder", () => {
+		const result = run(["/nonexistent/tui-timings"], {})
+		expect(result.status).toBe(1)
+		expect(result.stderr).toContain("folder not found")
 	})
 })

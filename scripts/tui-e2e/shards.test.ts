@@ -39,6 +39,12 @@ describe("planShards", () => {
 		expect(shards.map((shard) => shard.stems)).toEqual([["a"], [], []])
 	})
 
+	it("breaks ties by plain character order, not by locale", () => {
+		// localeCompare puts "a" before "B"; character order puts "B" first.
+		const shards = planShards(["a", "B"], { a: 5, B: 5 }, 2)
+		expect(shards.map((shard) => shard.stems)).toEqual([["B"], ["a"]])
+	})
+
 	it("gives the same plan for the same files in any order", () => {
 		const timings = { a: 4, b: 4, c: 2, d: 2 }
 		expect(planShards(["d", "c", "b", "a"], timings, 2)).toEqual(planShards(["a", "b", "c", "d"], timings, 2))

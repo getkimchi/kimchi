@@ -41,7 +41,7 @@ Run one TUI file by its name fragment:
 node scripts/run-tui-e2e.js mcp-oauth
 ```
 
-In CI, the MCP TUI and ACP files run inside the `tui-e2e` and `acp-e2e` jobs of the `CI` workflow, with every other TUI and ACP file. The `mcp-conformance` job runs the conformance scenarios. All three run on pull requests that change MCP-relevant files, and on manual dispatch.
+In CI, the MCP TUI and ACP files run inside the `tui-e2e` and `acp-e2e` jobs of the `CI` workflow, with every other TUI and ACP file. The `mcp-conformance` job runs the conformance scenarios. Each job has its own path filter (`scripts/ci/changes.js`, see [ci.md](ci.md)), and all three run on manual dispatch.
 
 ## Live provider checks
 

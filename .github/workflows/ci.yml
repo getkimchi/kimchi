@@ -1,7 +1,7 @@
 name: CI
 
-# No push trigger: the merge queue (squash, all checks green, no bypass) has
-# already tested the exact tree that lands on master.
+# No push trigger: the merge queue (squash, master-checks green, no bypass)
+# has already tested the exact tree that lands on master.
 on:
   pull_request:
   merge_group:
@@ -138,7 +138,8 @@ jobs:
         **/tui-traces/**
 
   # Advisory: the gate does not wait for it. It also runs in the merge queue,
-  # because PR-time runs miss combinations created when master moves on.
+  # where PR-time runs miss combinations created when master moves on. A
+  # failure there blocks nothing and shows only in the Actions tab.
   acp-e2e:
     needs: [changes, build]
     if: needs.changes.outputs.acp == 'true'

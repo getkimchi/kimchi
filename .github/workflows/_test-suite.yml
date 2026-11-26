@@ -76,7 +76,7 @@ jobs:
       # Artifacts do not keep file modes.
       - name: Restore executable bits
         if: inputs.use-build
-        run: chmod +x dist/bin/kimchi bin/proxy-helper
+        run: chmod +x dist/bin/kimchi dist/share/kimchi/bin/proxy-helper bin/proxy-helper
 
       - name: Run ${{ inputs.name }}
         env:

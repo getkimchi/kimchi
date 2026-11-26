@@ -6,6 +6,8 @@
 // must not use backslash escapes: "[.]" stands for a literal dot, and the
 // leading class stands for the path separator on any platform.
 export function exactFileFilter(stem) {
+	// "]", "^" and "\" change meaning inside a character class.
+	if (/[\]^\\]/.test(stem)) throw new Error(`TUI test file name cannot contain ], ^ or \\: ${stem}`)
 	const literal = stem.replace(/[^A-Za-z0-9_-]/g, (char) => `[${char}]`)
 	return `[^A-Za-z0-9_-]${literal}[.]test[.]ts$`
 }

@@ -1,7 +1,9 @@
 # CI
 
-All pull request checks run in one workflow, `.github/workflows/ci.yml`. The
-perf gate (`perf-gate.yml`) and the release workflows are separate.
+The build and test checks for pull requests run in one workflow,
+`.github/workflows/ci.yml`. Other workflows are separate: the perf gate
+(`perf-gate.yml`), MCP live checks for labeled PRs (`mcp-live.yml`), PR
+labeling and welcome messages, and the release workflows.
 
 ## What blocks a merge
 
@@ -23,20 +25,26 @@ The gate uses `if: always()`. Without it, a failed job makes the gate
 
 ## Advisory suites
 
-These jobs run after `build` and use its binary. They do not block merges,
-but a failure turns the CI run red.
+These jobs do not block merges, but a failure turns the CI run red. The
+three e2e suites run after `build` and use its binary.
 
 | Job | When it runs |
 |---|---|
 | `tui-e2e` | 6 shards. PRs whose change can affect the TUI |
-| `acp-e2e` | PRs and the merge queue, when the change can affect ACP |
+| `acp-e2e` | PRs whose change can affect ACP, and every merge queue run |
 | `mcp-conformance` | PRs whose change can affect the MCP client |
 | `acp-wire-tripwire` | every PR |
 | `documents-cross-os` | every PR, on macOS and Windows |
 
 The `changes` job decides which suites a PR needs. The rules are in
 `scripts/ci/changes.js`, with tests beside it. Docs-only changes skip all
-three e2e suites. The merge queue and manual runs do not filter.
+three e2e suites. In the merge queue and in manual runs the `changes` job
+does not filter, but `tui-e2e` and `mcp-conformance` still skip the merge
+queue.
+
+A suite result in the merge queue blocks nothing. The queue merges once
+`master-checks` passes, so an `acp-e2e` failure there shows only in the
+Actions tab.
 
 ## Where to change what
 

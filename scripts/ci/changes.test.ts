@@ -53,6 +53,10 @@ describe("suitesToRun", () => {
 		expect(suitesToRun(["tests/e2e/mcp/conformance-client.ts"])).toEqual({ tui: false, acp: false, mcp: true })
 	})
 
+	it("runs TUI and ACP for the MCP fixture server, which their MCP tests spawn", () => {
+		expect(suitesToRun(["tests/e2e/mcp/fixture-server.mjs"])).toEqual({ tui: true, acp: true, mcp: true })
+	})
+
 	it("runs MCP conformance for ACP support files, which the client imports", () => {
 		expect(suitesToRun(["tests/e2e/acp/support/acp-fixture.ts"]).mcp).toBe(true)
 	})

@@ -113,7 +113,8 @@ function testsToRun(shard) {
 		)
 	}
 	if (toRun.length === 0) {
-		process.stderr.write("[tui-e2e] all tests are quarantined; nothing to run\n")
+		const reason = unskipped.length === 0 ? "all tests are quarantined" : "this shard has no files"
+		process.stderr.write(`[tui-e2e] ${reason}; nothing to run\n`)
 		process.exit(0)
 	}
 	return { stems: toRun, plannedSeconds }

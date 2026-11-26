@@ -42,4 +42,8 @@ describe("exactFileFilter", () => {
 			expect(paths.filter((candidate) => filter.test(candidate))).toEqual([path])
 		}
 	})
+
+	it.each(["a]b", "a^b", "a\\b"])("rejects a file name it cannot match safely: %s", (stem) => {
+		expect(() => exactFileFilter(stem)).toThrow(stem)
+	})
 })

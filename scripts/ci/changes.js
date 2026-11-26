@@ -27,7 +27,16 @@ const NOT_CODE = [
 // Per suite: files that suite does not need to see. A suite runs when at
 // least one changed file is outside its list.
 export const SUITE_IGNORES = {
-	tui: [...NOT_CODE, "src/**/*.test.ts", "tests/unit/**", "tests/smoke/**", "tests/e2e/acp/**", "tests/e2e/mcp/**"],
+	// TUI and ACP MCP tests spawn tests/e2e/mcp/fixture-server.mjs, so they
+	// ignore only the conformance client from that folder.
+	tui: [
+		...NOT_CODE,
+		"src/**/*.test.ts",
+		"tests/unit/**",
+		"tests/smoke/**",
+		"tests/e2e/acp/**",
+		"tests/e2e/mcp/conformance-client.ts",
+	],
 	// ACP fixtures import tests/e2e/tui/support/, so only the TUI test files are ignored.
 	acp: [
 		...NOT_CODE,
@@ -35,7 +44,7 @@ export const SUITE_IGNORES = {
 		"tests/unit/**",
 		"tests/smoke/**",
 		"tests/e2e/tui/*.test.ts",
-		"tests/e2e/mcp/**",
+		"tests/e2e/mcp/conformance-client.ts",
 	],
 	// The conformance client imports TUI and ACP support code, so only their test files are ignored.
 	mcp: [
