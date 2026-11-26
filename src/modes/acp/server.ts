@@ -1223,11 +1223,18 @@ export class KimchiAcpAgent {
 			)
 		}
 		session.setThinkingLevel(value)
-		if (record.appMode && getClientOptedIntoModelEffort(this.clientCapabilities) && !isAutoRoutedModel(session.model)) {
-			const modelId = refFromModel(session.model)
-			record.effortByModel.set(modelId, value)
-			session.sessionManager.appendCustomEntry(MODEL_EFFORT_SELECTION_ENTRY_TYPE, { modelId, value })
-		}
+		this.rememberModelEffort(record, value)
+	}
+
+	/** Keep App-mode effort memory aligned with both user and harness selections. */
+	private rememberModelEffort(record: SessionRecord, value: AgentSession["thinkingLevel"]): void {
+		const { session } = record
+		if (!session.model || !record.appMode || !getClientOptedIntoModelEffort(this.clientCapabilities)) return
+		if (isAutoRoutedModel(session.model)) return
+		const modelId = refFromModel(session.model)
+		if (record.effortByModel.get(modelId) === value) return
+		record.effortByModel.set(modelId, value)
+		session.sessionManager.appendCustomEntry(MODEL_EFFORT_SELECTION_ENTRY_TYPE, { modelId, value })
 	}
 
 	/** Resolve the current concrete model through session memory, then the
@@ -1247,12 +1254,7 @@ export class KimchiAcpAgent {
 		const effort = parseModelThinkingLevel(clamped)
 		if (!effort) return
 		if (session.thinkingLevel !== effort) session.setThinkingLevel(effort)
-		record.effortByModel.set(modelId, effort)
-		if (remembered !== effort) {
-			// Pin the baseline too: later defaults must not rewrite this existing session.
-			// Selections are session-scoped and intentionally survive App-mode metadata changes.
-			session.sessionManager.appendCustomEntry(MODEL_EFFORT_SELECTION_ENTRY_TYPE, { modelId, value: effort })
-		}
+		this.rememberModelEffort(record, effort)
 	}
 
 	private async doSetModel(record: SessionRecord, value: string, persist = true): Promise<string> {
@@ -2780,6 +2782,11 @@ export class KimchiAcpAgent {
 						emitRunEnd(this.conn, sessionId, stopReason)
 					}
 				}
+				return
+			}
+			case "thinking_level_changed": {
+				if (this.subagentRegistry.has(sessionId)) return
+				this.rememberModelEffort(entry, event.level)
 				return
 			}
 			case "message_start": {

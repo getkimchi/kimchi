@@ -1,5 +1,6 @@
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import * as acpState from "../../modes/acp/state.js"
 import { isHarnessSteer } from "../steer-marker.js"
 import {
 	ASSISTANT_OUTPUT_WITHHELD,
@@ -70,6 +71,28 @@ function simulateSessionWithPriorToolCall(guard: ContinuationNudge): void {
 	guard.recordToolCall()
 	guard.resetForNewUserInput()
 }
+
+describe("length nudge compatibility", () => {
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("preserves native length nudging on ACP", () => {
+		vi.spyOn(acpState, "isAcpSessionHost").mockReturnValue(true)
+		const message = { ...textOnlyMessage, stopReason: "length" as const }
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		expect(guard.evaluateTurn(message)).toBe(true)
+	})
+
+	it("keeps length nudging suppressed for native RPC", () => {
+		vi.spyOn(acpState, "isAcpSessionHost").mockReturnValue(false)
+		const message = { ...textOnlyMessage, stopReason: "length" as const }
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		expect(guard.evaluateTurn(message)).toBe(false)
+	})
+})
 
 describe("ContinuationNudge.evaluateTurn", () => {
 	// Tests in this block exercise nudge firing on text-only turns and share the
@@ -191,6 +214,12 @@ describe("ContinuationNudge.evaluateTurn", () => {
 		simulateSessionWithPriorToolCall(guard)
 		const error = { ...textOnlyMessage, stopReason: "error" as const }
 		expect(guard.evaluateTurn(error)).toBe(false)
+	})
+
+	it("does not nudge a truncated turn; the length handler owns its one continuation", () => {
+		const guard = new ContinuationNudge()
+		simulateSessionWithPriorToolCall(guard)
+		expect(guard.evaluateTurn({ ...textOnlyMessage, stopReason: "length" as const })).toBe(false)
 	})
 
 	it("does not consume a nudge slot when the turn was a provider error", () => {
@@ -792,10 +821,11 @@ describe("EmptyTurnNudge", () => {
 		expect(guard.evaluateTurn(emptyMessage)).toBe(false)
 	})
 
-	it("does not nudge when the user aborted the turn (stopReason: aborted)", () => {
+	it("does not nudge when the user aborted or an answer was truncated", () => {
 		const guard = new EmptyTurnNudge()
 		const aborted = { ...emptyMessage, stopReason: "aborted" as const }
 		expect(guard.evaluateTurn(aborted)).toBe(false)
+		expect(guard.evaluateTurn({ ...emptyMessage, stopReason: "length" as const })).toBe(false)
 	})
 
 	describe("provider error suppression", () => {

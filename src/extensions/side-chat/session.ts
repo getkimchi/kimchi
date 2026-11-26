@@ -24,6 +24,7 @@ import { extractText } from "../agents/prompt/context.js"
 import { isAutoRoutedModel } from "../auto-model/constants.js"
 import { createAutoModelRoutingExtension } from "../auto-model/index.js"
 import { getEffectiveModel } from "../auto-model/state.js"
+import { createResponseRecoveryExtension } from "../response-recovery.js"
 import { WRAP_UP_SYSTEM_PROMPT, wrapUpRequest } from "./records.js"
 import type { SideThread } from "./store.js"
 
@@ -144,7 +145,10 @@ async function createChildSession(ctx: ExtensionContext, options: ChildSessionOp
 		noContextFiles: true,
 		systemPromptOverride: () => options.systemPrompt,
 		appendSystemPromptOverride: () => options.appendSystemPrompt,
-		extensionFactories: isAutoRoutedModel(model) ? [createAutoModelRoutingExtension()] : [],
+		extensionFactories: [
+			...(isAutoRoutedModel(model) ? [createAutoModelRoutingExtension()] : []),
+			createResponseRecoveryExtension({ headlessNotices: "suppress" }),
+		],
 	})
 	await loader.reload()
 
