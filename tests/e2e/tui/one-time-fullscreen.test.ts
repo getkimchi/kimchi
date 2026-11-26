@@ -8,7 +8,10 @@ import { createKimchiFixture, createKimchiSessionController, TUI_TEST_CONFIG } f
 test.use(TUI_TEST_CONFIG)
 
 test("a regular development TUI automatically switches to fullscreen once", async ({ terminal }) => {
-	const fixture = await createKimchiFixture({ responses: [{ stream: ["Use the LRU cache."] }] })
+	const fixture = await createKimchiFixture({
+		responses: [{ stream: ["Use the LRU cache."] }],
+		pendingFullscreenMigration: true,
+	})
 	const session = createKimchiSessionController(terminal, fixture)
 
 	try {
