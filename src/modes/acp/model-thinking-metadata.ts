@@ -15,7 +15,12 @@ export interface ModelThinkingMetadata {
 	levels?: ModelThinkingLevel[]
 	currentValue: ModelThinkingLevel | null
 	defaultValue: ModelThinkingLevel | null
+	/** Alternative model-search terms from managed configuration. Clients can
+	 * match these against opaque model IDs without changing identity or routing. */
 	searchAliases?: string[]
+	/** Distinguishes built-in Auto, with dynamic route resolution and
+	 * attribution, from another managed virtual row. Both are `routed`, but a
+	 * boolean would erase Auto's existing client-visible semantics. */
 	virtual?: "auto" | "other"
 }
 
