@@ -2,10 +2,16 @@
 
 `src/extensions/review-command/` connects the target resolver, reviewer runner,
 and panel coordinator to TUI, ACP, and print JSON sessions. All three entry
-points use the same stage 2–4 workflow. ACP advertises `/review`; bare input
-returns the explicit target syntax because protocol clients have no required
-review-target picker. The TUI offers Working tree and Branch using stage 2's
-preselection and base suggestions.
+points use the same stage 2–4 workflow. Interactive `/review` is experimental:
+launch with `--enable-experimental-features` to register it in the TUI and ACP
+command lists and completions. Without that opt-in, it is an ordinary unknown
+command. The TUI offers Working tree and Branch using stage 2's preselection and
+base suggestions when enabled; bare ACP input returns the explicit target
+syntax because protocol clients have no required review-target picker.
+
+The platform's `kimchi -p --review ... '/review --manifest ...'` path is always
+registered and does not require the experimental flag. All `--review*` switches
+are hidden from `--help` but continue to parse normally.
 
 ```text
 /review working-tree [--lens <id>] [--all] [--concurrency <n>] [--fetch]

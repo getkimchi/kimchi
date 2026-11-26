@@ -36,7 +36,7 @@ for (const scenario of [
 			{
 				artifactName: `review-command-${scenario.partial ? "partial" : "complete"}`,
 				gitInit: true,
-				extraArgs: ["--yolo", "--no-approve", "--plan=false"],
+				extraArgs: ["--yolo", "--no-approve", "--plan=false", "--enable-experimental-features"],
 				seedHome: (_homeDir, workDir) => seedReviewRepository(workDir),
 				responses: reviewResponseScripts({ partial: scenario.partial }),
 			},
@@ -59,7 +59,7 @@ test("review command publishes final findings to the transcript", async ({ termi
 		{
 			artifactName: "review-command-finding-transcript",
 			gitInit: true,
-			extraArgs: ["--yolo", "--no-approve", "--plan=false"],
+			extraArgs: ["--yolo", "--no-approve", "--plan=false", "--enable-experimental-features"],
 			seedHome: (_homeDir, workDir) => {
 				seedReviewRepository(workDir)
 				writeFileSync(join(workDir, REVIEW_VALUE_FILE), "export const value = 1\nexport const changed = false\n")
@@ -95,7 +95,7 @@ test("review command interruption terminates commands, finalizes partial coverag
 		{
 			artifactName: "review-command-interrupt",
 			gitInit: true,
-			extraArgs: ["--yolo", "--no-approve", "--plan=false"],
+			extraArgs: ["--yolo", "--no-approve", "--plan=false", "--enable-experimental-features"],
 			seedHome: (homeDir, workDir) => {
 				interruption = createReviewInterruptionFixture(homeDir)
 				seedReviewRepository(workDir)

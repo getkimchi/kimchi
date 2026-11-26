@@ -13,6 +13,8 @@ import {
 import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { commandNames, newSession, prompt, waitFor } from "./support/scenarios.js"
 
+const ENABLED_REVIEW_ARGS = ["--yolo", "--no-approve", "--enable-experimental-features"]
+
 describe("ACP review command", () => {
 	let fixture: AcpFixture | undefined
 
@@ -47,7 +49,7 @@ describe("ACP review command", () => {
 						seedReviewRepository(workDir)
 						writeFileSync(join(workDir, REVIEW_VALUE_FILE), "export const value = 1\nexport const changed = false\n")
 					},
-					extraArgs: ["--yolo", "--no-approve"],
+					extraArgs: ENABLED_REVIEW_ARGS,
 				})
 				const sessionId = await newSession(fixture, fixture.workDir)
 				await waitFor(
@@ -79,12 +81,37 @@ describe("ACP review command", () => {
 	}
 
 	it(
+		"keeps /review unregistered and inert without the experimental opt-in",
+		async () => {
+			fixture = await startAcpFixture({
+				artifactName: "acp-review-command-disabled",
+				responses: [],
+				seedHome: (_homeDir, workDir) => seedReviewRepository(workDir),
+			})
+			const sessionId = await newSession(fixture, fixture.workDir)
+			await waitFor(
+				() => commandNames(fixture as AcpFixture, sessionId),
+				(names) => names.length > 0,
+			)
+			expect(commandNames(fixture, sessionId)).not.toContain("review")
+			// An unregistered command follows the ordinary unknown-command/model-prompt
+			// path; it must never dispatch the review coordinator.
+			const response = await prompt(fixture, sessionId, "/review working-tree")
+			expect(response.stopReason).not.toBe("TIMEOUT")
+			expect(JSON.stringify(fixture.client.extNotifications)).not.toContain("Review scope pinned:")
+			expect(existsSync(join(fixture.workDir, ".kimchi", "review-output"))).toBe(false)
+		},
+		STARTUP_TIMEOUT_MS + 30_000,
+	)
+
+	it(
 		"returns explicit target syntax for bare input without opening a picker",
 		async () => {
 			fixture = await startAcpFixture({
 				artifactName: "acp-review-command-bare",
 				responses: [],
 				seedHome: (_homeDir, workDir) => seedReviewRepository(workDir),
+				extraArgs: ["--enable-experimental-features"],
 			})
 			const sessionId = await newSession(fixture, fixture.workDir)
 			await prompt(fixture, sessionId, "/review")
@@ -108,7 +135,7 @@ describe("ACP review command", () => {
 						"export const value = 1\nexport const changed = true\nexport const intendedEdit = true\n",
 					)
 				},
-				extraArgs: ["--yolo", "--no-approve"],
+				extraArgs: ENABLED_REVIEW_ARGS,
 			})
 			const sessionId = await newSession(fixture, fixture.workDir)
 			await prompt(fixture, sessionId, "/review working-tree --lens spec")
@@ -150,7 +177,7 @@ describe("ACP review command", () => {
 					interruption = createReviewInterruptionFixture(homeDir)
 					seedReviewRepository(workDir)
 				},
-				extraArgs: ["--yolo", "--no-approve"],
+				extraArgs: ENABLED_REVIEW_ARGS,
 			})
 			try {
 				const sessionId = await newSession(fixture, fixture.workDir)

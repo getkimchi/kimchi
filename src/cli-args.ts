@@ -106,7 +106,7 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 	"enable-experimental-features": {
 		type: "boolean",
-		description: "Enable experimental features, such as kimchi-experimental models and the background daemon",
+		description: "Enable experimental features, such as /review, kimchi-experimental models, and the background daemon",
 	},
 	thinking: {
 		type: "string",
@@ -199,26 +199,31 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	review: {
 		type: "boolean",
 		description: "Enable review mode and its submit tools",
+		hidden: true,
 	},
 	"review-writer": {
 		type: "string",
 		description: "Writer ID for submitted review records (default: final)",
 		placeholder: "<name>",
+		hidden: true,
 	},
 	"review-writer-limit": {
 		type: "string",
 		description: "Maximum findings per non-final writer: decimal integer 1–1000 (default: 50; final is always 50)",
 		placeholder: "<n>",
+		hidden: true,
 	},
 	"review-context-dir": {
 		type: "string",
 		description: "Review context directory (default: .kimchi/review-context under the current project)",
 		placeholder: "<path>",
+		hidden: true,
 	},
 	"review-output-dir": {
 		type: "string",
 		description: "Review output directory (default: .kimchi/review-output under the current project)",
 		placeholder: "<path>",
+		hidden: true,
 	},
 	"permissions-config": {
 		type: "string",

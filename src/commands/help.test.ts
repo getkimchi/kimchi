@@ -27,6 +27,15 @@ describe("printMergedHelp", () => {
 		expect(output).toContain("--provider <name>")
 	})
 
+	it("hides internal review flags from help", async () => {
+		await printMergedHelp()
+		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n")
+		expect(output).not.toContain("--review")
+		expect(output).not.toContain("review-writer")
+		expect(output).not.toContain("review-context-dir")
+		expect(output).not.toContain("review-output-dir")
+	})
+
 	it("includes boolean flags with short aliases", async () => {
 		await printMergedHelp()
 		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n")
