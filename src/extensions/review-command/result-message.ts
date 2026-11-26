@@ -118,23 +118,6 @@ function displayPath(value: string, width: number): string {
 	return middleTruncate(shortened, width)
 }
 
-function firstSentence(description: string): string {
-	let value = sanitizeReviewDisplayText(description)
-	const boilerplate =
-		/^(?:At (?:pinned )?head\s+[a-f\d]{40}(?:[a-f\d]{24})?[:,]?\s*|Revision\s+[a-f\d]{40}(?:[a-f\d]{24})?\.?\s*)/i
-	for (;;) {
-		const stripped = value.replace(boilerplate, "").trim()
-		if (stripped === value) break
-		value = stripped
-	}
-	if (!value) return "Review finding"
-	return value.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? value
-}
-
-function shortenShas(value: string): string {
-	return value.replace(/(?<![\w])([a-f\d]{64}|[a-f\d]{40})(?![\w])/gi, (sha) => sha.slice(0, 7))
-}
-
 function inlineText(value: string, theme: Theme | undefined): string {
 	let result = ""
 	let cursor = 0
@@ -156,19 +139,49 @@ function fitVisibleLine(value: string, width: number): string {
 	return visibleWidth(value) <= availableWidth ? value : truncateToWidth(value, availableWidth, "…")
 }
 
-function findingPrefix(finding: ReviewFindingRecord): string {
-	const icon = finding.priority === "P0" ? "✖" : priorityRank(finding.priority) <= 2 ? "▲" : "●"
-	return `${icon} ${finding.priority} `
-}
-
 function findingColor(finding: ReviewFindingRecord): "error" | "warning" | "accent" {
 	return finding.priority === "P0" ? "error" : priorityRank(finding.priority) <= 2 ? "warning" : "accent"
 }
 
-function findingHeader(finding: ReviewFindingRecord, theme: Theme | undefined, width: number): string {
-	const label = findingPrefix(finding)
-	const path = fileLocation(finding, width - 1 - visibleWidth(label))
-	return ` ${theme ? theme.fg(findingColor(finding), label) : label}${theme ? theme.bold(path) : path}`
+function oneLine(value: string): string {
+	return prose(value).replace(/\s+/g, " ").trim()
+}
+
+function findingTitle(finding: ReviewFindingRecord, theme: Theme | undefined, width: number): string {
+	const label = `${finding.priority} · ${finding.type} · `
+	const title = fitVisibleLine(oneLine(finding.title), Math.max(1, width - visibleWidth(label)))
+	if (!theme) return fitVisibleLine(`${label}${title}`, width)
+	const priority = theme.fg(findingColor(finding), finding.priority)
+	const type = theme.fg("dim", finding.type)
+	return fitVisibleLine(`${priority} · ${type} · ${theme.bold(title)}`, width)
+}
+
+function compactP4Finding(finding: ReviewFindingRecord, theme: Theme | undefined, width: number): string {
+	const content = middleTruncate(`${oneLine(finding.title)} · ${fileLocation(finding, width)}`, width)
+	return theme ? theme.bold(content) : content
+}
+
+function collapsedDescription(finding: ReviewFindingRecord, theme: Theme | undefined, width: number): string[] {
+	const content = inlineText(oneLine(finding.description), theme)
+	const rows = wrap(content, width)
+	if (rows.length <= 2) return rows
+	return [rows[0] ?? "", fitVisibleLine(`${rows[1] ?? ""}…`, width)]
+}
+
+function expandedField(value: string, label: string | undefined, theme: Theme | undefined, width: number): string[] {
+	const prefix = label ? `${label} ` : ""
+	const continuation = " ".repeat(visibleWidth(prefix))
+	const paragraphs = value.split(/\r?\n\s*\r?\n/).filter((paragraph) => paragraph.trim())
+	const rows: string[] = []
+	for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
+		if (paragraphIndex > 0) rows.push("")
+		rows.push(...wrap(inlineText(prose(paragraph), theme), Math.max(1, width - visibleWidth(prefix))))
+	}
+	return rows.map((row, index) => {
+		if (!row) return ""
+		if (index === 0 && label) return `${theme ? theme.fg("dim", prefix) : prefix}${row}`
+		return `${index === 0 ? "" : continuation}${row}`
+	})
 }
 
 /** Compact or expanded presentation used only by the live TUI. */
@@ -181,41 +194,53 @@ export function renderReviewResultLines(
 ): string[] {
 	const safeWidth = Math.max(1, width - Math.max(0, outputPad))
 	const line = (value: string) => (value ? `${" ".repeat(Math.max(0, outputPad))}${value}` : "")
-	const summary = truncateToWidth(summaryLine(details), safeWidth, "…")
-	const lines = [line(theme ? theme.fg(headlineColor(details), summary) : summary)]
+	const lines: string[] = []
+	if (details.findings.length === 0) {
+		lines.push(line(theme ? theme.fg(headlineColor(details), "No issues found") : "No issues found"))
+	} else {
+		const summary = truncateToWidth(summaryLine(details), safeWidth, "…")
+		lines.push(line(theme ? theme.fg(headlineColor(details), summary) : summary))
+	}
 	const partial = partialCoverageLine(details)
 	if (partial) {
 		lines.push("", ...wrap(partial, safeWidth).map((value) => line(theme ? theme.fg("warning", value) : value)))
 	}
 	if (details.findings.length > 0) lines.push("")
-	for (const [index, finding] of sortedFindings(details.findings).entries()) {
-		lines.push(line(findingHeader(finding, theme, safeWidth)))
+	let previousPriority: Priority | undefined
+	let renderedFindings = 0
+	for (const finding of sortedFindings(details.findings)) {
+		if (renderedFindings > 0) lines.push(line(""))
+		if (finding.priority !== previousPriority) {
+			const group = theme ? theme.bold(theme.fg(findingColor(finding), finding.priority)) : finding.priority
+			lines.push(line(group))
+			previousPriority = finding.priority
+		}
+		if (!expanded && finding.priority === "P4") {
+			lines.push(line(compactP4Finding(finding, theme, safeWidth)))
+			renderedFindings++
+			continue
+		}
+		lines.push(line(findingTitle(finding, theme, safeWidth)))
+		lines.push(line(`  ${fileLocation(finding, Math.max(1, safeWidth - 2))}`))
 		if (!expanded) {
-			lines.push(line(fitVisibleLine(`  ${firstSentence(finding.description)}`, safeWidth)))
-		} else {
-			const bodyWidth = Math.max(1, Math.min(safeWidth, 100))
-			const paragraphs = finding.description.split(/\r?\n\s*\r?\n/).filter((paragraph) => paragraph.trim())
-			for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
-				const content = inlineText(shortenShas(prose(paragraph)), theme)
-				const rows = wrap(content, Math.max(1, bodyWidth - 4))
-				for (const [rowIndex, row] of rows.entries()) {
-					lines.push(line(`${rowIndex === 0 ? "  " : "    "}${row}`))
-				}
-				if (paragraphIndex < paragraphs.length - 1) lines.push(line(""))
+			for (const row of collapsedDescription(finding, theme, Math.max(1, safeWidth - 2))) {
+				lines.push(line(`  ${row}`))
 			}
-			if (finding.suggestion) {
-				const label = "Fix: "
-				const suggestion = inlineText(shortenShas(prose(finding.suggestion)), theme)
-				const rows = wrap(suggestion, Math.max(1, bodyWidth - 2 - visibleWidth(label)))
-				if (rows[0] !== undefined) {
-					lines.push(line(`  ${theme ? theme.fg("dim", label) : label}${rows[0]}`))
+		} else {
+			for (const field of [
+				{ value: finding.description, label: undefined },
+				{ value: finding.explanation, label: "Explanation:" },
+				{ value: finding.suggestion, label: "Suggestion:" },
+			]) {
+				if (!field.value) continue
+				for (const row of expandedField(field.value, field.label, theme, Math.max(1, safeWidth - 2))) {
+					lines.push(line(row ? `  ${row}` : ""))
 				}
-				for (const row of rows.slice(1)) lines.push(line(`       ${row}`))
 			}
 		}
-		if (expanded && index < details.findings.length - 1) lines.push(line(""))
+		renderedFindings++
 	}
-	const toggle = expanded ? "ctrl+o to collapse details" : "ctrl+o to expand details"
+	const toggle = expanded ? "ctrl+o to collapse details" : "ctrl+o for full details"
 	const path = displayPath(details.summaryPath, Math.max(1, safeWidth - visibleWidth(`${toggle} · report: `)))
 	const footer = fitVisibleLine(`${toggle} · report: ${path}`, safeWidth)
 	lines.push("", line(theme ? theme.fg("dim", footer) : footer))

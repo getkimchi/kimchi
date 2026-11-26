@@ -13,11 +13,14 @@ import {
 	reviewResultRenderer,
 } from "./result-message.js"
 
+const WIDTHS = [60, 80, 120] as const
+
 function finding(
 	path: string,
 	line: number,
 	priority: ReviewFindingRecord["priority"],
 	description = "A finding.",
+	overrides: Partial<ReviewFindingRecord> = {},
 ): ReviewFindingRecord {
 	return {
 		schema_version: FINDING_SCHEMA_VERSION,
@@ -33,6 +36,7 @@ function finding(
 		suggestion: "Apply the focused correction and retain the full suggestion while wrapping.",
 		priority,
 		type: "bug",
+		...overrides,
 	}
 }
 
@@ -58,7 +62,16 @@ function details(overrides: Partial<ReviewResultDetails> = {}): ReviewResultDeta
 	}
 }
 
-describe("review result message", () => {
+function plain(rows: readonly string[]): string {
+	return rows
+		.map((row) => sanitizeReviewDisplayText(row).trim())
+		.filter(Boolean)
+		.join(" ")
+		.replace(/\s+/g, " ")
+		.trim()
+}
+
+describe("legacy review result content", () => {
 	it("sorts P0 through P4, followed by path and line", () => {
 		const output = renderReviewResult(
 			details({
@@ -108,7 +121,7 @@ describe("review result message", () => {
 		expect(output).not.toContain("✔ Review done")
 	})
 
-	it("uses the zero-finding summary without a legacy no-findings block", () => {
+	it("keeps the zero-finding summary without a legacy no-findings block", () => {
 		const output = renderReviewResult(details())
 		expect(output).toContain("✔ Review done · no findings · feature → main")
 		expect(output).not.toContain("No findings.")
@@ -126,25 +139,6 @@ describe("review result message", () => {
 		expect(output.indexOf("▲ Partial coverage: spec, security did not finish.")).toBeLessThan(
 			output.indexOf("value.ts:2"),
 		)
-	})
-
-	it.each([60, 80, 100, 120])("wraps prose and suggestions with one shortened report-path row at width %i", (width) => {
-		const description =
-			"The reviewer found a behavior change whose complete explanation must remain visible after wrapping across several terminal rows."
-		const summaryPath = `/private/var/folders/review/${"long-output-segment/".repeat(6)}summary/final.json`
-		const rows = renderReviewResultLines(
-			details({ findings: [finding("src/feature/value.ts", 42, "P4", description)], summaryPath }),
-			undefined,
-			width,
-		)
-		expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true)
-		const normalized = rows.join(" ").replace(/\s+/g, " ")
-		expect(normalized).toContain(description)
-		expect(normalized).toContain("Fix: Apply the focused correction and retain the full suggestion while wrapping.")
-		const footer = rows.at(-1)
-		expect(footer).toContain("ctrl+o to collapse details")
-		expect(footer).toContain("final.json")
-		expect(visibleWidth(footer ?? "")).toBeLessThanOrEqual(width)
 	})
 
 	it("uses priority colors and bold paths from the active theme", () => {
@@ -171,6 +165,7 @@ function presentationDetails(): ReviewResultDetails {
 				82,
 				"P2",
 				`At head ${LONG_SHA}, Staged confirmation can outlive the edit permission that opened it. Revision ${OTHER_SHA}. The boundary should be revalidated before approval.`,
+				{ title: "Revalidate the permission boundary" },
 			),
 			finding(
 				"BulkActionsBar.tsx",
@@ -178,6 +173,9 @@ function presentationDetails(): ReviewResultDetails {
 				"P4",
 				`Component docblock attached to the wrong declaration. See \`FileNavigator\` and ${OTHER_SHA}.\n\nThe owner should be the declaration, not a sibling wrapper.`,
 			),
+			finding("src/Other.ts", 12, "P4", "A second low-priority description that stays out of the compact list.", {
+				title: "Document the sibling export contract",
+			}),
 		],
 		summaryPath: join(
 			homedir(),
@@ -194,60 +192,85 @@ function presentationDetails(): ReviewResultDetails {
 }
 
 describe("expanded and collapsed result presentation", () => {
-	it.each([80, 120])("renders two compact rows per finding at width %i", (width) => {
-		const rows = renderReviewResultLines(presentationDetails(), undefined, width, false)
-		expect(rows).toHaveLength(8)
-		expect(rows[0]).toContain("Review done · 2 findings (1 P2, 1 P4) · feature → origin/main")
-		expect(rows[1]).toBe("")
-		expect(rows[2]).toMatch(/^ ▲ P2 /)
-		expect(rows[2]).toContain(
-			width === 80
-				? "…"
-				: "src/features/checkout/actions/changes/permissions/reconfirmation/nested/attention/BulkActionsBar.tsx:82",
-		)
-		expect(rows[2]).toContain("BulkActionsBar.tsx:82")
-		expect(rows[3]).toBe("  Staged confirmation can outlive the edit permission that opened it.")
-		expect(rows[4]).toMatch(/^ ● P4/)
-		expect(rows[5]).toBe("  Component docblock attached to the wrong declaration.")
-		expect(rows[6]).toBe("")
-		expect(rows[7]).toContain("ctrl+o to expand details · report: ~")
+	it.each(WIDTHS)("groups titled findings and collapses P4 rows at width %i", (width) => {
+		const source = presentationDetails()
+		const rows = renderReviewResultLines(source, undefined, width, false)
+		const text = plain(rows)
+		expect(rows[0]).toContain("Review done · 3 findings (1 P2, 2 P4)")
+		expect(rows.filter((row) => ["P0", "P1", "P2", "P3", "P4"].includes(row))).toEqual(["P2", "P4"])
+		const titleIndex = rows.findIndex((row) => row.includes("P2 · bug · Revalidate the permission boundary"))
+		expect(titleIndex).toBeGreaterThan(0)
+		expect(rows[titleIndex + 1]).toContain("BulkActionsBar.tsx:82")
+		const descriptionEnd = rows.indexOf("", titleIndex + 2)
+		expect(descriptionEnd - titleIndex - 2).toBeLessThanOrEqual(2)
+		expect(text).not.toContain("Static inspection confirms this fixture finding.")
+		expect(text).not.toContain("Apply the focused correction")
+		for (const lowPriority of source.findings.filter((record) => record.priority === "P4")) {
+			const row = rows.find((candidate) => candidate.includes(lowPriority.title))
+			expect(row).toContain(`${lowPriority.path}:${lowPriority.line}`)
+			expect(row).not.toContain(lowPriority.description)
+		}
+		expect(rows.at(-1)).toContain("ctrl+o for full details · report: ~")
+		expect(rows.at(-1)).toContain("final.json")
 		expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true)
 	})
 
-	it.each([
-		`At head ${LONG_SHA},`,
-		`Revision ${LONG_SHA}.`,
-		`At pinned head ${LONG_SHA},`,
-	])("derives a title after stripping boilerplate: %s", (prefix) => {
+	it.each(WIDTHS)("wraps a collapsed description to at most two lines with an ellipsis at width %i", (width) => {
+		const description =
+			"The complete description is deliberately long enough to exceed two terminal rows at every tested width. ".repeat(
+				5,
+			)
+		const rows = renderReviewResultLines(
+			details({ findings: [finding("src/value.ts", 42, "P1", description)] }),
+			undefined,
+			width,
+			false,
+		)
+		const titleIndex = rows.findIndex((row) => row.includes("P1 finding title"))
+		const end = rows.indexOf("", titleIndex + 2)
+		const descriptionRows = rows.slice(titleIndex + 2, end)
+		expect(descriptionRows).toHaveLength(2)
+		expect(sanitizeReviewDisplayText(descriptionRows[1] ?? "").endsWith("…")).toBe(true)
+		expect(plain(rows)).not.toContain(description)
+		expect(plain(rows).includes("Static inspection confirms")).toBe(false)
+		expect(plain(rows).includes("Apply the focused correction")).toBe(false)
+	})
+
+	it("uses the record title and type rather than deriving a title from the description", () => {
 		const rows = renderReviewResultLines(
 			details({
-				findings: [finding("value.ts", 42, "P2", `${prefix} Staged confirmation can outlive the edit.`)],
+				findings: [
+					finding("value.ts", 42, "P3", "A description that must not become a generated title.", {
+						title: "Persisted finding title",
+						type: "reliability",
+					}),
+				],
 			}),
 			undefined,
 			80,
 			false,
 		)
-		expect(rows.some((row) => row === "  Staged confirmation can outlive the edit.")).toBe(true)
-		expect(rows.join("\n")).not.toContain(LONG_SHA)
+		const title = rows.find((row) => row.includes("P3 · reliability · Persisted finding title"))
+		expect(title).toBeDefined()
+		expect(title).not.toContain("A description that must not become")
 	})
 
-	it.each([80, 120])("expands full prose, inline code, SHAs, suggestions and report paths at width %i", (width) => {
-		const rows = renderReviewResultLines(presentationDetails(), testTheme, width, true)
-		const text = sanitizeReviewDisplayText(rows.join(" "))
-		expect(text).toContain("Staged confirmation can outlive the edit permission that opened it.")
-		expect(text).toContain("The owner should be the declaration, not a sibling wrapper.")
-		expect(text).toContain(LONG_SHA.slice(0, 7))
-		expect(text).toContain(OTHER_SHA.slice(0, 7))
-		expect(text).not.toContain(LONG_SHA)
-		expect(text).not.toContain(OTHER_SHA)
+	it.each(WIDTHS)("expands every full description, explanation and suggestion at width %i", (width) => {
+		const source = presentationDetails()
+		const rows = renderReviewResultLines(source, testTheme, width, true)
+		const text = plain(rows)
+		for (const record of source.findings) {
+			expect(text).toContain(record.description.replace(/[`\s]+/g, " ").trim())
+			expect(text).toContain(record.explanation.replace(/\s+/g, " "))
+			expect(text).toContain(record.suggestion.replace(/\s+/g, " "))
+		}
+		expect(text).toContain(LONG_SHA)
+		expect(text).toContain(OTHER_SHA)
 		expect(text).not.toContain("`FileNavigator`")
-		expect(text).toContain("Fix:")
+		expect(text).toContain("Explanation:")
+		expect(text).toContain("Suggestion:")
 		expect(text).toContain("ctrl+o to collapse details")
 		expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true)
-		const descriptionRows = rows.filter(
-			(row) => row.trim() && !row.trim().startsWith("✔") && !row.trim().startsWith("ctrl+o"),
-		)
-		expect(descriptionRows.some((row) => visibleWidth(row.trim()) >= 80)).toBe(true)
 	})
 
 	it("uses the standard renderer expanded option while keeping the legacy fallback intact", () => {
@@ -265,7 +288,7 @@ describe("expanded and collapsed result presentation", () => {
 		if (!collapsed || !expanded) throw new Error("Expected the review renderer")
 		const compactRows = collapsed.render(80)
 		const expandedRows = expanded.render(120)
-		expect(compactRows.some((row) => row.includes("ctrl+o to expand details"))).toBe(true)
+		expect(compactRows.some((row) => row.includes("ctrl+o for full details"))).toBe(true)
 		expect(expandedRows.some((row) => row.includes("ctrl+o to collapse details"))).toBe(true)
 		expect(compactRows.every((row) => visibleWidth(row) <= 80)).toBe(true)
 		expect(expandedRows.every((row) => visibleWidth(row) <= 120)).toBe(true)
@@ -276,25 +299,68 @@ describe("expanded and collapsed result presentation", () => {
 		expect(fallback).toContain(LONG_SHA)
 		expect(fallback).toContain(source.summaryPath)
 	})
-})
 
-describe("collapsed result width", () => {
-	it.each([60, 80, 100])("keeps full title and footer rows within %i columns including indentation", (width) => {
-		const description =
-			"The additional exported flag creates a critical authorization bypass because every caller now enables the privileged path without checking the current principal or preserving the previous deny-by-default behavior."
+	it("says No issues found once for an empty result", () => {
+		const rows = renderReviewResultLines(details(), undefined, 80, false)
+		expect(rows[0]).toBe("No issues found")
+		expect(rows.filter((row) => row.includes("No issues found"))).toHaveLength(1)
+		expect(plain(rows)).not.toContain("no findings")
+		expect(plain(rows)).not.toContain("No findings.")
+	})
+
+	it("colors each non-empty priority group with its finding theme color", () => {
+		const rows = renderReviewResultLines(
+			details({ findings: [finding("critical.ts", 1, "P1"), finding("info.ts", 2, "P4")] }),
+			testTheme,
+			80,
+			false,
+		)
+		expect(rows).toContain(testTheme.bold(testTheme.fg("warning", "P1")))
+		expect(rows).toContain(testTheme.bold(testTheme.fg("accent", "P4")))
+	})
+
+	it("does not duplicate review or coverage status lines", () => {
 		const rows = renderReviewResultLines(
 			details({
-				findings: [finding("value.ts", 82, "P0", description)],
-				summaryPath: `/private/var/folders/review/${"long-output-segment/".repeat(6)}summary/final.json`,
+				coverage: { ...details().coverage, status: "partial", unfinished_lenses: ["spec"] },
+				findings: [finding("value.ts", 2, "P1")],
 			}),
-			testTheme,
-			width,
+			undefined,
+			80,
 			false,
-			1,
 		)
-		expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true)
-		expect(rows.some((row) => row.includes("…"))).toBe(true)
-		expect(rows.at(-1)).toContain("ctrl+o to expand details")
-		expect(rows.at(-1)).toContain("final.json")
+		const text = rows.join("\n")
+		expect(rows.filter((row) => row.includes("Review incomplete"))).toHaveLength(1)
+		expect(rows.filter((row) => row.includes("Partial coverage:"))).toHaveLength(1)
+		expect(text).not.toContain("Review complete:")
+		expect(text).not.toContain("Complete review coverage.")
+	})
+})
+
+describe("result width and Unicode safety", () => {
+	it.each(WIDTHS)("fits long titles, long paths, CJK and emoji within width %i", (width) => {
+		const source = details({
+			findings: [
+				finding(
+					`${"src/非常に長いディレクトリ/".repeat(3)}checkout/💥/AuthorizationHandler.ts`,
+					82,
+					"P1",
+					"長い説明文 🚨 ".repeat(40),
+					{ title: "認可チェックを再検証してください 🚨 ".repeat(6), type: "security" },
+				),
+			],
+			summaryPath: `/private/var/folders/review/${"long-output-segment/".repeat(6)}summary/final.json`,
+		})
+		for (const expanded of [false, true]) {
+			const rows = renderReviewResultLines(source, testTheme, width, expanded, 1)
+			expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true)
+			expect(rows.some((row) => row.includes("…"))).toBe(true)
+			expect(rows.at(-1)).toContain("final.json")
+			if (!expanded) {
+				const titleIndex = rows.findIndex((row) => row.includes("P1 · security ·"))
+				const descriptionEnd = rows.indexOf("", titleIndex + 2)
+				expect(descriptionEnd - titleIndex - 2).toBeLessThanOrEqual(2)
+			}
+		}
 	})
 })

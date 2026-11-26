@@ -61,7 +61,9 @@ describe("review result CustomMessageComponent", () => {
 			component.setExpanded(expanded)
 			const rows = component.render(width)
 			expect(rows.some((row) => row.includes("Review done"))).toBe(true)
-			expect(rows.some((row) => row.includes("ctrl+o to"))).toBe(true)
+			expect(
+				rows.some((row) => row.includes(expanded ? "ctrl+o to collapse details" : "ctrl+o for full details")),
+			).toBe(true)
 			expect(rows.map(visibleWidth).every((lineWidth) => lineWidth <= width)).toBe(true)
 		}
 	})

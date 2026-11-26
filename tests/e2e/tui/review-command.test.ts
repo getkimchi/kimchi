@@ -20,13 +20,13 @@ for (const scenario of [
 	{
 		name: "complete zero-finding",
 		partial: false,
-		finalText: "Review done · no findings · working-tree → HEAD",
+		finalText: "No issues found",
 		coverage: "Complete review coverage.",
 	},
 	{
 		name: "partial with unfinished lens",
 		partial: true,
-		finalText: "Review failed · no findings · working-tree → HEAD",
+		finalText: "No issues found",
 		coverage: "Partial coverage: spec did not finish.",
 	},
 ] as const) {
@@ -69,8 +69,9 @@ test("review command publishes final findings to the transcript", async ({ termi
 			await waitForText(terminal, "✔ Review done · 2 findings (1 P0, 1 P1) · working-tree → HEAD", {
 				full: true,
 			})
-			await waitForText(terminal, "P0 value.ts:2", { full: true })
-			await waitForText(terminal, "P1 value.ts:2", { full: true })
+			await waitForText(terminal, "P0 · security · Additional exported flag bypasses authorization", { full: true })
+			await waitForText(terminal, "P1 · bug · New export changes behavior without a guard", { full: true })
+			await waitForText(terminal, "value.ts:2", { full: true })
 			await waitForText(terminal, "critical authorization bypass because every caller now enables", {
 				full: true,
 			})
@@ -115,7 +116,7 @@ for (const cancellationKey of ["Escape", "Ctrl+C"] as const) {
 					grandchildPid = Number(readFileSync(requiredInterruption().grandchildPidFile, "utf8"))
 					if (cancellationKey === "Escape") terminal.keyPress(Key.Escape)
 					else terminal.keyCtrlC()
-					await waitForText(terminal, "Review failed · no findings · working-tree → HEAD", { timeoutMs: 20_000 })
+					await waitForText(terminal, "No issues found", { timeoutMs: 20_000 })
 					await waitForText(terminal, "Partial coverage: spec did not finish.")
 					await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_100))
 					expect(existsSync(requiredInterruption().survived)).toBe(false)
