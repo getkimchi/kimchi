@@ -11,6 +11,22 @@ function body(name: string): string {
 	return readFileSync(new URL(`./bodies/${name}.md`, import.meta.url), "utf8")
 }
 
+describe("finish-line-verification checks final source and external contracts", () => {
+	const text = body("finish-line-verification")
+
+	it("requires complete source, post-edit validation, direct contract checks, and test preservation", () => {
+		expect(text).toContain("Inspect the complete final diff, including new and untracked files")
+		expect(text).toContain("After the last substantive edit, run the most relevant existing build and test commands")
+		expect(text).toContain("Check public APIs and configuration directly")
+		expect(text).toContain("test the interpretation the implementation currently rejects")
+		expect(text).toContain("Do not modify existing tests solely for validation")
+	})
+
+	it("does not introduce clean-checkout replay or a second reviewer", () => {
+		expect(text).not.toMatch(/clean(?: |-)?checkout|second reviewer|reviewer subagent/i)
+	})
+})
+
 describe("PR category labels", () => {
 	for (const [name, create] of [
 		["gh-cli", "gh label list"],

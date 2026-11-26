@@ -11,6 +11,7 @@
  * entry below.
  */
 
+import finishLineVerificationBody from "./bodies/finish-line-verification.md" with { type: "text" }
 import ghCliBody from "./bodies/gh-cli.md" with { type: "text" }
 import gitHygieneBody from "./bodies/git-hygiene.md" with { type: "text" }
 import glabCliBody from "./bodies/glab-cli.md" with { type: "text" }
@@ -52,6 +53,7 @@ const sources: BehaviourSource[] = [
 		},
 	},
 	{ raw: reReadBeforeEditBody, kind: "baseline" },
+	{ raw: finishLineVerificationBody, kind: "baseline" },
 	{
 		raw: ghCliBody,
 		kind: "triggered",
