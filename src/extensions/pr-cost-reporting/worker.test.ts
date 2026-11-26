@@ -133,25 +133,29 @@ const eventUploads = () => http.mock.calls.filter(([url]) => String(url).endsWit
 
 async function seedCoverageEvents(storedKey: string, count: number, alternates: readonly string[] = []): Promise<void> {
 	const actual = await vi.importActual<typeof outbox>("./ledger/outbox.js")
-	for (let index = 0; index < count; index++) {
-		const key = alternates[index % alternates.length] ?? storedKey
-		actual.observeEvents(
-			directory,
-			key,
-			[
-				{
-					entityId: `aaaaaaaa-aaaa-4aaa-8aaa-${index.toString(16).padStart(12, "0")}`,
-					source: "codex",
-					sourceVersion: "test",
-					deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-					observeTime: "2026-10-24T00:00:00.123456789Z",
-					coverage: { code: "observed", count: "1" },
-				},
-			],
-			[],
-			() => {},
-		)
-	}
+	// One transaction around the whole seed: the in-memory ledger snapshots all of its state on every
+	// outermost tx, so one tx per event makes seeding quadratic (seconds for 500 events on Node 26).
+	backendFor(directory).tx(() => {
+		for (let index = 0; index < count; index++) {
+			const key = alternates[index % alternates.length] ?? storedKey
+			actual.observeEvents(
+				directory,
+				key,
+				[
+					{
+						entityId: `aaaaaaaa-aaaa-4aaa-8aaa-${index.toString(16).padStart(12, "0")}`,
+						source: "codex",
+						sourceVersion: "test",
+						deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+						observeTime: "2026-10-24T00:00:00.123456789Z",
+						coverage: { code: "observed", count: "1" },
+					},
+				],
+				[],
+				() => {},
+			)
+		}
+	})
 	vi.spyOn(outbox, "pendingBatch").mockImplementation(actual.pendingBatch)
 }
 
