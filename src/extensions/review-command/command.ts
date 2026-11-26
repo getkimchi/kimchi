@@ -483,6 +483,9 @@ async function runLocal(
 			pending.signal.throwIfAborted()
 			const run = await createLocalReviewRunDirectory(directories.outputDir)
 			operation = await acquireReviewOperation(ctx, target.scope.checkoutPath, run, undefined, pending.signal)
+			// Transfer terminal ownership. Otherwise the pending listener consumes
+			// the key and the panel's distinct active controller never aborts.
+			pending.releaseInput()
 			operation.signal.throwIfAborted()
 			report.scope(target, run.runDir)
 			const selection = deps.resolvePanel({ ...request.panel, requiredLenses: settings.requiredLenses })

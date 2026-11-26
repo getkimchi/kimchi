@@ -5,7 +5,12 @@ import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createCommandContext, sendTerminalInput } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { acquireReviewOperation, cancelActiveReview } from "./active-runs.js"
+import {
+	acquireReviewOperation,
+	cancelActiveReview,
+	isReviewTerminalInputActive,
+	registerPendingReview,
+} from "./active-runs.js"
 import { runReviewCommand } from "./command.js"
 import reviewCommandExtension from "./index.js"
 import { currentReviewHost, currentReviewOwnerIdentity } from "./owner-identity.js"
@@ -84,9 +89,27 @@ describe("active local review runs", () => {
 		const { outputRoot, checkoutPath } = sandbox()
 		const runDir = await createLocalReviewRunDirectory(outputRoot)
 		const operation = await acquireReviewOperation(ctx, checkoutPath, runDir)
+		expect(isReviewTerminalInputActive(ctx.sessionManager.getSessionId())).toBe(true)
 		sendTerminalInput(ctx, sequence)
 		expect(operation.cancelled).toBe(true)
 		await operation.finish()
+		expect(isReviewTerminalInputActive(ctx.sessionManager.getSessionId())).toBe(false)
+	})
+
+	it("transfers terminal cancellation from pending setup to the active operation", async () => {
+		const ctx = createCommandContext()
+		const { outputRoot, checkoutPath } = sandbox()
+		const pending = registerPendingReview(ctx)
+		pending.captureInput()
+		const runDir = await createLocalReviewRunDirectory(outputRoot)
+		const operation = await acquireReviewOperation(ctx, checkoutPath, runDir, undefined, pending.signal)
+		pending.releaseInput()
+
+		sendTerminalInput(ctx, "\u001b")
+		expect(pending.signal.aborted).toBe(false)
+		expect(operation.cancelled).toBe(true)
+		await operation.finish()
+		pending.finish()
 	})
 
 	it("reclaims PID reuse when the current process has a different start identity", async () => {

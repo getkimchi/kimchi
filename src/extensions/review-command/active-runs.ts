@@ -4,7 +4,6 @@ import { dirname } from "node:path"
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui"
 import { ReviewTargetError } from "../review-targets/types.js"
-import { claimRawInputCapture } from "../shared-input.js"
 import { currentReviewHost, currentReviewOwnerIdentity, reviewProcessStartIdentity } from "./owner-identity.js"
 import type { LocalReviewRunDirectory } from "./run-directory.js"
 
@@ -21,6 +20,11 @@ interface ActiveReview {
 const activeBySession = new Map<string, ActiveReview>()
 const activeByCheckout = new Map<string, ActiveReview>()
 const pendingBySession = new Map<string, { controller: AbortController; finish: () => void }>()
+const terminalInputBySession = new Map<string, number>()
+
+export function isReviewTerminalInputActive(sessionId: string): boolean {
+	return (terminalInputBySession.get(sessionId) ?? 0) > 0
+}
 
 export interface ReviewOperation {
 	signal: AbortSignal
@@ -32,7 +36,8 @@ export interface ReviewOperation {
 
 function captureTerminalCancellation(ctx: ExtensionCommandContext, controller: AbortController): () => void {
 	if (!ctx.hasUI) return () => {}
-	const releaseCapture = claimRawInputCapture()
+	const sessionId = ctx.sessionManager.getSessionId()
+	terminalInputBySession.set(sessionId, (terminalInputBySession.get(sessionId) ?? 0) + 1)
 	const detach = ctx.ui.onTerminalInput((data) => {
 		if (isKeyRelease(data) || (!matchesKey(data, Key.escape) && !matchesKey(data, Key.ctrl("c")))) {
 			return undefined
@@ -45,13 +50,16 @@ function captureTerminalCancellation(ctx: ExtensionCommandContext, controller: A
 		if (released) return
 		released = true
 		detach()
-		releaseCapture()
+		const listeners = (terminalInputBySession.get(sessionId) ?? 1) - 1
+		if (listeners > 0) terminalInputBySession.set(sessionId, listeners)
+		else terminalInputBySession.delete(sessionId)
 	}
 }
 
 export interface PendingReviewOperation {
 	signal: AbortSignal
 	captureInput: () => void
+	releaseInput: () => void
 	finish: () => void
 }
 
@@ -62,12 +70,15 @@ export function registerPendingReview(ctx: ExtensionCommandContext): PendingRevi
 	const controller = new AbortController()
 	let detachInput: (() => void) | undefined
 	let finished = false
+	const releaseInput = () => {
+		detachInput?.()
+		detachInput = undefined
+	}
 	const finish = () => {
 		if (finished) return
 		finished = true
 		if (pendingBySession.get(sessionId)?.controller === controller) pendingBySession.delete(sessionId)
-		detachInput?.()
-		detachInput = undefined
+		releaseInput()
 	}
 	pendingBySession.set(sessionId, { controller, finish })
 	return {
@@ -76,6 +87,7 @@ export function registerPendingReview(ctx: ExtensionCommandContext): PendingRevi
 			if (finished || detachInput || !ctx.hasUI) return
 			detachInput = captureTerminalCancellation(ctx, controller)
 		},
+		releaseInput,
 		finish,
 	}
 }
