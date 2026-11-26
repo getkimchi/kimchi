@@ -1182,7 +1182,7 @@ export class KimchiAcpAgent {
 			)
 		}
 
-		if (currentRef !== params.modelId) await this.doSetModel(record, params.modelId)
+		if (currentRef !== params.modelId) await this.doSetModel(record, params.modelId, false)
 		if (!record.session.model || refFromModel(record.session.model) !== params.modelId) {
 			throw RequestError.invalidParams(
 				undefined,
@@ -1255,7 +1255,7 @@ export class KimchiAcpAgent {
 		}
 	}
 
-	private async doSetModel(record: SessionRecord, value: string): Promise<string> {
+	private async doSetModel(record: SessionRecord, value: string, persist = true): Promise<string> {
 		if (record.turn) {
 			throw RequestError.invalidRequest(undefined, "a prompt is already in progress for this session")
 		}
@@ -1278,8 +1278,8 @@ export class KimchiAcpAgent {
 		}
 
 		try {
-			// An explicit client request to change the model, so save it as the default.
-			await session.setModel(target, { persist: true })
+			// Ordinary model selections save a default; Effort-only switches stay session-scoped.
+			await session.setModel(target, { persist })
 		} catch {
 			// Pi's setModel only throws "if no auth is configured for the model"
 			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)

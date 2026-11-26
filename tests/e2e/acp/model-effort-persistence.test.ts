@@ -98,6 +98,11 @@ function readDefaults(homeDir: string): unknown {
 	return JSON.parse(readFileSync(configPath(homeDir), "utf-8")).modelEffortDefaults
 }
 
+function readDefaultModel(homeDir: string): unknown {
+	const path = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+	return JSON.parse(readFileSync(path, "utf-8")).defaultModel
+}
+
 function readSessionEffortEntries(homeDir: string, sessionId: string): unknown[] {
 	const root = join(homeDir, ".config", "kimchi", "harness", "sessions")
 	const log = readdirSync(root)
@@ -219,6 +224,24 @@ describe("ACP integration — model Effort persistence", () => {
 
 		const freshCode = await newEffortSession(second, "code")
 		expect(currentEffort(await selectModel(second, freshCode.sessionId, ALPHA_REF))).toBe("high")
+	})
+
+	it("keeps Effort-only model switches from overwriting the saved default model", async () => {
+		const fixture = await start({
+			artifactName: "model-effort-session-only-switch",
+			models: CATALOG,
+			defaultModel: "alpha",
+			responses: [],
+			clientMeta: MODEL_EFFORT_META,
+		})
+		const chat = await newEffortSession(fixture, "chat")
+
+		const result = await setFreshEffort(fixture, chat.sessionId, "chat", BETA_REF, "low")
+
+		expect(currentModel(result)).toBe(BETA_REF)
+		expect(readDefaultModel(fixture.homeDir)).toBe("alpha")
+		await selectModel(fixture, chat.sessionId, BETA_REF)
+		expect(readDefaultModel(fixture.homeDir)).toBe("beta")
 	})
 
 	it("resolves persisted values to a supported higher level, then a lower level", async () => {
