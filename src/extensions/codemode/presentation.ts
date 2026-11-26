@@ -127,8 +127,10 @@ export function truncateForDisplay(text: string, max: number): string {
 }
 
 /** Pi starts its error block with a line that holds only this marker (the
- *  `Script error:` item in its codemode `execute`). */
-const SCRIPT_ERROR_LINE = /^Script error:$/gm
+ *  `Script error:` item in its codemode `execute`). When Pi truncates long
+ *  output, it glues the kept tail to its `…N tokens truncated…` notice with no
+ *  newline, so the marker can also follow that notice directly. */
+const SCRIPT_ERROR_LINE = /(?:^|…\d+ tokens truncated…)Script error:$/gm
 /** Pi's result header lines, which say nothing about why the script failed. */
 const RESULT_HEADER = /^(Script failed|Script completed|Wall time .*|Output:)$/
 

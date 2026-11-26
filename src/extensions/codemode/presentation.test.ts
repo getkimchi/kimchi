@@ -175,6 +175,22 @@ describe("codemodeFailureReason", () => {
 		).toBe("Error: upstream said: Script error: disk full")
 	})
 
+	it("finds the marker that Pi's truncation glues to its notice", () => {
+		// Pi's result for long output: the header block, then one text block
+		// whose kept tail starts at the error marker, right after the notice.
+		const result: AgentToolResult<unknown> = {
+			content: [
+				{ type: "text", text: "Script failed\nWall time 0.0 seconds\nOutput:\n" },
+				{
+					type: "text",
+					text: "Warning: truncated output (original token count: 2500)\nTotal output lines: 401\n\nline 1\nline 2…400 tokens truncated…Script error:\nError: upstream failed\n    at <anonymous> (codemode.js:9:3)\n\n[Full output: /tmp/out.txt (read with offset/limit)]",
+				},
+			],
+			details: {},
+		}
+		expect(codemodeFailureReason(result)).toBe("Error: upstream failed")
+	})
+
 	it("returns the first line of an error thrown before the script ran", () => {
 		expect(
 			codemodeFailureReason(failed("@options only supports `max_output_tokens` and `timeout_ms`; got `timeout`")),
