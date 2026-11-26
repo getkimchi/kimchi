@@ -1,4 +1,4 @@
-import { Text, type TUI } from "@earendil-works/pi-tui"
+import { Text, type TUI, visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createCommandContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
@@ -6,10 +6,16 @@ import { testTheme } from "../__mocks__/theme.js"
 import { type ReviewPanelSelectionInput, resolveReviewPanel } from "../review-panel/lenses.js"
 import type { ReviewPanelProgress, ReviewPanelResult } from "../review-panel/types.js"
 import { FINDING_SCHEMA_VERSION } from "../review-submit/store.js"
+import { sanitizeReviewDisplayText } from "../review-targets/provider-url.js"
 import type { ResolvedReviewTarget } from "../review-targets/types.js"
 import { reporter } from "./command.js"
 import { isReviewWidgetMounted, stopReviewProgressAnimation } from "./progress-widget.js"
-import { REVIEW_RESULT_CUSTOM_TYPE } from "./result-message.js"
+import {
+	REVIEW_RESULT_CUSTOM_TYPE,
+	renderReviewResult,
+	renderReviewResultLines,
+	reviewResultDetails,
+} from "./result-message.js"
 
 const BASE_SHA = "a".repeat(40)
 const HEAD_SHA = "b".repeat(40)
@@ -174,6 +180,64 @@ describe("review command reporter", () => {
 		expect(isReviewWidgetMounted(ctx)).toBe(false)
 	})
 
+	it("keeps Review running until three lenses finish, then completes Merge and Report in order", () => {
+		const ctx = commandContext()
+		const { api } = createExtensionApi()
+		const selection = selected({ lenses: ["spec", "standards", "operational"], concurrency: 1 })
+		const report = reporter(ctx, true, api)
+		report.scope(target())
+		report.selection(selection)
+		const current = progress(selection)
+		const green = testTheme.fg("success", "marker").split("marker")[0]
+		const yellow = testTheme.fg("warning", "marker").split("marker")[0]
+		const dim = testTheme.fg("dim", "marker").split("marker")[0]
+		const stage = (label: string) => widgetRows(ctx, 120).find((row) => row.includes(label))
+
+		report.progress(current)
+		expect(stage("1 Review")?.startsWith(yellow)).toBe(true)
+		expect(stage("1 Review")).toContain("running")
+		expect(stage("2 Merge")?.startsWith(dim)).toBe(true)
+		expect(stage("3 Report")?.startsWith(dim)).toBe(true)
+
+		current.lenses[1].status = "submitted"
+		report.progress(current)
+		expect(stage("1 Review")?.startsWith(yellow)).toBe(true)
+		expect(stage("1 Review")).toContain("running")
+
+		current.lenses[2].status = "submitted"
+		current.phase = "reconciling"
+		report.progress(current)
+		expect(stage("1 Review")?.startsWith(green)).toBe(true)
+		expect(stage("2 Merge")?.startsWith(yellow)).toBe(true)
+		expect(stage("3 Report")?.startsWith(dim)).toBe(true)
+
+		current.phase = "finalizing"
+		report.progress(current)
+		expect(stage("2 Merge")?.startsWith(green)).toBe(true)
+		expect(stage("3 Report")?.startsWith(yellow)).toBe(true)
+
+		current.phase = "complete"
+		report.progress(current)
+		expect(stage("2 Merge")?.startsWith(green)).toBe(true)
+		expect(stage("3 Report")?.startsWith(green)).toBe(true)
+	})
+
+	it.each(["failed", "cancelled"] as const)("marks Review failed after the last lens is %s", (status) => {
+		const ctx = commandContext()
+		const { api } = createExtensionApi()
+		const selection = selected({ lenses: ["spec", "standards", "operational"], concurrency: 1 })
+		const report = reporter(ctx, true, api)
+		report.scope(target())
+		report.selection(selection)
+		const current = progress(selection, true)
+		current.lenses[2].status = status
+		report.progress(current)
+		const red = testTheme.fg("error", "marker").split("marker")[0]
+		const review = widgetRows(ctx, 120).find((row) => row.includes("1 Review"))
+		expect(review?.startsWith(red)).toBe(true)
+		expect(review).toContain(status)
+	})
+
 	it("shows no issues dimmed on a completed empty lens and preserves issue counts", () => {
 		const ctx = commandContext()
 		const { api } = createExtensionApi()
@@ -240,6 +304,77 @@ describe("review command reporter", () => {
 			})
 		}
 	}
+
+	it.each(WIDTHS)("renders grouped result details through the reporter at width %i", (width) => {
+		const ctx = commandContext()
+		const { api, sendMessage } = createExtensionApi()
+		const selection = selected({ lenses: ["spec"], concurrency: 1 })
+		const report = reporter(ctx, true, api)
+		const view = target()
+		report.scope(view)
+		report.selection(selection)
+		const enriched = result(selection)
+		const template = enriched.findings[0]
+		if (!template) throw new Error("Expected the finding template")
+		enriched.findings = (
+			[
+				["P1", "Reject unsafe privileged transition", "src/unsafe.ts"],
+				["P2", "Preserve request cancellation", "src/cancel.ts"],
+				["P3", "Handle intermittent notifier failure", "src/notifier.ts"],
+				["P4", "Clarify cache option comment", "src/cache.ts"],
+				["P4", "Fix parameter documentation typo", "src/docs.ts"],
+			] as const
+		).map(([priority, title, path], index) => ({
+			...template,
+			id: `finding-${priority}-${index}`,
+			path,
+			line: index + 2,
+			title,
+			description: `Full ${title} description.`,
+			explanation: `Explanation for ${title}.`,
+			suggestion: `Suggestion for ${title}.`,
+			priority,
+			type: priority === "P1" ? "security" : "bug",
+		}))
+		enriched.progress.coverage = {
+			...enriched.progress.coverage,
+			candidate_count: enriched.findings.length,
+			final_finding_count: enriched.findings.length,
+			findings_by_priority: { P0: 0, P1: 1, P2: 1, P3: 1, P4: 2 },
+		}
+		report.result(enriched)
+		const details = reviewResultDetails(view.scope, enriched)
+		expect(sendMessage).toHaveBeenCalledWith({
+			customType: REVIEW_RESULT_CUSTOM_TYPE,
+			content: renderReviewResult(details),
+			display: true,
+			details,
+		})
+
+		for (const expanded of [false, true]) {
+			const rows = renderReviewResultLines(details, testTheme, width, expanded)
+			expect(rows.every((row) => visibleWidth(row) <= width)).toBe(true)
+			const text = sanitizeReviewDisplayText(rows.join("\n"))
+			expect(text).toContain("P1 · security · Reject unsafe privileged transition")
+			expect(text).toContain("P2 · bug · Preserve request cancellation")
+			expect(text).toContain("P3 · bug · Handle intermittent notifier failure")
+			if (expanded) {
+				expect(text).toContain("Explanation for Clarify cache option comment.")
+				expect(text).toContain("Suggestion for Fix parameter documentation typo.")
+				expect(text).toContain("ctrl+o to collapse details")
+			} else {
+				const lowPriorityRows = rows.filter((row) =>
+					sanitizeReviewDisplayText(row).includes("Clarify cache option comment"),
+				)
+				expect(lowPriorityRows).toHaveLength(1)
+				expect(sanitizeReviewDisplayText(lowPriorityRows[0] ?? "")).toContain("src/cache.ts:5")
+				expect(text).not.toContain("Full Clarify cache option comment description.")
+				expect(text).not.toContain("Explanation for Clarify cache option comment.")
+				expect(text).not.toContain("Suggestion for Fix parameter documentation typo.")
+				expect(text).toContain("ctrl+o for full details")
+			}
+		}
+	})
 
 	it("renders issue states, stage mapping, PR title, and theme colors", () => {
 		const ctx = commandContext()

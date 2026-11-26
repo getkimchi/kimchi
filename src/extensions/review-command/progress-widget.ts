@@ -20,15 +20,32 @@ class ReviewActivityLoader extends Loader {
 }
 
 const activities = new WeakMap<ExtensionContext, ReviewActivityLoader>()
+const visibilityListeners = new WeakMap<ExtensionContext, Set<() => void>>()
 
 export function isReviewWidgetMounted(ctx: ExtensionContext): boolean {
 	return activities.has(ctx)
 }
 
+export function subscribeReviewWidgetVisibility(ctx: ExtensionContext, listener: () => void): () => void {
+	const listeners = visibilityListeners.get(ctx) ?? new Set<() => void>()
+	listeners.add(listener)
+	visibilityListeners.set(ctx, listeners)
+	return () => {
+		listeners.delete(listener)
+		if (listeners.size === 0) visibilityListeners.delete(ctx)
+	}
+}
+
+function notifyReviewWidgetVisibility(ctx: ExtensionContext): void {
+	for (const listener of visibilityListeners.get(ctx) ?? []) listener()
+}
+
 export function stopReviewProgressAnimation(ctx: ExtensionContext): void {
 	const loader = activities.get(ctx)
+	if (!loader) return
 	activities.delete(ctx)
-	loader?.stop()
+	loader.stop()
+	notifyReviewWidgetVisibility(ctx)
 }
 
 export function mountReviewProgressComponent(
@@ -46,6 +63,7 @@ export function mountReviewProgressComponent(
 			"",
 		)
 		activities.set(ctx, loader)
+		notifyReviewWidgetVisibility(ctx)
 	}
 	return createReviewProgressComponent(theme, model, () => loader?.frame() ?? "◐")
 }
@@ -97,6 +115,34 @@ function oneLine(value: string, maximum = 64): string {
 	return truncateToWidth(value.replace(/\s+/g, " ").trim(), maximum, "…")
 }
 
+function reviewStage(model: ReviewProgressModel): { state: StageState; label: string } {
+	const selectedLenses = model.selection?.lenses ?? []
+	if (selectedLenses.length === 0) {
+		return { state: model.error ? "failed" : "waiting", label: model.error ? oneLine(model.error, 32) : "waiting" }
+	}
+	const progressById = new Map(model.progress?.lenses.map((lens) => [lens.id, lens]) ?? [])
+	const current = selectedLenses.map((lens) => progressById.get(lens.id))
+	const terminalCount = current.filter(
+		(lens) => lens?.status === "submitted" || lens?.status === "failed" || lens?.status === "cancelled",
+	).length
+	if (terminalCount === selectedLenses.length) {
+		const unsuccessful = current.find((lens) => lens?.status === "failed" || lens?.status === "cancelled")
+		if (unsuccessful) {
+			return { state: "failed", label: `${unsuccessful.id} ${unsuccessful.status}` }
+		}
+		return {
+			state: "done",
+			label: `${selectedLenses.length} ${selectedLenses.length === 1 ? "lens" : "lenses"} submitted`,
+		}
+	}
+	if (model.error) return { state: "failed", label: oneLine(model.error, 32) }
+	if (!model.progress) return { state: "waiting", label: "waiting" }
+	return {
+		state: "running",
+		label: `running · ${terminalCount}/${selectedLenses.length} lenses done`,
+	}
+}
+
 export function renderReviewProgress(
 	model: ReviewProgressModel,
 	theme: Theme,
@@ -119,8 +165,16 @@ export function renderReviewProgress(
 
 	const selectedLenses = model.selection?.lenses ?? []
 	const progressById = new Map(progress?.lenses.map((lens) => [lens.id, lens]) ?? [])
+	const review = reviewStage(model)
+	lines.push(
+		stateColor(
+			theme,
+			review.state,
+			truncateToWidth(`  1 Review   ${stateIcon(review.state, indicator)} ${review.label}`, safeWidth, "…"),
+		),
+	)
 	const lensWidth = Math.max(12, ...selectedLenses.map((lens) => lens.id.length))
-	selectedLenses.forEach((lens, index) => {
+	selectedLenses.forEach((lens) => {
 		const current = progressById.get(lens.id)
 		const state: StageState =
 			current?.status === "submitted"
@@ -136,11 +190,9 @@ export function renderReviewProgress(
 				: ""
 		const count = issueCount(current?.candidateCount ?? 0, state === "running" || state === "waiting")
 		const countLabel = count === "no issues" && state === "done" ? theme.fg("dim", count) : count
-		const prefix = index === 0 ? "  1 Review   " : "             "
-		const content = `${prefix}${stateIcon(state, indicator)} ${lens.id.padEnd(lensWidth)} ${stateText(state).padEnd(8)}${countLabel ? ` ${countLabel}` : ""}${reason ? ` ${reason}` : ""}`
+		const content = `             ${stateIcon(state, indicator)} ${lens.id.padEnd(lensWidth)} ${stateText(state).padEnd(8)}${countLabel ? ` ${countLabel}` : ""}${reason ? ` ${reason}` : ""}`
 		lines.push(stateColor(theme, state, truncateToWidth(content, safeWidth, "…")))
 	})
-	if (selectedLenses.length === 0) lines.push(stateColor(theme, "waiting", "  1 Review   ○ waiting"))
 
 	const stages = stageStates(progress, model.error)
 	const mergeReason = stages.merge === "failed" && model.error ? ` ${oneLine(model.error, 32)}` : ""

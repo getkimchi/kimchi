@@ -123,17 +123,24 @@ describe("tips extension", () => {
 		expect(harness.requestRender).toHaveBeenCalledTimes(1)
 	})
 
-	it("renders no tip while a review widget is mounted and restores it after cleanup", () => {
+	it("unmounts the tip widget while a review is mounted and restores it after cleanup", () => {
 		const harness = createHarness({ hasUI: true })
 		harness.start()
 		expect(harness.component()?.render(120)).toHaveLength(1)
+		harness.ui.setWidget.mockClear()
 
 		// Only lifecycle state is needed for this assertion; the review body is not rendered.
 		const model = () => ({ target: {} as ResolvedReviewTarget })
 		mountReviewProgressComponent(harness.ctx, harness.tui, testTheme, model)
+		expect(harness.ui.setWidget).toHaveBeenCalledWith(TIPS_WIDGET_KEY, undefined, {
+			placement: "aboveEditor",
+		})
 		expect(harness.component()?.render(120)).toEqual([])
 
 		stopReviewProgressAnimation(harness.ctx)
+		expect(harness.ui.setWidget).toHaveBeenLastCalledWith(TIPS_WIDGET_KEY, expect.any(Function), {
+			placement: "aboveEditor",
+		})
 		expect(harness.component()?.render(120).join("\n")).toContain("Tip:")
 	})
 
