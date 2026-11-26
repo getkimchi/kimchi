@@ -247,8 +247,8 @@ function collectAllTips(registry: TipRegistry): TipCandidate[] {
 		all.push({ ...tip, source: "kimchi.general" })
 	}
 
-	// Static ferment (V1) tips: only when the legacy Ferment is on and was
-	// loaded, so a mid-session enable does not advertise commands that do not exist.
+	// V1 tips name /ferment-legacy commands. Those commands exist only when
+	// legacy Ferment was on at startup, so a mid-session enable must not show them.
 	if (isFermentLegacyLoadedAndEnabled()) {
 		for (const tip of Object.values(FERMENT_TIPS)) {
 			seen.add(tip.id)
