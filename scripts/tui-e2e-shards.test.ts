@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
-import { planShards } from "./tui-e2e-shards.js"
+import { planShards, shardDriftWarning } from "./tui-e2e-shards.js"
 
 const tuiDir = resolve(import.meta.dirname, "../tests/e2e/tui")
 
@@ -53,5 +53,31 @@ describe("planShards", () => {
 		const seconds = shards.map((shard) => shard.seconds)
 		const even = seconds.reduce((sum, value) => sum + value, 0) / seconds.length
 		expect(Math.max(...seconds)).toBeLessThan(even * 1.25)
+	})
+})
+
+describe("shardDriftWarning", () => {
+	it("stays quiet when the shard runs close to plan", () => {
+		expect(shardDriftWarning(400, 500)).toBeNull()
+	})
+
+	it("warns when the shard runs much longer than planned", () => {
+		expect(shardDriftWarning(400, 700)).toContain("pnpm run test:e2e:tui:timings")
+	})
+
+	it("stays quiet at exactly 1.5 times the plan", () => {
+		expect(shardDriftWarning(400, 600)).toBeNull()
+	})
+
+	it("stays quiet for a small shard under one minute over plan", () => {
+		expect(shardDriftWarning(20, 70)).toBeNull()
+	})
+
+	it("stays quiet when the shard is faster than planned", () => {
+		expect(shardDriftWarning(400, 100)).toBeNull()
+	})
+
+	it("warns for a shard that was planned as empty", () => {
+		expect(shardDriftWarning(0, 120)).not.toBeNull()
 	})
 })

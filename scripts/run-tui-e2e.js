@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 import { inflateSync } from "node:zlib"
 import { SKIPPED_TUI_TESTS } from "../tests/e2e/tui/skip-list.js"
 import { exactFileFilter } from "./tui-e2e-file-filter.js"
-import { planShards } from "./tui-e2e-shards.js"
+import { planShards, shardDriftWarning } from "./tui-e2e-shards.js"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const tuiCwd = resolve(repoRoot, "tests/e2e/tui")
@@ -37,7 +37,7 @@ const env = {
 
 // No filter: run each non-quarantined file in its own tui-test process.
 const hasTestFilter = args.some((arg) => !arg.startsWith("-"))
-const stems = hasTestFilter ? [] : testsToRun(shard)
+const { stems, plannedSeconds } = hasTestFilter ? { stems: [] } : testsToRun(shard)
 if (dryRun) {
 	if (hasTestFilter) {
 		process.stderr.write("[tui-e2e] --dry-run with an explicit file filter: nothing to shard\n")
@@ -70,7 +70,7 @@ function runTui(runArgs) {
 }
 
 // KIMCHI_TUI_TIMINGS_OUT=<file> records the seconds per file, so CI can
-// refresh tests/e2e/tui/timings.json (see scripts/update-tui-timings.js).
+// refresh tests/e2e/tui/timings.json (see docs/ci.md).
 function runEach(stems) {
 	let status = 0
 	const seconds = {}
@@ -82,6 +82,12 @@ function runEach(stems) {
 	}
 	if (process.env.KIMCHI_TUI_TIMINGS_OUT) {
 		writeFileSync(process.env.KIMCHI_TUI_TIMINGS_OUT, `${JSON.stringify(seconds, null, "\t")}\n`)
+	}
+	if (plannedSeconds !== undefined) {
+		const actual = Object.values(seconds).reduce((sum, value) => sum + value, 0)
+		const warning = shardDriftWarning(plannedSeconds, actual)
+		// The ::warning:: form shows on the CI run summary page.
+		if (warning) process.stderr.write(process.env.GITHUB_ACTIONS ? `::warning::${warning}\n` : `[tui-e2e] ${warning}\n`)
 	}
 	return status
 }
@@ -96,10 +102,12 @@ function testsToRun(shard) {
 		.sort()
 	const unskipped = all.filter((name) => !skipped.has(name))
 	let toRun = unskipped
+	let plannedSeconds
 	if (shard) {
 		const { files: timings } = JSON.parse(readFileSync(resolve(tuiCwd, "timings.json"), "utf8"))
 		const planned = planShards(unskipped, timings, shard.total)[shard.index - 1]
 		toRun = planned.stems
+		plannedSeconds = planned.seconds
 		process.stderr.write(
 			`[tui-e2e] shard ${shard.index}/${shard.total}: ${toRun.length} of ${unskipped.length} files, about ${Math.round(planned.seconds)} s\n`,
 		)
@@ -108,7 +116,7 @@ function testsToRun(shard) {
 		process.stderr.write("[tui-e2e] all tests are quarantined; nothing to run\n")
 		process.exit(0)
 	}
-	return toRun
+	return { stems: toRun, plannedSeconds }
 }
 
 function listTraces() {

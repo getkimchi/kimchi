@@ -27,3 +27,10 @@ function median(values) {
 	const middle = Math.floor(sorted.length / 2)
 	return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
 }
+
+// A shard that runs much longer than planned means the timings are out of
+// date. The minute floor keeps small shards from warning on normal noise.
+export function shardDriftWarning(plannedSeconds, actualSeconds) {
+	if (actualSeconds <= plannedSeconds * 1.5 || actualSeconds - plannedSeconds < 60) return null
+	return `shard took ${Math.round(actualSeconds)} s, planned about ${Math.round(plannedSeconds)} s. The TUI timings are out of date. Refresh them: pnpm run test:e2e:tui:timings (see docs/ci.md)`
+}

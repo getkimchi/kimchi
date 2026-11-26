@@ -1,0 +1,95 @@
+# CI
+
+All pull request checks run in one workflow, `.github/workflows/ci.yml`. The
+perf gate (`perf-gate.yml`) and the release workflows are separate.
+
+## What blocks a merge
+
+The "Master" ruleset requires one check: `master-checks`. It is a small gate
+job that passes only when every job in its `needs` list passed:
+
+| Job | What it runs |
+|---|---|
+| `lint` | `pnpm run check` (biome and typecheck) |
+| `unit` | unit tests in 4 shards (`vitest --shard`) |
+| `build` | proxy-helper tests, then the binary, uploaded as the `kimchi-build` artifact |
+| `smoke` | script tests and smoke tests against the built binary |
+
+To make another job block merges, add it to `needs` of `master-checks`. Do
+not change the ruleset: the gate keeps the same name.
+
+The gate uses `if: always()`. Without it, a failed job makes the gate
+"skipped", and GitHub treats a skipped required check as passing.
+
+## Advisory suites
+
+These jobs run after `build` and use its binary. They do not block merges,
+but a failure turns the CI run red.
+
+| Job | When it runs |
+|---|---|
+| `tui-e2e` | 6 shards. PRs whose change can affect the TUI |
+| `acp-e2e` | PRs and the merge queue, when the change can affect ACP |
+| `mcp-conformance` | PRs whose change can affect the MCP client |
+| `acp-wire-tripwire` | every PR |
+| `documents-cross-os` | every PR, on macOS and Windows |
+
+The `changes` job decides which suites a PR needs. The rules are in
+`scripts/ci-changes.js`, with tests beside it. Docs-only changes skip all
+three e2e suites. The merge queue and manual runs do not filter.
+
+## Adding a test suite
+
+Use the reusable workflow `.github/workflows/_test-suite.yml`. It checks out
+the repo, sets up the tools, optionally downloads the build, runs the command
+and uploads logs when the command fails.
+
+```yaml
+my-suite:
+  needs: build
+  uses: ./.github/workflows/_test-suite.yml
+  with:
+    name: my-suite
+    use-build: true           # download dist/ and bin/proxy-helper
+    shards: "[1, 2]"          # optional, one job per entry
+    command: pnpm exec vitest run --config my.config.ts --shard="$SHARD_INDEX/$SHARD_TOTAL"
+    failure-artifacts: "*.my-suite.log"
+```
+
+The command gets `$SHARD_INDEX` and `$SHARD_TOTAL`. Each suite decides how
+to split its files.
+
+## TUI shards and timings
+
+TUI files take from a few seconds to several minutes each. A split by file
+count puts several slow files in one shard, and that shard decides when the
+job ends. So `scripts/run-tui-e2e.js --shard k/N` splits by measured time:
+
+1. It reads the seconds per file from `tests/e2e/tui/timings.json`. A file
+   with no timing counts as the median.
+2. It gives each file, slowest first, to the shard with the least work so
+   far (`scripts/tui-e2e-shards.js`).
+
+Every shard computes the same plan, so each file runs in exactly one shard.
+
+### Refreshing the timings
+
+Each TUI shard uploads its measured times as a `tui-e2e-report-*` artifact,
+kept for 7 days. To update `timings.json` from CI:
+
+```bash
+pnpm run test:e2e:tui:timings
+```
+
+This needs the GitHub CLI (`gh auth login`). It takes the latest finished CI
+run that has TUI reports, merges the times, and prints how many files
+changed. Then commit `tests/e2e/tui/timings.json`, in any PR.
+
+To use a given run, pass its ID: `pnpm run test:e2e:tui:timings 45685439335`.
+You can also pass a folder with reports that you downloaded before.
+
+**When:** when a shard log shows the warning "The TUI timings are out of
+date". It appears when a shard runs more than 1.5 times its planned time and
+at least one minute longer. A shard with failing tests can also show it,
+because failures often wait for timeouts. Old timings never skip a file or
+run it twice. They only make the shards less even.
