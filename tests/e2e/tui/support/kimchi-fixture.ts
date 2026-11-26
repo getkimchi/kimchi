@@ -49,6 +49,22 @@ export function harnessSettingsPath(homeDir: string): string {
 	return join(homeDir, ".config", "kimchi", "harness", "settings.json")
 }
 
+/** Set how completed work folds in the fixture's isolated harness settings.json.
+ *  Call from `seedHome`, after the fixture has seeded its settings file. */
+export function setCollapseWorkMode(homeDir: string, mode: "all" | "tools" | "off"): void {
+	const settingsPath = harnessSettingsPath(homeDir)
+	let settings: Record<string, unknown>
+	try {
+		settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
+	} catch (error) {
+		throw new Error(
+			`setCollapseWorkMode: unable to read ${settingsPath} — call from seedHome; the fixture writes valid harness settings.json before seedHome runs`,
+			{ cause: error },
+		)
+	}
+	writeFileSync(settingsPath, JSON.stringify({ ...settings, collapseWork: mode }, null, "\t"))
+}
+
 /** Pin status line elements in the fixture's isolated harness settings.json.
  *  Opt-in segments (lsp/dap) are hidden by default, so a test asserting their
  *  footer text must pin the segment here or it never renders. Call from
