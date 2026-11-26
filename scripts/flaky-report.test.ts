@@ -221,10 +221,11 @@ describe("public artifact redaction", () => {
 })
 
 describe("report mode", () => {
-	it("normalizes probe-shaped API pages and writes JSON, markdown, and the GitHub summary", async () => {
+	it("normalizes pages and writes reports without fetching passed non-flaky result details", async () => {
 		const root = mkdtempSync(join(tmpdir(), "kimchi-flaky-report-"))
 		const summaryPath = join(root, "github-summary.md")
 		const logs = vi.spyOn(console, "log").mockImplementation(() => {})
+		const progress = vi.spyOn(console, "error").mockImplementation(() => {})
 		const env = {
 			ALLURE_ENDPOINT: "https://testops.example",
 			ALLURE_TOKEN: "[REDACTED-GENERIC_SECRET]",
@@ -262,6 +263,15 @@ describe("report mode", () => {
 							id: 501,
 							fullName: "tests/e2e/tui/zz-planted-flaky.test.ts",
 							status: "passed",
+							flaky: true,
+							createdDate: launch.createdDate,
+						},
+						{
+							id: 503,
+							fullName: "tests/e2e/tui/stable.test.ts",
+							testCaseId: 503,
+							status: "passed",
+							flaky: false,
 							createdDate: launch.createdDate,
 						},
 						{
@@ -308,6 +318,11 @@ describe("report mode", () => {
 				"https://testops.example/project/42/test-results/501",
 				"https://github.example/getkimchi/kimchi/actions/runs/45702964790/attempts/1",
 			])
+			const detailPaths = fetchImpl.mock.calls
+				.map(([input]) => new URL(input instanceof Request ? input.url : String(input)).pathname)
+				.filter((path) => /^\/api\/rs\/testresult\/\d+$/.test(path))
+			expect(detailPaths.sort()).toEqual(["/api/rs/testresult/501", "/api/rs/testresult/502"])
+			expect(progress.mock.calls.flat().join("\n")).toContain("launch 1/1 id=101 results=3 detailRequests=2 elapsed=")
 
 			const json = JSON.parse(readFileSync(join(root, "out", "flaky-report.json"), "utf8"))
 			expect(json.flaky).toHaveLength(1)
@@ -317,14 +332,14 @@ describe("report mode", () => {
 				windowHours: 48,
 				events: ["experiment"],
 				launchCount: 1,
-				resultCount: 2,
+				resultCount: 3,
 				skipped: 0,
 			})
 			expect(json.flaky[0].firstSeen).toBeUndefined()
 			const markdown = readFileSync(join(root, "out", "flaky-report.md"), "utf8")
 			expect(markdown).toContain("Window: 48h")
 			expect(markdown).toContain("Launches scanned: 1")
-			expect(markdown).toContain("Results scanned: 2")
+			expect(markdown).toContain("Results scanned: 3")
 			expect(markdown).toContain("Records skipped: 0")
 			expect(markdown).not.toContain("First seen")
 			expect(markdown).toContain("## Flaky")
@@ -370,7 +385,13 @@ describe("report mode", () => {
 			if (url.pathname === "/api/rs/testresult" && launch) {
 				return jsonResponse(
 					page([
-						{ id: launch.resultId, fullName: launch.fullName, status: launch.status, createdDate: launch.createdDate },
+						{
+							id: launch.resultId,
+							fullName: launch.fullName,
+							status: launch.status,
+							flaky: launch.flaky,
+							createdDate: launch.createdDate,
+						},
 					]),
 				)
 			}

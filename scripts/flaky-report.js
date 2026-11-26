@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url"
 const DEFAULT_EVENTS = "master,merge_queue,nightly"
 const PAGE_SIZE = 100
 const MAX_PAGES = 200
+const DETAIL_CONCURRENCY = 8
 
 export function classify(records, options = {}) {
 	const grouped = new Map()
@@ -121,15 +122,23 @@ export async function runReport({ env = process.env, fetchImpl = fetch, now = ()
 	)
 
 	const records = []
-	for (const launch of launches) {
+	for (const [launchIndex, launch] of launches.entries()) {
+		const launchStartedAt = performance.now()
+		console.error(`flaky-report: launch ${launchIndex + 1}/${launches.length} id=${launch.id} started`)
 		const tags = tagMap(launch)
 		const summaries = await getAllPages(client, "/api/rs/testresult", { launchId: launch.id, sort: "id,asc" })
-		for (const summary of summaries) {
+		const detailRequestCount = summaries.filter(needsResultDetail).length
+		const normalized = await mapWithConcurrency(summaries, DETAIL_CONCURRENCY, async (summary) => {
 			const id = summary.id ?? summary.resultId
 			if (id === undefined || id === null) throw new Error(`Test result without id in launch ${launch.id}`)
-			const detail = await client.get(`/api/rs/testresult/${id}`)
-			records.push(normalizeResult({ launch, tags, summary, detail, resultId: id }))
-		}
+			const detail = needsResultDetail(summary) ? await client.get(`/api/rs/testresult/${id}`) : summary
+			return normalizeResult({ launch, tags, summary, detail, resultId: id })
+		})
+		records.push(...normalized)
+		const elapsedSeconds = ((performance.now() - launchStartedAt) / 1000).toFixed(1)
+		console.error(
+			`flaky-report: launch ${launchIndex + 1}/${launches.length} id=${launch.id} results=${summaries.length} detailRequests=${detailRequestCount} elapsed=${elapsedSeconds}s`,
+		)
 	}
 
 	const report = classify(records, {
@@ -350,6 +359,24 @@ export async function getAllPages(client, path, params) {
 		page += 1
 	}
 	throw new Error(`Pagination limit of ${MAX_PAGES} pages exceeded for ${path}`)
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+	const results = new Array(items.length)
+	let nextIndex = 0
+	async function worker() {
+		while (nextIndex < items.length) {
+			const index = nextIndex
+			nextIndex += 1
+			results[index] = await mapper(items[index], index)
+		}
+	}
+	await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()))
+	return results
+}
+
+function needsResultDetail(summary) {
+	return normalizeStatus(summary.status) !== "passed" || hasFlakyFlag(summary)
 }
 
 function pageItems(data) {
