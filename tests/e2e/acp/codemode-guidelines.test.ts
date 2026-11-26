@@ -1,4 +1,5 @@
 import { expect, it } from "vitest"
+import { UPDATE_FERMENT_V2_TOOL_NAME } from "../../../src/extensions/ferment-v2/constants.js"
 import { systemPromptOf, toolDescriptionOf } from "../tui/support/wire-requests.js"
 import { PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 
@@ -10,29 +11,33 @@ const SCENARIOS = [
 		settings: { codemode: { mode: "only" } },
 		expectCodemode: true,
 		checkPiLeak: true,
+		expectFerment: true,
 	},
 	{
 		name: "excluded",
 		settings: { defaultTools: ["-codemode"] },
 		expectCodemode: false,
 		checkPiLeak: false,
+		expectFerment: true,
 	},
 	{
 		// Regression: codemode's default activation used to ride on the legacy
 		// ferment's idle-profile snapshot (applied by its before_agent_start in
-		// every non-worker session). With the legacy ferment resource disabled, no
-		// profile was ever applied, so the tool — and the Tool Selection rule
-		// conditioned on it — silently vanished.
-		name: "ferment-disabled",
-		settings: { resources: { "extensions.ferment-legacy": false } },
+		// every non-worker session). With that extension disabled, no profile was
+		// ever applied, so the tool and the Tool Selection rule conditioned on it
+		// silently vanished. Legacy is off by default, so this scenario also turns
+		// Ferment (V2) off to cover the state where no Ferment extension loads.
+		name: "ferment-all-disabled",
+		settings: { resources: { "extensions.ferment": false, "extensions.ferment-legacy": false } },
 		expectCodemode: true,
 		checkPiLeak: false,
+		expectFerment: false,
 	},
 ] as const
 
 it.each(SCENARIOS)(
 	"$name: codemode guidance in the ACP prompt (present=$expectCodemode)",
-	async ({ name, settings, expectCodemode, checkPiLeak }) => {
+	async ({ name, settings, expectCodemode, checkPiLeak, expectFerment }) => {
 		const fixture = await startAcpFixture({
 			artifactName: `codemode-guidelines-${name}`,
 			responses: [{ stream: ["Acknowledged."] }],
@@ -48,6 +53,10 @@ it.each(SCENARIOS)(
 			const request = fixture.fake.requests.find((request) => request.url.includes("chat/completions"))
 			expect(request).toBeDefined()
 			if (!request) throw new Error("No model request recorded")
+			// Proves the resource toggles really took effect. Without this, a
+			// scenario whose settings are ignored would still pass. Ferment's tools
+			// are listed directly or, in only mode, inside codemode's catalog.
+			expect(JSON.stringify(request.body).includes(UPDATE_FERMENT_V2_TOOL_NAME)).toBe(expectFerment)
 			const prompt = systemPromptOf(request)
 			const codemodeDescription = toolDescriptionOf(request, "codemode")
 			if (expectCodemode) {
