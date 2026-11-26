@@ -12,7 +12,7 @@ on:
       events:
         description: "Comma-separated TestOps launch event tags"
         required: false
-        default: "master,merge_queue,nightly"
+        default: "merge_queue,nightly"
   pull_request:
     types: [opened, synchronize, reopened, labeled]
 
@@ -35,7 +35,7 @@ jobs:
       ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
       ALLURE_TOKEN_AVAILABLE: ${{ secrets.ALLURE_TOKEN != '' }}
       FLAKY_WINDOW_HOURS: ${{ github.event_name == 'workflow_dispatch' && inputs.window_hours || '48' }}
-      FLAKY_EVENTS: ${{ github.event_name == 'pull_request' && 'master,merge_queue,nightly,experiment' || github.event_name == 'workflow_dispatch' && inputs.events || 'master,merge_queue,nightly' }}
+      FLAKY_EVENTS: ${{ github.event_name == 'pull_request' && 'master,merge_queue,nightly,experiment' || github.event_name == 'workflow_dispatch' && inputs.events || 'merge_queue,nightly' }}
       FLAKY_OUT_DIR: flaky-report
     steps:
       - uses: actions/checkout@v4

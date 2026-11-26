@@ -58,6 +58,12 @@ function createTuiRunnerFixture({
 	mkdirSync(join(root, "node_modules", ".bin"), { recursive: true })
 	copyFileSync(runnerPath, join(root, "scripts", "run-tui-e2e.js"))
 	copyFileSync(allureResultsPath, join(root, "scripts", "tui-allure-results.js"))
+	mkdirSync(join(root, "scripts", "tui-e2e"), { recursive: true })
+	copyFileSync(
+		join(repoRoot, "scripts", "tui-e2e", "file-filter.js"),
+		join(root, "scripts", "tui-e2e", "file-filter.js"),
+	)
+	copyFileSync(join(repoRoot, "scripts", "tui-e2e", "shards.js"), join(root, "scripts", "tui-e2e", "shards.js"))
 	writeFileSync(join(root, "tests", "e2e", "tui", "skip-list.js"), "export const SKIPPED_TUI_TESTS = []\n")
 	writeFileSync(join(root, "tests", "e2e", "tui", "alpha.test.ts"), "")
 	writeFileSync(join(root, "tests", "e2e", "tui", "beta.test.ts"), "")
@@ -70,7 +76,8 @@ function createTuiRunnerFixture({
 				"#!/usr/bin/env node",
 				'const { writeFileSync } = require("node:fs")',
 				'const { join } = require("node:path")',
-				"const stem = process.argv.at(-1)",
+				"const filter = process.argv.at(-1)",
+				"const stem = filter.includes('[.]test[.]ts$') ? filter.slice(filter.indexOf(']') + 1, -'[.]test[.]ts$'.length) : filter",
 				"console.log(stem)",
 				`const failureLogs = ${JSON.stringify(failureLogs)}`,
 				`const exitCodes = ${JSON.stringify(exitCodes)}`,
@@ -344,88 +351,83 @@ it.skipIf(process.platform === "win32")("continues executing files when an Allur
 	}
 })
 
-it("configures optional non-blocking Allure uploads in the TUI workflow", () => {
-	const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", "tui-e2e.yml"), "utf8"))
-	const job = workflow.jobs["tui-e2e"]
+it("offers non-blocking Allure uploads with visible failures in the reusable test suite", () => {
+	const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", "_test-suite.yml"), "utf8"))
+	expect(workflow.on.workflow_call.inputs).toMatchObject({
+		"allure-launch": { type: "string", default: "" },
+		"allure-upload": { type: "boolean", default: false },
+		"allure-kind": { type: "string", default: "other" },
+		iteration: { type: "string", default: "" },
+		"always-artifacts": { type: "boolean", default: false },
+	})
+	const job = workflow.jobs.run
 	expect(job.env).toMatchObject({
 		ALLURE_ENDPOINT: "https://castai.testops.cloud",
 		ALLURE_PROJECT_ID: githubExpression("vars.ALLURE_PROJECT_ID"),
-		ALLURE_RESULTS: "allure-results/tui",
-		ALLURE_CONTINUE_ON_ERROR: "true",
+		ALLURE_TOKEN_AVAILABLE: githubExpression("secrets.ALLURE_TOKEN != ''"),
 	})
-	expect(job.env.ALLURE_TOKEN).toBeUndefined()
+	expect(job.env.ALLURE_RESULTS).toContain(
+		githubExpression("inputs.allure-upload && format('allure-results/{0}', inputs.name) || ''"),
+	)
 
 	const setup = job.steps.find((step: { uses?: string }) => step.uses === allureSetupAction)
 	expect(setup).toMatchObject({
 		id: "allurectl",
-		if: "always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''",
+		if: "always() && inputs.allure-upload && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''",
 		"continue-on-error": true,
 		with: {
 			"allure-endpoint": githubExpression("env.ALLURE_ENDPOINT"),
 			"allure-project-id": githubExpression("env.ALLURE_PROJECT_ID"),
 		},
 	})
-	const upload = job.steps.find((step: { name?: string }) => step.name === "Upload TUI results to Allure TestOps")
+	const upload = job.steps.find((step: { name?: string }) => step.name === "Upload results to Allure TestOps")
 	expect(upload).toMatchObject({
+		id: "allure-upload",
 		if: "always() && steps.allurectl.outcome == 'success'",
 		"continue-on-error": true,
 	})
 	expect(upload.run).toContain("allurectl upload")
 	expect(upload.run).toContain('"$ALLURE_RESULTS"')
+	const warning = job.steps.find((step: { name?: string }) => step.name === "Report TestOps upload failure")
+	expect(warning.run).toContain("::warning::Allure TestOps result delivery failed")
+	expect(warning.run).toContain("GITHUB_STEP_SUMMARY")
 })
 
-it("restricts TestOps uploads to trusted events and tags nightly repetitions", () => {
-	const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", "tui-e2e.yml"), "utf8"))
-	expect(workflow.on.push.branches).toEqual(["master"])
-	expect(workflow.on.push["paths-ignore"]).toEqual(workflow.on.pull_request["paths-ignore"])
-	expect(workflow.on.merge_group).toBeNull()
-	expect(workflow.on.schedule).toEqual([{ cron: "17 3 * * *" }])
+it("uses merge-queue unit and ACP reporting and always uploads TUI logs", () => {
+	const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8"))
+	expect(workflow.on.push).toBeUndefined()
+	expect(workflow.jobs.unit.with).toMatchObject({
+		"allure-launch": "Vitest",
+		"allure-upload": githubExpression("github.event_name == 'merge_group'"),
+		"allure-kind": "merge_queue",
+		iteration: "1",
+	})
+	expect(workflow.jobs["acp-e2e"].with).toMatchObject({
+		"allure-launch": "ACP E2E",
+		"allure-upload": githubExpression("github.event_name == 'merge_group'"),
+		"allure-kind": "merge_queue",
+		iteration: "1",
+	})
+	expect(workflow.jobs["tui-e2e"].with).toMatchObject({
+		"always-artifacts": true,
+		"report-artifacts": "tui-e2e-timings.json",
+	})
+	expect(workflow.jobs["tui-e2e"].if).toContain("github.event_name != 'merge_group'")
+})
 
-	const job = workflow.jobs["tui-e2e"]
-	expect(job.env.ALLURE_UPLOAD_ENABLED).toContain(
-		`contains(fromJSON('["push","merge_group","schedule"]'), github.event_name)`,
+it("correlates reusable TestOps uploads by run, attempt, shard, and suite", () => {
+	const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", "_test-suite.yml"), "utf8"))
+	const upload = workflow.jobs.run.steps.find(
+		(step: { name?: string }) => step.name === "Upload results to Allure TestOps",
 	)
-	expect(job.env.ALLURE_RUN_KIND).toContain(
-		`github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || github.event_name == 'schedule' && 'nightly' || 'other'`,
-	)
-	expect(job.strategy.matrix.shard).toEqual([1, 2, 3, 4])
-	expect(job.strategy.matrix.iteration).toContain(
-		`github.event_name == 'schedule' && fromJSON('[1,2,3,4,5,6,7,8,9,10]') || fromJSON('[1]')`,
-	)
-
-	const setup = job.steps.find((step: { uses?: string }) => step.uses === allureSetupAction)
-	expect(setup.if).toBe(
-		"always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''",
-	)
-	expect(job.env.ALLURE_TOKEN).toBeUndefined()
-	const upload = job.steps.find((step: { name?: string }) => step.name === "Upload TUI results to Allure TestOps")
-	expect(upload.run).toContain("$ALLURE_RUN_KIND")
-	expect(upload.run).toContain(
-		`--job-run-uid "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-shard-${githubExpression("matrix.shard")}-iteration-${githubExpression("matrix.iteration")}"`,
-	)
-	expect(upload.run).toContain("commit=$GITHUB_SHA")
-	expect(upload.run).toContain("event=$ALLURE_RUN_KIND")
-	expect(upload.run).toContain(`iteration=${githubExpression("matrix.iteration")}`)
 	expect(upload.run).toContain("run_id=$GITHUB_RUN_ID")
 	expect(upload.run).toContain("run_attempt=$GITHUB_RUN_ATTEMPT")
+	expect(upload.run).toContain(
+		`--job-run-uid "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${githubExpression("inputs.name")}-shard-${githubExpression("matrix.shard")}"`,
+	)
 	expect(upload.run).toContain(`shard=${githubExpression("matrix.shard")}`)
-	const artifacts = job.steps.find((step: { name?: string }) => step.name === "Upload TUI E2E artifacts")
-	expect(artifacts.if).toBe("always()")
-	expect(artifacts.with["if-no-files-found"]).toBe("ignore")
-	expect(artifacts.with.name).toContain(githubExpression("matrix.iteration"))
-})
-
-it("tags ACP and Vitest uploads with GitHub run correlation", () => {
-	for (const [workflowFile, jobName] of [
-		["acp-e2e.yml", "acp-e2e"],
-		["ci.yml", "master-checks"],
-	]) {
-		const workflow = parse(readFileSync(join(repoRoot, ".github", "workflows", workflowFile), "utf8"))
-		const upload = workflow.jobs[jobName].steps.find(
-			(step: { name?: string }) => step.name === "Upload Vitest results to Allure TestOps",
-		)
-		expect(upload.run).toContain("run_id=$GITHUB_RUN_ID")
-		expect(upload.run).toContain("run_attempt=$GITHUB_RUN_ATTEMPT")
-		expect(upload.run).toContain('--job-run-uid "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-')
-	}
+	expect(upload.run).toContain(`suite=${githubExpression("inputs.name")}`)
+	expect(upload.run).toContain(
+		githubExpression("inputs.iteration != '' && format(',iteration={0}', inputs.iteration) || ''"),
+	)
 })

@@ -9,9 +9,9 @@ import { isProjectScopeAllowed } from "../project-scope-trust.js"
  * "Worked for Xs" row.
  *
  * Modes:
- *  - "all":   fold tool calls AND interstitial assistant commentary (default)
+ *  - "all":   fold tool calls AND interstitial assistant commentary
  *  - "tools": fold tool calls only; assistant text and thinking stay visible
- *  - "off":   classic rendering, nothing folds
+ *  - "off":   classic rendering, nothing folds (default)
  *
  * Booleans are accepted for convenience: true → "all", false → "off".
  *
@@ -36,7 +36,7 @@ import { isProjectScopeAllowed } from "../project-scope-trust.js"
  *    (so the `/settings` control is not a no-op under a project override);
  *    otherwise it goes global.
  *
- * A missing/invalid `collapseWork` key defaults to "all".
+ * A missing/invalid `collapseWork` key defaults to "off".
  */
 
 export type CollapseWorkMode = "all" | "tools" | "off"
@@ -184,7 +184,7 @@ export function readCollapseWorkMode(cwd: string, opts: CollapseWorkReadOptions 
 	}
 	const globalValue = readModeFromFile(globalSettingsPath())
 	const projectValue = projectTrusted ? readModeFromFile(projectSettingsPath(cwd)) : undefined
-	const value = projectValue ?? globalValue ?? "all"
+	const value = projectValue ?? globalValue ?? "off"
 	cache = { value, timestamp: now, cwd, projectTrusted }
 	return value
 }

@@ -12,6 +12,10 @@ type CredentialIdentity = Pick<OAuthCredentials, "access" | "refresh" | "expires
 // result for every lookup in the originating prompt, including tool continuations.
 // The surface releases it only at prompt completion; expiry is never falsified and
 // a subsequent prompt refreshes normally.
+//
+// The handoff is intentionally owner/prompt-scoped: auth-status and other
+// ownerless readers of the shared store never inherit a prepared replacement
+// and keep upstream's ordinary renewal behavior.
 let preparedByOwner = new WeakMap<object, Map<string, CredentialIdentity>>()
 
 export function rememberPreparedOAuthCredential(

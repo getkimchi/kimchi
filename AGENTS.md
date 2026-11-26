@@ -43,6 +43,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/auto-update.md](docs/auto-update.md) — background auto-update: ticks, gates, updater lock, update result, manual path
 - [docs/bash-commands.md](docs/bash-commands.md) — inspecting running background bash commands
 - [docs/bash-tool-guard.md](docs/bash-tool-guard.md) — bash command safety guard and its taxonomy
+- [docs/ci.md](docs/ci.md) — CI pipeline: what blocks a merge, adding a test suite, TUI shard timings
 - [docs/event-bus.md](docs/event-bus.md) — global UI event bus channels
 - [docs/pii-redaction-policy.md](docs/pii-redaction-policy.md) — redaction categories/entities, local and org-managed policy, custom regex entities
 - [docs/extensions/dap.md](docs/extensions/dap.md) — DAP debugger integration

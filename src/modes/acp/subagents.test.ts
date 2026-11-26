@@ -1,7 +1,8 @@
 import type { AgentContext, ClientCapabilities, SessionNotification } from "@agentclientprotocol/sdk/unstable"
-import type { AgentSessionEvent, AgentSessionEventListener } from "@earendil-works/pi-coding-agent"
+import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { asSession, BaseFakeAgentSession } from "./__mocks__/fake-agent-session.js"
+import { asSession } from "./__mocks__/fake-agent-session.js"
+import { RecordingFakeAgentSession as ProjectionFakeSession } from "./__mocks__/recording-agent-session.js"
 import { KimchiAcpAgent } from "./server.js"
 import {
 	absoluteSubagentCwd,
@@ -14,29 +15,6 @@ import {
 	withSubagentSessionLink,
 } from "./subagents.js"
 import { buildToolCall } from "./tool-calls/utils.js"
-
-class ProjectionFakeSession extends BaseFakeAgentSession {
-	private listeners = new Set<AgentSessionEventListener>()
-
-	constructor(sessionId: string, cwd = "/tmp") {
-		super(sessionId)
-		this.sessionManager.getCwd = () => cwd
-	}
-
-	subscribe = (listener?: AgentSessionEventListener): (() => void) => {
-		if (listener) this.listeners.add(listener)
-		return () => {
-			if (listener) this.listeners.delete(listener)
-		}
-	}
-
-	getContextUsage = () => undefined
-	clearQueue = () => ({ steering: [], followUp: [] })
-
-	emit(event: AgentSessionEvent): void {
-		for (const listener of [...this.listeners]) listener(event)
-	}
-}
 
 const nativeSessions = new Map<string, ReturnType<typeof asSession>>()
 
@@ -58,6 +36,15 @@ function recordingConnection(): { conn: AgentContext; updates: SessionNotificati
 
 function setCapabilities(agent: KimchiAcpAgent, capabilities: ClientCapabilities | undefined): void {
 	Reflect.set(agent, "clientCapabilities", capabilities)
+}
+
+function subagentRegistry(agent: KimchiAcpAgent): {
+	getLive(childId: string): { record: { unsubscribe: () => void } } | undefined
+	childForTool(parentSessionId: string, toolCallId: string, upstreamId: string): string | undefined
+	begin(parentSessionId: string): object | undefined
+	replay(session: AgentSession, replayHistory: boolean): Promise<void>
+} {
+	return Reflect.get(agent, "subagentRegistry")
 }
 
 function createChild(agent: KimchiAcpAgent, event: SubagentSessionCreatedEvent): void {
@@ -138,29 +125,9 @@ function reconstructMessageText(
 	return messages
 }
 
-function assistant(text: string): Record<string, unknown> {
-	return {
-		role: "assistant",
-		content: [{ type: "text", text }],
-		api: "test",
-		provider: "test",
-		model: "test-model",
-		usage: undefined,
-		stopReason: "stop",
-		timestamp: Date.now(),
-	}
-}
-
 function streamChild(session: ProjectionFakeSession, text: string): void {
-	const message = assistant(text)
 	session.emit({ type: "agent_start" } as AgentSessionEvent)
-	session.emit({ type: "message_start", message } as unknown as AgentSessionEvent)
-	session.emit({
-		type: "message_update",
-		message,
-		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text, partial: message },
-	} as unknown as AgentSessionEvent)
-	session.emit({ type: "message_end", message } as unknown as AgentSessionEvent)
+	session.streamAssistantText(text)
 	session.emit({ type: "agent_settled" } as AgentSessionEvent)
 }
 
@@ -214,7 +181,7 @@ describe("subagent registry and child projection", () => {
 		const event = childEvent("parent", child)
 		createChild(agent, event)
 
-		expect(updates).toHaveLength(4)
+		expect(updates).toHaveLength(5)
 		expect(updates[0]?.sessionId).toBe("parent")
 		expect(update(updates[0] as SessionNotification)).toMatchObject({
 			sessionUpdate: "subagent_update",
@@ -225,22 +192,26 @@ describe("subagent registry and child projection", () => {
 			state: { state: "running" },
 		})
 		expect(update(updates[0] as SessionNotification).capabilities).not.toHaveProperty("cancel")
+		expect(updates[1]?.sessionId).toBe("native-child")
 		expect(update(updates[1] as SessionNotification)).toMatchObject({
+			sessionUpdate: "config_option_update",
+		})
+		expect(update(updates[2] as SessionNotification)).toMatchObject({
 			sessionUpdate: "session_message",
 			senderSessionId: "parent",
 			recipientSessionId: "native-child",
 		})
-		expect(updates[2]?.sessionId).toBe("native-child")
-		expect(update(updates[3] as SessionNotification)).toMatchObject({
+		expect(updates[3]?.sessionId).toBe("native-child")
+		expect(update(updates[4] as SessionNotification)).toMatchObject({
 			sessionUpdate: "session_message_chunk",
 			content: { type: "text", text: "Investigate the complete original prompt.\nKeep every line." },
 		})
-		const parentMessage = update(updates[1] as SessionNotification)
-		const childMessage = update(updates[2] as SessionNotification)
+		const parentMessage = update(updates[2] as SessionNotification)
+		const childMessage = update(updates[3] as SessionNotification)
 		expect(parentMessage.recipientMessageId).toBe(childMessage.messageId)
 		expect(childMessage.senderMessageId).toBe(parentMessage.messageId)
 		expect(parentMessage.messageId).not.toBe(childMessage.messageId)
-		const reconstructed = reconstructMessageText(updates.slice(0, 4))
+		const reconstructed = reconstructMessageText(updates)
 		expect(reconstructed.get(String(parentMessage.messageId))).toBe(event.prompt)
 		expect(reconstructed.get(String(childMessage.messageId))).toBe(event.prompt)
 		expect(childMessage.content).toEqual([])
@@ -369,13 +340,15 @@ describe("subagent registry and child projection", () => {
 		agents.push(agent)
 		const child = new ProjectionFakeSession("native-child")
 		createChild(agent, childEvent("parent", child))
-		const route = Reflect.get(agent, "subagentRoutes").get("native-child")
+		const registry = subagentRegistry(agent)
+		const route = registry.getLive("native-child")
+		if (!route) throw new Error("Expected registered child route")
 		const unsubscribe = vi.spyOn(route.record, "unsubscribe")
 		await agent.unstable_closeSession({ sessionId: "parent" })
 
 		expect(unsubscribe).toHaveBeenCalledOnce()
-		expect(Reflect.get(agent, "subagentRoutes")).toEqual(new Map())
-		expect(Reflect.get(agent, "subagentIdsByParentTool")).toEqual(new Map())
+		expect(registry.getLive("native-child")).toBeUndefined()
+		expect(registry.childForTool("parent", "provider-agent-call", "provider-agent-call")).toBeUndefined()
 		updates.length = 0
 		streamChild(child, "detached child output")
 		expect(updates).toEqual([])
@@ -413,7 +386,7 @@ describe("subagent registry and child projection", () => {
 		finish()
 		expect(update(updates.at(-1) as SessionNotification).sessionUpdate).toBe("tool_call_update")
 		expect(JSON.stringify(updates)).not.toContain('{"type":"session","sessionId":"native-child"}')
-		expect(Reflect.get(agent, "subagentIdsByParentTool")).toEqual(new Map())
+		expect(subagentRegistry(agent).childForTool("parent", "provider-agent-call", "provider-agent-call")).toBeUndefined()
 	})
 
 	it("lets a registered root replace a colliding child route", async () => {
@@ -421,13 +394,15 @@ describe("subagent registry and child projection", () => {
 		const { agent, updates } = await createRoot("parent", { subagents: {} } as ClientCapabilities, child)
 		agents.push(agent)
 		createChild(agent, childEvent("parent", child))
-		const route = Reflect.get(agent, "subagentRoutes").get(child.sessionId)
+		const registry = subagentRegistry(agent)
+		const route = registry.getLive(child.sessionId)
+		if (!route) throw new Error("Expected registered child route")
 		const unsubscribe = vi.spyOn(route.record, "unsubscribe")
 		await agent.newSession({ cwd: "/workspace/root", mcpServers: [] })
 
 		expect(unsubscribe).toHaveBeenCalledOnce()
-		expect(Reflect.get(agent, "subagentRoutes")).toEqual(new Map())
-		expect(Reflect.get(agent, "subagentIdsByParentTool")).toEqual(new Map())
+		expect(registry.getLive(child.sessionId)).toBeUndefined()
+		expect(registry.childForTool("parent", "provider-agent-call", "provider-agent-call")).toBeUndefined()
 		updates.length = 0
 		child.emit({ type: "queue_update", steering: ["root input"], followUp: [] } as AgentSessionEvent)
 		child.emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent)
@@ -488,5 +463,296 @@ describe("Agent invocation presentation and native links", () => {
 	it("resolves both relative and worktree-absolute child directories absolutely", () => {
 		expect(absoluteSubagentCwd(".worktrees/child", "/workspace/root")).toBe("/workspace/root/.worktrees/child")
 		expect(absoluteSubagentCwd("/outside/worktree", "/workspace/root")).toBe("/outside/worktree")
+	})
+})
+
+describe("subagent cancellation", () => {
+	const agents: KimchiAcpAgent[] = []
+	afterEach(async () => {
+		for (const agent of agents.splice(0)) await agent.shutdown()
+	})
+
+	it("advertises a real abort path and emits idle/cancelled only when the native run settles", async () => {
+		const { agent, updates } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("child-cancel")
+		let resolveStopped = () => {}
+		const stopped = new Promise<void>((resolve) => {
+			resolveStopped = resolve
+		})
+		const abort = vi.fn(() => ({ accepted: true, stopped }))
+		createChild(agent, childEvent("parent", child, { abort }))
+		expect(update(updates[0] as SessionNotification)).toMatchObject({ capabilities: { cancel: {} } })
+
+		child.emit({ type: "agent_start" } as AgentSessionEvent)
+		const cancelling = agent.cancel({ sessionId: child.sessionId })
+		expect(abort).toHaveBeenCalledOnce()
+		expect(updates.some((item) => (update(item).state as { state?: string } | undefined)?.state === "idle")).toBe(false)
+		resolveStopped()
+		await cancelling
+		expect(updates.some((item) => (update(item).state as { state?: string } | undefined)?.state === "idle")).toBe(false)
+
+		child.emit({ type: "agent_settled" } as AgentSessionEvent)
+		expect(update(updates.at(-1) as SessionNotification)).toMatchObject({
+			sessionUpdate: "subagent_update",
+			sessionId: child.sessionId,
+			state: { state: "idle", stopReason: "cancelled" },
+		})
+		expect(JSON.stringify(updates)).not.toContain('"status":"cancelled"')
+		child.emit({ type: "agent_start" } as AgentSessionEvent)
+		child.emit({ type: "agent_settled" } as AgentSessionEvent)
+		expect(update(updates.at(-1) as SessionNotification)).toMatchObject({
+			state: { state: "idle", stopReason: "end_turn" },
+		})
+	})
+
+	it("awaits an in-flight stop on repeated cancel instead of treating accepted:false as stopped", async () => {
+		const { agent, updates } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("repeat-cancel")
+		let finishStop = () => {}
+		const stopped = new Promise<void>((resolve) => (finishStop = resolve))
+		const abort = vi
+			.fn()
+			.mockReturnValueOnce({ accepted: true, stopped })
+			.mockReturnValueOnce({ accepted: false, stopped })
+		createChild(agent, childEvent("parent", child, { abort }))
+		child.emit({ type: "agent_start" } as AgentSessionEvent)
+		const first = agent.cancel({ sessionId: child.sessionId })
+		const second = agent.cancel({ sessionId: child.sessionId })
+		await vi.waitFor(() => expect(abort).toHaveBeenCalledTimes(2))
+		expect(updates.some((item) => (update(item).state as { state?: string } | undefined)?.state === "idle")).toBe(false)
+		finishStop()
+		await Promise.all([first, second])
+		child.emit({ type: "agent_settled" } as AgentSessionEvent)
+		expect(update(updates.at(-1) as SessionNotification)).toMatchObject({
+			state: { state: "idle", stopReason: "cancelled" },
+		})
+	})
+
+	it("cancels a pending parent prompt before stopping slow descendants", async () => {
+		const { agent, root, updates } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("slow-close-child")
+		let finishStop = () => {}
+		const stopped = new Promise<void>((resolve) => (finishStop = resolve))
+		const abort = vi.fn(() => ({ accepted: true, stopped }))
+		createChild(agent, childEvent("parent", child, { abort }))
+		const idle = new Promise<void>(() => {})
+		Reflect.set(root, "waitForIdle", async () => await idle)
+		root.emit({ type: "agent_start" } as AgentSessionEvent)
+		const prompt = agent.prompt({ sessionId: "parent", prompt: [{ type: "text", text: "Wait for close." }] })
+		const sessions = Reflect.get(agent, "sessions") as Map<string, { pendingPrompts?: Set<unknown> }>
+		await vi.waitFor(() => expect(sessions.get("parent")?.pendingPrompts?.size).toBe(1))
+		const closing = agent.closeSession({ sessionId: "parent" })
+		await expect(prompt).resolves.toEqual({ stopReason: "cancelled" })
+		expect(updates.some((item) => item.update.sessionUpdate === "agent_message_chunk")).toBe(false)
+		finishStop()
+		await closing
+	})
+
+	it("cleans up after a rejected child stop promise", async () => {
+		const { agent } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("rejected-stop-child")
+		let rejectStop!: (error: Error) => void
+		const stopped = new Promise<void>((_, reject) => (rejectStop = reject))
+		const abort = vi.fn(() => ({ accepted: true, stopped }))
+		createChild(agent, childEvent("parent", child, { abort }))
+
+		const closing = agent.closeSession({ sessionId: "parent" })
+		rejectStop(new Error("child run failed while stopping"))
+		await expect(closing).resolves.toEqual({})
+		expect(subagentRegistry(agent).getLive(child.sessionId)).toBeUndefined()
+	})
+
+	it("serializes different load intents while allowing another root to recover", async () => {
+		const { agent } = await createRoot("parent")
+		agents.push(agent)
+		const registry = Reflect.get(agent, "subagentRegistry") as ReturnType<typeof subagentRegistry>
+		const begin = vi.spyOn(registry, "begin")
+		const histories: boolean[] = []
+		let releaseReplay!: () => void
+		const blocked = new Promise<void>((resolve) => (releaseReplay = resolve))
+		vi.spyOn(registry, "replay").mockImplementation(async (_session, replayHistory) => {
+			histories.push(replayHistory)
+			await blocked
+		})
+		const operations: Promise<unknown>[] = [
+			agent.loadSession({ sessionId: "parent", cwd: "/workspace/root", mcpServers: [] }),
+		]
+		try {
+			await vi.waitFor(() => expect(begin).toHaveBeenCalledOnce())
+			operations.push(agent.resumeSession({ sessionId: "parent", cwd: "/workspace/root" }))
+			expect(begin).toHaveBeenCalledOnce()
+			const other = await createRoot("other")
+			agents.push(other.agent)
+			const otherLoad = other.agent.loadSession({ sessionId: "other", cwd: "/workspace/root", mcpServers: [] })
+			operations.push(otherLoad)
+			await otherLoad
+			expect(begin).toHaveBeenCalledOnce()
+			releaseReplay()
+			await Promise.all(operations)
+			expect(histories).toEqual([true, false])
+		} finally {
+			releaseReplay()
+			await Promise.allSettled(operations)
+		}
+	})
+
+	it("discards queued child events when root loading fails", async () => {
+		const parentId = "failed-parent"
+		const parent = new ProjectionFakeSession(parentId)
+		const child = new ProjectionFakeSession("queued-child")
+		const { conn, updates } = recordingConnection()
+		let failLoad = true
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/acp-subagent-tests",
+			sessionLoader: async () => {
+				if (failLoad) {
+					failLoad = false
+					createChild(agent, childEvent(parentId, child))
+					throw new Error("root loading failed")
+				}
+				return asSession(parent)
+			},
+			subagentSessionResolver: (agentId) => nativeSessions.get(agentId),
+		})
+		setCapabilities(agent, { subagents: {} } as ClientCapabilities)
+		agents.push(agent)
+
+		await expect(agent.loadSession({ sessionId: parentId, cwd: "/workspace/root", mcpServers: [] })).rejects.toThrow(
+			"root loading failed",
+		)
+		await agent.loadSession({ sessionId: parentId, cwd: "/workspace/root", mcpServers: [] })
+		expect(subagentRegistry(agent).getLive(child.sessionId)).toBeUndefined()
+		expect(updates.some((entry) => entry.sessionId === child.sessionId)).toBe(false)
+	})
+
+	it("registers an adopted child once its cloned parent is registered", async () => {
+		const child = new ProjectionFakeSession("adopted-child")
+		const abort = vi.fn(() => ({ accepted: true, stopped: Promise.resolve() }))
+		const event = childEvent("cloned-parent", child, { abort })
+		const { agent, root, updates } = await createRoot(
+			"cloned-parent-source",
+			{ subagents: {} } as ClientCapabilities,
+			new ProjectionFakeSession("cloned-parent"),
+		)
+		agents.push(agent)
+		createChild(agent, event)
+		Reflect.set(root, "sessionId", "cloned-parent")
+		await agent.newSession({ cwd: "/workspace/root", mcpServers: [] })
+		await vi.waitFor(() =>
+			expect(
+				updates.some((item) => update(item).sessionUpdate === "subagent_update" && item.sessionId === "cloned-parent"),
+			).toBe(true),
+		)
+		expect(
+			updates.filter((item) => update(item).sessionUpdate === "subagent_update" && item.sessionId === "cloned-parent"),
+		).toHaveLength(1)
+		await agent.cancel({ sessionId: child.sessionId })
+		expect(abort).toHaveBeenCalledOnce()
+	})
+
+	it("ignores unavailable and unknown cancellation targets without changing state", async () => {
+		const { agent, updates } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("child-without-abort")
+		createChild(agent, childEvent("parent", child))
+		const before = structuredClone(updates)
+		await agent.cancel({ sessionId: child.sessionId })
+		await agent.cancel({ sessionId: "missing-child" })
+		expect(updates).toEqual(before)
+	})
+
+	it("admits child cancellation only when recovery publishes a current cancellation capability", async () => {
+		const { agent, updates } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("child-during-recovery")
+		const abort = vi.fn(() => ({ accepted: true, stopped: Promise.resolve() }))
+		createChild(agent, childEvent("parent", child, { abort }))
+		const registry = Reflect.get(agent, "subagentRegistry") as { replay(): Promise<void> }
+		const replay = vi.spyOn(registry, "replay")
+		const states = () =>
+			updates.filter(({ update }) => update.sessionUpdate === "subagent_update" && update.sessionId === child.sessionId)
+		let rejectReplay!: (error: Error) => void
+		replay.mockImplementationOnce(async () => {
+			await new Promise<void>((_, reject) => (rejectReplay = reject))
+		})
+		const pending = agent.loadSession({ sessionId: "parent", cwd: "/workspace/root", mcpServers: [] })
+		expect(states().at(-1)?.update).toMatchObject({ state: { state: "unknown" }, capabilities: {} })
+		await agent.cancel({ sessionId: child.sessionId })
+		expect(abort).not.toHaveBeenCalled()
+
+		rejectReplay(new Error("parent recovery failed"))
+		await expect(pending).rejects.toThrow("parent recovery failed")
+		expect(states().at(-1)?.update).toMatchObject({ state: { state: "unknown" }, capabilities: {} })
+		await agent.cancel({ sessionId: child.sessionId })
+		expect(abort).not.toHaveBeenCalled()
+
+		replay.mockResolvedValueOnce(undefined)
+		await agent.loadSession({ sessionId: "parent", cwd: "/workspace/root", mcpServers: [] })
+		await new Promise<void>((resolve) => setImmediate(resolve))
+		expect(states().at(-1)?.update).toMatchObject({ state: { state: "running" }, capabilities: { cancel: {} } })
+		await agent.cancel({ sessionId: child.sessionId })
+		expect(abort).toHaveBeenCalledOnce()
+	})
+
+	it("cancels awaited children with the parent but leaves independent background children running", async () => {
+		const { agent, root } = await createRoot("parent")
+		agents.push(agent)
+		const foregroundAbort = vi.fn(() => ({ accepted: true, stopped: Promise.resolve() }))
+		const backgroundAbort = vi.fn(() => ({ accepted: true, stopped: Promise.resolve() }))
+		const rootAbort = vi.spyOn(root, "abort")
+		createChild(agent, childEvent("parent", new ProjectionFakeSession("child-fg"), { abort: foregroundAbort }))
+		createChild(
+			agent,
+			childEvent("parent", new ProjectionFakeSession("child-bg"), {
+				background: true,
+				abort: backgroundAbort,
+			}),
+		)
+
+		await agent.cancel({ sessionId: "parent" })
+		expect(rootAbort).toHaveBeenCalledOnce()
+		expect(foregroundAbort).toHaveBeenCalledOnce()
+		expect(backgroundAbort).not.toHaveBeenCalled()
+	})
+
+	it("stops all children on parent close only for the closing root", async () => {
+		const roots = [new ProjectionFakeSession("root-a"), new ProjectionFakeSession("root-b")]
+		const { conn } = recordingConnection()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/acp-subagent-tests",
+			sessionFactory: async () => asSession(roots.shift() as ProjectionFakeSession),
+			subagentSessionResolver: (agentId) => nativeSessions.get(agentId),
+		})
+		agents.push(agent)
+		setCapabilities(agent, { subagents: {} } as ClientCapabilities)
+		await agent.newSession({ cwd: "/workspace/a", mcpServers: [] })
+		await agent.newSession({ cwd: "/workspace/b", mcpServers: [] })
+		for (const background of [false, true]) {
+			createChild(
+				agent,
+				childEvent("root-a", new ProjectionFakeSession(`child-a-${background}`), {
+					background,
+					abort: vi.fn(() => ({ accepted: true, stopped: Promise.resolve() })),
+				}),
+			)
+		}
+		const otherAbort = vi.fn(() => ({ accepted: true, stopped: Promise.resolve() }))
+		createChild(agent, childEvent("root-b", new ProjectionFakeSession("child-b"), { abort: otherAbort }))
+
+		await agent.closeSession({ sessionId: "root-a" })
+		const registry = Reflect.get(agent, "subagentRegistry") as { has(childId: string): boolean }
+		expect(registry.has("child-b")).toBe(true)
+		for (const background of [false, true]) {
+			expect(registry.has(`child-a-${background}`)).toBe(false)
+		}
+		expect(otherAbort).not.toHaveBeenCalled()
+		await agent.closeSession({ sessionId: "root-b" })
+		expect(otherAbort).toHaveBeenCalledOnce()
 	})
 })

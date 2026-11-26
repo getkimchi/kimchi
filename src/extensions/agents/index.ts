@@ -1200,11 +1200,12 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	function appendSubagentRecord(record: AgentRecord): void {
+	function appendSubagentRecord(record: AgentRecord, delegatedPrompt?: string): void {
 		pi.appendEntry("subagents:record", {
 			id: record.id,
 			type: record.type,
 			description: record.description,
+			...(delegatedPrompt !== undefined ? { prompt: delegatedPrompt } : {}),
 			agentId: record.id,
 			sessionId: record.sessionId ?? "",
 			parentSessionId: record.parentSessionId ?? "",
@@ -1249,9 +1250,9 @@ export default function (pi: ExtensionAPI) {
 	 * enrichment, tolerating a stale runtime: the entry cannot be written
 	 * once the session is replaced, and it is auxiliary — the run's result
 	 * still reaches the orchestrator. Any other error still propagates. */
-	function appendSubagentRecordSafe(record: AgentRecord): void {
+	function appendSubagentRecordSafe(record: AgentRecord, delegatedPrompt?: string): void {
 		try {
-			appendSubagentRecord(record)
+			appendSubagentRecord(record, delegatedPrompt)
 		} catch (err) {
 			if (!isStaleCtxError(err)) throw err
 		}
@@ -1508,6 +1509,9 @@ export default function (pi: ExtensionAPI) {
 			})
 		},
 		(record, session) => {
+			if (!record.remote && record.visibility === "user" && record.sessionFile) {
+				appendSubagentRecordSafe(record, record.prompt)
+			}
 			emitSubagentEvent("subagents:session_created", {
 				...buildAgentLifecycleData(record),
 				sessionId: session.sessionId,
@@ -1515,6 +1519,14 @@ export default function (pi: ExtensionAPI) {
 				// existing child session directly so consumers never resolve through
 				// the process-global active manager (which another root can replace).
 				agentSession: session,
+				abort: () => {
+					const accepted = manager.abort(record.id)
+					const running = record.promise
+					return {
+						accepted,
+						stopped: running ? running.then(() => {}) : Promise.resolve(),
+					}
+				},
 			})
 		},
 		(record, session, prompt) => {
@@ -1582,7 +1594,25 @@ export default function (pi: ExtensionAPI) {
 		// takeHandoffFor refuses (undefined never claims).
 		const handoff = takeHandoffFor(event.previousSessionFile)
 		if (!handoff) return
+		for (const record of handoff.records) {
+			record.parentSessionId = ctx.sessionManager.getSessionId()
+			record.parentSessionFile = ctx.sessionManager.getSessionFile()
+		}
 		manager.adoptRecords(handoff.records, handoff.queued, handoff.midResumeIds, pi, ctx)
+		for (const record of handoff.records) {
+			if (!record.session || !record.sessionId) continue
+			appendSubagentRecordSafe(record, record.prompt)
+			emitSubagentEvent("subagents:session_created", {
+				...buildAgentLifecycleData(record),
+				sessionId: record.sessionId,
+				agentSession: record.session,
+				abort: () => {
+					const accepted = manager.abort(record.id)
+					const running = record.promise
+					return { accepted, stopped: running ? running.then(() => {}) : Promise.resolve() }
+				},
+			})
+		}
 		for (const [id, entry] of handoff.activity) agentActivity.set(id, entry)
 		widget.setUICtx(ctx.ui as UICtx)
 		widget.ensureTimer()

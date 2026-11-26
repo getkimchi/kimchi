@@ -1,0 +1,155 @@
+name: Test suite
+
+# One reusable job shape for every test suite in ci.yml: check out, set up,
+# optionally download the shared build, run the suite (split into shards),
+# and keep logs when it fails. Each suite splits its own files; this workflow
+# only passes SHARD_INDEX and SHARD_TOTAL to the command.
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: "Suite name, used in job and artifact names"
+        type: string
+        required: true
+      command:
+        description: "Shell command that runs the suite. Can use $SHARD_INDEX and $SHARD_TOTAL."
+        type: string
+        required: true
+      shards:
+        description: "JSON list of shard indexes, for example [1, 2, 3, 4]"
+        type: string
+        default: "[1]"
+      timeout-minutes:
+        type: number
+        default: 10
+      use-build:
+        description: "Download the binary and proxy-helper from the build job"
+        type: boolean
+        default: false
+      search-tools:
+        description: "Put ripgrep and fd on PATH"
+        type: boolean
+        default: false
+      playwright:
+        description: "Install Playwright Chromium"
+        type: boolean
+        default: false
+      failure-artifacts:
+        description: "Paths to upload when the suite fails"
+        type: string
+        default: ""
+      report-artifacts:
+        description: "Paths to upload after every run, for example timings"
+        type: string
+        default: ""
+      always-artifacts:
+        description: "Upload failure-artifacts after every run, including retry-recovered flakes"
+        type: boolean
+        default: false
+      allure-launch:
+        description: "Allure TestOps launch name prefix; empty with allure-upload=false disables reporting"
+        type: string
+        default: ""
+      allure-upload:
+        description: "Upload suite results to Allure TestOps"
+        type: boolean
+        default: false
+      allure-kind:
+        description: "TestOps launch kind and event tag"
+        type: string
+        default: "other"
+      iteration:
+        description: "Optional TestOps iteration tag"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: ${{ inputs.name }} (${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    strategy:
+      # Run every shard even when one fails, so one run reports every failure.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shards) }}
+    env:
+      ALLURE_ENDPOINT: https://castai.testops.cloud
+      ALLURE_PROJECT_ID: ${{ vars.ALLURE_PROJECT_ID }}
+      ALLURE_RESULTS: ${{ inputs.allure-upload && format('allure-results/{0}', inputs.name) || '' }}
+      ALLURE_TOKEN_AVAILABLE: ${{ secrets.ALLURE_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+          search-tools: ${{ inputs.search-tools }}
+          playwright: ${{ inputs.playwright }}
+
+      - name: Download build
+        if: inputs.use-build
+        uses: actions/download-artifact@v4
+        with:
+          name: kimchi-build
+          path: .
+
+      # Artifacts do not keep file modes.
+      - name: Restore executable bits
+        if: inputs.use-build
+        run: chmod +x dist/bin/kimchi dist/share/kimchi/bin/proxy-helper bin/proxy-helper
+
+      - name: Run ${{ inputs.name }}
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+          SHARD_TOTAL: ${{ strategy.job-total }}
+        run: ${{ inputs.command }}
+
+      - name: Install and configure allurectl
+        id: allurectl
+        if: always() && inputs.allure-upload && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''
+        continue-on-error: true
+        uses: allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db # v1.0.3
+        with:
+          allure-endpoint: ${{ env.ALLURE_ENDPOINT }}
+          allure-project-id: ${{ env.ALLURE_PROJECT_ID }}
+          allure-token: ${{ secrets.ALLURE_TOKEN }}
+
+      - name: Upload results to Allure TestOps
+        id: allure-upload
+        if: always() && steps.allurectl.outcome == 'success'
+        continue-on-error: true
+        run: >-
+          allurectl upload
+          --job-run-uid "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${{ inputs.name }}-shard-${{ matrix.shard }}"
+          --launch-name "${{ inputs.allure-launch }} ${{ inputs.allure-kind }} shard ${{ matrix.shard }}/${{ strategy.job-total }}"
+          --launch-tags "commit=$GITHUB_SHA,event=${{ inputs.allure-kind }},run_id=$GITHUB_RUN_ID,run_attempt=$GITHUB_RUN_ATTEMPT,shard=${{ matrix.shard }},suite=${{ inputs.name }}${{ inputs.iteration != '' && format(',iteration={0}', inputs.iteration) || '' }}"
+          "$ALLURE_RESULTS"
+
+      - name: Report TestOps upload failure
+        if: always() && inputs.allure-upload && (steps.allurectl.outcome == 'failure' || steps.allure-upload.outcome == 'failure')
+        run: |
+          echo "::warning::Allure TestOps result delivery failed for ${{ inputs.name }} shard ${{ matrix.shard }}"
+          echo "Allure TestOps result delivery failed for ${{ inputs.name }} shard ${{ matrix.shard }}. See the Allure step log for details." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        if: always() && inputs.report-artifacts != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.name }}-report-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ inputs.report-artifacts }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload logs
+        if: (failure() || inputs.always-artifacts) && inputs.failure-artifacts != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.name }}-logs-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ inputs.failure-artifacts }}
+          if-no-files-found: ignore
+          retention-days: 7

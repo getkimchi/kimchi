@@ -128,4 +128,73 @@ describe("ACP integration — subagent interaction requests", () => {
 		},
 		STARTUP_TIMEOUT_MS * 2,
 	)
+
+	it(
+		"cancels an announced child to actual idle/cancelled after the native work stops",
+		async () => {
+			fixture = await startAcpFixture({
+				artifactName: "subagent-child-cancel",
+				clientCapabilities: { subagents: {} },
+				responses: [
+					{
+						match: (request) => JSON.stringify(request.body ?? {}).includes(PARENT_REQUEST),
+						toolCalls: [
+							{
+								id: "parent-spawn-cancel",
+								function: {
+									name: "Agent",
+									arguments: JSON.stringify({
+										prompt: TASK,
+										description: "Long child",
+										subagent_type: "general-purpose",
+									}),
+								},
+							},
+						],
+					},
+					{
+						forSubagent: true,
+						thinking: ["The child is still working."],
+						stream: ["The child must not finish normally."],
+						stallAfterThinking: true,
+					},
+					{ stream: ["Parent observed the stopped child."] },
+				],
+			})
+			const active = fixture
+			const parentId = await newSession(active, active.workDir)
+			const prompting = active.conn.request("session/prompt", {
+				sessionId: parentId,
+				prompt: [{ type: "text", text: PARENT_REQUEST }],
+			})
+			const announcement = await waitFor(
+				() => active.client.sessionUpdates,
+				(updates) =>
+					updates.some(
+						({ update }) => update.sessionUpdate === "subagent_update" && update.capabilities?.cancel != null,
+					),
+				45_000,
+			)
+			const child = announcement.find(
+				({ update }) => update.sessionUpdate === "subagent_update" && update.capabilities?.cancel != null,
+			)?.update
+			if (child?.sessionUpdate !== "subagent_update") throw new Error("Missing abortable child announcement")
+			await active.conn.notify("session/cancel", { sessionId: child.sessionId })
+			await waitFor(
+				() => active.client.sessionUpdates,
+				(updates) =>
+					updates.some(
+						({ update }) =>
+							update.sessionUpdate === "subagent_update" &&
+							update.sessionId === child.sessionId &&
+							update.state?.state === "idle" &&
+							update.state.stopReason === "cancelled",
+					),
+				45_000,
+			)
+			expect((await prompting).stopReason).toBe("end_turn")
+			expect(JSON.stringify(active.client.sessionUpdates)).not.toContain('"status":"cancelled"')
+		},
+		STARTUP_TIMEOUT_MS * 2,
+	)
 })

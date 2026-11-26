@@ -1,219 +1,234 @@
 name: CI
 
+# No push trigger: the merge queue (squash, master-checks green, no bypass)
+# has already tested the exact tree that lands on master.
 on:
-  push:
-    branches: [master]
   pull_request:
   merge_group:
+  workflow_dispatch:
 
+# github.ref is unique per PR (refs/pull/N/merge) and per merge queue entry,
+# so a new push cancels only its own stale run. github.head_ref is not used
+# because two fork PRs can share a branch name.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# Playwright 1.59.1 cannot install Chromium on Ubuntu 26.04, so the Linux
+# jobs pin ubuntu-24.04. Remove the pins when upgrading to Playwright 1.61+.
 jobs:
+  # Decides which path-filtered suites this change needs. The rules live in
+  # scripts/ci/changes.js. Only pull requests are filtered.
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tui: ${{ steps.decide.outputs.tui }}
+      acp: ${{ steps.decide.outputs.acp }}
+      mcp: ${{ steps.decide.outputs.mcp }}
+    steps:
+      # Depth 2 gives the PR merge commit and its first parent, the base.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            node scripts/ci/changes.js HEAD^1 HEAD
+          else
+            node scripts/ci/changes.js --all
+          fi
+
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+      - name: Check (lint + type check)
+        run: pnpm run check
+
+  unit:
+    uses: ./.github/workflows/_test-suite.yml
+    with:
+      name: unit
+      shards: "[1, 2, 3, 4]"
+      search-tools: true
+      playwright: true
+      command: pnpm run test --shard="$SHARD_INDEX/$SHARD_TOTAL"
+      allure-launch: Vitest
+      allure-upload: ${{ github.event_name == 'merge_group' }}
+      allure-kind: merge_queue
+      iteration: "1"
+
+  # Builds the binary and proxy-helper once. Every suite that runs the binary
+  # downloads this artifact, so it is not rebuilt per suite.
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+          go: "true"
+
+      - name: Build proxy-helper
+        run: make copy-for-dev # Builds it and copies it to bin/, where kimchi finds it
+        working-directory: tools/proxy-helper
+
+      - name: Test proxy-helper
+        run: make test
+        working-directory: tools/proxy-helper
+
+      # The lint job typechecks the same tree.
+      - name: Build binary
+        run: pnpm run build:binary
+        env:
+          KIMCHI_SKIP_TYPECHECK: "1"
+
+      # Kept for 3 days so "Re-run failed jobs" still works the next day.
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: kimchi-build
+          path: |
+            dist/**
+            bin/proxy-helper
+          retention-days: 3
+          compression-level: 1
+
+  # Script tests take a few seconds, so they run here instead of in their own job.
+  smoke:
+    needs: build
+    uses: ./.github/workflows/_test-suite.yml
+    with:
+      name: smoke
+      use-build: true
+      search-tools: true
+      playwright: true
+      command: |
+        pnpm run test:scripts
+        node --import tsx --input-type=module -e "import pty from 'node-pty'; if (typeof pty.spawn !== 'function') throw new Error('node-pty spawn is unavailable')"
+        pnpm run test:smoke
+
+  # Advisory: the gate does not wait for it. PR and manual runs only.
+  tui-e2e:
+    needs: [changes, build]
+    if: github.event_name != 'merge_group' && needs.changes.outputs.tui == 'true'
+    uses: ./.github/workflows/_test-suite.yml
+    with:
+      name: tui-e2e
+      # Shards are balanced by tests/e2e/tui/timings.json to about 7 minutes each.
+      shards: "[1, 2, 3, 4, 5, 6]"
+      timeout-minutes: 15
+      use-build: true
+      search-tools: true
+      # The timings file feeds pnpm run test:e2e:tui:timings (docs/ci.md).
+      command: KIMCHI_TUI_TIMINGS_OUT="$PWD/tui-e2e-timings.json" pnpm run test:e2e:tui:ci --shard "$SHARD_INDEX/$SHARD_TOTAL"
+      report-artifacts: tui-e2e-timings.json
+      always-artifacts: true
+      failure-artifacts: |
+        *.tui-e2e.log
+        **/tui-traces/**
+
+  # Advisory: the gate does not wait for it. It also runs in the merge queue,
+  # where PR-time runs miss combinations created when master moves on. A
+  # failure there blocks nothing and shows only in the Actions tab.
+  acp-e2e:
+    needs: [changes, build]
+    if: needs.changes.outputs.acp == 'true'
+    uses: ./.github/workflows/_test-suite.yml
+    with:
+      name: acp-e2e
+      timeout-minutes: 15
+      use-build: true
+      search-tools: true
+      command: pnpm run test:e2e:acp:ci
+      allure-launch: ACP E2E
+      allure-upload: ${{ github.event_name == 'merge_group' }}
+      allure-kind: merge_queue
+      iteration: "1"
+      failure-artifacts: |
+        *.acp-e2e.log
+        **/acp-traces/**
+
+  # MCP protocol conformance. The MCP TUI and ACP files run in tui-e2e and
+  # acp-e2e. Advisory. PR and manual runs only.
+  mcp-conformance:
+    needs: [changes, build]
+    if: github.event_name != 'merge_group' && needs.changes.outputs.mcp == 'true'
+    uses: ./.github/workflows/_test-suite.yml
+    with:
+      name: mcp-conformance
+      use-build: true
+      command: pnpm run test:e2e:mcp:conformance:ci
+      failure-artifacts: .kimchi/mcp-conformance-results/**
+
+  # Tripwire for ACP wire-compat regressions (docs/acp-compat.md). It diffs
+  # against the PR base, so it runs on pull requests only. It is advisory: the
+  # gate below does not wait for it.
+  acp-wire-tripwire:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+      # Self-test first so a broken checker fails as a checker bug, not as a
+      # wire finding.
+      - name: ACP wire-compat tripwire
+        run: |
+          git fetch --quiet origin "${{ github.base_ref }}"
+          pnpm run check:acp-wire:self-test
+          pnpm run check:acp-wire -- --base "origin/${{ github.base_ref }}"
+
+  # Document unit tests on macOS and Windows: the documents modules must behave
+  # the same on every target. Linux is covered by the unit job. Advisory.
   documents-cross-os:
-    # Document unit tests on macOS + Windows — the documents modules must
-    # behave identically across targets; Linux is covered by pr-checks.
     if: github.event_name == 'pull_request'
     strategy:
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
-    concurrency:
-      group: ci-documents-${{ github.head_ref }}-${{ matrix.os }}
-      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
       - uses: ./.github/actions/setup
         with:
           bun: "true"
       - name: Document unit tests
         run: pnpm exec vitest run src/extensions/documents
 
-  # Playwright 1.59.1 cannot install Chromium on Ubuntu 26.04.
-  # Remove these pins when upgrading to Playwright 1.61 or later.
-  pr-checks:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    concurrency:
-      group: ci-pr-${{ github.head_ref }}
-      cancel-in-progress: true
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-
-      - uses: ./.github/actions/setup
-        with:
-          bun: "true"
-          playwright: "true"
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tools/proxy-helper/go.mod
-          cache-dependency-path: tools/proxy-helper/go.sum
-
-      # The find/grep tools download fd/rg on first use. Provisioning them here keeps the
-      # unit suite off the network: a slow download used to blow the test budget and a
-      # failed one failed the test with "fd is not available and could not be downloaded".
-      - name: Install search tools
-        timeout-minutes: 3
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install --yes --no-install-recommends ripgrep fd-find
-
-      - name: Build proxy-helper
-        run: make copy-for-dev # This builds the binary and puts it into a location kimchi can find it
-        working-directory: tools/proxy-helper
-
-      - name: Test proxy-helper
-        run: make test
-        working-directory: tools/proxy-helper
-
-      - name: Check (lint + type check)
-        run: pnpm run check
-
-      # Tripwire for ACP wire-compat regressions (docs/acp-compat.md):
-      # self-test first so a broken checker fails as a checker bug, not as a
-      # wire finding.
-      # Non-PR runs (push to master, merge_group) have no base ref to diff
-      # against; the tripwire is PR-scoped by design.
-      - name: ACP wire-compat tripwire
-        if: github.event_name == 'pull_request'
-        run: |
-          git fetch --quiet origin "${{ github.base_ref }}"
-          pnpm run check:acp-wire:self-test
-          pnpm run check:acp-wire -- --base "origin/${{ github.base_ref }}"
-
-      - name: Build binary
-        run: pnpm run build:binary
-
-      - name: Test
-        run: KIMCHI_PROXY_HELPER=$(pwd)/bin/proxy-helper pnpm run test
-
-      - name: Script tests
-        run: pnpm run test:scripts
-
-      - name: Ensure native node-pty for smoke tests
-        run: |
-          node --import tsx --input-type=module -e "import pty from 'node-pty'; if (typeof pty.spawn !== 'function') throw new Error('node-pty spawn is unavailable')" ||
-            pnpm rebuild node-pty
-          node --import tsx --input-type=module -e "import pty from 'node-pty'; if (typeof pty.spawn !== 'function') throw new Error('node-pty spawn is unavailable')"
-
-      - name: Smoke tests
-        run: pnpm run test:smoke
-
+  # The only required check. The "Master" ruleset requires the context
+  # "master-checks", so the job keeps that name. Add a job to `needs` to make
+  # it block merges; shards and new jobs then never touch branch protection.
+  #
+  # `if: always()` is required: without it a failed need makes this job
+  # "skipped", and GitHub treats a skipped required check as passing.
+  # `!cancelled()` is not enough either: a cancelled merge queue run would
+  # skip the gate the same way.
   master-checks:
-    # Run on both push-to-master and pull_request so PR CI exercises the same
-    # post-merge checks (e.g. `make build` + `pnpm run test` without the
-    # `KIMCHI_PROXY_HELPER` env var) that will run after merge. Without this,
-    # a PR based on a stale base ref can pass `pr-checks` and only fail at the
-    # post-merge `master-checks` step, leaving master red until a follow-up
-    # lands (see #657 for the original incident).
-    # It also runs on merge_group events as the merge queue's required
-    # validation build ("CI / master-checks"): checkout@v4 resolves to the
-    # queued merge branch (base + queued PRs), so the queue validates exactly
-    # the tree that would land on master before squashing.
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    if: always()
+    needs: [lint, unit, build, smoke]
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
-    concurrency:
-      # Pick a concurrency group name based on the triggering event:
-      #
-      #   push to master     → group = "ci-master"
-      #                        (single slot; new pushes cancel stale runs)
-      #   pull_request       → group = "ci-pr-master-checks-<head_ref>"
-      #                        e.g. PR from "fix/foo"  →  "ci-pr-master-checks-fix/foo"
-      #                        (one slot per PR; cancels only that PR's stale runs)
-      #   merge_group        → group = "ci-mq-<run_id>"
-      #                        (merge-queue validation builds. github.head_ref
-      #                        is empty on merge_group events, and each queued
-      #                        build needs its own slot — a shared group with
-      #                        cancel-in-progress would make successive queue
-      #                        builds cancel each other)
-      #
-      # Why not a single "ci-master" group across both events? It would make
-      # concurrent PRs cancel each other and let master pushes cancel
-      # in-flight PR runs.
-      #
-      # `&&`/`||` short-circuit (and `&&` binds tighter than `||`) in GitHub
-      # Actions expressions, so each `format(...)` branch is only evaluated
-      # for its own event (github.head_ref is only defined on pull_request).
-      group: ${{ github.event_name == 'push' && 'ci-master' || github.event_name == 'merge_group' && format('ci-mq-{0}', github.run_id) || format('ci-pr-master-checks-{0}', github.head_ref) }}
-      cancel-in-progress: true
-
-    env:
-      ALLURE_ENDPOINT: https://castai.testops.cloud
-      ALLURE_PROJECT_ID: ${{ vars.ALLURE_PROJECT_ID }}
-      ALLURE_RESULTS: ${{ contains(fromJSON('["push","merge_group"]'), github.event_name) && 'allure-results/vitest' || '' }}
-      ALLURE_TOKEN_AVAILABLE: ${{ secrets.ALLURE_TOKEN != '' }}
-      ALLURE_CONTINUE_ON_ERROR: "true"
-      ALLURE_UPLOAD_ENABLED: ${{ contains(fromJSON('["push","merge_group"]'), github.event_name) }}
-      ALLURE_RUN_KIND: ${{ github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || 'other' }}
-
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-
-      - uses: ./.github/actions/setup
-        with:
-          bun: "true"
-          playwright: "true"
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tools/proxy-helper/go.mod
-          cache-dependency-path: tools/proxy-helper/go.sum
-
-      # Same reason as pr-checks: keep fd/rg provisioning out of the test runs.
-      - name: Install search tools
-        timeout-minutes: 3
+      - name: Require every needed job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install --yes --no-install-recommends ripgrep fd-find
-
-      - name: Build proxy-helper
-        run: make build
-        working-directory: tools/proxy-helper
-
-      - name: Test proxy-helper
-        run: make test
-        working-directory: tools/proxy-helper
-
-      - name: Check (lint + type check)
-        run: pnpm run check
-
-      - name: Build binary
-        run: pnpm run build:binary
-
-      - name: Test
-        run: pnpm run test
-
-      - name: Script tests
-        run: pnpm run test:scripts
-
-      - name: Ensure native node-pty for smoke tests
-        run: |
-          node --import tsx --input-type=module -e "import pty from 'node-pty'; if (typeof pty.spawn !== 'function') throw new Error('node-pty spawn is unavailable')" ||
-            pnpm rebuild node-pty
-          node --import tsx --input-type=module -e "import pty from 'node-pty'; if (typeof pty.spawn !== 'function') throw new Error('node-pty spawn is unavailable')"
-
-      - name: Smoke tests
-        run: pnpm run test:smoke
-
-      - name: Install and configure allurectl
-        id: allurectl
-        if: always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''
-        continue-on-error: true
-        uses: allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db # v1.0.3
-        with:
-          allure-endpoint: ${{ env.ALLURE_ENDPOINT }}
-          allure-project-id: ${{ env.ALLURE_PROJECT_ID }}
-          allure-token: ${{ secrets.ALLURE_TOKEN }}
-
-      - name: Upload Vitest results to Allure TestOps
-        if: always() && steps.allurectl.outcome == 'success'
-        continue-on-error: true
-        run: allurectl upload --job-run-uid "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-vitest" --launch-name "Vitest $ALLURE_RUN_KIND" --launch-tags "commit=$GITHUB_SHA,event=$ALLURE_RUN_KIND,iteration=1,run_id=$GITHUB_RUN_ID,run_attempt=$GITHUB_RUN_ATTEMPT" "$ALLURE_RESULTS"
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")' > /dev/null

@@ -23,55 +23,42 @@ it("adds JUnit output without registering the native Allure runner or setup", ()
 })
 
 it.each([
-	{
-		workflow: "ci.yml",
-		job: "master-checks",
-		resultsDir: "allure-results/vitest",
-		launchName: "Vitest",
-		jobUid: "vitest",
-	},
-	{ workflow: "acp-e2e.yml", job: "acp-e2e", resultsDir: "allure-results/acp", launchName: "ACP E2E", jobUid: "acp" },
-])("reports trusted Vitest runs from $workflow / $job with event and iteration tags", ({
-	workflow,
-	job,
-	resultsDir,
-	launchName,
-	jobUid,
-}) => {
-	const config = parseYaml(readFileSync(join(repoRoot, ".github", "workflows", workflow), "utf8"))
+	{ job: "unit", launchName: "Vitest" },
+	{ job: "acp-e2e", launchName: "ACP E2E" },
+])("reports $job from merge queue with TestOps launch and iteration tags", ({ job, launchName }) => {
+	const config = parseYaml(readFileSync(join(repoRoot, ".github", "workflows", "ci.yml"), "utf8"))
 	const target = config.jobs[job]
-	expect(target.env).toMatchObject({
-		ALLURE_ENDPOINT: "https://castai.testops.cloud",
-		ALLURE_PROJECT_ID: githubExpression("vars.ALLURE_PROJECT_ID"),
-		ALLURE_RESULTS: githubExpression(
-			`contains(fromJSON('["push","merge_group"]'), github.event_name) && '${resultsDir}' || ''`,
-		),
-		ALLURE_CONTINUE_ON_ERROR: "true",
-		ALLURE_UPLOAD_ENABLED: githubExpression(`contains(fromJSON('["push","merge_group"]'), github.event_name)`),
-		ALLURE_RUN_KIND: githubExpression(
-			`github.event_name == 'push' && 'master' || github.event_name == 'merge_group' && 'merge_queue' || 'other'`,
-		),
+	expect(target.uses).toBe("./.github/workflows/_test-suite.yml")
+	expect(target.with).toMatchObject({
+		"allure-launch": launchName,
+		"allure-upload": githubExpression("github.event_name == 'merge_group'"),
+		"allure-kind": "merge_queue",
+		iteration: "1",
 	})
-	expect(target.env.ALLURE_TOKEN).toBeUndefined()
-	const setup = target.steps.find((step: { uses?: string }) => step.uses === allureSetupAction)
+
+	const suite = parseYaml(readFileSync(join(repoRoot, ".github", "workflows", "_test-suite.yml"), "utf8"))
+	const setup = suite.jobs.run.steps.find((step: { uses?: string }) => step.uses === allureSetupAction)
 	expect(setup).toMatchObject({
 		id: "allurectl",
-		if: "always() && env.ALLURE_UPLOAD_ENABLED == 'true' && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''",
+		if: "always() && inputs.allure-upload && env.ALLURE_TOKEN_AVAILABLE == 'true' && env.ALLURE_PROJECT_ID != ''",
 		"continue-on-error": true,
 		with: {
 			"allure-endpoint": githubExpression("env.ALLURE_ENDPOINT"),
 			"allure-project-id": githubExpression("env.ALLURE_PROJECT_ID"),
 		},
 	})
-	const upload = target.steps.find((step: { name?: string }) => step.name === "Upload Vitest results to Allure TestOps")
-	expect(upload).toMatchObject({
-		if: "always() && steps.allurectl.outcome == 'success'",
-		"continue-on-error": true,
-	})
-	expect(upload.run).toContain(`--launch-name "${launchName} $ALLURE_RUN_KIND"`)
-	expect(upload.run).toContain(`--job-run-uid "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${jobUid}"`)
+	const upload = suite.jobs.run.steps.find(
+		(step: { name?: string }) => step.name === "Upload results to Allure TestOps",
+	)
 	expect(upload.run).toContain(
-		'--launch-tags "commit=$GITHUB_SHA,event=$ALLURE_RUN_KIND,iteration=1,run_id=$GITHUB_RUN_ID,run_attempt=$GITHUB_RUN_ATTEMPT"',
+		`--job-run-uid "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${githubExpression("inputs.name")}-shard-${githubExpression("matrix.shard")}"`,
+	)
+	expect(upload.run).toContain(
+		`--launch-name "${githubExpression("inputs.allure-launch")} ${githubExpression("inputs.allure-kind")} shard`,
+	)
+	expect(upload.run).toContain(`event=${githubExpression("inputs.allure-kind")}`)
+	expect(upload.run).toContain(
+		githubExpression("inputs.iteration != '' && format(',iteration={0}', inputs.iteration) || ''"),
 	)
 	expect(upload.run).toContain('"$ALLURE_RESULTS"')
 })

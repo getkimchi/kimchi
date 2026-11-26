@@ -6,6 +6,7 @@ import type { KimchiOAuthConfig } from "../oauth-config.js"
 import {
 	authorizationCodeFromManualInput,
 	buildAuthorizeUrl,
+	effectiveStoredOAuthExpiryMs,
 	generateCodeChallenge,
 	generateCodeVerifier,
 	generateOAuthState,
@@ -725,5 +726,218 @@ describe("refreshKimchiOauth", () => {
 	it("fails with a re-login guidance error when stored extras are incomplete", async () => {
 		const credential = { type: "oauth" as const, access: "x", refresh: "r", expires: 0 }
 		await expect(refreshKimchiOauth(credential, new AbortController().signal)).rejects.toThrow(/sign in again/)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Selected bearer expiry — shared rule (gateway-bearer-expiry plan).
+// ---------------------------------------------------------------------------
+
+/** Same constant as the implementation's safety margin (60s). */
+const EXPIRY_MARGIN_MS = 60_000
+/** Fixed fake-clock instant for exact timestamp assertions. */
+const FAKE_NOW = new Date("2025-01-02T03:04:05.678Z").getTime()
+
+/** Secret-free synthetic JWT from a raw JSON payload string (so fixtures can
+ * express payloads JSON.stringify cannot, e.g. a non-finite numeric exp). */
+function jwtFromPayloadJson(payloadJson: string): string {
+	return `${Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")}.${Buffer.from(
+		payloadJson,
+	).toString("base64url")}.fixture-signature`
+}
+
+/** Secret-free synthetic JWT with a numeric epoch-seconds exp. */
+function jwtWithExp(expSeconds: number): string {
+	return jwtFromPayloadJson(JSON.stringify({ exp: expSeconds }))
+}
+
+describe("effectiveStoredOAuthExpiryMs", () => {
+	it("returns the stored expires in raw-access-token mode even with an earlier ID-token exp", () => {
+		const expires = FAKE_NOW + 86_400_000
+		expect(
+			effectiveStoredOAuthExpiryMs({ access: jwtWithExp(FAKE_NOW / 1000 + 600), expires, useIdToken: false }),
+		).toBe(expires)
+	})
+
+	it("returns the stored expires when the bearer is opaque or lacks usable numeric exp metadata", () => {
+		const expires = FAKE_NOW + 86_400_000
+		for (const bearer of [
+			"opaque-bearer",
+			jwtFromPayloadJson("{}"),
+			jwtFromPayloadJson('{"sub":"u"}'),
+			jwtFromPayloadJson('{"exp":"3600"}'),
+			jwtFromPayloadJson('{"exp":null}'),
+			jwtFromPayloadJson('{"exp":1e999}'), // parses to Infinity — not finite
+			"not-a-jwt",
+			"a.b",
+			`h.${Buffer.from("not json").toString("base64url")}.s`,
+		]) {
+			expect(effectiveStoredOAuthExpiryMs({ access: bearer, expires, useIdToken: true })).toBe(expires)
+		}
+	})
+
+	it("narrows a stored expiry to an earlier selected ID-token exp minus the margin", () => {
+		const expires = FAKE_NOW + 86_400_000
+		const expMs = FAKE_NOW + 3_600_000
+		expect(effectiveStoredOAuthExpiryMs({ access: jwtWithExp(expMs / 1000), expires, useIdToken: true })).toBe(
+			expMs - EXPIRY_MARGIN_MS,
+		)
+	})
+
+	it("never extends a stored expiry when the selected ID-token exp is later", () => {
+		const expires = FAKE_NOW + 3_600_000
+		expect(
+			effectiveStoredOAuthExpiryMs({ access: jwtWithExp(FAKE_NOW / 1000 + 86_400), expires, useIdToken: true }),
+		).toBe(expires)
+	})
+
+	it("treats a credential without the useIdToken flag as raw-access-token mode", () => {
+		const expires = FAKE_NOW + 86_400_000
+		expect(effectiveStoredOAuthExpiryMs({ access: jwtWithExp(FAKE_NOW / 1000 + 600), expires })).toBe(expires)
+	})
+})
+
+describe("selected bearer expiry on issuance (login + refresh)", () => {
+	/** A stored credential the refresh path accepts (extras complete). */
+	const storedForRefresh = {
+		type: "oauth" as const,
+		access: "id-1",
+		refresh: "rt-1",
+		expires: FAKE_NOW - 1_000,
+		region: "us",
+		tokenUrl: "",
+		clientId: "test-client",
+		useIdToken: true,
+		idToken: "id-1",
+		accessToken: "at-1",
+		orgId: "org-default",
+		orgName: "Default Org",
+	}
+
+	beforeEach(() => {
+		// Only Date is faked: the loopback server / fetch keep real timers, so
+		// the whole token flow runs while `Date.now()` is pinned for exact
+		// expiry assertions.
+		vi.useFakeTimers({ toFake: ["Date"] })
+		vi.setSystemTime(FAKE_NOW)
+	})
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	/** Drive a full browser login against the mock server with a canned token response. */
+	async function driveLogin(tokenBody: Record<string, unknown>, overrides: Partial<KimchiOAuthConfig> = {}) {
+		mock.setResponder(() => ({ status: 200, body: tokenBody }))
+		const { callbacks, authUrls } = makeCallbacks()
+		const loginPromise = login(configFor(mock.url, overrides), callbacks)
+		await vi.waitFor(() => expect(authUrls).toHaveLength(1))
+		// vi.waitFor advances the fake clock by its poll interval between checks;
+		// re-pin the instant so the token exchange below reads an exact Date.now().
+		vi.setSystemTime(FAKE_NOW)
+		const { state, redirectUri } = authorizeUrlParts(authUrls[0])
+		await driveBrowserCallback(redirectUri, { code: "c", state })
+		return await loginPromise
+	}
+
+	it("stores the ID-token JWT exp when it is shorter than the response lifetime", async () => {
+		const idToken = jwtWithExp(FAKE_NOW / 1000 + 10 * 3600)
+		const credential = await driveLogin({
+			access_token: "at-1",
+			id_token: idToken,
+			refresh_token: "rt-1",
+			expires_in: 24 * 3600,
+		})
+		expect(credential.access).toBe(idToken)
+		expect(credential.expires).toBe(FAKE_NOW + 10 * 3600_000 - EXPIRY_MARGIN_MS)
+	})
+
+	it("keeps the response lifetime when the ID-token JWT exp is longer", async () => {
+		const credential = await driveLogin({
+			access_token: "at-1",
+			id_token: jwtWithExp(FAKE_NOW / 1000 + 24 * 3600),
+			refresh_token: "rt-1",
+			expires_in: 10 * 3600,
+		})
+		expect(credential.expires).toBe(FAKE_NOW + 10 * 3600_000 - EXPIRY_MARGIN_MS)
+	})
+
+	it("raw-access-token mode ignores the ID-token JWT lifetime and keeps the response-derived expiry", async () => {
+		const credential = await driveLogin(
+			{
+				access_token: "at-1",
+				id_token: jwtWithExp(FAKE_NOW / 1000 + 600),
+				refresh_token: "rt-1",
+				expires_in: 3600,
+			},
+			{ useIdToken: false },
+		)
+		expect(credential.access).toBe("at-1")
+		expect(credential.expires).toBe(FAKE_NOW + 3600_000 - EXPIRY_MARGIN_MS)
+	})
+
+	it("raw-access-token mode succeeds with no ID token at all and keeps the response-derived expiry", async () => {
+		const credential = await driveLogin(
+			{ access_token: "at-1", refresh_token: "rt-1", expires_in: 1800 },
+			{ useIdToken: false },
+		)
+		expect(credential.access).toBe("at-1")
+		expect(credential.expires).toBe(FAKE_NOW + 1800_000 - EXPIRY_MARGIN_MS)
+	})
+
+	it("falls back to the response lifetime for opaque tokens and unusable expiry metadata", async () => {
+		const bearers = [
+			"opaque-id-token",
+			jwtFromPayloadJson("{}"),
+			jwtFromPayloadJson('{"exp":"3600"}'),
+			jwtFromPayloadJson('{"exp":null}'),
+			jwtFromPayloadJson('{"exp":1e999}'),
+			"not-a-jwt",
+			`h.${Buffer.from("not json").toString("base64url")}.s`,
+		]
+		for (const idToken of bearers) {
+			const credential = await driveLogin({
+				access_token: "at-1",
+				id_token: idToken,
+				refresh_token: "rt-1",
+				expires_in: 7200,
+			})
+			expect(credential.access).toBe(idToken)
+			expect(credential.expires).toBe(FAKE_NOW + 7200_000 - EXPIRY_MARGIN_MS)
+		}
+	})
+
+	it("applies the same rule to refresh issuance with identical timestamps and margin", async () => {
+		const idToken = jwtWithExp(FAKE_NOW / 1000 + 1800)
+		const body = { access_token: "at-1", id_token: idToken, refresh_token: "rt-1", expires_in: 7200 }
+		const loginCredential = await driveLogin(body)
+
+		mock.setResponder(() => ({ status: 200, body: { ...body, refresh_token: "rt-2" } }))
+		const refreshed = await refreshKimchiOauth(
+			{ ...storedForRefresh, tokenUrl: `${mock.url}/token` },
+			new AbortController().signal,
+		)
+		expect(refreshed.access).toBe(idToken)
+		expect(refreshed.expires).toBe(loginCredential.expires)
+		expect(refreshed.expires).toBe(FAKE_NOW + 1800_000 - EXPIRY_MARGIN_MS)
+		// Metadata and grant rotation behavior are unchanged by the rule.
+		expect(refreshed.refresh).toBe("rt-2")
+		expect(refreshed.orgId).toBe("org-default")
+		expect(refreshed.orgName).toBe("Default Org")
+		expect(refreshed.useIdToken).toBe(true)
+		expect(refreshed.idToken).toBe(idToken)
+		expect(refreshed.accessToken).toBe("at-1")
+	})
+
+	it("keeps the response-derived expiry on refresh when the rotated ID token is opaque", async () => {
+		mock.setResponder(() => ({
+			status: 200,
+			body: { access_token: "at-2", id_token: "id-2", refresh_token: "rt-2", expires_in: 3600 },
+		}))
+		const refreshed = await refreshKimchiOauth(
+			{ ...storedForRefresh, tokenUrl: `${mock.url}/token` },
+			new AbortController().signal,
+		)
+		expect(refreshed.access).toBe("id-2")
+		expect(refreshed.expires).toBe(FAKE_NOW + 3600_000 - EXPIRY_MARGIN_MS)
 	})
 })
