@@ -8,14 +8,20 @@ const MAX_PAGES = 200
 
 export function classify(records, options = {}) {
 	const grouped = new Map()
+	let skipped = 0
 	for (const record of records) {
-		validateRecord(record)
+		try {
+			validateRecord(record)
+		} catch {
+			skipped += 1
+			continue
+		}
 		const current = grouped.get(record.testKey) ?? []
 		current.push(record)
 		grouped.set(record.testKey, current)
 	}
 
-	const output = { flaky: [], failing: [] }
+	const output = { flaky: [], failing: [], skipped }
 	for (const [testKey, testResults] of grouped) {
 		const commits = new Map()
 		for (const result of testResults) {
@@ -80,13 +86,20 @@ export async function runReport({ env = process.env, fetchImpl = fetch, now = ()
 	const windowHours = positiveNumber(env.FLAKY_WINDOW_HOURS ?? "48", "FLAKY_WINDOW_HOURS")
 	const client = await createClient(config, fetchImpl)
 	const since = now() - windowHours * 60 * 60 * 1000
-	const launches = (
-		await getAllPages(client, "/api/rs/launch/__search", {
-			projectId: config.projectId,
-			rql: `createdDate >= ${since}`,
-			sort: "createdDate,desc",
-		})
-	).filter((launch) => events.has(tagMap(launch).get("event")))
+	const searchedLaunches = await getAllPages(client, "/api/rs/launch/__search", {
+		projectId: config.projectId,
+		rql: `createdDate >= ${since}`,
+		sort: "createdDate,desc",
+	})
+	const listedLaunches = await getAllPages(client, "/api/rs/launch", {
+		projectId: config.projectId,
+		sort: "createdDate,desc",
+	})
+	const launchesById = new Map()
+	for (const launch of [...searchedLaunches, ...listedLaunches]) launchesById.set(launch.id, launch)
+	const launches = [...launchesById.values()].filter(
+		(launch) => Number(launch.createdDate) >= since && events.has(tagMap(launch).get("event")),
+	)
 
 	const records = []
 	for (const launch of launches) {
@@ -140,7 +153,17 @@ export async function runProbe({ env = process.env, fetchImpl = fetch, now = () 
 		sort: "createdDate,desc",
 	})
 	writeProbe("launches.json", launchPage, "launch")
-	const launches = pageItems(launchPage).filter((launch) => events.has(tagMap(launch).get("event")))
+	const launchListPage = await client.get("/api/rs/launch", {
+		projectId: config.projectId,
+		page: 0,
+		size: 3,
+		sort: "createdDate,desc",
+	})
+	writeProbe("launch-list.json", launchListPage, "launch")
+	const launches = pageItems(launchListPage).filter(
+		(launch) =>
+			Number(launch.createdDate) >= now() - windowHours * 60 * 60 * 1000 && events.has(tagMap(launch).get("event")),
+	)
 	const launch = launches.at(-1) ?? pageItems(launchPage).at(-1)
 	if (!launch) return { launches: 0, results: 0 }
 
@@ -212,7 +235,15 @@ function publicReport(report) {
 		failureMessages: row.failureMessages,
 		links: row.links,
 	})
-	return { flaky: report.flaky.map(publicRow), failing: report.failing.map(publicRow) }
+	return {
+		windowHours: report.windowHours,
+		events: report.events,
+		launchCount: report.launchCount,
+		resultCount: report.resultCount,
+		skipped: report.skipped,
+		flaky: report.flaky.map(publicRow),
+		failing: report.failing.map(publicRow),
+	}
 }
 
 function readConfig(env) {
@@ -380,8 +411,7 @@ function validateRecord(record) {
 	if (record.status !== "passed" && record.status !== "failed")
 		throw new TypeError("Malformed record: status must be passed or failed")
 	if (typeof record.flaky !== "boolean") throw new TypeError("Malformed record: flaky must be boolean")
-	if (record.commit !== null && typeof record.commit !== "string")
-		throw new TypeError("Malformed record: commit must be a string or null")
+	if (typeof record.commit !== "string" || !record.commit) throw new TypeError("Malformed record: commit is required")
 	if (!Number.isFinite(record.createdAt)) throw new TypeError("Malformed record: createdAt must be a timestamp")
 	if (
 		record.launchId === undefined ||
@@ -421,7 +451,14 @@ function uniqueLinks(results, options) {
 }
 
 function renderMarkdown(report) {
-	const lines = ["# Flaky Test Triage", "", "## Flaky", ""]
+	const lines = [
+		"# Flaky Test Triage",
+		"",
+		`Window: ${report.windowHours}h · Events: ${report.events.join(", ")} · Launches scanned: ${report.launchCount} · Results scanned: ${report.resultCount} · Records skipped: ${report.skipped}`,
+		"",
+		"## Flaky",
+		"",
+	]
 	appendTable(lines, report.flaky)
 	lines.push("", "## Persistently failing", "")
 	appendTable(lines, report.failing)

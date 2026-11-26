@@ -109,23 +109,21 @@ describe("classify detected outcomes", () => {
 
 describe("classify edge cases and malformed records", () => {
 	it("returns empty tables for empty input", () => {
-		expect(classify([])).toEqual({ flaky: [], failing: [] })
+		expect(classify([])).toEqual({ flaky: [], failing: [], skipped: 0 })
 	})
 
-	it("ignores missing commit tags for commit comparisons but retains explicit flaky flags", () => {
-		expect(classify([record({ commit: null, status: "failed" })])).toEqual({ flaky: [], failing: [] })
-		const flagged = classify([record({ commit: null, flaky: true })])
-		expect(flagged.flaky).toHaveLength(1)
-		expect(flagged.flaky[0].mixedCommitCount).toBe(0)
+	it("skips and counts records with missing commit tags", () => {
+		expect(classify([record({ commit: null, status: "failed" })])).toEqual({ flaky: [], failing: [], skipped: 1 })
+		expect(classify([record({ commit: null, flaky: true })])).toEqual({ flaky: [], failing: [], skipped: 1 })
 	})
 
 	it.each([
-		[null, /Malformed test result record/],
-		[record({ testKey: "" }), /testKey/],
-		[record({ status: "skipped" as "passed" }), /status/],
-		[record({ createdAt: Number.NaN }), /createdAt/],
-	])("rejects malformed record %#", (malformed, error) => {
-		expect(() => classify([malformed])).toThrow(error)
+		null,
+		record({ testKey: "" }),
+		record({ status: "skipped" as "passed" }),
+		record({ createdAt: Number.NaN }),
+	])("skips malformed record %# without aborting classification", (malformed) => {
+		expect(classify([malformed])).toEqual({ flaky: [], failing: [], skipped: 1 })
 	})
 })
 
@@ -237,6 +235,7 @@ describe("report mode", () => {
 				expect(url.searchParams.get("rql")).toMatch(/^createdDate >= \d+$/)
 				return jsonResponse(page([launch]))
 			}
+			if (url.pathname === "/api/rs/launch") return jsonResponse(page([launch]))
 			if (url.pathname === "/api/rs/testresult") {
 				expect(url.searchParams.get("launchId")).toBe("101")
 				return jsonResponse(
@@ -296,9 +295,19 @@ describe("report mode", () => {
 			expect(json.flaky).toHaveLength(1)
 			expect(json.failing).toHaveLength(1)
 			expect(json.generatedAt).toBeUndefined()
+			expect(json).toMatchObject({
+				windowHours: 48,
+				events: ["experiment"],
+				launchCount: 1,
+				resultCount: 2,
+				skipped: 0,
+			})
 			expect(json.flaky[0].firstSeen).toBeUndefined()
 			const markdown = readFileSync(join(root, "out", "flaky-report.md"), "utf8")
-			expect(markdown).not.toContain("Window:")
+			expect(markdown).toContain("Window: 48h")
+			expect(markdown).toContain("Launches scanned: 1")
+			expect(markdown).toContain("Results scanned: 2")
+			expect(markdown).toContain("Records skipped: 0")
 			expect(markdown).not.toContain("First seen")
 			expect(markdown).toContain("## Flaky")
 			expect(markdown).toContain("zz-planted-flaky.test.ts")
@@ -338,6 +347,7 @@ describe("report mode", () => {
 					last: pageNumber === 1,
 				})
 			}
+			if (url.pathname === "/api/rs/launch") return jsonResponse(page(launches))
 			const launch = launches.find((item) => url.searchParams.get("launchId") === String(item.id))
 			if (url.pathname === "/api/rs/testresult" && launch) {
 				return jsonResponse(
