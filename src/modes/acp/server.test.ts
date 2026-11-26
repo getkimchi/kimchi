@@ -10882,6 +10882,7 @@ describe("setSessionConfigOption", () => {
 				extensionFactories: [],
 				agentDir: "/tmp/fake-agent-dir",
 				sessionFactory: async () => asSession(fake),
+				sessionLoader: async () => asSession(fake),
 			})
 		}
 
@@ -10948,6 +10949,52 @@ describe("setSessionConfigOption", () => {
 			const effort = configOptions?.find((option) => option.id === "reasoning_effort")
 			expect(effort?.currentValue).toBe(expected)
 			expect(effort).toMatchObject({ options: [{ value: "low" }, { value: "max" }] })
+		})
+
+		it("applies and persists an unsupported harness fallback across model switches and reload", async () => {
+			const curated = { ...REASONING_MODEL, id: "curated", name: "Curated" }
+			const models = [{ ...REASONING_MODEL, name: "Reasoner" }, curated]
+			registerModelThinkingLevels("test/reasoner", ["low", "medium", "high", "max"])
+			registerModelThinkingLevels("test/curated", ["low", "high"])
+			const fake = new FakeAgentSession("test-session-effort-clamped-fallback")
+			fake.model = REASONING_MODEL
+			fake.thinkingLevel = "medium"
+			fake.modelRegistry = {
+				...fake.modelRegistry,
+				getAvailable: () => models,
+				find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
+			}
+			const agent = makeAgent(fake)
+			await optIntoModelEffort(agent)
+			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
+
+			await agent.setSessionConfigOption({ sessionId: fake.sessionId, configId: "model", value: "test/curated" })
+
+			expect(fake.thinkingLevel).toBe("high")
+			expect(fake.branch).toContainEqual(
+				expect.objectContaining({
+					customType: "model_effort_selection",
+					data: { modelId: "test/curated", value: "high" },
+				}),
+			)
+			expect(writeModelEffortDefault).not.toHaveBeenCalled()
+
+			const reloaded = new FakeAgentSession(fake.sessionId)
+			reloaded.model = curated
+			reloaded.thinkingLevel = "medium"
+			reloaded.branch = [...fake.branch]
+			const reloadAgent = makeAgent(reloaded)
+			await optIntoModelEffort(reloadAgent)
+
+			const { configOptions } = await reloadAgent.loadSession({
+				sessionId: reloaded.sessionId,
+				cwd: "/tmp",
+				mcpServers: [],
+				_meta: { "kimchi.dev": { appMode: "chat" } },
+			})
+
+			expect(reloaded.thinkingLevel).toBe("high")
+			expect(configOptions?.find((option) => option.id === "reasoning_effort")?.currentValue).toBe("high")
 		})
 
 		it("restores a session's previous level after switching models without writing a default", async () => {

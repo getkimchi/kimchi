@@ -1245,7 +1245,7 @@ export class KimchiAcpAgent {
 		const clamped = clampToSelection(stored ?? session.thinkingLevel, selection)
 		const effort = parseModelThinkingLevel(clamped)
 		if (!effort) return
-		if (stored && session.thinkingLevel !== effort) session.setThinkingLevel(effort)
+		if (session.thinkingLevel !== effort) session.setThinkingLevel(effort)
 		record.effortByModel.set(modelId, effort)
 		if (remembered !== effort) {
 			// Pin the baseline too: later defaults must not rewrite this existing session.
