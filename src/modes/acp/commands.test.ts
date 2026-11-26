@@ -6,8 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { markFermentLegacyLoaded, resetFermentLegacyLoadedForTests } from "../../extensions/ferment/resource.js"
 import { FERMENT_LEGACY_RESOURCE_ID } from "../../extensions/ferment/resource-id.js"
+import { markFermentV2Loaded, resetFermentV2LoadedForTests } from "../../extensions/ferment-v2/availability.js"
+import { FERMENT_V2_RESOURCE_ID } from "../../extensions/ferment-v2/constants.js"
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
+import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { setResourceOverride } from "../../resources/store.js"
 import { asSession, BaseFakeAgentSession } from "./__mocks__/fake-agent-session.js"
 import { makeResourceLoader } from "./__mocks__/resource-loader.js"
@@ -16,6 +19,7 @@ import {
 	composeAvailableCommands,
 	createCommandsRefresher,
 	discoverSkillCommandsMap,
+	FERMENT_AVAILABLE_COMMAND,
 	FERMENT_LEGACY_AVAILABLE_COMMAND,
 	reloadSkillCommandsMap,
 	tryParseCompactCommand,
@@ -101,6 +105,14 @@ describe("tryParseCompactCommand", () => {
 })
 
 describe("composeAvailableCommands", () => {
+	beforeEach(() => {
+		resetFermentV2LoadedForTests()
+	})
+
+	afterEach(() => {
+		resetFermentV2LoadedForTests()
+	})
+
 	it("puts static commands first, then skill commands in map order", () => {
 		const skills = new Map([
 			["alpha", { name: "alpha", description: "Alpha skill", filePath: "/skills/alpha/SKILL.md" }],
@@ -133,6 +145,70 @@ describe("composeAvailableCommands", () => {
 	})
 })
 
+describe("composeAvailableCommands — /ferment", () => {
+	let agentDir: string
+
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "acp-ferment-palette-"))
+		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+		resetOrgPolicyForTests()
+		resetFermentV2LoadedForTests()
+		resetFermentLegacyLoadedForTests()
+	})
+
+	afterEach(() => {
+		resetFermentV2LoadedForTests()
+		resetFermentLegacyLoadedForTests()
+		resetOrgPolicyForTests()
+		Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
+		rmSync(agentDir, { recursive: true, force: true })
+	})
+
+	it("lists /ferment after the static commands when Ferment loaded at startup", () => {
+		markFermentV2Loaded()
+
+		const commands = composeAvailableCommands(new Map(), true)
+		expect(commands.map((c) => c.name)).toEqual(["bug", "compact", "language", "pr-watch", "ferment"])
+		expect(commands.find((command) => command.name === "ferment")).toEqual(FERMENT_AVAILABLE_COMMAND)
+	})
+
+	it("does not list /ferment when Ferment did not load", () => {
+		expect(composeAvailableCommands(new Map(), true).map((c) => c.name)).not.toContain("ferment")
+	})
+
+	it("hides /ferment when the user turns Ferment off after load", () => {
+		markFermentV2Loaded()
+		setResourceOverride(FERMENT_V2_RESOURCE_ID, false)
+		expect(composeAvailableCommands(new Map(), true).map((c) => c.name)).not.toContain("ferment")
+	})
+
+	it("hides /ferment when the org locks Ferment off after load", async () => {
+		markFermentV2Loaded()
+		await setOrgPolicyForTests({ resources: { [FERMENT_V2_RESOURCE_ID]: "FORCE_OFF" } })
+		expect(composeAvailableCommands(new Map(), true).map((c) => c.name)).not.toContain("ferment")
+	})
+
+	it("puts /ferment before /ferment-legacy and skills", () => {
+		markFermentV2Loaded()
+		setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+		markFermentLegacyLoaded()
+		const skills = new Map([
+			["alpha", { name: "alpha", description: "Alpha skill", filePath: "/skills/alpha/SKILL.md" }],
+		])
+
+		expect(composeAvailableCommands(skills, true).map((c) => c.name)).toEqual([
+			"bug",
+			"compact",
+			"language",
+			"pr-watch",
+			"ferment",
+			"ferment-legacy",
+			"skill:alpha",
+		])
+	})
+})
+
 // Real resource store in a temp agent dir, so the live legacy setting and the
 // startup loaded marker are both exercised.
 describe("composeAvailableCommands — /ferment-legacy", () => {
@@ -143,10 +219,12 @@ describe("composeAvailableCommands — /ferment-legacy", () => {
 		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
 		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
 		resetOrgPolicyForTests()
+		resetFermentV2LoadedForTests()
 		resetFermentLegacyLoadedForTests()
 	})
 
 	afterEach(() => {
+		resetFermentV2LoadedForTests()
 		resetFermentLegacyLoadedForTests()
 		resetOrgPolicyForTests()
 		Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")

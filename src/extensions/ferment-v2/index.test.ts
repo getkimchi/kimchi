@@ -21,9 +21,12 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
+import { runAsAgentWorker } from "../agent-worker-context.js"
 import { clearPermissionModeEnv, getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "../permissions/mode-controller-registry.js"
 import { PERMISSION_EVENTS } from "../permissions/permissions-events.js"
@@ -33,6 +36,7 @@ import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "../todos/store.js"
 import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoItem } from "../todos/types.js"
+import { isFermentV2LoadedAndEnabled, resetFermentV2LoadedForTests } from "./availability.js"
 import {
 	FERMENT_V2_CONTEXT_MESSAGE_TYPE,
 	FERMENT_V2_CONTROL_MESSAGE_TYPE,
@@ -111,11 +115,44 @@ type ToolConfig = {
 	}>
 }
 
+describe("Ferment V2 loaded marker", () => {
+	let agentDir: string
+	const savedAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "ferment-v2-extension-loaded-"))
+		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+		resetFermentV2LoadedForTests()
+		resetOrgPolicyForTests()
+	})
+
+	afterEach(() => {
+		resetFermentV2LoadedForTests()
+		resetOrgPolicyForTests()
+		if (savedAgentDir === undefined) Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
+		else process.env.KIMCHI_CODING_AGENT_DIR = savedAgentDir
+		rmSync(agentDir, { recursive: true, force: true })
+	})
+
+	it("marks Ferment as loaded when the extension runs", () => {
+		const harness = createExtensionApi()
+		fermentV2Extension(harness.api)
+		expect(isFermentV2LoadedAndEnabled()).toBe(true)
+	})
+
+	it("does not mark Ferment as loaded in an agent worker", async () => {
+		const harness = createExtensionApi()
+		await runAsAgentWorker(async () => fermentV2Extension(harness.api))
+		expect(isFermentV2LoadedAndEnabled()).toBe(false)
+	})
+})
+
 describe("Ferment V2 extension", () => {
 	let harness: ReturnType<typeof createHarness>
 	let cwd: string
 
 	beforeEach(async () => {
+		resetFermentV2LoadedForTests()
 		__resetTodoStore()
 		evaluateFermentV2Mock.mockReset().mockResolvedValue({
 			verdict: "continue",
@@ -136,6 +173,7 @@ describe("Ferment V2 extension", () => {
 	afterEach(async () => {
 		resetProjectScopeTrustForTests()
 		await harness.fire("session_shutdown", { type: "session_shutdown" })
+		resetFermentV2LoadedForTests()
 		clearPermissionModeEnv(TEST_SESSION_ID)
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 		__resetTodoStore()

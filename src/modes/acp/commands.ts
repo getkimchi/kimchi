@@ -4,6 +4,8 @@ import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-age
 import { isExperimentalFeaturesEnabled } from "../../extensions/experimental.js"
 import { isFermentLegacyLoadedAndEnabled } from "../../extensions/ferment/resource.js"
 import { FERMENT_LEGACY_COMMAND_NAME } from "../../extensions/ferment/resource-id.js"
+import { isFermentV2LoadedAndEnabled } from "../../extensions/ferment-v2/availability.js"
+import { FERMENT_V2_COMMAND_NAME } from "../../extensions/ferment-v2/constants.js"
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
 import {
 	type AcpSkillInfo,
@@ -51,6 +53,12 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 		input: { hint: "Optional instructions, or an action: watch, monitor, status, or stop." },
 	},
 ]
+
+export const FERMENT_AVAILABLE_COMMAND: AvailableCommand = {
+	name: FERMENT_V2_COMMAND_NAME,
+	description: SLASH_COMMANDS.ferment.hint,
+	input: { hint: "The objective, or edit, pause, resume, or clear." },
+}
 
 /**
  * `/ferment-legacy` is kept out of /help (SLASH_COMMANDS), so it is not in
@@ -118,6 +126,8 @@ export function composeAvailableCommands(
 ): AvailableCommand[] {
 	return [
 		...AVAILABLE_COMMANDS.filter(({ name }) => (name !== "pr-watch" || prMonitoring) && (name !== "review" || review)),
+		// The palette is not built from registered commands, so this uses the same startup and enablement gates as legacy.
+		...(isFermentV2LoadedAndEnabled() ? [FERMENT_AVAILABLE_COMMAND] : []),
 		...(isFermentLegacyLoadedAndEnabled() ? [FERMENT_LEGACY_AVAILABLE_COMMAND] : []),
 		...buildSkillAvailableCommands(Array.from(skillCommands.values())),
 	]

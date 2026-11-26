@@ -23,6 +23,7 @@ import { GLOBAL_TODO_SCOPE, getTodosForScope, resolveTodoScope } from "../todos/
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { holdWorkedDuration } from "../tool-rendering.js"
 import { holdWorkedForMessage, holdWorkingIndicator } from "../ui.js"
+import { markFermentV2Loaded } from "./availability.js"
 import {
 	FERMENT_V2_COMMAND_COMPLETIONS,
 	formatFermentLegacyWordHint,
@@ -172,6 +173,7 @@ function errorMessage(error: unknown): string {
 
 export default function fermentV2Extension(pi: ExtensionAPI): void {
 	if (isAgentWorker()) return
+	markFermentV2Loaded()
 
 	let currentFermentV2: FermentV2State
 	const mutationTails = new Map<string, Promise<void>>()

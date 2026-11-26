@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, expect, it } from "vitest"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
-import { newSession, prompt, type ScenarioResult, waitFor } from "./support/scenarios.js"
+import { commandNames, newSession, prompt, type ScenarioResult, waitFor } from "./support/scenarios.js"
 
 let fixture: AcpFixture | undefined
 
@@ -120,6 +120,13 @@ it("sends a failing claim back with a finding, re-checks the fix, and completes"
 	})
 	fixture = active
 	const session = await newSession(active, active.workDir)
+
+	const names = await waitFor(
+		() => commandNames(active, session),
+		(found) => found.includes("bug"),
+	)
+	expect(names.filter((name) => name === "ferment")).toHaveLength(1)
+	expect(names).not.toContain("ferment-v2")
 
 	const running: ScenarioResult = await prompt(
 		active,

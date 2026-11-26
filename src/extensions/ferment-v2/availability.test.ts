@@ -7,7 +7,12 @@ import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { setResourceOverride } from "../../resources/store.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { createFermentV2AvailabilityCheck } from "./availability.js"
+import {
+	createFermentV2AvailabilityCheck,
+	isFermentV2LoadedAndEnabled,
+	markFermentV2Loaded,
+	resetFermentV2LoadedForTests,
+} from "./availability.js"
 import { FERMENT_V2_RESOURCE_ID } from "./constants.js"
 
 function command(name: string, source: SlashCommandInfo["source"] = "extension"): SlashCommandInfo {
@@ -102,5 +107,49 @@ describe("createFermentV2AvailabilityCheck", () => {
 		check()
 		check()
 		expect(harness.getCommands).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("isFermentV2LoadedAndEnabled", () => {
+	let agentDir: string
+	const savedAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	const savedEnableResources = process.env.KIMCHI_ENABLE_RESOURCES
+
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "ferment-v2-loaded-"))
+		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
+		resetFermentV2LoadedForTests()
+		resetOrgPolicyForTests()
+	})
+
+	afterEach(() => {
+		resetFermentV2LoadedForTests()
+		resetOrgPolicyForTests()
+		if (savedAgentDir === undefined) Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
+		else process.env.KIMCHI_CODING_AGENT_DIR = savedAgentDir
+		if (savedEnableResources !== undefined) process.env.KIMCHI_ENABLE_RESOURCES = savedEnableResources
+		rmSync(agentDir, { recursive: true, force: true })
+	})
+
+	it("is false before the extension loads, even when the resource is on", () => {
+		expect(isFermentV2LoadedAndEnabled()).toBe(false)
+	})
+
+	it("is true after load with the default setting", () => {
+		markFermentV2Loaded()
+		expect(isFermentV2LoadedAndEnabled()).toBe(true)
+	})
+
+	it("is false after load when the user turns Ferment off", () => {
+		markFermentV2Loaded()
+		setResourceOverride(FERMENT_V2_RESOURCE_ID, false)
+		expect(isFermentV2LoadedAndEnabled()).toBe(false)
+	})
+
+	it("is false after load when the org locks Ferment off", async () => {
+		markFermentV2Loaded()
+		await setOrgPolicyForTests({ resources: { [FERMENT_V2_RESOURCE_ID]: "FORCE_OFF" } })
+		expect(isFermentV2LoadedAndEnabled()).toBe(false)
 	})
 })
