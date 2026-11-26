@@ -11142,6 +11142,20 @@ describe("setSessionConfigOption", () => {
 			const fixed = { ...REASONING_MODEL, id: "fixed", name: "Fixed" }
 			const provider = { ...REASONING_MODEL, id: "provider", name: "Provider controlled" }
 			const intersection = { ...REASONING_MODEL, id: "intersection", name: "Empty intersection" }
+			const allNullMap = {
+				...REASONING_MODEL,
+				id: "all-null-map",
+				name: "All-null map",
+				thinkingLevelMap: {
+					off: null,
+					minimal: null,
+					low: null,
+					medium: null,
+					high: null,
+					xhigh: null,
+					max: null,
+				},
+			}
 			const plain = { ...REASONING_MODEL, id: "plain", name: "Plain", reasoning: false, thinkingLevelMap: {} }
 			const auto = { ...REASONING_MODEL, provider: "kimchi-dev", id: "auto", name: "Auto" }
 			const family = {
@@ -11157,14 +11171,18 @@ describe("setSessionConfigOption", () => {
 				name: "Other",
 				description: "Configured model description",
 			}
-			const models = [REASONING_MODEL, fixed, provider, intersection, plain, auto, family, other].map((model) => ({
-				...model,
-				name: model.name ?? model.id,
-			}))
+			const models = [REASONING_MODEL, fixed, provider, intersection, allNullMap, plain, auto, family, other].map(
+				(model) => ({
+					...model,
+					name: model.name ?? model.id,
+				}),
+			)
 			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
 			registerModelThinkingLevels("test/fixed", ["high"])
 			registerModelThinkingLevels("test/provider", [])
 			registerModelThinkingLevels("test/intersection", ["xhigh"])
+			// Leave the all-null map uncurated: Pi returns no selectable levels,
+			// but the provider still owns reasoning for this reasoning model.
 			registerModelThinkingLevels("test/other", ["low", "high", "max"])
 			vi.mocked(readModelEffortDefaults).mockReturnValue({ "test/fixed": "high" })
 			const fake = new FakeAgentSession("test-session-effort-availability")
@@ -11189,6 +11207,9 @@ describe("setSessionConfigOption", () => {
 				"kimchi.dev": { modelEffort: { availability: "provider-controlled", currentValue: null } },
 			})
 			expect(configRow(configOptions, "model", "test/intersection")._meta).toMatchObject({
+				"kimchi.dev": { modelEffort: { availability: "provider-controlled", currentValue: null } },
+			})
+			expect(configRow(configOptions, "model", "test/all-null-map")._meta).toMatchObject({
 				"kimchi.dev": { modelEffort: { availability: "provider-controlled", currentValue: null } },
 			})
 			expect(configRow(configOptions, "model", "test/plain")._meta).toMatchObject({

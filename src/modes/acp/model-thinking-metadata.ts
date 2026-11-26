@@ -61,9 +61,12 @@ export function buildModelThinkingMeta(
 	const isCurrent = context.currentModel !== undefined && refFromModel(context.currentModel) === modelId
 	const selection = thinkingSelection(isCurrent && context.currentModel ? context.currentModel : model)
 	if (selection.mode !== "levels" || selection.selectable.length === 0) {
+		// An uncurated all-null level map can yield mode "levels" with no
+		// selectable values, without hiding the provider-managed reasoning flag.
+		const providerControlled = (selection.mode === "none" && selection.reasoning) || model.reasoning
 		return kimchiDevMetaOf({
 			modelEffort: {
-				availability: selection.mode === "none" && selection.reasoning ? "provider-controlled" : "unsupported",
+				availability: providerControlled ? "provider-controlled" : "unsupported",
 				currentValue: null,
 			},
 		})
