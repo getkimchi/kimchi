@@ -394,17 +394,6 @@ describe("clearPiAuth", () => {
 })
 
 describe("syncOAuthCredentialToKimchiProviders", () => {
-	const oauthCredential = {
-		type: "oauth",
-		access: "id-1",
-		refresh: "rt-1",
-		expires: Date.now() + 3600_000,
-		region: "us",
-		tokenUrl: "https://login.kimchi.dev/oauth/token",
-		clientId: "kimchi-cli-us",
-		useIdToken: true,
-	}
-
 	it("fans the OAuth credential out to every Kimchi-managed provider, replacing stale entries", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-oauth-"))
 		tempDirs.push(dir)
@@ -461,5 +450,128 @@ describe("syncOAuthCredentialToKimchiProviders", () => {
 
 		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, oauthCredential)
 		expect(statSync(authPath).mtimeMs).toBeLessThan(first)
+	})
+})
+
+const oauthCredential = {
+	type: "oauth",
+	access: "id-1",
+	refresh: "rt-1",
+	expires: Date.now() + 3600_000,
+	region: "us",
+	tokenUrl: "https://login.kimchi.dev/oauth/token",
+	clientId: "kimchi-cli-us",
+	useIdToken: true,
+}
+
+describe("syncOAuthCredentialToKimchiProviders guarded fan-out", () => {
+	const newerCredential = {
+		...oauthCredential,
+		access: "id-2",
+		refresh: "rt-2",
+		expires: oauthCredential.expires + 60_000,
+	}
+
+	/**
+	 * Deterministic interleaving: the store is changed to the winning state
+	 * before sync is invoked, and the pre-call auth.json mtime is pushed into
+	 * the past so any guarded write would be observable (existing pattern from
+	 * the no-op sync tests).
+	 */
+	function setupStore(authEntries: Record<string, unknown>, modelsProviders: Record<string, unknown> | null) {
+		const dir = mkdtempSync(join(tmpdir(), "kimchi-pi-auth-oauth-guard-"))
+		tempDirs.push(dir)
+		const authPath = join(dir, "auth.json")
+		const modelsPath = join(dir, "models.json")
+		writeFileSync(authPath, `${JSON.stringify(authEntries, null, 2)}\n`, { mode: 0o600 })
+		if (modelsProviders) writeFileSync(modelsPath, JSON.stringify({ providers: modelsProviders }))
+		const fixedTime = new Date(Date.now() - 60_000)
+		utimesSync(authPath, fixedTime, fixedTime)
+		return { authPath, modelsPath, mtime: statSync(authPath).mtimeMs }
+	}
+
+	it("does not resurrect a superseded credential: the newer login wins and no write occurs", async () => {
+		const { authPath, modelsPath, mtime } = setupStore(
+			{ "kimchi-dev": newerCredential, "kimchi-dev/openai": newerCredential },
+			{ "kimchi-dev": {}, "kimchi-dev/openai": {} },
+		)
+		const original = readFileSync(authPath, "utf-8")
+
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, oauthCredential, undefined, {
+			expectedCanonical: oauthCredential,
+		})
+
+		// The attempted fan-out of snapshot A lost to the newer credential B:
+		// concrete entries keep B and auth.json was not written at all.
+		expect(readFileSync(authPath, "utf-8")).toBe(original)
+		expect(statSync(authPath).mtimeMs).toBe(mtime)
+	})
+
+	it("does not recreate the canonical credential after an interleaved logout", async () => {
+		const { authPath, modelsPath, mtime } = setupStore({}, { "kimchi-dev": {}, "kimchi-dev/openai": {} })
+
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, oauthCredential, undefined, {
+			expectedCanonical: oauthCredential,
+		})
+
+		expect(JSON.parse(readFileSync(authPath, "utf-8"))).toEqual({})
+		expect(statSync(authPath).mtimeMs).toBe(mtime)
+	})
+
+	it("still fans out when the canonical matches, ignoring unrelated metadata", async () => {
+		const { authPath, modelsPath, mtime } = setupStore(
+			{
+				// Same access/refresh/expires identity as the expected snapshot,
+				// different unrelated metadata.
+				"kimchi-dev": { ...oauthCredential, region: "eu", note: "metadata" },
+				"kimchi-dev/openai": { ...oauthCredential, access: "stale-bearer" },
+			},
+			{ "kimchi-dev": {}, "kimchi-dev/openai": {} },
+		)
+
+		await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, oauthCredential, undefined, {
+			expectedCanonical: oauthCredential,
+		})
+
+		const credentials = JSON.parse(readFileSync(authPath, "utf-8"))
+		expect(credentials["kimchi-dev"]).toEqual(oauthCredential)
+		expect(credentials["kimchi-dev/openai"]).toEqual(oauthCredential)
+		expect(statSync(authPath).mtimeMs).toBeGreaterThan(mtime)
+	})
+
+	it("treats access, refresh, and expires each as credential identity", async () => {
+		for (const field of ["access", "refresh", "expires"] as const) {
+			const divergent = field === "expires" ? oauthCredential.expires + 1 : `different-${field}`
+			const { authPath, modelsPath, mtime } = setupStore(
+				{ "kimchi-dev": { ...oauthCredential, [field]: divergent } },
+				{ "kimchi-dev": {} },
+			)
+			const original = readFileSync(authPath, "utf-8")
+
+			await syncOAuthCredentialToKimchiProviders(authPath, modelsPath, oauthCredential, undefined, {
+				expectedCanonical: oauthCredential,
+			})
+
+			expect(readFileSync(authPath, "utf-8"), `field: ${field}`).toBe(original)
+			expect(statSync(authPath).mtimeMs, `field: ${field}`).toBe(mtime)
+		}
+	})
+
+	it("returns before malformed models.json can throw on a losing guard", async () => {
+		const { authPath, modelsPath, mtime } = setupStore({ "kimchi-dev": newerCredential }, null)
+		writeFileSync(modelsPath, "{ not json")
+		const original = readFileSync(authPath, "utf-8")
+
+		// The guard rejects the stale snapshot before models.json is ever read.
+		await expect(
+			syncOAuthCredentialToKimchiProviders(authPath, modelsPath, oauthCredential, undefined, {
+				expectedCanonical: oauthCredential,
+			}),
+		).resolves.toBeUndefined()
+		expect(readFileSync(authPath, "utf-8")).toBe(original)
+		expect(statSync(authPath).mtimeMs).toBe(mtime)
+
+		// Unguarded callers keep the existing propagation for the same store.
+		await expect(syncOAuthCredentialToKimchiProviders(authPath, modelsPath, oauthCredential)).rejects.toThrow()
 	})
 })

@@ -6,6 +6,7 @@ import { join } from "node:path"
 export const EXPIRING_ACCESS_TOKEN = "e2e-expiring-access"
 export const REPLACEMENT_ACCESS_TOKEN = "e2e-replacement-access"
 export const REFRESH_CONTINUED_REPLY = "Refreshed prompt continued."
+const HOUR_MS = 3_600_000
 
 export interface RefreshGrant {
 	grantType: string
@@ -21,9 +22,9 @@ export interface FakeOAuthRefreshServer {
 
 /** A loopback-only OAuth token endpoint that rotates fake credentials. It never logs request bodies or headers. */
 export async function startFakeOAuthRefreshServer(
-	options: { expiresInSeconds?: number; failFirstGrant?: boolean } = {},
+	options: { expiresInSeconds?: number; failFirstGrant?: boolean; idToken?: string } = {},
 ): Promise<FakeOAuthRefreshServer> {
-	const { expiresInSeconds = 3600, failFirstGrant = false } = options
+	const { expiresInSeconds = 3600, failFirstGrant = false, idToken } = options
 	const grants: RefreshGrant[] = []
 	let revoked = false
 	let transientFailurePending = failFirstGrant
@@ -58,6 +59,11 @@ export async function startFakeOAuthRefreshServer(
 			res.end(
 				JSON.stringify({
 					access_token: REPLACEMENT_ACCESS_TOKEN,
+					// Optional ID-token-bearing response: selected-ID-token mode
+					// (useIdToken) needs the issuer to return the JWT it will use
+					// as the bearer. Raw-access-token consumers omit `idToken` and
+					// keep the previous response shape unchanged.
+					...(idToken ? { id_token: idToken } : {}),
 					refresh_token: "e2e-rotated-refresh",
 					expires_in: expiresInSeconds,
 					token_type: "Bearer",
@@ -110,6 +116,53 @@ export function seedExpiringOAuthCredential(homeDir: string, tokenUrl: string): 
 		accessToken: EXPIRING_ACCESS_TOKEN,
 	}
 	const authPath = join(agentDir, "auth.json")
+	writeFileSync(authPath, JSON.stringify({ "kimchi-dev": credential, "kimchi-dev/openai": credential }), {
+		mode: 0o600,
+	})
+	return authPath
+}
+
+/** Secret-free synthetic JWT (alg "none") with a numeric epoch-seconds exp. */
+export function syntheticIdTokenJwt(expiryMs: number): string {
+	return `${Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")}.${Buffer.from(
+		JSON.stringify({ exp: Math.floor(expiryMs / 1000) }),
+	).toString("base64url")}.e2e-fixture-signature`
+}
+
+/** A legacy credential: the stored response-derived schedule (24h) outlives
+ * the selected ID-token bearer that was persisted before the shared expiry
+ * rule, so the effective expiry is the (expired/near-expiry) JWT exp. */
+export function legacyIdTokenCredential(bearerExpiryMs: number, tokenUrl: string): Record<string, unknown> {
+	const bearer = syntheticIdTokenJwt(bearerExpiryMs)
+	return {
+		type: "oauth",
+		tokenUrl,
+		clientId: "e2e-client",
+		access: bearer,
+		refresh: "e2e-original-refresh",
+		expires: Date.now() + 24 * HOUR_MS,
+		useIdToken: true,
+		region: "us",
+		audience: "https://llm.kimchi.dev",
+		orgId: "e2e-org",
+		orgName: "E2E Org",
+		idToken: bearer,
+		accessToken: "e2e-legacy-raw-access",
+	}
+}
+
+/** Clear the fixture's fake default API key and seed canonical plus concrete
+ * legacy ID-token credentials before the process starts, so auth status must
+ * resolve and recover OAuth instead of the config short-circuit. */
+export function seedLegacyIdTokenCredentials(homeDir: string, tokenUrl: string): string {
+	const configDir = join(homeDir, ".config", "kimchi")
+	const configPath = join(configDir, "config.json")
+	const config = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>
+	config.apiKey = ""
+	writeFileSync(configPath, JSON.stringify(config, null, "\t"))
+
+	const credential = legacyIdTokenCredential(Date.now() - 10 * 60_000, tokenUrl)
+	const authPath = join(configDir, "harness", "auth.json")
 	writeFileSync(authPath, JSON.stringify({ "kimchi-dev": credential, "kimchi-dev/openai": credential }), {
 		mode: 0o600,
 	})

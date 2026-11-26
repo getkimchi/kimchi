@@ -48,6 +48,15 @@ describe("printMergedHelp", () => {
 		expect(output).toContain("setup-tools first")
 	})
 
+	it("omits hidden catalog flags and keeps visible extension booleans", async () => {
+		await printMergedHelp()
+		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n")
+		expect(output).toContain("--ferment-oneshot")
+		expect(output).toContain("--init-git")
+		expect(output).not.toContain("--debug-prompts")
+		expect(output).not.toMatch(/--memory\b/)
+	})
+
 	it("shows no package-commands section when none are installed", async () => {
 		await printMergedHelp()
 		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n")

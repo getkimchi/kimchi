@@ -18,7 +18,9 @@ function flagDocFromCliOption(name: string, def: CliOptionDef): FlagDoc {
 	return { name: `${long}${short}${value}`, description: def.description }
 }
 
-const KIMCHI_FLAGS: FlagDoc[] = Object.entries(CLI_OPTIONS).map(([name, def]) => flagDocFromCliOption(name, def))
+const KIMCHI_FLAGS: FlagDoc[] = Object.entries(CLI_OPTIONS)
+	.filter(([, def]) => def.hidden !== true)
+	.map(([name, def]) => flagDocFromCliOption(name, def))
 
 function printSection(rows: FlagDoc[], pad: number): void {
 	for (const row of rows) {

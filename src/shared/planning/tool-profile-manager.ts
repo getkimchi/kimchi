@@ -124,6 +124,19 @@ export function isProviderReadOnlyTool(pi: ExtensionAPI, name: string): boolean 
 	return collectReadOnlyProviderNames(pi).includes(name)
 }
 
+/**
+ * Per-scope restore state for the idle profile. `surfaceBaseline` is the
+ * chat-surface the session should return to: captured at the first
+ * restrictive (non-idle) profile apply, and normalized to the achieved
+ * surface on every idle application. `lastApplied` is exactly what the
+ * profile manager last wrote, so a deliberate idle can tell which names the
+ * session actively gained or lost since then (upstream auto-activation of
+ * late registrations, user/adapter toggles, visibility votes) and honor
+ * them — a deactivation outlives every subsequent idle apply.
+ */
+let surfaceBaselineByScope = new WeakMap<object, string[]>()
+let lastAppliedByScope = new WeakMap<object, string[]>()
+
 /** What caused a tool-profile snapshot: a deliberate apply, or a deferred resnapshot. */
 export type ProfileApplyTrigger = "apply" | "resnapshot"
 
@@ -149,14 +162,17 @@ export function debugToolSurface(line: () => string): void {
  * can call the tool-setting logic without triggering the cooperative-layer
  * no-op guard in `applyCooperativeTweak()`.
  *
- * Two profiles use `pi.getAllTools()` as their base rather than the fixed
- * catalog, so that MCP/custom/third-party tools registered by other
- * extensions are preserved:
+ * Two profiles sample `pi.getAllTools()` in addition to the fixed catalog:
  *
- * - `"idle"`: full registered toolset minus ferment-only tools. Restores the
- *   pre-unification behaviour where exiting a ferment returned the user to
- *   their normal chat toolset — including `bash`, `edit`, `write`, and any
- *   third-party tools.
+ * - `"idle"` does NOT use the registry as its base. Deliberate applies
+ *   restore the captured pre-profile baseline plus names the session gained
+ *   since the last snapshot, minus names it lost; resnapshots carry the live
+ *   surface. Minus ferment-only tools. Registered is not active — extension
+ *   tools such as `tool_search` register `defaultActive: false`, and an idle
+ *   snapshot must not activate them merely because the profile manager ran.
+ *   Intentionally default-active tools such as codemode belong to the
+ *   captured surface instead. Exiting a ferment restores the surface the user
+ *   had before the ferment, not the implementation-widened one.
  *
  * - `"implementation-ferment"`: full registered toolset plus the required
  *   ferment lifecycle tools added defensively (so they are always present
@@ -168,7 +184,36 @@ export function debugToolSurface(line: () => string): void {
  */
 export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger: ProfileApplyTrigger = "apply"): void {
 	installTurnBoundaryReset(pi)
+	const scope = getToolSessionScope(pi)
+	const previousActive = [...new Set(pi.getActiveTools())]
 	const disabled = getDisabledToolNames(pi)
+	const lastApplied = lastAppliedByScope.get(scope) ?? []
+
+	// Capture the pre-profile chat surface exactly once per scope, at the
+	// session's first restrictive profile apply. Later idle restores re-derive
+	// from it, so a widening profile (implementation's full-registry union)
+	// can never reshape what chat returns to.
+	if (trigger === "apply" && profile !== "idle" && !surfaceBaselineByScope.has(scope)) {
+		surfaceBaselineByScope.set(scope, previousActive)
+	}
+
+	// Fold external activations into the baseline regardless of the profile
+	// in force: a tool registered and auto-activated mid-restrictive-profile
+	// (MCP server connecting during plan mode or a running ferment) is part
+	// of the session's surface, not of the profile's widening, and must
+	// survive the profile's exit. Only REGISTERED names fold — profile
+	// utilities the manager itself applied are already in lastApplied, and
+	// ephemeral admissions (planning read-only providers) are unregistered.
+	const baseline = surfaceBaselineByScope.get(scope)
+	if (baseline) {
+		const registeredNames = new Set(pi.getAllTools().map((t) => t.name))
+		const externallyActivated = previousActive.filter(
+			(name) => registeredNames.has(name) && !lastApplied.includes(name) && !baseline.includes(name),
+		)
+		if (externallyActivated.length > 0) {
+			surfaceBaselineByScope.set(scope, [...baseline, ...externallyActivated])
+		}
+	}
 
 	// Registry-derived profiles rebuild additively on resnapshot, mirroring
 	// upstream's `_refreshToolRegistry` (previous active set + newly registered
@@ -178,14 +223,40 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger: Profi
 	// visibility votes) still win. Planning profiles never sample the registry.
 	let allowedNames: string[]
 	if (profile === "idle") {
-		// Idle = no active ferment, no plan mode. Restore the full registered
-		// toolset minus ferment-only tools so users keep access to bash, edit,
-		// write, third-party tools, etc. in normal chat.
-		const carriedNames = carryOverNames(trigger, pi)
-		const registeredNames = pi.getAllTools().map((t) => t.name)
-		allowedNames = [...new Set([...carriedNames, ...registeredNames])].filter(
-			(name) => !isFermentOnlyToolName(name) && !disabled.has(name),
-		)
+		// Idle = no active ferment, no plan mode. The restore surface is
+		// baseline + admissions − removals, never the raw registry: registered
+		// is not active, and `tool_search` registers `defaultActive: false`,
+		// so a registry union would activate it without any user opt-in. Default-
+		// active tools such as codemode come from the captured baseline. Minus
+		// ferment-only tools so exiting a ferment never leaks its lifecycle
+		// surface.
+		if (trigger === "resnapshot") {
+			// Stale-registry guard: carry the mid-turn surface exactly, without
+			// sampling the registry, so a mid-rebuild can't shrink it.
+			allowedNames = previousActive.filter((name) => !isFermentOnlyToolName(name) && !disabled.has(name))
+		} else {
+			// Deliberate restore (exiting a profile or the per-turn idle
+			// re-assert): baseline ∪ gained − lost, still registered, never
+			// ferment-only, never vote-disabled. Ephemeral profile-admitted
+			// names (planning read-only providers) are not registry entries and
+			// leave with the profile that admitted them. Names the session lost
+			// since the last snapshot stay lost — a user/adapter deactivation
+			// outlives every idle apply. Two carve-outs: an empty previousActive
+			// (pending-plan-review suppression wipes the surface on purpose)
+			// carries no loss signal, and a restrictive profile whose apply
+			// overwrote a deactivation during its lifetime is the profile's
+			// documented widening, not a user toggle.
+			const gained = previousActive.filter((n) => !lastApplied.includes(n))
+			const lost =
+				previousActive.length === 0
+					? new Set<string>()
+					: new Set(lastApplied.filter((n) => !previousActive.includes(n)))
+			const registered = new Set(pi.getAllTools().map((t) => t.name))
+			const restorable = [...new Set([...(surfaceBaselineByScope.get(scope) ?? previousActive), ...gained])]
+			allowedNames = restorable.filter(
+				(name) => !lost.has(name) && registered.has(name) && !isFermentOnlyToolName(name) && !disabled.has(name),
+			)
+		}
 	} else if (profile === "implementation-ferment") {
 		// Implementation phase: keep the previously active and full registered
 		// toolset so MCP/custom/third-party tools are preserved, then merge in
@@ -245,8 +316,15 @@ export function applyCore(profile: ToolProfile, pi: ExtensionAPI, trigger: Profi
 	})
 
 	pi.setActiveTools(allowedNames)
-	snapshotAppliedByScope.set(getToolSessionScope(pi), true)
-	lastProfileByScope.set(getToolSessionScope(pi), profile)
+	snapshotAppliedByScope.set(scope, true)
+	lastProfileByScope.set(scope, profile)
+	lastAppliedByScope.set(scope, allowedNames)
+	if (profile === "idle") {
+		// The achieved surface becomes the restore surface: names a widening
+		// profile dragged in are forgotten here, and idle resnapshots fold
+		// late admissions (e.g. freshly registered MCP tools) into it.
+		surfaceBaselineByScope.set(scope, allowedNames)
+	}
 }
 
 /**
@@ -298,6 +376,8 @@ export function resetAll(): void {
 	snapshotAppliedByScope = new WeakMap()
 	turnListenersByPi = new WeakSet()
 	lastProfileByScope = new WeakMap()
+	surfaceBaselineByScope = new WeakMap()
+	lastAppliedByScope = new WeakMap()
 }
 
 /**

@@ -516,8 +516,11 @@ export function registerFermentEvents(
 		}
 		// One-shot, interactive, and normal chat share the unified profile model:
 		// derive the profile from runtime state. With no active ferment this
-		// resolves to the idle profile, which preserves normal tools and
-		// list_ferments while hiding ferment workflow tools.
+		// resolves to the idle profile, which re-asserts the session's chat
+		// surface (baseline plus later admissions) and strips ferment-owned
+		// workflow tools from it. Idle never widens with registered-but-inactive
+		// tools (defaultActive: false) and never undoes a deactivation — it only
+		// restores what the session actively had, minus ferment's own tools.
 		applyFermentRuntimeToolProfile(pi, runtime)
 		return {}
 	})

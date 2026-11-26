@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process"
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, isAbsolute, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { inflateSync } from "node:zlib"
 import { SKIPPED_TUI_TESTS } from "../tests/e2e/tui/skip-list.js"
+import { exactFileFilter } from "./tui-e2e/file-filter.js"
+import { planShards, shardDriftWarning } from "./tui-e2e/shards.js"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const tuiCwd = resolve(repoRoot, "tests/e2e/tui")
@@ -33,9 +35,9 @@ const env = {
 	...(debugEnabled ? { KIMCHI_TUI_E2E_DEBUG: "1" } : {}),
 }
 
-// No filter: run each non-quarantined file separately (one filter matching many files runs only one).
+// No filter: run each non-quarantined file in its own tui-test process.
 const hasTestFilter = args.some((arg) => !arg.startsWith("-"))
-const stems = hasTestFilter ? [] : testsToRun(shard)
+const { stems, plannedSeconds } = hasTestFilter ? { stems: [] } : testsToRun(shard)
 if (dryRun) {
 	if (hasTestFilter) {
 		process.stderr.write("[tui-e2e] --dry-run with an explicit file filter: nothing to shard\n")
@@ -67,11 +69,25 @@ function runTui(runArgs) {
 	return result.status ?? 1
 }
 
+// KIMCHI_TUI_TIMINGS_OUT=<file> records the seconds per file, so CI can
+// refresh tests/e2e/tui/timings.json (see docs/ci.md).
 function runEach(stems) {
 	let status = 0
+	const seconds = {}
 	for (const stem of stems) {
-		const code = runTui([...args, stem])
+		const started = Date.now()
+		const code = runTui([...args, exactFileFilter(stem)])
+		seconds[stem] = Math.round((Date.now() - started) / 100) / 10
 		if (code !== 0) status = code
+	}
+	if (process.env.KIMCHI_TUI_TIMINGS_OUT) {
+		writeFileSync(process.env.KIMCHI_TUI_TIMINGS_OUT, `${JSON.stringify(seconds, null, "\t")}\n`)
+	}
+	if (plannedSeconds !== undefined) {
+		const actual = Object.values(seconds).reduce((sum, value) => sum + value, 0)
+		const warning = shardDriftWarning(plannedSeconds, actual)
+		// The ::warning:: form shows on the CI run summary page.
+		if (warning) process.stderr.write(process.env.GITHUB_ACTIONS ? `::warning::${warning}\n` : `[tui-e2e] ${warning}\n`)
 	}
 	return status
 }
@@ -85,18 +101,23 @@ function testsToRun(shard) {
 		.map((name) => name.replace(/\.test\.ts$/, ""))
 		.sort()
 	const unskipped = all.filter((name) => !skipped.has(name))
-	// Deterministic round-robin over the sorted list keeps shards stable between runs.
-	const toRun = shard ? unskipped.filter((_, i) => i % shard.total === shard.index - 1) : unskipped
+	let toRun = unskipped
+	let plannedSeconds
 	if (shard) {
+		const { files: timings } = JSON.parse(readFileSync(resolve(tuiCwd, "timings.json"), "utf8"))
+		const planned = planShards(unskipped, timings, shard.total)[shard.index - 1]
+		toRun = planned.stems
+		plannedSeconds = planned.seconds
 		process.stderr.write(
-			`[tui-e2e] shard ${shard.index}/${shard.total}: ${toRun.length} of ${unskipped.length} files\n`,
+			`[tui-e2e] shard ${shard.index}/${shard.total}: ${toRun.length} of ${unskipped.length} files, about ${Math.round(planned.seconds)} s\n`,
 		)
 	}
 	if (toRun.length === 0) {
-		process.stderr.write("[tui-e2e] all tests are quarantined; nothing to run\n")
+		const reason = unskipped.length === 0 ? "all tests are quarantined" : "this shard has no files"
+		process.stderr.write(`[tui-e2e] ${reason}; nothing to run\n`)
 		process.exit(0)
 	}
-	return toRun
+	return { stems: toRun, plannedSeconds }
 }
 
 function listTraces() {

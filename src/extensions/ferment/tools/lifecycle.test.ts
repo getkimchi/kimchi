@@ -78,6 +78,7 @@ function createHarness() {
 		events: { emit: vi.fn(), on: vi.fn(() => () => {}) },
 		getFlag: vi.fn(() => undefined),
 		getActiveTools: vi.fn(() => []),
+		getAllTools: vi.fn(() => []),
 		setActiveTools: vi.fn(),
 	} as unknown as ExtensionAPI
 	const ferment = storage.create("Lifecycle Test", undefined, process.cwd())
