@@ -1,0 +1,20 @@
+{
+  "schema_version": "review-summary/v1",
+  "writer": "final",
+  "created_at": "2026-11-17T12:00:00Z",
+  "body": "One critical finding was kept; lower-priority duplicate fixture findings fill the remaining storage slots.",
+  "score": 82,
+  "estimated_effort_to_review": 3,
+  "environment_gaps": [
+    {
+      "kind": "missing_tool",
+      "name": "golangci-lint",
+      "note": "Needed to run the repository's configured lint suite."
+    },
+    {
+      "kind": "private_package",
+      "name": "github.com/acme/privatekit",
+      "note": "The sandbox cannot fetch private modules."
+    }
+  ]
+}

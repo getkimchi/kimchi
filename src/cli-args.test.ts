@@ -48,6 +48,12 @@ describe("value-flag parsing", () => {
 	})
 })
 
+describe("review writer limit parsing", () => {
+	it("preserves a negative equals-form value for structured validation", () => {
+		expect(parseCliArgs(["--review-writer-limit=-1"]).options["review-writer-limit"]).toBe("-1")
+	})
+})
+
 describe("getCliModeArg", () => {
 	it("reads --mode value", () => {
 		expect(getCliModeArg(["--model", "cast/gpt-5", "--mode", "json"])).toBe("json")
