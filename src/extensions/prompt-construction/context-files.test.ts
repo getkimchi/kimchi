@@ -22,6 +22,7 @@ describe("loadProjectContextFiles", () => {
 	})
 
 	afterEach(() => {
+		populateCliArgs([])
 		vi.unstubAllEnvs()
 		rmSync(tmpBase, { recursive: true, force: true })
 	})
@@ -77,7 +78,6 @@ describe("loadProjectContextFiles", () => {
 		writeFileSync(join(tmpBase, "AGENTS.md"), "ancestor rules")
 		writeFileSync(join(nested, "CLAUDE.md"), "cwd rules")
 		expect(loadProjectContextFiles(nested)).toEqual([])
-		populateCliArgs([])
 	})
 
 	it("does not return duplicate paths", () => {
@@ -142,6 +142,7 @@ describe("loadGlobalContextFiles", () => {
 	})
 
 	afterEach(() => {
+		populateCliArgs([])
 		vi.unstubAllEnvs()
 		rmSync(FAKE_AGENT_DIR, { recursive: true, force: true })
 		rmSync(FAKE_CLAUDE_DIR, { recursive: true, force: true })
@@ -159,7 +160,6 @@ describe("loadGlobalContextFiles", () => {
 		mkdirSync(nested, { recursive: true })
 		writeFileSync(join(nested, "AGENTS.md"), "project rules")
 		expect(loadContextFiles(nested, { includeClaudeCodeInstructions: true })).toEqual([])
-		populateCliArgs([])
 	})
 
 	it("discovers AGENTS.md in agent dir", () => {
