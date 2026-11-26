@@ -10902,6 +10902,25 @@ describe("setSessionConfigOption", () => {
 			__clearModelThinkingLevelsForTest()
 		})
 
+		it("advertises Effort only through the versioned capability with or without opt-in", async () => {
+			for (const withOptIn of [false, true]) {
+				const agent = makeAgent(new FakeAgentSession(`test-session-effort-capability-${withOptIn}`))
+				const response = await agent.initialize({
+					protocolVersion: 1,
+					clientCapabilities: withOptIn ? { _meta: { "kimchi.dev": { modelEffort: 1 } } } : {},
+				})
+				const meta = response.agentCapabilities?._meta?.["kimchi.dev"] as Record<string, unknown> | undefined
+
+				expect(meta).toMatchObject({ modelEffort: 1 })
+				expect(meta).not.toHaveProperty("set_model_effort")
+				if (!withOptIn) {
+					await expect(agent.extMethod(AVAILABLE_EXT_METHODS.set_model_effort, {})).rejects.toMatchObject({
+						code: -32601,
+					})
+				}
+			}
+		})
+
 		it("applies only the session App-mode's default on first use", async () => {
 			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
 			vi.mocked(readModelEffortDefaults).mockReturnValue({
