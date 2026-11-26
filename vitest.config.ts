@@ -45,6 +45,8 @@ export default defineConfig({
 		// ignores HOME, so per-test HOME stubs alone don't protect the real profile.
 		// Relies on the default isolate: true, which reruns the setup for each file.
 		setupFiles: ["./tests/setup/isolated-home.ts", "./tests/setup/work-ledger.ts"],
+		// Once per run, before any file: the resources postinstall generates (tests/setup/generated-resources.ts).
+		globalSetup: ["./tests/setup/generated-resources.ts"],
 		env: {
 			// Pin locale so toLocaleString() produces consistent comma-separated
 			// numbers across developer machines and CI regardless of system locale.
