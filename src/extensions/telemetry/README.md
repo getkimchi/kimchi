@@ -118,7 +118,7 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 
 | Event | When | Attributes |
 |-------|------|------------|
-| `session.start` | Session begins | `model`, `tui_startup_mode`² *(`fullscreen` / `regular`; omitted outside the interactive TUI)* |
+| `session.start` | Session begins | `model`, `tui_startup_mode` *(`fullscreen` / `regular`; omitted outside the interactive TUI)* |
 | `session.end` | Session ends | `model`, `duration_ms`, `ended_by`, `source`, `mode` |
 | `user_message` | User sends a message | `model`, `message_length`, `turn_index` *(the 1-based session turn this prompt's run starts in)* |
 | `api_request` | Assistant response completes | `model`, `provider`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `cost_usd`, `duration_ms`, `request.trace_id`, `request.span_id` *(trace of the request that produced it — present when a provider request has been issued)* |
@@ -153,17 +153,6 @@ Fired from `session-context.ts` via `ctx.emit()`. Batched (max 20) and flushed e
 > the `tool_execution_*` extension events and on `tool_call` permission events). Direct
 > (model-issued) calls carry neither attribute. Usage and duration still count under the
 > nested tool's own name — the marker is additive attribution, not a re-bucketing.
-
-> **² `tui_startup_mode`:** the interactive TUI renderer of this session, read once from
-> the live renderer at `session_start`. It is a snapshot: a later fullscreen/regular switch
-> does not change it. `/new`, `/resume` and fork start a new session in the same process, and
-> that session recaptures the renderer active at that moment, so the value means "mode when
-> this session started", not "mode the process was launched in". Omitted for non-TUI run
-> modes (`rpc` / `json` / `print`; ACP runs as `rpc`) and when the live renderer cannot be
-> resolved: never guessed, never defaulted to `regular`. Sent to PostHog only
-> (`session_start.tui_startup_mode`, mapped in kubecast
-> `services/ai-optimizer/internal/services/reporting/otel/posthog_mapping.go`); not in the
-> ClickHouse allowlist.
 
 > **Codemode privacy:** `codemode.completed` carries counts, enums, and cost totals only —
 > never script text, nested-call args, error text, or file paths. The upstream
