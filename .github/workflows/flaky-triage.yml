@@ -87,7 +87,7 @@ jobs:
       ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
       KIMCHI_API_KEY: ${{ secrets.KIMCHI_API_KEY }}
       KIMCHI_API_KEY_AVAILABLE: ${{ secrets.KIMCHI_API_KEY != '' }}
-      KIMCHI_BIN: ${{ github.workspace }}/dist/bin/kimchi
+      KIMCHI_BIN: ${{ runner.temp }}/kimchi-agent/bin/kimchi
       FLAKY_REPORT: flaky-report/flaky-report.json
       FLAKY_FIX_OUT_DIR: flaky-fix
       FLAKY_FIX_MODEL: kimi-k3.1-pro
@@ -108,12 +108,19 @@ jobs:
           go: "true"
           search-tools: "true"
 
-      - name: Build Kimchi from this checkout
+      - name: Install and verify latest Kimchi release for the triage agent
         if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          node scripts/build-proxy-helper.js --target linux-x64
-          KIMCHI_SKIP_TYPECHECK=1 pnpm run build:binary
-          chmod +x dist/bin/kimchi dist/share/kimchi/bin/proxy-helper
+          agent_dir="$RUNNER_TEMP/kimchi-agent"
+          mkdir -p "$agent_dir"
+          gh release download --repo getkimchi/kimchi --dir "$agent_dir" \
+            --pattern 'kimchi_linux_amd64.tar.gz' --pattern checksums.txt
+          (cd "$agent_dir" && grep 'kimchi_linux_amd64.tar.gz$' checksums.txt | sha256sum --check -)
+          tar -xzf "$agent_dir/kimchi_linux_amd64.tar.gz" -C "$agent_dir"
+          chmod +x "$KIMCHI_BIN" "$agent_dir/share/kimchi/bin/proxy-helper"
+          "$KIMCHI_BIN" --version
 
       - uses: actions/download-artifact@v4
         if: env.KIMCHI_API_KEY_AVAILABLE == 'true'
