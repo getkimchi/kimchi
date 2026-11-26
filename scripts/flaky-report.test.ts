@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-const { apiShape, classify, runReport } = await import(new URL("./flaky-report.js", import.meta.url).href)
+const { apiShape, classify, getAllPages, runReport } = await import(new URL("./flaky-report.js", import.meta.url).href)
 
 interface TestRecord {
 	testKey: string
@@ -126,6 +126,28 @@ describe("classify edge cases and malformed records", () => {
 		[record({ createdAt: Number.NaN }), /createdAt/],
 	])("rejects malformed record %#", (malformed, error) => {
 		expect(() => classify([malformed])).toThrow(error)
+	})
+})
+
+describe("pagination safeguards", () => {
+	it("stops on an empty page even when last is false", async () => {
+		const client = { get: vi.fn(async () => ({ content: [], last: false, totalPages: 500 })) }
+		expect(await getAllPages(client, "/api/rs/launch/__search", {})).toEqual([])
+		expect(client.get).toHaveBeenCalledTimes(1)
+	})
+
+	it("rejects clearly at the 200-page cap", async () => {
+		const client = {
+			get: vi.fn(async (_path: string, params: { page: number }) => ({
+				content: [{ id: params.page }],
+				last: false,
+				totalPages: 500,
+			})),
+		}
+		await expect(getAllPages(client, "/api/rs/launch/__search", {})).rejects.toThrow(
+			"Pagination limit of 200 pages exceeded for /api/rs/launch/__search",
+		)
+		expect(client.get).toHaveBeenCalledTimes(200)
 	})
 })
 

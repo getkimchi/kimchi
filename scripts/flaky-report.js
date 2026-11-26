@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url"
 
 const DEFAULT_EVENTS = "master,merge_queue,nightly"
 const PAGE_SIZE = 100
+const MAX_PAGES = 200
 
 export function classify(records, options = {}) {
 	const grouped = new Map()
@@ -274,12 +275,13 @@ async function createClient(config, fetchImpl) {
 	}
 }
 
-async function getAllPages(client, path, params) {
+export async function getAllPages(client, path, params) {
 	const items = []
 	let page = 0
-	while (true) {
+	while (page < MAX_PAGES) {
 		const data = await client.get(path, { ...params, page, size: PAGE_SIZE })
 		const current = pageItems(data)
+		if (current.length === 0) return items
 		items.push(...current)
 		const hasTotalPages = Number.isFinite(data.totalPages)
 		if (data.last === true || (hasTotalPages && page + 1 >= data.totalPages)) return items
@@ -290,6 +292,7 @@ async function getAllPages(client, path, params) {
 		if (current.length < PAGE_SIZE) return items
 		page += 1
 	}
+	throw new Error(`Pagination limit of ${MAX_PAGES} pages exceeded for ${path}`)
 }
 
 function pageItems(data) {
