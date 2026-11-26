@@ -333,10 +333,8 @@ describe("prompt summary stale-ctx crash prevention", () => {
 			},
 		)
 
-		// Wait for polling to complete (2 retries × 50ms + buffer)
-		await new Promise((resolve) => setTimeout(resolve, 200))
-
-		expect(harness.sent).toHaveLength(1)
+		// Wait for the send, not a fixed time: a busy runner can delay the polls.
+		await vi.waitFor(() => expect(harness.sent).toHaveLength(1), { timeout: 5_000, interval: 10 })
 		expect(idleCalls).toBe(3)
 		const message = harness.sent[0] as { customType: string }
 		expect(message.customType).toBe("prompt-summary")

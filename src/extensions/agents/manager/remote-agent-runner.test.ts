@@ -731,9 +731,19 @@ describe("runRemoteAgent", () => {
 		 *  client (constructed with the onForeignResponse hook) exists — the
 		 *  realistic exit for recovery tests that reattach, since the quiesce
 		 *  no longer fires while attached. */
-		async function runUntilTurnEnd(options: RemoteRunOptions) {
+		async function runUntilTurnEnd(options: RemoteRunOptions, initializeCalls?: number) {
 			const runPromise = runRemoteAgent(WORKSPACE_ID, PROMPT, options)
-			await vi.waitFor(() => expect(capturedOptions?.onForeignResponse).toBeTypeOf("function"))
+			// With failing reattaches, wait for the attempt that succeeds: firing
+			// the turn end at an earlier, failing client ends the run too soon
+			// whenever a slow runner lets the check land between attempts.
+			await vi.waitFor(
+				() => {
+					expect(capturedOptions?.onForeignResponse).toBeTypeOf("function")
+					if (initializeCalls !== undefined) expect(mockInitialize).toHaveBeenCalledTimes(initializeCalls)
+				},
+				// Below the 5 s test timeout, so a regression shows the call count.
+				{ timeout: 4_000 },
+			)
 			;(capturedOptions as { onForeignResponse: (response: unknown) => void }).onForeignResponse({ id: 4, result: {} })
 			return runPromise
 		}
@@ -983,7 +993,7 @@ describe("runRemoteAgent", () => {
 				return { ...runningStatus, agentRunning: running }
 			})
 
-			const result = await runUntilTurnEnd(makeRecoveryOptions())
+			const result = await runUntilTurnEnd(makeRecoveryOptions(), 4)
 
 			expect(result.stopReason).toBe("recovered")
 			// The dip never reached the grace window (reset by the resumed

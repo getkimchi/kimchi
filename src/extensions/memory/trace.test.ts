@@ -110,7 +110,9 @@ describe("createTraceRecorder", () => {
 	})
 
 	it("rotates partitioned files by bytes while preserving valid JSONL", async () => {
-		const recorder = createTraceRecorder({ rawExchanges: true, maxFileBytes: 1024 })
+		// A slow append past the 50 ms default drops its batch, and this test
+		// checks rotation, not the write limit.
+		const recorder = createTraceRecorder({ rawExchanges: true, maxFileBytes: 1024, writeTimeoutMs: 10_000 })
 		for (let i = 0; i < 20; i++) recorder?.emit({ type: "phase", job: `job-${i}.json`, phase: "store-add" })
 		await recorder?.flush?.()
 		await vi.waitFor(() => expect(listTraceFiles().length).toBeGreaterThan(0), { timeout: 2_000 })

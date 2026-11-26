@@ -34,11 +34,13 @@ describe("escalated TUI input coordination", () => {
 	it("waits for recent input to become quiet without changing the editor", async () => {
 		const ctx = createContext({ hasUI: true, mode: "tui" })
 		const controller = new AbortController()
-		let lastInputAt = Date.now()
+		// Input age, not a timestamp: the input stays recent however long this
+		// test is delayed, until the test makes it old.
+		let inputAge = 0
 		let settled = false
 		const waiting = waitForEscalatedInput(
 			ctx,
-			() => lastInputAt,
+			() => Date.now() - inputAge,
 			controller.signal,
 			"Subagent waiting",
 			noOtherDialogs,
@@ -48,7 +50,7 @@ describe("escalated TUI input coordination", () => {
 		})
 		await delay(8)
 		expect(settled).toBe(false)
-		lastInputAt = Date.now() - timing.quietMs
+		inputAge = timing.quietMs
 		await waiting
 		expect(settled).toBe(true)
 	})
@@ -84,12 +86,16 @@ describe("escalated TUI input coordination", () => {
 		const ctx = createContext({ hasUI: true, mode: "tui" })
 		const controller = new AbortController()
 		const withdraw = vi.fn()
+		// A controlled clock: a slow runner must not end the opening guard early.
+		let now = 0
+		const clock = vi.spyOn(Date, "now").mockImplementation(() => now)
 		const stop = watchEscalatedDialog(ctx, withdraw, isRawInputCaptureActive, controller.signal, timing)
 		const inputHandler = vi.mocked(ctx.ui.onTerminalInput).mock.calls[0]?.[0]
 		if (!inputHandler) throw new Error("expected an input guard listener")
 		expect(inputHandler("2")).toEqual({ consume: true })
-		await delay(50)
+		now = timing.openingGuardMs
 		expect(inputHandler("2")).toBeUndefined()
+		clock.mockRestore()
 		sendTerminalInput(ctx, "2")
 		expect(withdraw).not.toHaveBeenCalled()
 		const release = claimRawInputCapture()
