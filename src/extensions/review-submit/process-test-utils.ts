@@ -1,8 +1,16 @@
-import { spawn } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import type { SubmitResult } from "./store.js"
 
 const PROCESS_ENTRY = fileURLToPath(new URL("./submit-process.ts", import.meta.url))
+
+let cachedBunExecutable: string | undefined
+
+/** Resolve Bun while the parent still has its real HOME and version-manager config. */
+export function bunExecutablePath(): string {
+	cachedBunExecutable ??= execFileSync("bun", ["-e", "console.log(process.execPath)"], { encoding: "utf8" }).trim()
+	return cachedBunExecutable
+}
 
 const NODE_SQLITE_EXPERIMENTAL_WARNING =
 	/^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature and might change at any time\r?\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\r?\n?/
@@ -30,7 +38,7 @@ export function runSubmissionProcess(options: {
 }): Promise<SubmissionProcessResult> {
 	const args = [options.tool, options.homeDir, JSON.stringify(options.input)]
 	if (options.killBeforeRename) args.push("kill-before-rename")
-	const runtime = options.runtime === "bun" ? "bun" : process.execPath
+	const runtime = options.runtime === "bun" ? bunExecutablePath() : process.execPath
 	const runtimeArgs = options.runtime === "bun" ? [] : ["--import", "tsx"]
 	return new Promise((resolve, reject) => {
 		const child = spawn(runtime, [...runtimeArgs, PROCESS_ENTRY, ...args], {

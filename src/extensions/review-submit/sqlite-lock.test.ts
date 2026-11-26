@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+	bunExecutablePath,
 	runSubmissionProcess,
 	type SubmissionProcessResult,
 	stripExpectedNodeSqliteWarning,
@@ -35,10 +36,20 @@ interface HookedSubmission {
 	completed: Promise<SubmissionProcessResult>
 }
 
-function checkpoint(child: ChildProcess, type: string): Promise<void> {
-	return new Promise<void>((resolve) => {
+function checkpoint(child: ChildProcess, type: string, readStderr: () => string): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
 		child.on("message", (message: { type?: string }) => {
 			if (message.type === type) resolve()
+		})
+		child.once("error", (error) => {
+			reject(new Error(`Submission process failed before ${type}: ${error.message}\nstderr:\n${readStderr()}`))
+		})
+		child.once("close", (code, signal) => {
+			reject(
+				new Error(
+					`Submission process exited before ${type} (code=${code}, signal=${signal}).\nstderr:\n${readStderr()}`,
+				),
+			)
 		})
 	})
 }
@@ -50,7 +61,7 @@ function startHookedSubmission(
 	runtime: "node" | "bun" = "node",
 ): HookedSubmission {
 	const child = fork(PROCESS_ENTRY, ["submit_finding", homeDir, JSON.stringify(input), mode], {
-		execPath: runtime === "bun" ? "bun" : process.execPath,
+		execPath: runtime === "bun" ? bunExecutablePath() : process.execPath,
 		execArgv: runtime === "bun" ? [] : ["--import", "tsx"],
 		silent: true,
 		env: {
@@ -76,13 +87,13 @@ function startHookedSubmission(
 			})
 		})
 	})
-	return {
-		child,
-		beforeAcquire: checkpoint(child, "before_acquire"),
-		beforeRename: checkpoint(child, "before_rename"),
-		beforeRelease: checkpoint(child, "before_release"),
-		completed,
-	}
+	const beforeAcquire = checkpoint(child, "before_acquire", () => stderr)
+	const beforeRename = checkpoint(child, "before_rename", () => stderr)
+	const beforeRelease = checkpoint(child, "before_release", () => stderr)
+	// Each mode awaits at most one checkpoint. Mark the others as handled so
+	// their expected rejections on normal process close do not become unhandled.
+	for (const pending of [beforeAcquire, beforeRename, beforeRelease]) void pending.catch(() => {})
+	return { child, beforeAcquire, beforeRename, beforeRelease, completed }
 }
 
 function readFindings(homeDir: string): Array<Record<string, unknown>> {
