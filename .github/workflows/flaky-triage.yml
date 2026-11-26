@@ -71,3 +71,4 @@ jobs:
           name: flaky-report
           path: ${{ env.FLAKY_OUT_DIR }}
           if-no-files-found: ignore
+          retention-days: 7

@@ -40,7 +40,7 @@ export function classify(records, options = {}) {
 		const messages = new Map()
 		for (const result of testResults) {
 			if (result.status !== "failed" || !result.message) continue
-			const message = truncate(result.message, 240)
+			const message = truncate(result.message, 200)
 			messages.set(message, (messages.get(message) ?? 0) + 1)
 		}
 		const links = uniqueLinks(testResults, options)
@@ -114,8 +114,8 @@ export async function runReport({ env = process.env, fetchImpl = fetch, now = ()
 		...report,
 	}
 	mkdirSync(config.outDir, { recursive: true })
-	writeFileSync(join(config.outDir, "flaky-report.json"), `${JSON.stringify(document, null, 2)}\n`)
-	const markdown = renderMarkdown(document)
+	writeFileSync(join(config.outDir, "flaky-report.json"), `${JSON.stringify(publicReport(document), null, 2)}\n`)
+	const markdown = renderMarkdown(publicReport(document))
 	writeFileSync(join(config.outDir, "flaky-report.md"), markdown)
 	if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, markdown)
 	return document
@@ -128,7 +128,8 @@ export async function runProbe({ env = process.env, fetchImpl = fetch, now = () 
 	const client = await createClient(config, fetchImpl)
 	const probeDir = join(config.outDir, "probe")
 	mkdirSync(probeDir, { recursive: true })
-	const writeProbe = (name, data) => writeFileSync(join(probeDir, name), `${JSON.stringify(data, null, 2)}\n`)
+	const writeProbe = (name, data, kind) =>
+		writeFileSync(join(probeDir, name), `${JSON.stringify(apiShape(data, kind), null, 2)}\n`)
 
 	const launchPage = await client.get("/api/rs/launch/__search", {
 		projectId: config.projectId,
@@ -137,7 +138,7 @@ export async function runProbe({ env = process.env, fetchImpl = fetch, now = () 
 		size: 3,
 		sort: "createdDate,desc",
 	})
-	writeProbe("launches.json", launchPage)
+	writeProbe("launches.json", launchPage, "launch")
 	const launches = pageItems(launchPage).filter((launch) => events.has(tagMap(launch).get("event")))
 	const launch = launches[0] ?? pageItems(launchPage)[0]
 	if (!launch) return { launches: 0, results: 0 }
@@ -160,6 +161,51 @@ export async function runProbe({ env = process.env, fetchImpl = fetch, now = () 
 		writeProbe("test-result-history.json", { error: "Not found", status: 404 })
 	}
 	return { launches: 1, results: pageItems(resultsPage).length }
+}
+
+export function apiShape(value, documentKind = "result", path = []) {
+	if (Array.isArray(value)) {
+		return {
+			$type: "array",
+			length: value.length,
+			items: value.map((item, index) => apiShape(item, documentKind, [...path, index])),
+		}
+	}
+	if (value && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value).map(([key, item]) => [key, apiShape(item, documentKind, [...path, key])]),
+		)
+	}
+	if (value === null) return "<null>"
+	if (allowedPrimitive(path, documentKind)) return value
+	if (typeof value === "string") return `<string len=${value.length}>`
+	return `<${typeof value}>`
+}
+
+function allowedPrimitive(path, documentKind) {
+	const key = path.at(-1)
+	const parent = path.at(-2)
+	if (["status", "flaky", "known", "createdDate"].includes(key)) return true
+	if (parent === "status" && (key === "name" || key === "value")) return true
+	if (path.some((part) => part === "tags" || part === "tag" || part === "launchTags")) {
+		return key === "name" || typeof key === "number"
+	}
+	return documentKind === "launch" && key === "name" && /^(content|results)\.\d+\.name$/.test(path.join("."))
+}
+
+function publicReport(report) {
+	const publicRow = (row) => ({
+		fullName: row.fullName,
+		totalRuns: row.totalRuns,
+		failures: row.failures,
+		flakyFlagCount: row.flakyFlagCount,
+		mixedCommitCount: row.mixedCommitCount,
+		failureCommitCount: row.failureCommitCount,
+		failureRate: row.failureRate,
+		failureMessages: row.failureMessages,
+		links: row.links,
+	})
+	return { flaky: report.flaky.map(publicRow), failing: report.failing.map(publicRow) }
 }
 
 function readConfig(env) {
@@ -198,7 +244,7 @@ async function createClient(config, fetchImpl) {
 		body,
 	})
 	console.log(`POST ${oauthPath} ${response.status}`)
-	if (!response.ok) throw new Error(`OAuth token exchange failed: HTTP ${response.status}: ${await response.text()}`)
+	if (!response.ok) throw new Error(`OAuth token exchange failed: HTTP ${response.status}`)
 	const oauth = await response.json()
 	if (!oauth.access_token) throw new Error("OAuth token exchange response did not contain access_token")
 	const bearer = oauth.access_token
@@ -343,14 +389,7 @@ function uniqueLinks(results, options) {
 }
 
 function renderMarkdown(report) {
-	const lines = [
-		"# Flaky Test Triage",
-		"",
-		`Window: ${report.windowHours}h · Events: ${report.events.join(", ")} · Launches: ${report.launchCount} · Results: ${report.resultCount}`,
-		"",
-		"## Flaky",
-		"",
-	]
+	const lines = ["# Flaky Test Triage", "", "## Flaky", ""]
 	appendTable(lines, report.flaky)
 	lines.push("", "## Persistently failing", "")
 	appendTable(lines, report.failing)
@@ -363,19 +402,13 @@ function appendTable(lines, rows) {
 		lines.push("None detected.")
 		return
 	}
-	lines.push(
-		"| Test | Runs | Failures | Flaky flags | Mixed commits | Failure rate | First seen | Last seen | Failure messages | Links |",
-	)
-	lines.push("| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |")
+	lines.push("| Test | Runs | Failures | Flaky flags | Mixed commits | Failure rate | Failure messages | Links |")
+	lines.push("| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |")
 	for (const row of rows) {
 		lines.push(
-			`| ${cell(row.fullName)} | ${row.totalRuns} | ${row.failures} | ${row.flakyFlagCount} | ${row.mixedCommitCount} | ${(row.failureRate * 100).toFixed(1)}% | ${dateCell(row.firstSeen)} | ${dateCell(row.lastSeen)} | ${cell(row.failureMessages.join("<br>") || "—")} | ${row.links.map((link) => `[${cell(link.title)}](${link.url})`).join("<br>") || "—"} |`,
+			`| ${cell(row.fullName)} | ${row.totalRuns} | ${row.failures} | ${row.flakyFlagCount} | ${row.mixedCommitCount} | ${(row.failureRate * 100).toFixed(1)}% | ${cell(row.failureMessages.join("<br>") || "—")} | ${row.links.map((link) => `[${cell(link.title)}](${link.url})`).join("<br>") || "—"} |`,
 		)
 	}
-}
-
-function dateCell(timestamp) {
-	return new Date(timestamp).toISOString().replace("T", " ").replace(".000Z", "Z")
 }
 
 function cell(value) {

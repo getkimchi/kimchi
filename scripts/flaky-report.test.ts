@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-const { classify, runReport } = await import(new URL("./flaky-report.js", import.meta.url).href)
+const { apiShape, classify, runReport } = await import(new URL("./flaky-report.js", import.meta.url).href)
 
 interface TestRecord {
 	testKey: string
@@ -129,6 +129,53 @@ describe("classify edge cases and malformed records", () => {
 	})
 })
 
+describe("public artifact redaction", () => {
+	it("preserves probe shapes and allowlisted metadata without exposing raw values", () => {
+		const shaped = apiShape(
+			{
+				content: [
+					{
+						name: "TUI E2E experiment shard 1/4 iteration 1",
+						createdDate: 123456,
+						createdBy: { name: "Sensitive User", email: "person@example.com" },
+						tags: [{ id: 7, name: "event=experiment" }],
+						status: "failed",
+						statusDetails: { flaky: true, message: "sensitive failure detail" },
+					},
+				],
+			},
+			"launch",
+		)
+		const launch = shaped.content.items[0]
+		expect(shaped.content).toMatchObject({ $type: "array", length: 1 })
+		expect(launch.name).toBe("TUI E2E experiment shard 1/4 iteration 1")
+		expect(launch.createdDate).toBe(123456)
+		expect(launch.status).toBe("failed")
+		expect(launch.statusDetails).toEqual({ flaky: true, message: "<string len=24>" })
+		expect(launch.createdBy.name).toBe("<string len=14>")
+		expect(launch.createdBy.email).toMatch(/^<string len=\d+>$/)
+		expect(launch.tags.items[0]).toEqual({ id: "<number>", name: "event=experiment" })
+		expect(JSON.stringify(shaped)).not.toContain("Sensitive User")
+		expect(JSON.stringify(shaped)).not.toContain("person@example.com")
+		expect(JSON.stringify(shaped)).not.toContain("sensitive failure detail")
+	})
+
+	it("does not reflect the OAuth error response body", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {})
+		const operation = runReport({
+			env: {
+				ALLURE_ENDPOINT: "https://testops.example",
+				ALLURE_TOKEN: "[REDACTED-GENERIC_SECRET]",
+				ALLURE_PROJECT_ID: "42",
+				FLAKY_OUT_DIR: join(tmpdir(), "unused-flaky-report"),
+			},
+			fetchImpl: async () => new Response("secret-reflected-token in response", { status: 401 }),
+		})
+		await expect(operation).rejects.toThrow("OAuth token exchange failed: HTTP 401")
+		await expect(operation).rejects.not.toThrow("secret-reflected-token in response")
+	})
+})
+
 describe("report mode", () => {
 	it("normalizes probe-shaped API pages and writes JSON, markdown, and the GitHub summary", async () => {
 		const root = mkdtempSync(join(tmpdir(), "kimchi-flaky-report-"))
@@ -218,8 +265,13 @@ describe("report mode", () => {
 			])
 
 			const json = JSON.parse(readFileSync(join(root, "out", "flaky-report.json"), "utf8"))
-			expect(json.resultCount).toBe(2)
+			expect(json.flaky).toHaveLength(1)
+			expect(json.failing).toHaveLength(1)
+			expect(json.generatedAt).toBeUndefined()
+			expect(json.flaky[0].firstSeen).toBeUndefined()
 			const markdown = readFileSync(join(root, "out", "flaky-report.md"), "utf8")
+			expect(markdown).not.toContain("Window:")
+			expect(markdown).not.toContain("First seen")
 			expect(markdown).toContain("## Flaky")
 			expect(markdown).toContain("zz-planted-flaky.test.ts")
 			expect(markdown).toContain("## Persistently failing")
