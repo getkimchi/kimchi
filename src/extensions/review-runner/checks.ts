@@ -262,13 +262,14 @@ export class ReviewCheckQueue {
 	async idle(): Promise<void> {
 		this.rejectReentrantLifecycleCall("idle")
 		while (this.requests.size > 0) await Promise.allSettled([...this.requests])
-		this.detachSignal?.()
 	}
 
 	async dispose(): Promise<void> {
 		this.rejectReentrantLifecycleCall("dispose")
 		this.cancel(new Error("Review check queue disposed."))
 		await this.idle()
+		this.detachSignal?.()
+		this.detachSignal = undefined
 	}
 
 	private rejectReentrantLifecycleCall(method: "idle" | "dispose"): void {
@@ -309,11 +310,17 @@ export class ReviewCheckQueue {
 		const definition = this.definitions.get(request.id)
 		if (!definition) throw new Error(`Unknown review check ID "${request.id}".`)
 		const satisfiesBuild = result.status === "passed" && (definition.kind === "build" || definition.builds)
-		if (result.id === definition.id && result.kind === definition.kind && result.satisfiesBuild === satisfiesBuild) {
+		if (
+			result.id === definition.id &&
+			result.kind === definition.kind &&
+			result.definitionSource === this.definitionSource &&
+			result.satisfiesBuild === satisfiesBuild
+		) {
 			return result
 		}
 		return {
 			...result,
+			definitionSource: this.definitionSource,
 			id: definition.id,
 			kind: definition.kind,
 			satisfiesBuild,
@@ -408,6 +415,15 @@ export class ReviewCheckQueue {
 				request,
 				"blocked",
 				"Review wrap-up began before this queued check started; it was not run.",
+				this.definitionSource,
+			)
+		}
+		if (this.abort.signal.aborted) {
+			return syntheticResult(
+				key,
+				request,
+				"cancelled",
+				"The review check queue was cancelled before this check ran.",
 				this.definitionSource,
 			)
 		}

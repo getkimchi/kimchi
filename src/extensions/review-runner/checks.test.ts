@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent"
@@ -87,6 +96,7 @@ console.error('routine failure'); process.exit(4)`,
 		)
 		writeFileSync(join(repo, "upcoming.cjs"), "console.log('must not run in wrap-up')")
 		writeFileSync(join(repo, "focused.cjs"), "console.log('private focused result')")
+		writeFileSync(join(repo, "slow.cjs"), "setTimeout(() => {}, 1500)")
 		git(repo, "add", "--all")
 		git(repo, "commit", "-m", "base")
 		baseSha = git(repo, "rev-parse", "HEAD")
@@ -135,6 +145,7 @@ console.error('routine failure'); process.exit(4)`,
 	async function setup(
 		checkDefinitions: ReviewCheckDefinition[] | null = definitions,
 		contextMode: "tui" | "print" = "tui",
+		signal?: AbortSignal,
 	) {
 		target = await resolveReviewTarget(
 			parseReviewTargetArgs(["branch", "main", "--base", baseSha]) as ExplicitReviewRequest,
@@ -149,6 +160,7 @@ console.error('routine failure'); process.exit(4)`,
 			worktrees: pool,
 			outputDir,
 			...(checkDefinitions === null ? {} : { definitions: checkDefinitions }),
+			...(signal ? { signal } : {}),
 		})
 		return createContext({ cwd: repo, mode: contextMode, hasUI: contextMode === "tui" })
 	}
@@ -768,5 +780,110 @@ module.exports = (async () => {
 		expect(result.content.map((block) => (block.type === "text" ? block.text : "")).join("\n")).toContain(
 			"Denied by rule",
 		)
+	})
+
+	it("projects definitionSource when saved evidence is reused in both directions", async () => {
+		await setup(null)
+		const definition = queue.checks.find((check) => check.id === "test")
+		if (!definition) throw new Error("expected the reviewed package test definition")
+		const reviewedDefinition: ReviewCheckDefinition = definition
+		await queue.dispose()
+
+		async function verifyReuse(
+			firstSource: "coordinator" | "reviewed-tree",
+			secondSource: "coordinator" | "reviewed-tree",
+			stateName: string,
+		) {
+			const statePath = join(outputDir, "state", stateName)
+			const createQueue = (source: "coordinator" | "reviewed-tree") =>
+				ReviewCheckQueue.create({
+					scope: target.scope,
+					worktrees: pool,
+					outputDir,
+					statePath,
+					...(source === "coordinator" ? { definitions: [reviewedDefinition] } : {}),
+				})
+			const firstQueue = await createQueue(firstSource)
+			const first = await firstQueue.request({
+				id: "test",
+				requestedBy: firstSource,
+				controller: controller(firstSource),
+			})
+			expect(first.definitionSource).toBe(firstSource)
+			await firstQueue.dispose()
+
+			const secondQueue = await createQueue(secondSource)
+			const reused = await secondQueue.request({
+				id: "test",
+				requestedBy: secondSource,
+				controller: controller(`${secondSource}-reuse`),
+			})
+			expect(reused.key).toBe(first.key)
+			expect(reused.definitionSource).toBe(secondSource)
+			await secondQueue.dispose()
+		}
+
+		await verifyReuse("coordinator", "reviewed-tree", "coordinator-first.json")
+		await verifyReuse("reviewed-tree", "coordinator", "reviewed-tree-first.json")
+	})
+
+	it("cancels a queued check without creating its worktree", async () => {
+		await setup([
+			{
+				id: "slow",
+				command: "node slow.cjs",
+				cwd: ".",
+				kind: "test",
+				builds: false,
+				toolchain: "inherited",
+				dependencies: [],
+			},
+			{
+				id: "other",
+				command: "node -e 1",
+				cwd: ".",
+				kind: "test",
+				builds: false,
+				toolchain: "inherited",
+				dependencies: [],
+			},
+		])
+		const runner = controller("cancel-queued")
+		const running = queue.request({ id: "slow", requestedBy: "first", controller: runner })
+		await new Promise((resolve) => setTimeout(resolve, 300))
+		const queued = queue.request({ id: "other", requestedBy: "second", controller: runner, revision: "base" })
+		await new Promise((resolve) => setTimeout(resolve, 200))
+		queue.cancel(new Error("stop"))
+
+		const [first, second] = await Promise.allSettled([running, queued])
+		expect(first.status).toBe("fulfilled")
+		if (first.status === "fulfilled") expect(first.value.status).toBe("cancelled")
+		expect(second.status).toBe("fulfilled")
+		if (second.status === "fulfilled") expect(second.value.status).toBe("cancelled")
+		expect(readdirSync(pool.runDir).filter((name) => name.startsWith("checks-base"))).toHaveLength(0)
+	})
+
+	it("keeps parent abort connected after idle", async () => {
+		const parent = new AbortController()
+		await setup(
+			[
+				{
+					id: "slow",
+					command: "node slow.cjs",
+					cwd: ".",
+					kind: "test",
+					builds: false,
+					toolchain: "inherited",
+					dependencies: [],
+				},
+			],
+			"tui",
+			parent.signal,
+		)
+		await queue.idle()
+		const pending = queue.request({ id: "slow", requestedBy: "after-idle", controller: controller("after-idle") })
+		await new Promise((resolve) => setTimeout(resolve, 300))
+		parent.abort(new Error("user abort"))
+		expect((await pending).status).toBe("cancelled")
 	})
 })
