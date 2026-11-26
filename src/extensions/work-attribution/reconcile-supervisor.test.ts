@@ -168,7 +168,8 @@ describe("KIMCHI_E2E_FIRST_TICK_DELAY_MS seam", () => {
 	})
 
 	it("a subscriber joining inside the window drains durable updates without kicking off the scan", async () => {
-		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "150")
+		// The window must stay open for the whole test, even on a slow runner.
+		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "60000")
 		const first = vi.fn()
 		const second = vi.fn()
 		vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([
@@ -199,11 +200,12 @@ describe("KIMCHI_E2E_FIRST_TICK_DELAY_MS seam", () => {
 		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "60")
 		const report = vi.fn(async () => {})
 		stops.push(subscribeReportingReconciliation(report))
-		await new Promise((resolve) => setTimeout(resolve, 120))
-		expect(report).toHaveBeenCalled()
+		// Wait for the pass, not a fixed time: after a stall the test timer can
+		// run before the pass's first disk call has finished.
+		await vi.waitFor(() => expect(report).toHaveBeenCalled(), { timeout: 10_000 })
 		vi.clearAllMocks()
 		stops.push(subscribeReportingReconciliation(report))
-		await vi.waitFor(() => expect(report).toHaveBeenCalled())
+		await vi.waitFor(() => expect(report).toHaveBeenCalled(), { timeout: 10_000 })
 	})
 })
 

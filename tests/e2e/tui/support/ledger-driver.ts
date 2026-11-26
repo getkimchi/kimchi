@@ -1919,20 +1919,33 @@ async function summaryWriter(agent: string, json: string): Promise<void> {
 		return byte[0] === 99
 	}
 	const signal = (phase: string) => writeSync(1, `${JSON.stringify({ phase })}\n`)
+	let published = false
 	backend.putHead = (head) => {
 		publish(head)
+		published = true
 		signal("pending")
 		if (!gate()) throw cancelled
+	}
+	// BEGIN IMMEDIATE waits up to the 5 s busy timeout for another writer, then
+	// fails before this writer did anything. The test holds that writer's lock
+	// across its own round trips, which a busy runner can stretch past 5 s, so
+	// try again. A writer that already signalled "pending" never retries.
+	const captureWhenFree = (next: WorkRecord) => {
+		for (;;) {
+			published = false
+			try {
+				return capture(agent, next, "summary-native")
+			} catch (error) {
+				const busy = String((error as { code?: unknown } | null)?.code ?? "").startsWith("SQLITE_BUSY")
+				if (!busy || published) throw error
+			}
+		}
 	}
 	try {
 		signal("ready")
 		for (let index = 0; index < count; index++) {
 			try {
-				capture(
-					agent,
-					count === 1 ? record : { ...record, requestId: `${record.sessionId}-${index}` },
-					"summary-native",
-				)
+				captureWhenFree(count === 1 ? record : { ...record, requestId: `${record.sessionId}-${index}` })
 			} catch (error) {
 				if (error !== cancelled) throw error
 				signal("rolled-back")
