@@ -1,7 +1,8 @@
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
+import type { readModelEffortDefaults } from "../../config.js"
 import { isAutoRoutedModel } from "../../extensions/auto-model/constants.js"
-import { getModelEffortDefault, parseModelThinkingLevel, type SessionAppMode } from "../../model-effort.js"
+import { parseModelThinkingLevel, type SessionAppMode } from "../../model-effort.js"
 import { getModelSearchAliases, getModelVirtualIdentity } from "../../models.js"
 import { refFromModel } from "../../shared/model-ref.js"
 import { clampToSelection, thinkingSelection } from "../../thinking-selection.js"
@@ -52,6 +53,7 @@ function withSearchAliases(metadata: ModelEffortMetadata, model: Model<Api>): Mo
 
 export interface ModelEffortMetadataContext {
 	appMode?: SessionAppMode
+	effortDefaults: ReturnType<typeof readModelEffortDefaults>
 	effortByModel: ReadonlyMap<string, ModelThinkingLevel>
 	currentModel: AgentSession["model"]
 	currentThinkingLevel: AgentSession["thinkingLevel"]
@@ -98,7 +100,9 @@ export function buildModelEffortMeta(
 	}
 
 	const remembered = context.effortByModel.get(modelId)
-	const storedDefault = getModelEffortDefault(context.appMode, modelId)
+	const storedDefault = context.appMode
+		? parseModelThinkingLevel(context.effortDefaults[context.appMode]?.[modelId])
+		: undefined
 	const harnessFallback = isCurrent
 		? context.currentThinkingLevel
 		: (context.settingsManager.getModelThinkingLevel(model.provider, model.id) ??

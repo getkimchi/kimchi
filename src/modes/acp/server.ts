@@ -84,6 +84,7 @@ import {
 	clearApiKey,
 	endpointsForRegion,
 	loadConfig as loadKimchiConfig,
+	readModelEffortDefaults,
 	resolveEndpoints,
 	resolveSelfHostedEndpoints,
 	type WriteApiKeyOptions,
@@ -4176,6 +4177,7 @@ function buildConfigOptions(
 	const modelEffort = includeModelEffort
 		? {
 				appMode: record.appMode,
+				effortDefaults: record.appMode ? readModelEffortDefaults() : {},
 				effortByModel: record.effortByModel,
 				currentModel: session.model,
 				currentThinkingLevel: session.thinkingLevel,

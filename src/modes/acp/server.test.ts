@@ -11344,11 +11344,15 @@ describe("setSessionConfigOption", () => {
 			})
 
 			const beforePermission = updates.length
+			vi.mocked(readModelEffortDefaults).mockClear()
 			await agent.setSessionConfigOption({
 				sessionId: fake.sessionId,
 				configId: "permissions-mode",
 				value: "auto",
 			})
+			// One live snapshot per complete build: response + pushed update.
+			// Previously each of those builds reread defaults for both model rows.
+			expect(readModelEffortDefaults).toHaveBeenCalledTimes(2)
 			const permissionPush = updates
 				.slice(beforePermission)
 				.find((entry) => entry.update.sessionUpdate === "config_option_update")
