@@ -45,6 +45,10 @@ export const AVAILABLE_EXT_METHODS = {
 	set_model_effort: "_kimchi.dev/set_model_effort",
 	memory_status: `_${CAPABILITIES_KEY}/memory_status`,
 	set_memory_enabled: `_${CAPABILITIES_KEY}/set_memory_enabled`,
+	// The other live Kimchi sessions on this machine, for the client's @ list. Served only to clients that opted
+	// into SESSION_MESSAGES_CAPABILITY. No RFD covers it: Session List (session/list) lists one agent's saved
+	// sessions and Prompt Suggestions offers whole prompts, so this is an own design.
+	live_sessions: `_${CAPABILITIES_KEY}/live_sessions`,
 
 	// Sessionless inbound — no session involved.
 	auth_status: `_${CAPABILITIES_KEY}/auth_status`,
@@ -194,6 +198,19 @@ export const MODEL_EFFORT_VERSION = 1
 export function getClientOptedIntoModelEffort(capabilities: ClientCapabilities | undefined): boolean {
 	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, unknown> | undefined
 	return flags?.[MODEL_EFFORT_CAPABILITY] === MODEL_EFFORT_VERSION
+}
+
+/**
+ * Client opt-in for messages between Kimchi sessions on one machine (docs/session-messages.md): the session
+ * opens an inbox, gets list_agents and message_agent, and reads @tags in prompts. A received message starts a run
+ * no prompt owns, so it also needs backgroundRuns. No RFD covers messages between unrelated live sessions;
+ * Subagent Sessions (https://agentclientprotocol.com/rfds/subagents) only links a parent to its children.
+ */
+export const SESSION_MESSAGES_CAPABILITY = "sessionMessages"
+
+export function getClientOptedIntoSessionMessages(capabilities: ClientCapabilities | undefined): boolean {
+	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
+	return flags?.[SESSION_MESSAGES_CAPABILITY] === true && getClientOptedIntoBackgroundRuns(capabilities)
 }
 
 /**

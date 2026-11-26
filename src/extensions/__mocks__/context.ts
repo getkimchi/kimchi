@@ -155,6 +155,7 @@ export function createContext(
 			select: vi.fn(),
 			confirm: vi.fn(),
 			editor: vi.fn(),
+			addAutocompleteProvider: vi.fn(),
 			notify: vi.fn(),
 			custom: vi.fn(),
 			setStatus: vi.fn(),

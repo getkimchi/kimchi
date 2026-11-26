@@ -3967,6 +3967,12 @@ export function summarizeOpenAiToolCall(
 			return getStringArg(args, "agent_id") || theme.fg("muted", "agent result")
 		case "steer_subagent":
 			return getStringArg(args, "agent_id") || theme.fg("muted", "steer agent")
+		case "message_agent":
+			return getStringArg(args, "to") || theme.fg("muted", "message agent")
+		case "watch_session":
+			return getStringArg(args, "to") || theme.fg("muted", "watch session")
+		case "list_agents":
+			return theme.fg("muted", "subagents and sessions")
 		case "TaskCreate":
 			return summarizeText(getStringArg(args, "subject") || "create task", 72)
 		case "TaskList":
