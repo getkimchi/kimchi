@@ -15,7 +15,9 @@ import {
 	discoverModelsConfig,
 	getModelDescription,
 	getModelLabel,
+	getModelSearchAliases,
 	getModelThinkingLevels,
+	getModelVirtualIdentity,
 	injectExperimentalProvider,
 	isTransientModelsError,
 	ModelsFetchError,
@@ -1807,6 +1809,23 @@ describe("model thinking levels registry (/model table THINKING column)", () => 
 			search_aliases: ["family", "router"],
 			virtual: "other",
 		})
+	})
+
+	it("clears Effort search aliases and other-virtual identity when a refresh withdraws them", () => {
+		const provider = "metadata-withdrawal-test"
+		const ref = `${provider}/family`
+		registerModelInfoFromProviders({
+			[provider]: {
+				models: [{ id: "family", searchAliases: ["family", "router"], virtual: "other" }],
+			},
+		})
+		expect(getModelSearchAliases(ref)).toEqual(["family", "router"])
+		expect(getModelVirtualIdentity(ref)).toBe("other")
+
+		registerModelInfoFromProviders({ [provider]: { models: [{ id: "family" }] } })
+
+		expect(getModelSearchAliases(ref)).toBeUndefined()
+		expect(getModelVirtualIdentity(ref)).toBeUndefined()
 	})
 
 	it("round-trips thinking_levels onto the cached ModelMetadata", async () => {
