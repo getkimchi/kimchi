@@ -79,6 +79,14 @@ async function driveDocCliCreate(
 	return { fixture, sessionId }
 }
 
+async function expectCreatedPdf(workDir: string): Promise<void> {
+	// Slow commands are handed off to background bash before the scripted
+	// final response arrives; the contract is that the artifact is created.
+	await expect
+		.poll(() => existsSync(join(workDir, "hello.pdf")), { timeout: STARTUP_TIMEOUT_MS })
+		.toBe(true, "artifact created")
+}
+
 it(
 	"auto mode runs doc-cli with no permission round-trip (ACP)",
 	async () => {
@@ -89,7 +97,7 @@ it(
 				// The deterministic gate accepted the command: no permission
 				// request crossed the protocol surface.
 				expect(fixture.client.permissionRequests).toEqual([])
-				expect(existsSync(join(fixture.workDir, "hello.pdf")), "artifact created").toBe(true)
+				await expectCreatedPdf(fixture.workDir)
 			} finally {
 				await fixture.stop()
 			}
@@ -108,7 +116,7 @@ it(
 				// Default mode prompts per action; the fixture client
 				// auto-approves allow_once, so the command still runs.
 				expect(fixture.client.permissionRequests.length, "permission requests").toBe(1)
-				expect(existsSync(join(fixture.workDir, "hello.pdf")), "artifact created").toBe(true)
+				await expectCreatedPdf(fixture.workDir)
 			} finally {
 				await fixture.stop()
 			}
