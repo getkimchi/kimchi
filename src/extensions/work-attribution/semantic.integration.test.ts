@@ -272,7 +272,7 @@ it.each([
 	expect(usage.map((row) => row.workId)).toEqual(attempts.map(() => planned))
 })
 
-it("writes a held request with the Jira issue of the work matching decides", async () => {
+it("writes a held request with the issue of the work matching decides", async () => {
 	await rememberWorkIntent(cwd, planned, first)
 	const agentDir = join(root, "agent")
 	await changeWorkIssue(agentDir, planned, "planner", "ABC-123")

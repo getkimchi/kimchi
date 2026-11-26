@@ -7,7 +7,7 @@ import { currentBranch } from "../pull-request-status/branch-status.js"
 import { object } from "./summary.js"
 
 /*
- * The Jira issue chosen for a work with `/work issue`, as a ledger note keyed (workId, "issue"). Writers read and
+ * The issue chosen for a work with `/work issue`, as a ledger note keyed (workId, "issue"). Writers read and
  * replace it inside one store transaction, so simultaneous sessions get consecutive revisions. It is separate from
  * the work's immutable `scope` note. It is not a journal record: a selection belongs to a work and is read before
  * every input, while journals are per session, and an older Kimchi's PR cost reporting stops on journal record types
@@ -47,7 +47,7 @@ export interface WorkIssue {
 	unreadable?: string
 }
 
-/** The key `text` names, with ASCII letters uppercased, or undefined when it is not exactly one Jira key. */
+/** The key `text` names, with ASCII letters uppercased, or undefined when it is not exactly one canonical issue key. */
 export function parseIssueKey(text: string): string | undefined {
 	// Only ASCII letters: toUpperCase would also turn ı and ſ into I and S.
 	const key = Array.from(text, (character) =>
@@ -131,8 +131,8 @@ export function changeWorkIssue(
 
 /** What `/work` prints about a work's issue; nothing for a work without one. */
 export function workIssueLines(issue: WorkIssue): string[] {
-	if (issue.unreadable) return [`Jira issue: unknown; ${issue.unreadable} is unreadable. ${CHOOSE}`]
-	return issue.selected ? [`Jira issue: ${issue.selected.key}`] : []
+	if (issue.unreadable) return [`Issue: unknown; ${issue.unreadable} is unreadable. ${CHOOSE}`]
+	return issue.selected ? [`Issue: ${issue.selected.key}`] : []
 }
 
 /** Suggests a key the checked-out branch names, unless it is the selected one. Only the command selects. */
@@ -166,9 +166,7 @@ export async function workIssueCommand(
 		const suggestion = await branchSuggestion(work.cwd, issue.selected?.key)
 		if (workIssueLines(issue).length) return { lines: suggestion, changed: false }
 		return {
-			lines: suggestion.length
-				? ["Jira issue: none", ...suggestion]
-				: ["Jira issue: none. Select one with: /work issue <KEY>"],
+			lines: suggestion.length ? ["Issue: none", ...suggestion] : ["Issue: none. Select one with: /work issue <KEY>"],
 			changed: false,
 		}
 	}
@@ -176,7 +174,7 @@ export async function workIssueCommand(
 	if (!key && value !== "clear")
 		return {
 			lines: [
-				`Not a Jira issue key: ${JSON.stringify(value.slice(0, 80))}. Use /work issue <KEY>, such as /work issue ABC-123, or /work issue clear.`,
+				`Not an issue key: ${JSON.stringify(value.slice(0, 80))}. Use /work issue <KEY>, such as /work issue ABC-123, or /work issue clear.`,
 			],
 			changed: false,
 			warning: true,
@@ -187,16 +185,16 @@ export async function workIssueCommand(
 		return {
 			lines: [
 				changed
-					? `Jira issue ${key} selected for this work${replaced ? `, replacing ${replaced}` : ""}. It applies from the next prompt; earlier requests are unchanged.`
-					: `Jira issue ${key} is already selected for this work.`,
+					? `Issue ${key} selected for this work${replaced ? `, replacing ${replaced}` : ""}. It applies from the next prompt; earlier requests are unchanged.`
+					: `Issue ${key} is already selected for this work.`,
 			],
 			changed,
 		}
 	return {
 		lines: [
 			changed
-				? `Jira issue ${replaced ? `${replaced} ` : ""}cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.`
-				: "No Jira issue is selected for this work.",
+				? `Issue ${replaced ? `${replaced} ` : ""}cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.`
+				: "No issue is selected for this work.",
 		],
 		changed,
 	}

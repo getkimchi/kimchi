@@ -34,7 +34,7 @@ export interface SavedWork {
 	planTitle?: string
 	/** `work.json` modification time, used when the summary has no timestamps. */
 	modifiedAt?: number
-	/** The Jira issue chosen with `/work issue`. */
+	/** The issue chosen with `/work issue`. */
 	issue?: WorkIssue
 }
 

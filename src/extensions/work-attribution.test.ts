@@ -1627,7 +1627,7 @@ describe("local work attribution", () => {
 	})
 })
 
-describe("Jira issue selection", () => {
+describe("issue selection", () => {
 	function session() {
 		const api = createExtensionApi()
 		createWorkAttributionExtension()(api.api)
@@ -1655,7 +1655,7 @@ describe("Jira issue selection", () => {
 
 		await api.getRegisteredCommand("work").handler("issue ABC-123", ctx)
 		expect(vi.mocked(ctx.ui.notify).mock.lastCall).toEqual([
-			`Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged.\nWork ID: ${getWorkId(ctx)}\nJira issue: ABC-123\nCost: not priced locally; see the console`,
+			`Issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged.\nWork ID: ${getWorkId(ctx)}\nIssue: ABC-123\nCost: not priced locally; see the console`,
 			"info",
 		])
 		await input("Implement it")
@@ -1715,20 +1715,20 @@ describe("Jira issue selection", () => {
 			].join("\n")
 
 		await command.handler("issue", ctx)
-		expect(printed()).toEqual([`Jira issue: none. Select one with: /work issue <KEY>\n${details([])}`, "info"])
+		expect(printed()).toEqual([`Issue: none. Select one with: /work issue <KEY>\n${details([])}`, "info"])
 		await command.handler("issue ABC-123", ctx)
 		await command.handler("", ctx)
-		expect(printed()).toEqual([details(["Jira issue: ABC-123"]), "info"])
+		expect(printed()).toEqual([details(["Issue: ABC-123"]), "info"])
 		await command.handler("issue", ctx)
-		expect(printed()).toEqual([details(["Jira issue: ABC-123"]), "info"])
+		expect(printed()).toEqual([details(["Issue: ABC-123"]), "info"])
 		await command.handler("issue clear", ctx)
 		expect(printed()).toEqual([
-			`Jira issue ABC-123 cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.\n${details([])}`,
+			`Issue ABC-123 cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.\n${details([])}`,
 			"info",
 		])
 		await command.handler("issue ABC 123", ctx)
 		expect(printed()).toEqual([
-			'Not a Jira issue key: "ABC 123". Use /work issue <KEY>, such as /work issue ABC-123, or /work issue clear.',
+			'Not an issue key: "ABC 123". Use /work issue <KEY>, such as /work issue ABC-123, or /work issue clear.',
 			"warning",
 		])
 		// Choosing an issue is not a work choice: the work and its input segment stay.
@@ -1754,12 +1754,12 @@ describe("Jira issue selection", () => {
 		await vi.waitFor(() => expect(panels).toHaveLength(1))
 		const view = panels[0].render(100).map(stripTerminalSequences)
 		expect(view).toContain(`  Work ID: ${getWorkId(ctx)}`)
-		expect(view).toContain("  Jira issue: ABC-123")
+		expect(view).toContain("  Issue: ABC-123")
 		expect(view.join("\n")).toContain(`● ${getWorkId(ctx).slice(0, 8)} ABC-123`)
 		panels[0].handleInput?.("\r")
 		await browsing
 		const notice = String(vi.mocked(ctx.ui.notify).mock.lastCall?.[0]).split("\n")
-		expect(notice.slice(0, 2)).toEqual([`Work ID: ${getWorkId(ctx)}`, "Jira issue: ABC-123"])
+		expect(notice.slice(0, 2)).toEqual([`Work ID: ${getWorkId(ctx)}`, "Issue: ABC-123"])
 		expect(notice[2].startsWith("Cost: not priced locally")).toBe(true)
 	})
 })

@@ -570,7 +570,7 @@ describe("work browser rows", () => {
 		)
 	})
 
-	it("names each work's selected Jira issue in its row, and other works' saved issue in their details", async () => {
+	it("names each work's selected issue in its row, and other works' saved issue in their details", async () => {
 		const [current, other, none] = [1, 2, 3].map(workId)
 		for (const id of [current, other, none])
 			await save(id, { summary: summary(id, { requests: [request(`r-${id}`)] }) })
@@ -579,7 +579,7 @@ describe("work browser rows", () => {
 		await changeWorkIssue(agentDir, none, "session", "ABC-7")
 		await changeWorkIssue(agentDir, none, "session", undefined)
 		// /work passes the current work's lines, its issue first, as it prints them elsewhere.
-		const lines = ["Jira issue: ABC-123", "PR #7 open: https://github.com/example/kimchi/pull/7"]
+		const lines = ["Issue: ABC-123", "PR #7 open: https://github.com/example/kimchi/pull/7"]
 
 		const { rows } = await readWorkBrowser(agentDir, { workId: current, lines }, NOW)
 		const row = (id: string) => rows.find((candidate) => candidate.workId === id)
@@ -590,15 +590,15 @@ describe("work browser rows", () => {
 		)
 		expect(row(other)?.label).toBe("  00000002 ABC-12 · kimchi")
 		expect(row(other)?.details).toBe(
-			[`Work ID: ${other}`, "Jira issue: ABC-12", ...workCostDetails(agentDir, other)].join("\n"),
+			[`Work ID: ${other}`, "Issue: ABC-12", ...workCostDetails(agentDir, other)].join("\n"),
 		)
 		// The issue sits right below the work's last activity, with more lines after it.
 		const description = row(other)?.description?.split("\n") ?? []
 		const activity = description.findIndex((line) => line.startsWith("Last activity: "))
 		expect(activity).toBeGreaterThan(0)
-		expect(description.slice(activity + 1, activity + 3)).toEqual(["Jira issue: ABC-12", expect.any(String)])
+		expect(description.slice(activity + 1, activity + 3)).toEqual(["Issue: ABC-12", expect.any(String)])
 		expect(row(none)?.label).toBe("  00000003 kimchi")
-		expect(row(none)?.description).not.toContain("Jira issue")
+		expect(row(none)?.description).not.toContain("Issue:")
 	})
 
 	it("reads issue notes without opening legacy files, skipping a legacy file larger than any selection", async () => {

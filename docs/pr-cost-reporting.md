@@ -45,7 +45,7 @@ Kimchi sends `POST /ai-optimizer/v1beta/organizations/{organizationId}/pr-cost-e
 Uploads include only facts available in the captured records:
 
 - Physical request IDs, observed model/provider usage and reported cache/iteration counters, source version and completeness. Missing attempts, counters, pricing dimensions or catalog rates remain unknown.
-- Work metadata and allocation from the existing calculator, repository/PR metadata and Jira issue references. Work/session/device and plan/file identities use opaque identifiers; an explicit work title and provider PR title/login can be included.
+- Work metadata and allocation from the existing calculator, repository/PR metadata and issue references. Work/session/device and plan/file identities use opaque identifiers; an explicit work title and provider PR title/login can be included.
 - Terminal tool category, outcome and duration when observed, plus captured file revision transitions. Filesystem observation windows remain ambiguous about which process changed a file.
 - Observed plan revision identities, Git commit SHAs and explicit coverage gaps. Raw plan hashes, local paths, prompts, plan contents, file contents, tool arguments/results and credentials are not sent.
 - Genuine billing aliases when available. Authentication establishes the contributor; the harness source is retained separately. Shared credentials cannot distinguish people.
@@ -76,7 +76,7 @@ Each upload replaces one producer's inventory for one account and repository. It
 - The Git provider, host, stable target repository ID, and optional repository name.
 - Stable PR/MR IDs, numbers, links, state and merge or close times.
 - Each PR/MR's `title` and `author` login, as the provider returned them to PR discovery, so the console can name the PR. A title is cut to 1,024 characters. An unknown or empty value, or a login longer than 255 characters, is left out rather than sent empty or cut.
-- Each PR/MR's `issueKeys`, so Kimchi counts its cost for its Jira issues: the issue chosen with `/work issue` for the work whose requests went to it (`work`), then the Jira keys its head branch names (`branch`), at most 20. Only the keys are sent, never the branch name. A PR without keys leaves the field out. The backend reads keys in titles itself.
+- Each PR/MR's `issueKeys`, so Kimchi counts its cost for its issues: the issue chosen with `/work issue` for the work whose requests went to it (`work`), then the keys its head branch names (`branch`), at most 20. Lowercase branch project prefixes are emitted as uppercase keys. Only the keys are sent, never the branch name. A PR without keys leaves the field out. The reporting service reads keys in titles itself.
 - Exact request attempt UUIDs, verified billing-row UUIDs and request start times.
 - Allocation kind, referenced PR IDs and evidence method. An `unknown` request names the PRs it may belong to, so only those totals stay incomplete. An input whose native edits landed in the PR sends `native`; other session inputs send `session` and stay inferred. Continued plans send `explicit`; `/work link` corrections send `user-correction`. Model guesses send `model` and stay inferred.
 - Request counts, missing-price counts, history completeness and the latest applicable cost refresh time.

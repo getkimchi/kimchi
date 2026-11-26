@@ -44,7 +44,7 @@ export interface SnapshotContent {
 		/** The author's provider login, at most 255 characters; left out when unknown. */
 		author?: string
 		/**
-		 * Jira keys the PR is for, at most 20: the issue chosen with `/work issue` for the work behind its requests, then
+		 * Issue keys the PR is for, at most 20: the issue chosen with `/work issue` for the work behind its requests, then
 		 * the keys its head branch names. Left out when there are none.
 		 */
 		issueKeys?: PullRequestIssueKey[]
@@ -72,7 +72,7 @@ export interface SnapshotContent {
 
 type SnapshotRequest = SnapshotContent["requests"][number]
 
-/** A Jira key a PR is for and how the client knows it. */
+/** An issue key a PR is for and how the client knows it. */
 export interface PullRequestIssueKey {
 	key: string
 	source: "work" | "branch"
