@@ -47,10 +47,12 @@ function createTuiRunnerFixture({
 	missingRunner = false,
 	failureLogs = {},
 	exitCodes = { beta: 1 },
+	testSummaries = {},
 }: {
 	missingRunner?: boolean
 	failureLogs?: Record<string, FakeFailureLog[]>
 	exitCodes?: Record<string, number>
+	testSummaries?: Record<string, string>
 } = {}) {
 	const root = mkdtempSync(join(tmpdir(), "kimchi-tui-allure-test-"))
 	mkdirSync(join(root, "scripts"), { recursive: true })
@@ -81,6 +83,7 @@ function createTuiRunnerFixture({
 				"console.log(stem)",
 				`const failureLogs = ${JSON.stringify(failureLogs)}`,
 				`const exitCodes = ${JSON.stringify(exitCodes)}`,
+				`const testSummaries = ${JSON.stringify(testSummaries)}`,
 				"for (const [index, log] of (failureLogs[stem] ?? []).entries()) {",
 				// biome-ignore lint/suspicious/noTemplateCurlyInString: placeholders belong to emitted fake-runner source
 				"\tconst artifactName = log.artifactName ?? `${stem}-attempt-${index}`",
@@ -88,6 +91,9 @@ function createTuiRunnerFixture({
 				"\tconst name = `${artifactName}.fail.${process.pid}-${Date.now()}-${index + 1}.tui-e2e.log`",
 				`\twriteFileSync(join(${JSON.stringify(root)}, name), log.content ?? "x".repeat(log.size ?? 0))`,
 				"}",
+				"const defaultSummary = (failureLogs[stem] ?? []).length > 0 ? '1 flaky, 1 total' : '1 passed, 1 total'",
+				// biome-ignore lint/suspicious/noTemplateCurlyInString: placeholders belong to emitted fake-runner source
+				"console.log(`  tests: ${testSummaries[stem] ?? defaultSummary}`)",
 				"process.exit(exitCodes[stem] ?? 0)",
 			].join("\n"),
 		)
@@ -222,6 +228,32 @@ describe("successful TUI results", () => {
 			rmSync(fixture.root, { recursive: true, force: true })
 		}
 	})
+
+	it.skipIf(process.platform === "win32")(
+		"does not treat expected-failure artifacts as flaky without a flaky summary",
+		() => {
+			const log = "# Kimchi TUI E2E Artifact\n\n## Error\n\nError: expected failure\n\n## Scenario Steps\n"
+			const fixture = createTuiRunnerFixture({
+				exitCodes: {},
+				failureLogs: { alpha: [{ content: log }] },
+				testSummaries: { alpha: "1 passed, 1 total" },
+			})
+			try {
+				const resultsDir = fixture.resultsDir("allure-expected-failure")
+				expect(fixture.run(resultsDir).status).toBe(0)
+				const result = requireResult(
+					readResults(resultsDir).find((candidate) => candidate.name === "alpha"),
+					"alpha",
+				)
+				expect(result.status).toBe("passed")
+				expect(result.statusDetails).toBeUndefined()
+				expect(result.attachments).toHaveLength(1)
+				expect(readFileSync(join(resultsDir, result.attachments[0].source), "utf8")).toBe(log)
+			} finally {
+				rmSync(fixture.root, { recursive: true, force: true })
+			}
+		},
+	)
 
 	it.skipIf(process.platform === "win32")("attributes fail logs whose artifact names differ from the file stem", () => {
 		const log = "# Kimchi TUI E2E Artifact\n\n## Error\n\nError: bash card failed\n\n## Scenario Steps\n"

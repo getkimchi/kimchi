@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { inflateSync } from "node:zlib"
 import { SKIPPED_TUI_TESTS } from "../tests/e2e/tui/skip-list.js"
-import { listFailLogs, newFailLogs, writeTuiAllureResult } from "./tui-allure-results.js"
+import { listFailLogs, newFailLogs, parseTuiFlakyCount, writeTuiAllureResult } from "./tui-allure-results.js"
 import { exactFileFilter } from "./tui-e2e/file-filter.js"
 import { planShards, shardDriftWarning } from "./tui-e2e/shards.js"
 
@@ -66,7 +66,16 @@ function runTui(runArgs, stem) {
 	// Artifact names are unique per attempt, so a before/after snapshot avoids
 	// both stale logs and same-millisecond mtime boundary errors.
 	const failLogsBefore = stem ? listFailLogs(repoRoot) : []
-	const result = spawnSync(tuiTest, runArgs, { cwd: tuiCwd, stdio: "inherit", env })
+	// tui-test injects only terminal, not testInfo, into fixtures. Capture and replay
+	// stdout so its authoritative summary (not expected-failure artifacts) drives Allure.
+	const result = spawnSync(tuiTest, runArgs, {
+		cwd: tuiCwd,
+		stdio: ["inherit", "pipe", "inherit"],
+		env,
+		encoding: "utf8",
+		maxBuffer: 16 * 1024 * 1024,
+	})
+	if (result.stdout) process.stdout.write(result.stdout)
 	const stop = Date.now()
 	const status = result.status ?? 1
 	if (stem && process.env.ALLURE_RESULTS) {
@@ -79,6 +88,7 @@ function runTui(runArgs, stem) {
 				start,
 				stop,
 				failLogPaths,
+				flakyCount: parseTuiFlakyCount(result.stdout ?? ""),
 				failureMessage: result.error ? `spawn failed: ${result.error.message}` : undefined,
 			})
 		} catch (error) {

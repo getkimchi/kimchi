@@ -17,12 +17,31 @@ export function newFailLogs(before, after) {
 	return after.filter((path) => !existing.has(path))
 }
 
+export function parseTuiFlakyCount(output) {
+	for (const line of output.split(/\r?\n/)) {
+		const summary = /^\s*tests:\s*(.*),\s*\d+\s+total\s*$/.exec(line)
+		if (!summary) continue
+		const flaky = /(?:^|,\s*)(\d+)\s+flaky(?=,|$)/.exec(summary[1])
+		return flaky ? Number(flaky[1]) : 0
+	}
+	return 0
+}
+
 /** Write one native Allure result for an entire test file, not for its individual test cases. */
-export function writeTuiAllureResult({ resultsDir, stem, exitCode, start, stop, failLogPaths = [], failureMessage }) {
+export function writeTuiAllureResult({
+	resultsDir,
+	stem,
+	exitCode,
+	start,
+	stop,
+	failLogPaths = [],
+	flakyCount = 0,
+	failureMessage,
+}) {
 	const fullName = `tests/e2e/tui/${stem}.test.ts`
 	const identity = createHash("sha256").update(fullName).digest("hex")
 	const uuid = randomUUID()
-	const flaky = exitCode === 0 && failLogPaths.length > 0
+	const flaky = exitCode === 0 && flakyCount > 0
 	mkdirSync(resultsDir, { recursive: true })
 	const statusDetails =
 		exitCode === 0
