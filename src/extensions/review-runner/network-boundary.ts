@@ -1,19 +1,41 @@
 import { execFile } from "node:child_process"
+import { realpathSync } from "node:fs"
 import { join } from "node:path"
+import type { ReviewWorktree } from "./types.js"
 
 export interface ReviewNetworkBoundary {
-	kind: "sandbox-exec" | "unshare-net" | "bwrap"
-	/** Return the same logical command enclosed in an outbound-network boundary. */
-	wrap: (command: string) => string
+	kind: "sandbox-exec" | "bwrap"
+	/** Enclose a command in outbound-network and private-worktree write boundaries. */
+	wrap: (command: string, worktree: ReviewWorktree) => string
 }
 
-const MACOS_PROFILE = `(version 1)
+const MACOS_DETECTION_PROFILE = `(version 1)
 (allow default)
 (deny network-outbound)`
 let detection: Promise<ReviewNetworkBoundary | undefined> | undefined
 
 function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+function privateWritePaths(worktree: ReviewWorktree): string[] {
+	return [
+		...new Set(
+			[worktree.path, worktree.scratchDir, worktree.buildDir, worktree.cacheDir, worktree.homeDir].map((path) =>
+				realpathSync(path),
+			),
+		),
+	]
+}
+
+function macosProfile(worktree: ReviewWorktree): string {
+	const writeAllows = privateWritePaths(worktree)
+		.map((path) => `(allow file-write* (subpath ${JSON.stringify(path)}))`)
+		.join("\n")
+	return `${MACOS_DETECTION_PROFILE}
+(deny file-write*)
+(allow file-write* (literal "/dev/null"))
+${writeAllows}`
 }
 
 function succeeds(command: string, args: readonly string[]): Promise<boolean> {
@@ -24,24 +46,26 @@ function succeeds(command: string, args: readonly string[]): Promise<boolean> {
 
 async function detectPlatformBoundary(): Promise<ReviewNetworkBoundary | undefined> {
 	if (process.platform === "darwin") {
-		if (!(await succeeds("sandbox-exec", ["-p", MACOS_PROFILE, process.execPath, "--version"]))) return undefined
+		if (!(await succeeds("sandbox-exec", ["-p", MACOS_DETECTION_PROFILE, process.execPath, "--version"])))
+			return undefined
 		return {
 			kind: "sandbox-exec",
-			wrap: (command) => `sandbox-exec -p ${shellQuote(MACOS_PROFILE)} /bin/sh -c ${shellQuote(command)}`,
+			wrap: (command, worktree) =>
+				`sandbox-exec -p ${shellQuote(macosProfile(worktree))} /bin/sh -c ${shellQuote(command)}`,
 		}
 	}
 	if (process.platform === "linux") {
-		if (await succeeds("unshare", ["--net", "--map-root-user", process.execPath, "--version"])) {
-			return {
-				kind: "unshare-net",
-				wrap: (command) => `unshare --net --map-root-user -- /bin/sh -c ${shellQuote(command)}`,
-			}
+		if (!(await succeeds("bwrap", ["--unshare-net", "--ro-bind", "/", "/", process.execPath, "--version"]))) {
+			return undefined
 		}
-		if (await succeeds("bwrap", ["--unshare-net", "--dev-bind", "/", "/", process.execPath, "--version"])) {
-			return {
-				kind: "bwrap",
-				wrap: (command) => `bwrap --unshare-net --dev-bind / / -- /bin/sh -c ${shellQuote(command)}`,
-			}
+		return {
+			kind: "bwrap",
+			wrap: (command, worktree) => {
+				const writeBinds = privateWritePaths(worktree)
+					.map((path) => `--bind ${shellQuote(path)} ${shellQuote(path)}`)
+					.join(" ")
+				return `bwrap --unshare-net --ro-bind / / ${writeBinds} -- /bin/sh -c ${shellQuote(command)}`
+			},
 		}
 	}
 	return undefined

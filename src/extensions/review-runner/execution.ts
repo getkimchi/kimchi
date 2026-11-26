@@ -300,7 +300,7 @@ class ExecutionController implements ReviewExecutionController {
 
 	commandForExecution(command: string, toolCallId?: string): string {
 		const boundary = toolCallId === undefined ? undefined : this.offlineToolCalls.get(toolCallId)
-		return boundary ? boundary.wrap(command) : command
+		return boundary ? boundary.wrap(command, this.worktree) : command
 	}
 
 	environment(base: NodeJS.ProcessEnv, toolCallId?: string): NodeJS.ProcessEnv {
@@ -542,7 +542,7 @@ export async function prepareReviewCommand(
 	}
 	controller.markOfflineBoundary(request.toolCallId, boundary)
 	return {
-		command: boundary.wrap(request.command),
+		command: boundary.wrap(request.command, request.worktree),
 		environment: offlineEnvironment({ ...process.env, ...request.worktree.env }),
 		network: "offline",
 		networkBoundary: boundary.kind,

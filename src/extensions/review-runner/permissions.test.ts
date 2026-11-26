@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent"
@@ -14,6 +14,7 @@ import type { ApprovalOutcome } from "../permissions/prompts.js"
 import { parseRules } from "../permissions/rules.js"
 import type { PermissionMode, Rule } from "../permissions/types.js"
 import { createReviewBashToolDefinition, createReviewExecutionController, executeReviewCommand } from "./execution.js"
+import { detectReviewNetworkBoundary, type ReviewNetworkBoundary } from "./network-boundary.js"
 import type { ReviewWorktree } from "./types.js"
 
 function fixtureWorktree(root: string, id: string): ReviewWorktree {
@@ -45,10 +46,20 @@ describe("review worker permission integration", () => {
 		mode: PermissionMode,
 		outcome: ApprovalOutcome | undefined,
 		id = "one",
-		policy: { rules?: Rule[]; dangerBypass?: boolean } = {},
+		policy: {
+			rules?: Rule[]
+			dangerBypass?: boolean
+			networkBoundary?: ReviewNetworkBoundary | null
+			rootDir?: string
+		} = {},
 	) {
 		const parentSessionId = `parent-${id}`
-		const controller = createReviewExecutionController({ mode: "local", worktree: fixtureWorktree(root, id) })
+		const fixtureRoot = policy.rootDir ?? root
+		const controller = createReviewExecutionController({
+			mode: "local",
+			worktree: fixtureWorktree(fixtureRoot, id),
+			...(policy.networkBoundary !== undefined ? { networkBoundary: policy.networkBoundary } : {}),
+		})
 		const unregisterPolicy = registerPermissionPolicySource(parentSessionId, {
 			getMode: () => ({ mode, initiatedBy: "user", source: "runtime" }),
 			getRules: () => policy.rules ?? [],
@@ -79,7 +90,7 @@ describe("review worker permission integration", () => {
 			description: `Review lens ${id}`,
 			reviewExecution: controller,
 		})(child.api)
-		const ctx = createContext({ cwd: fixtureWorktree(root, id).path, hasUI: false }) as ExtensionContext
+		const ctx = createContext({ cwd: fixtureWorktree(fixtureRoot, id).path, hasUI: false }) as ExtensionContext
 		return { controller, child, ctx, requestPermission }
 	}
 
@@ -302,5 +313,52 @@ describe("review worker permission integration", () => {
 		const normal = gate("default", { kind: "allow-once" })
 		expect(await call(normal.child, normal.ctx, "run_review_check", { id: "test" })).toBeUndefined()
 		expect(normal.requestPermission).not.toHaveBeenCalled()
+	})
+
+	it("blocks review command writes outside private worktree directories without a prompt", async (ctx) => {
+		const boundary = await detectReviewNetworkBoundary()
+		if (!boundary) {
+			ctx.skip("No OS execution boundary is available on this host")
+			return
+		}
+		const localRoot = mkdtempSync("/tmp/review-write-boundary-")
+		cleanups.push(() => rmSync(localRoot, { recursive: true, force: true }))
+		const worktree = join(localRoot, "worktree")
+		const victimDirectory = join(localRoot, "users-real-project")
+		const victim = join(victimDirectory, "notes.txt")
+		mkdirSync(worktree)
+		for (const part of ["scratch", "build", "cache", "home"]) {
+			mkdirSync(join(worktree, part), { recursive: true })
+		}
+		mkdirSync(victimDirectory)
+		writeFileSync(victim, "important")
+		const review = gate("default", { kind: "deny" }, "worktree", { rootDir: localRoot, networkBoundary: boundary })
+		const command = `rm -f ${victim}`
+
+		expect(await call(review.child, review.ctx, "bash", { command })).toMatchObject({ block: true })
+		expect(review.requestPermission).toHaveBeenCalledTimes(1)
+		expect(await call(review.child, review.ctx, "run_review_command", { command })).toBeUndefined()
+		expect(review.requestPermission).toHaveBeenCalledTimes(1)
+
+		const inside = join(worktree, "inside.txt")
+		const allowed = await review.controller.execute({
+			command: `printf reviewed > ${inside}`,
+			cwd: worktree,
+			intendedCheck: "write-boundary-control",
+			toolCallId: "write-boundary-control",
+			toolName: "run_review_command",
+		})
+		expect(allowed, JSON.stringify(allowed)).toMatchObject({ status: "passed", network: "offline" })
+		expect(readFileSync(inside, "utf8")).toBe("reviewed")
+		const blocked = await review.controller.execute({
+			command,
+			cwd: worktree,
+			intendedCheck: "write-boundary-repro",
+			toolCallId: "call-run_review_command",
+			toolName: "run_review_command",
+		})
+		expect(blocked).toMatchObject({ status: "failed", network: "offline", approval: "not-requested" })
+		expect(existsSync(victim)).toBe(true)
+		expect(readFileSync(victim, "utf8")).toBe("important")
 	})
 })
