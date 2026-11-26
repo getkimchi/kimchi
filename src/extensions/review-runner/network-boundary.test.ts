@@ -271,14 +271,70 @@ describe("real OS offline network boundary", () => {
 		expect(existsSync(mainWorktreeWrite)).toBe(false)
 	}, 30_000)
 
-	it("binds only the verified Git admin exception in static Linux arguments", () => {
+	it("supports ignored-stdio grandchildren through bwrap without weakening containment", async (ctx) => {
+		if (boundary?.kind !== "bwrap") {
+			ctx.skip("This regression requires the Linux bwrap boundary")
+			return
+		}
+		writeFileSync(
+			join(worktree.path, "ignored-stdio.cjs"),
+			`const { spawnSync } = require("node:child_process")
+const { writeFileSync } = require("node:fs")
+const grandchild = spawnSync(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" })
+if (grandchild.error) throw grandchild.error
+if (grandchild.status !== 0) throw new Error(\`Grandchild exited with \${grandchild.status}\`)
+writeFileSync("/dev/null", "discard\\n")
+console.log("ignored-stdio grandchild passed")`,
+		)
+		const controller = createReviewExecutionController({ mode: "local", worktree, networkBoundary: boundary })
+		const execute = (command: string) =>
+			controller.execute({ command, cwd: worktree.path, intendedCheck: "ignored-stdio process boundary" })
+
+		const spawned = await execute("node ignored-stdio.cjs")
+		expect(spawned, JSON.stringify(spawned)).toMatchObject({
+			status: "passed",
+			exitCode: 0,
+			network: "offline",
+			networkBoundary: "bwrap",
+		})
+		expect(spawned.output).toContain("ignored-stdio grandchild passed")
+
+		const outsideWrite = `${root}-outside-write`
+		const deniedWrite = await execute(`printf denied > ${outsideWrite}`)
+		expect(deniedWrite).toMatchObject({ status: "failed", network: "offline", networkBoundary: "bwrap" })
+		expect(existsSync(outsideWrite)).toBe(false)
+
+		let requests = 0
+		server = createServer((_request, response) => {
+			requests++
+			response.end("online")
+		})
+		await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", resolve))
+		const port = (server.address() as AddressInfo).port
+		const fetch = `fetch("http://127.0.0.1:${port}").then(() => process.exit(0)).catch((error) => { console.error(error); process.exit(1) })`
+		const network = await execute(`node -e ${JSON.stringify(fetch)}`)
+		expect(network).toMatchObject({ status: "failed", network: "offline", networkBoundary: "bwrap" })
+		expect(requests).toBe(0)
+	}, 30_000)
+
+	it("binds only the null device and verified Git admin exception in static Linux arguments", () => {
 		const linked = linkedWorktree(root)
 		worktree = linked.worktree
 		const command = "git update-index --refresh"
 		const args = REVIEW_NETWORK_BOUNDARY_TESTING.linuxBoundaryArguments(worktree, command)
 		const binds = writableBinds(args)
 
-		expect(args.slice(0, 5)).toEqual(["bwrap", "--unshare-net", "--ro-bind", "/", "/"])
+		expect(args.slice(0, 8)).toEqual([
+			"bwrap",
+			"--unshare-net",
+			"--ro-bind",
+			"/",
+			"/",
+			"--dev-bind",
+			"/dev/null",
+			"/dev/null",
+		])
+		expect(args).not.toContain("--dev")
 		expect(binds).toContainEqual(["--bind", linked.gitAdminDir, linked.gitAdminDir])
 		expect(binds).not.toContainEqual(["--bind", linked.commonDir, linked.commonDir])
 		expect(binds).not.toContainEqual(["--bind", join(linked.commonDir, "objects"), join(linked.commonDir, "objects")])

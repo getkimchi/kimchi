@@ -174,8 +174,10 @@ Every local offline command is enclosed before execution:
   TCP and outbound Unix-domain socket `connect()` calls, including package
   downloads from a local HTTP server and local daemon connections.
 - **Linux:** detection first tries `bwrap --unshare-net` with a read-only root
-  mount and selected writable binds. If `bwrap` is missing or its probe fails,
-  detection tries `unshare --net --map-root-user`. Both create a network
+  mount, a writable `/dev/null` device bind for ignored or redirected standard
+  I/O, and selected writable binds. No general `/dev` mount is added. If
+  `bwrap` is missing or its probe fails, detection tries
+  `unshare --net --map-root-user`. Both create a network
   namespace with no usable external interfaces. The `unshare-net` fallback
   confines **network access only**: it does not confine filesystem writes, so
   the checkout, other user files, and shared Git metadata retain their ordinary
