@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process"
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
 import type { FakeResponseScript } from "./tui/support/fake-openai-server.js"
 
 export const REVIEW_VALUE_FILE = "value.ts"
@@ -180,22 +181,66 @@ export interface ReviewInterruptionFixture {
 }
 
 export function createReviewInterruptionFixture(homeDir: string): ReviewInterruptionFixture {
-	const started = join(homeDir, "review-command-started")
-	const survived = join(homeDir, "review-command-survived")
-	const pidFile = join(homeDir, "review-command.pid")
-	const grandchildPidFile = join(homeDir, "review-command-grandchild.pid")
+	const suffix = Date.now()
+	const names = {
+		started: `review-command-started-${suffix}`,
+		survived: `review-command-survived-${suffix}`,
+		pidFile: `review-command-${suffix}.pid`,
+		grandchildPidFile: `review-command-grandchild-${suffix}.pid`,
+	}
+	const worktreeRoot = join(tmpdir(), "kimchi-review-worktrees")
+	const markerPath = (name: keyof typeof names) => {
+		let located: string | undefined
+		return () => {
+			if (!located) {
+				try {
+					for (const entry of readdirSync(worktreeRoot, { recursive: true, withFileTypes: true })) {
+						if (entry.isFile() && entry.name === names[name]) {
+							located = join(entry.parentPath, entry.name)
+							break
+						}
+					}
+				} catch {
+					// The run directory may not exist yet or may be removed during cleanup.
+				}
+			}
+			if (!located && name !== "started") {
+				const start = markerPath("started")()
+				if (start !== join(homeDir, names.started)) located = join(dirname(start), names[name])
+			}
+			return located ?? join(homeDir, names[name])
+		}
+	}
+	const started = markerPath("started")
+	const survived = markerPath("survived")
+	const pidFile = markerPath("pidFile")
+	const grandchildPidFile = markerPath("grandchildPidFile")
 	const script = join(homeDir, "review-command.mjs")
 	writeFileSync(
 		script,
 		`import { spawn } from "node:child_process"\nimport { writeFileSync } from "node:fs"\nconst grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })\ngrandchild.unref()\nwriteFileSync(process.argv[3], String(process.pid))\nwriteFileSync(process.argv[5], String(grandchild.pid))\nwriteFileSync(process.argv[2], "started")\nsetTimeout(() => writeFileSync(process.argv[4], "survived"), 2000)\nsetInterval(() => {}, 1000)\n`,
 	)
 	return {
-		started,
-		survived,
-		pidFile,
-		grandchildPidFile,
+		get started() {
+			return started()
+		},
+		get survived() {
+			return survived()
+		},
+		get pidFile() {
+			return pidFile()
+		},
+		get grandchildPidFile() {
+			return grandchildPidFile()
+		},
 		toolArguments: JSON.stringify({
-			command: `${process.execPath} ${script} ${started} ${pidFile} ${survived} ${grandchildPidFile}`,
+			command: [
+				process.execPath,
+				script,
+				...[names.started, names.pidFile, names.survived, names.grandchildPidFile].map(
+					(name) => `"$KIMCHI_REVIEW_SCRATCH_DIR/${name}"`,
+				),
+			].join(" "),
 			cwd: ".",
 			intended_check: "long-running reviewer command for cancellation cleanup",
 		}),

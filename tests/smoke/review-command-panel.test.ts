@@ -305,7 +305,9 @@ for (const scenario of [
 	})
 }
 
-it("rejects bare local review without the experimental flag and preserves JSON stdout", { timeout: 30_000 }, async () => {
+it("rejects bare local review without the experimental flag and preserves JSON stdout", {
+	timeout: 30_000,
+}, async () => {
 	const f = await fixture()
 	try {
 		const result = await runPrint(f.homeDir, "/review", f.directories, { cwd: f.checkout }).done
