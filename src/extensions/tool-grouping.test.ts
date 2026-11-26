@@ -554,7 +554,6 @@ describe("buildGroupView", () => {
 
 	it("appends timer for completed groups", () => {
 		const run = [mockToolFull("read", { path: "a.ts" }), mockToolFull("read", { path: "b.ts" })]
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
 		;(run[1] as any).rendererState = { _executionStartedAt: Date.now() - 5000, _executionEndedAt: Date.now() }
 		const view = buildGroupView(run, plainTheme)
 		const lines = view.render(120)
@@ -565,7 +564,6 @@ describe("buildGroupView", () => {
 
 	it("shows 'Worked for' duration, counts, and failed count when completed", () => {
 		const run = [mockToolFull("read", { path: "a.ts" }), mockTool("b", { isError: true })]
-		// biome-ignore lint/suspicious/noExplicitAny: mock property access
 		;(run[0] as any).rendererState = { _executionStartedAt: Date.now() - 5000, _executionEndedAt: Date.now() }
 		const view = buildGroupView(run, plainTheme)
 		const headerLine = view.render(120)[0]
@@ -653,7 +651,6 @@ describe("buildGroupView live timer on mixed runs", () => {
 interface FakeToolHarness {
 	fake: any
 	callRegion: any
-	// biome-ignore lint/suspicious/noExplicitAny: plain region stand-ins
 	resultRegion: any
 	originalBg: (text: string) => string
 }
@@ -661,16 +658,12 @@ interface FakeToolHarness {
 const renderTheme = { fg: (_key: string, value: string) => value }
 
 function makeFakeToolHarness(index: number): FakeToolHarness {
-	// biome-ignore lint/suspicious/noExplicitAny: plain region stand-ins
 	const callRegion: any = { render: () => [`call-${index}`], invalidate: () => {} }
-	// biome-ignore lint/suspicious/noExplicitAny: plain region stand-ins
 	const resultRegion: any = { render: () => [`result-${index}`], invalidate: () => {} }
 	const originalBg = (text: string) => text
-	// biome-ignore lint/suspicious/noExplicitAny: Box children are swapped with stand-ins
 	const contentBox: any = new Box(1, 1, originalBg)
 	contentBox.children = [callRegion, resultRegion]
 
-	// biome-ignore lint/suspicious/noExplicitAny: fake instance of the patched prototype
 	const fake: any = Object.create(ToolExecutionComponent.prototype)
 	Object.assign(fake, {
 		children: [contentBox],
@@ -985,7 +978,6 @@ describe("folded group row: chrome and click paths", () => {
 		// Two real components in self mode share the same container (like upstream
 		// MCP tools with a custom renderer); the renderer reports the tool as self-shelled.
 		const make = (id: string) => {
-			// biome-ignore lint/suspicious/noExplicitAny: minimal self-rendered tool definition
 			const toolDefinition: any = {
 				renderShell: "self",
 				renderCall: () => ({ render: () => [`call-${id}`], invalidate: () => {} }),

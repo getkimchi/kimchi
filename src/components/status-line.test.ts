@@ -123,6 +123,7 @@ function concreteModel(id: string): Model<string> {
 function createMockStatusLineData(opts?: {
 	permissionsMode?: string
 	permissionsWarning?: string
+	subagentWaiting?: string
 	updateAvailable?: string
 	updateInstalled?: string
 	lsp?: string
@@ -136,6 +137,7 @@ function createMockStatusLineData(opts?: {
 	const statuses = new Map<string, string>()
 	if (opts?.permissionsMode) statuses.set("permissions-mode", opts.permissionsMode)
 	if (opts?.permissionsWarning) statuses.set("permissions-warning", opts.permissionsWarning)
+	if (opts?.subagentWaiting) statuses.set("permission-subagent-wait", opts.subagentWaiting)
 	if (opts?.updateAvailable) statuses.set("update-available", opts.updateAvailable)
 	if (opts?.updateInstalled) statuses.set("update-installed", opts.updateInstalled)
 	if (opts?.lsp) statuses.set("lsp", opts.lsp)
@@ -1199,6 +1201,26 @@ describe("StatusLine info line", () => {
 
 		expect(lines.length).toBe(2)
 		expect(stripAnsi(lines[0])).toContain("Warning")
+	})
+
+	it("renders the subagent waiting notice in the info line", () => {
+		const data = createMockStatusLineData({ subagentWaiting: "Subagent explorer is waiting for permission" })
+		const sl = new StatusLine(createMockContext(), theme, data)
+		const lines = sl.render(160)
+
+		expect(lines.length).toBe(2)
+		expect(stripAnsi(lines[0])).toContain("Subagent explorer is waiting for permission")
+	})
+
+	it("shows the permissions warning before the subagent waiting notice", () => {
+		const data = createMockStatusLineData({
+			permissionsWarning: "Warning: check permissions",
+			subagentWaiting: "Subagent explorer is waiting for permission",
+		})
+		const sl = new StatusLine(createMockContext(), theme, data)
+		const infoLine = stripAnsi(sl.render(160)[0])
+
+		expect(infoLine).toContain("Warning: check permissions · Subagent explorer is waiting for permission")
 	})
 
 	it("renders an info line above the status line when update-available is set", () => {

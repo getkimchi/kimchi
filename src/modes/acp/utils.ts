@@ -1,3 +1,4 @@
+import type { SendRequestOptions } from "@agentclientprotocol/sdk/unstable"
 import type { ImageContent } from "@earendil-works/pi-ai"
 
 export const asString = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined)
@@ -18,13 +19,20 @@ export function extractImages(blocks: unknown[]): ImageContent[] {
 		.map((b) => ({ type: "image" as const, data: b.data, mimeType: b.mimeType }))
 }
 
-export function requestWithAbort<T>(request: Promise<T>, signal: AbortSignal | undefined): Promise<T | "aborted"> {
-	if (!signal) return request
+/** Start an SDK request only when still live, and wire the caller's actual
+ * signal to JSON-RPC cancellation. The local race preserves Pi's `"aborted"`
+ * outcome while the SDK drops the peer's late response for the original id. */
+export function requestWithAbort<T>(
+	request: (options: SendRequestOptions) => Promise<T>,
+	signal: AbortSignal | undefined,
+): Promise<T | "aborted"> {
+	if (!signal) return request({})
 	if (signal.aborted) return Promise.resolve("aborted")
 
+	const pending = request({ cancellationSignal: signal, stopWaitingOnCancel: true })
 	return new Promise((resolve, reject) => {
 		const onAbort = () => resolve("aborted")
 		signal.addEventListener("abort", onAbort, { once: true })
-		request.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort))
+		pending.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort))
 	})
 }

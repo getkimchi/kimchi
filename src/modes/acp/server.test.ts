@@ -234,7 +234,6 @@ import {
 	fileChangeToDiffContent,
 	initializeHeadlessTheme,
 	KimchiAcpAgent,
-	stripAnsi,
 	toAcpSessionInfo,
 	userMessageText,
 } from "./server.js"
@@ -13186,23 +13185,23 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(loaderCalls).toBe(1)
 	})
 
-	it("does not coalesce a concurrent loadSession and resumeSession of the same sessionId", async () => {
-		// replayHistory is per-caller: load replays the transcript, resume
-		// must not. Coalescing them under one key would have the second
-		// caller inherit the first's replay decision, so each intent runs
-		// the loader on its own.
+	it("serializes concurrent loadSession and resumeSession without conflating replay decisions", async () => {
+		// Load replays history; the following resume attaches without replaying it.
 		const fake = new FakeAgentSession("mutual-1")
+		fake.branch = [userTextEntry("historic", "u1", null)]
 		let loaderCalls = 0
 		const loader: AcpSessionLoader = async () => {
 			loaderCalls++
 			return asSession(fake)
 		}
-		const agent = makeAgent(loader)
+		const { conn, updates } = makeRecordingConn()
+		const agent = makeAgent(loader, { conn })
 		const params = { sessionId: "mutual-1", cwd: "/tmp", mcpServers: [] }
 		const [loaded, resumed] = await Promise.all([agent.loadSession(params), agent.resumeSession(params)])
 		expect(loaded.configOptions).toBeDefined()
 		expect(resumed.configOptions).toBeDefined()
-		expect(loaderCalls).toBe(2)
+		expect(loaderCalls).toBe(1)
+		expect(updates.filter(({ update }) => update.sessionUpdate === "user_message_chunk")).toHaveLength(1)
 	})
 
 	it("propagates loader errors (e.g. missing file → invalidParams)", async () => {
@@ -13549,22 +13548,15 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(getSessionPermissionFlagController("session-alive")).toBeUndefined()
 	})
 
-	it("a late-failing concurrent attach evicts only its own registrations (winner stays intact)", async () => {
-		// failure-006: load + resume of the same id coalesce separately and
-		// race; here the loser registers AFTER the winner installed its
-		// record. Registry slots are multi-owner stacks: the loser's
-		// identity-checked unwind evicts exactly its own objects, and the
-		// winner's triad (record, prompter, mode controller) stays intact.
+	it("preserves a registered session's bindings when another attach follows", async () => {
+		// Ordered load/resume operations never compete to replace an already
+		// registered root. The second operation must not create a loser session.
 		const conn = makeConn()
 		const winner = new FakeAgentSession("session-raced")
-		const loser = new FakeAgentSession("session-raced")
-		loser.bindExtensionsImpl = async () => {
-			throw new Error("bind boom")
+		const competing = new FakeAgentSession("session-raced")
+		competing.bindExtensionsImpl = async () => {
+			throw new Error("unexpected competing bind")
 		}
-		let gateLoser: (s: FakeAgentSession) => void = () => {}
-		const loserGate = new Promise<FakeAgentSession>((resolve) => {
-			gateLoser = resolve
-		})
 		let loaderCalls = 0
 		const agent = new KimchiAcpAgent(conn, {
 			extensionFactories: [],
@@ -13572,19 +13564,15 @@ describe("KimchiAcpAgent loadSession", () => {
 			sessionFactory: async () => asSession(new FakeAgentSession("unused-x")),
 			sessionLoader: async () => {
 				loaderCalls += 1
-				return asSession(loaderCalls === 1 ? winner : await loserGate)
+				return asSession(loaderCalls === 1 ? winner : competing)
 			},
 		})
-		const winnerPromise = agent.loadSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })
-		const loserPromise = agent.resumeSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })
-		await winnerPromise
-		expect(getAcpPrompter("session-raced")).toBeDefined()
-		gateLoser(loser)
-		await expect(loserPromise).rejects.toThrow(/bind boom/)
-		// Loser unwound exactly its own registrations; the winner lives on.
+		const load = agent.loadSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })
+		const attach = agent.resumeSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })
+		await Promise.all([load, attach])
+		expect(loaderCalls).toBe(1)
 		expect(getAcpPrompter("session-raced")).toBeDefined()
 		expect(getSessionPermissionFlagController("session-raced")).toBeDefined()
-		// The winner's record is still the registered, re-loadable session.
 		await expect(agent.loadSession({ sessionId: "session-raced", cwd: "/tmp", mcpServers: [] })).resolves.toMatchObject(
 			{},
 		)
@@ -14706,21 +14694,6 @@ describe("KimchiAcpAgent session event handlers", () => {
 			expect((titleUpdates[0].update as { title?: string }).title).toBe("Draft title")
 			expect((titleUpdates[1].update as { title?: string }).title).toBe("Final title")
 		})
-	})
-})
-
-describe("stripAnsi", () => {
-	it("returns unchanged text when no ANSI escapes are present", () => {
-		expect(stripAnsi("plain text")).toBe("plain text")
-	})
-	it("removes CSI sequences (color, dim, reset) without touching surrounding text", () => {
-		expect(stripAnsi("\x1b[2mfoo\x1b[22m bar")).toBe("foo bar")
-		expect(stripAnsi("\x1b[31mred\x1b[0m and \x1b[1mbold\x1b[0m")).toBe("red and bold")
-	})
-	it("leaves a stray ESC byte (no full sequence) untouched", () => {
-		// Conservative scrub: only `\x1b[…<letter>` is dropped. A bare ESC
-		// without a CSI body isn't styling and shouldn't be mangled.
-		expect(stripAnsi("plain\x1bbody")).toBe("plain\x1bbody")
 	})
 })
 

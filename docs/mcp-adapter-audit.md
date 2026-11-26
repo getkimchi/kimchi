@@ -357,6 +357,53 @@ Relevant code:
 - [`src/shared/planning/tool-profile-manager.ts`](../src/shared/planning/tool-profile-manager.ts)
 - [`src/extensions/permissions/index.ts`](../src/extensions/permissions/index.ts)
 
+### Auto-mode approval of read-only MCP calls
+
+In auto mode, the permission hook runs MCP calls without the classifier when
+the resolved tool has `annotations.readOnlyHint: true`. Gateway metadata
+operations (status, server, instructions, describe, search) are also approved.
+Auto mode treats `readOnlyHint: true` as an authorization assertion from the
+configured server. Kimchi does not verify it. A server that sets the hint on a
+tool that writes data gets that tool run without review.
+
+This trust is limited in the following ways:
+
+- Deny and allow rules are checked first, so a deny rule still blocks the call.
+- Auto mode is opt-in. Default and plan modes are not changed by this path.
+- A hint from the persistent cache counts only when the entry has the same
+  config hash as the current server definition and its TTL is still valid. A
+  cached hint therefore comes from the same configured server as a live
+  `tools/list` would.
+- Unknown, ambiguous, stale, disabled-server and malformed calls go to the
+  classifier. So do tools with `readOnlyHint: false`, an annotations object
+  without the hint, or no annotations and no read-only name. The name taxonomy
+  is not used for these calls, because it would judge the wrapper or server
+  name (`mcp__readwise`) and not the tool that runs.
+- Tools without annotations whose name starts with a read verb, and resource
+  tools, keep the normal auto-mode flow.
+
+The permission hook, the gateway check, and the plan-mode wire names share one
+cached catalog. The catalog is rebuilt when the config, the private catalogs,
+the `stat` of the cache file, the process environment, or a TTL expiry changes.
+The environment counts because server hashes interpolate env vars. If the cache file cannot
+be `stat`ed, nothing is reused and every lookup rebuilds. Kimchi refreshes the
+config on each `session_start` in file-backed mode and keeps it in programmatic
+mode. In file-backed mode, if the config source or the session `cwd` changes, MCP
+calls go to the classifier until the next reload. Servers added at runtime
+resolve as `unknown` and also go to the classifier.
+
+Known limits:
+
+- A config edit in the short window between Kimchi's read and the adapter's
+  read is not detected.
+
+Relevant code:
+
+- [`src/extensions/mcp/auto-policy.ts`](../src/extensions/mcp/auto-policy.ts)
+- [`src/extensions/mcp/call-facts.ts`](../src/extensions/mcp/call-facts.ts)
+- [`src/extensions/mcp/call-catalog.ts`](../src/extensions/mcp/call-catalog.ts)
+- [`src/extensions/mcp/call-catalog-store.ts`](../src/extensions/mcp/call-catalog-store.ts)
+
 ### Conservative adapter defaults
 
 The facade disables the model-facing `mcpScript` tool and omits the MCP

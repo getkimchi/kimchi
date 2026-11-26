@@ -32,6 +32,21 @@ While agents run, a persistent widget above the editor shows live status, token
 counts, and current activity. Open `/agents` to see the menu — select any
 running or completed agent to view its full conversation in a live overlay.
 
+## Permissions
+
+Subagent tool calls go through the same permission gate as the main session and
+follow its mode and rules. A subagent has no prompt of its own. When a call
+needs a decision, the main session asks the user and names the subagent. When
+nobody can be asked, the call is blocked. The details are in
+[subagent-permissions.md](subagent-permissions.md).
+
+### Branching
+
+After `/branch`, a subagent that is still running keeps its original parent
+session. It cannot ask the new session for approval, so a call that needs
+approval is blocked. Start a new subagent from the new session when a call needs
+the user's approval.
+
 ## Discovery hierarchy
 
 Agents are discovered from three locations, in priority order (later wins):
@@ -328,14 +343,6 @@ before the interruption. No manual cleanup is needed.
 Subagents cannot spawn further subagents. The `Agent`, `get_subagent_result`,
 and `steer_subagent` tools are filtered out of any spawned agent's tool set,
 preventing fork-bombs and runaway delegation chains.
-
-## Permissions
-
-Subagent tool calls go through the same permission gate as the main session and
-follow its mode and rules. A subagent has no prompt of its own. In `default` and
-`auto` mode a call that is not read-only and that no rule allows runs only when
-the classifier calls it safe; otherwise it is blocked. The details are in
-[subagent-permissions.md](subagent-permissions.md).
 
 ## Remote runs and session replacement
 

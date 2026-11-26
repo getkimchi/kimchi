@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import type * as acp from "@agentclientprotocol/sdk"
+import type * as acp from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
@@ -85,7 +85,7 @@ describe("ACP integration — codemode rawOutput", () => {
 			const liveUnrelated = projection(fixture, isUnrelatedTool)
 
 			const replayStart = fixture.client.sessionUpdates.length
-			await fixture.conn.loadSession({ sessionId, cwd: fixture.workDir, mcpServers: [] })
+			await fixture.conn.request("session/load", { sessionId, cwd: fixture.workDir, mcpServers: [] })
 			const replayCodemode = projection(fixture, isCodemodeScript, replayStart)
 			const replayUnrelated = projection(fixture, isUnrelatedTool, replayStart)
 

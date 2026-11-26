@@ -885,9 +885,16 @@ export class StatusLine implements Component {
 	}
 
 	private permissionsWarning(): string | null {
-		const text = this.statusLineData.getExtensionStatuses().get("permissions-warning")
-		if (!text) return null
-		return this.theme.fg("warning", text)
+		const statuses = this.statusLineData.getExtensionStatuses()
+		const parts: string[] = []
+		const warning = statuses.get("permissions-warning")
+		if (warning) parts.push(this.theme.fg("warning", warning))
+		// Set by the permissions extension while a subagent's approval prompt is
+		// held back (draft in the editor, another dialog open). Without this line
+		// nothing on screen says that a subagent is waiting on the user.
+		const subagentWaiting = statuses.get("permission-subagent-wait")
+		if (subagentWaiting) parts.push(this.theme.fg("accent", subagentWaiting))
+		return parts.length > 0 ? parts.join(` ${this.dim("·")} `) : null
 	}
 
 	private updateSegment(): { text: string; width: number } | null {

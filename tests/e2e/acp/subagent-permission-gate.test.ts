@@ -50,10 +50,10 @@ describe("ACP integration — subagent permission gate", () => {
 		await fixture.stop()
 	})
 
-	describe("classifier rejection in default mode", () => {
+	describe("parent approval in default mode", () => {
 		beforeEach(async () => {
 			fixture = await startAcpFixture({
-				artifactName: "subagent-acp-classifier-deny",
+				artifactName: "subagent-acp-parent-deny",
 				providerId: "kimchi-dev",
 				models: MODELS,
 				responses: [
@@ -70,7 +70,7 @@ describe("ACP integration — subagent permission gate", () => {
 					{
 						match: (request) => isClassifierRequest(request.body),
 						stream: [
-							'{"verdict":"requires-confirmation","reason":"The worker cannot ask for approval","riskScore":"high"}',
+							'{"verdict":"requires-confirmation","reason":"This write needs user approval","riskScore":"high"}',
 						],
 					},
 					{ forSubagent: true, stream: [CHILD_DONE] },
@@ -82,14 +82,30 @@ describe("ACP integration — subagent permission gate", () => {
 			})
 		}, STARTUP_TIMEOUT_MS)
 
-		it("blocks the write without requesting permission from the client", async () => {
+		it("asks the parent client and runs the write when approved", async () => {
+			const sessionId = await newSession(fixture, fixture.workDir)
+			const result = await prompt(fixture, sessionId, USER_PROMPT)
+
+			expect(result.stopReason).toBe("end_turn")
+			expect(result.chunks).toContain(PARENT_DONE)
+			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(true)
+			expect(fixture.client.permissionRequests).toHaveLength(1)
+			expect(fixture.client.permissionRequests[0]?.toolCall.title).toMatch(/^Subagent General-Purpose: /)
+			expect(fixture.fake.requests.filter((request) => isClassifierRequest(request.body)).length).toBeGreaterThan(0)
+		})
+
+		it("blocks a cancelled write through the parent", async () => {
+			fixture.client.requestPermission = async (request) => {
+				fixture.client.permissionRequests.push(request)
+				return { outcome: { outcome: "cancelled" } }
+			}
 			const sessionId = await newSession(fixture, fixture.workDir)
 			const result = await prompt(fixture, sessionId, USER_PROMPT)
 
 			expect(result.stopReason).toBe("end_turn")
 			expect(result.chunks).toContain(PARENT_DONE)
 			expect(existsSync(join(fixture.workDir, "output.txt"))).toBe(false)
-			expect(fixture.client.permissionRequests).toHaveLength(0)
+			expect(fixture.client.permissionRequests).toHaveLength(1)
 			expect(fixture.fake.requests.filter((request) => isClassifierRequest(request.body)).length).toBeGreaterThan(0)
 		})
 	})
@@ -179,7 +195,11 @@ describe("ACP integration — subagent permission gate", () => {
 				(count) => count > 0,
 			)
 
-			await fixture.conn.setSessionConfigOption({ sessionId, configId: "permissions-mode", value: "plan" })
+			await fixture.conn.request("session/set_config_option", {
+				sessionId,
+				configId: "permissions-mode",
+				value: "plan",
+			})
 			if (!releaseChild) throw new Error("child release was not initialized")
 			releaseChild()
 			await waitFor(

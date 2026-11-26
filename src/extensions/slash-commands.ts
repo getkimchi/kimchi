@@ -24,6 +24,7 @@ export const SLASH_COMMANDS = {
 	agents: { hint: "Manage background agents" },
 	permissions: { hint: "View or change permission mode and rules" },
 	language: { hint: "Show or pin the language Kimchi replies in" },
+	timestamps: { hint: "Show or configure transcript timestamps" },
 	hooks: { hint: "View or change Kimchi hooks" },
 	resources: { hint: "View or change Kimchi hooks, tools, extensions, and plugins" },
 	mcp: { hint: "Show MCP server status" },

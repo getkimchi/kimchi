@@ -4,7 +4,7 @@ import { expect, Key, test } from "@microsoft/tui-test"
 import { poll } from "@microsoft/tui-test/lib/utils/poll.js"
 import { fullText, viewText, waitForText } from "./support/assertions.js"
 import type { FakeToolCall } from "./support/fake-openai-server.js"
-import { PROMPT_READY, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { PROMPT_READY, runKimchiSession, setCollapseWorkMode, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -16,7 +16,10 @@ test("Bash uses one descriptive header like Grep and expands the submitted comma
 			artifactName: "bash-card-layout",
 			extraArgs: ["--plan=false"],
 			env: { KIMCHI_PERMISSIONS: "yolo" },
-			seedHome: (_home, workDir) => writeFileSync(join(workDir, "sample.txt"), "card-output\n"),
+			seedHome: (home, workDir) => {
+				setCollapseWorkMode(home, "tools")
+				writeFileSync(join(workDir, "sample.txt"), "card-output\n")
+			},
 			responses: [
 				{
 					toolCalls: [
@@ -40,6 +43,8 @@ test("Bash uses one descriptive header like Grep and expands the submitted comma
 		async (_fixture, trace) => {
 			terminal.submit("Compare the tool cards")
 			await waitForText(terminal, "Card comparison complete.", { full: false })
+			await waitForText(terminal, "searched for 1 pattern", { full: false })
+			await waitForText(terminal, "ran 1 operation", { full: false })
 			const collapsed = viewText(terminal)
 			// Completed work folds into one "Worked for" row: neither tool row is
 			// repeated in the collapsed transcript.
@@ -221,7 +226,8 @@ test("inspect a running Bash command without interrupting it or asking the model
 			artifactName: "bash-commands",
 			extraArgs: ["--plan=false"],
 			env: { KIMCHI_PERMISSIONS: "default" },
-			seedHome: (_home, workDir) => {
+			seedHome: (home, workDir) => {
+				setCollapseWorkMode(home, "tools")
 				for (const [file, text] of Object.entries({
 					"initial.txt": "output-before-checkin",
 					"waiting.txt": "output-during-control-wait",
@@ -288,10 +294,11 @@ test("inspect a running Bash command without interrupting it or asking the model
 			trace.step("initial output visible before the handoff")
 
 			await waitForText(terminal, "The command is still running", { full: false, timeoutMs: 20_000 })
+			await waitForText(terminal, "Working for", { full: false })
 			expect(requests()).toHaveLength(2)
 			// The handed-off command's call row folds into the run summary; its live
 			// output and identity stay visible through the Bash Control row.
-			expect(viewText(terminal)).toContain("Working")
+			expect(viewText(terminal)).toContain("Working for")
 			expect(viewText(terminal)).not.toContain("Snapshot at check-in")
 			expect(viewText(terminal)).not.toMatch(/Command [a-f0-9-]{36}/)
 			expect(viewText(terminal)).not.toContain("cat initial.txt")

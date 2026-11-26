@@ -34,7 +34,8 @@ jobs:
   pr-checks:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    # TODO: shard tests and reduce this
+    timeout-minutes: 15
     concurrency:
       group: ci-pr-${{ github.head_ref }}
       cancel-in-progress: true
@@ -117,7 +118,8 @@ jobs:
     # the tree that would land on master before squashing.
     if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    # TODO: shard tests and reduce this
+    timeout-minutes: 15
     concurrency:
       # Pick a concurrency group name based on the triggering event:
       #

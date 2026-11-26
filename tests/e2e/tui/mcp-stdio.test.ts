@@ -16,6 +16,21 @@ import {
 test.use(TUI_TEST_CONFIG)
 
 const SENTINEL = "kimchi-mcp-e2e"
+const ALLOW_PROMPT = "Allow the assistant to run this?"
+const MAIN_MODEL = {
+	slug: "basic",
+	displayName: "Fake Basic",
+	provider: "ai-enabler",
+	contextWindow: 200_000,
+	maxTokens: 8192,
+}
+const CLASSIFIER_MODEL = {
+	slug: "deepseek-v4-flash-0731",
+	displayName: "DeepSeek V4 Flash",
+	provider: "ai-enabler",
+	contextWindow: 200_000,
+	maxTokens: 8192,
+}
 
 test("calls a stdio MCP tool through the real Kimchi session", async ({ terminal }) => {
 	const echo = gatewayMcpCall("echo", { message: SENTINEL })
@@ -144,6 +159,152 @@ test("reads through an annotated direct MCP tool in plan mode while hiding write
 			expect(fixture.mcp.hasEvent("tool_called", { name: "get_write_access" })).toBe(false)
 			expect(toolResultText(fixture.fake.requests, read)).toContain("Fixture issue: planning read succeeded")
 			trace.step("annotated MCP read executed; gateway stayed available and writable direct tool stayed hidden")
+		},
+	)
+})
+
+test("auto mode executes an annotated gateway read without classifier or prompt", async ({ terminal }) => {
+	const read = gatewayMcpCall("getJiraIssue", { issueIdOrKey: "LLM-4358" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-auto-gateway-read",
+			providerId: "kimchi-dev",
+			extraArgs: ["--auto"],
+			models: [MAIN_MODEL, CLASSIFIER_MODEL],
+			mcp: {
+				behavior: {
+					catalogTools: [
+						{
+							name: "getJiraIssue",
+							description: "Read a Jira issue",
+							inputSchema: {
+								type: "object",
+								properties: { issueIdOrKey: { type: "string" } },
+								additionalProperties: false,
+							},
+							annotations: { readOnlyHint: true },
+						},
+					],
+					tools: [
+						mcpToolResult("getJiraIssue", {
+							content: [{ type: "text", text: "LLM-4358: Auto-approved MCP read" }],
+						}),
+					],
+				},
+			},
+			responses: [read.response, modelReply("The annotated gateway read completed without approval.")],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Read LLM-4358 through the MCP gateway")
+			await waitForText(terminal, "The annotated gateway read completed without approval.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+
+			const called = await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "getJiraIssue", arguments: { issueIdOrKey: "LLM-4358" } },
+				description: "auto-approved Jira read",
+			})
+			expect(called.arguments).toEqual({ issueIdOrKey: "LLM-4358" })
+			expect(toolResultText(fixture.fake.requests, read)).toContain("LLM-4358: Auto-approved MCP read")
+			trace.step("annotated read reached the fixture and the follow-up rendered")
+
+			const fullBuffer = terminal
+				.getBuffer()
+				.map((row: string[]) => row.join(""))
+				.join("\n")
+			expect(fullBuffer).not.toContain(ALLOW_PROMPT)
+			const classifierRequests = fixture.fake.requests.filter(
+				(request) =>
+					request.url.startsWith("/openai/v1/chat/completions") &&
+					request.body !== null &&
+					typeof request.body === "object" &&
+					"model" in request.body &&
+					request.body.model === CLASSIFIER_MODEL.slug,
+			)
+			expect(classifierRequests).toHaveLength(0)
+			trace.step("read completed without a permission prompt or classifier request")
+		},
+	)
+})
+
+test("auto mode retains classifier and prompt approval for a gateway write", async ({ terminal }) => {
+	const write = gatewayMcpCall("updateJiraIssue", {
+		issueIdOrKey: "LLM-4358",
+		fields: { summary: "Updated through the MCP gateway" },
+	})
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-auto-gateway-write",
+			providerId: "kimchi-dev",
+			extraArgs: ["--auto"],
+			models: [MAIN_MODEL, CLASSIFIER_MODEL],
+			mcp: {
+				behavior: {
+					catalogTools: [
+						{
+							name: "updateJiraIssue",
+							description: "Update a Jira issue",
+							inputSchema: {
+								type: "object",
+								properties: {
+									issueIdOrKey: { type: "string" },
+									fields: { type: "object" },
+								},
+								additionalProperties: false,
+							},
+							annotations: { readOnlyHint: false },
+						},
+					],
+					tools: [
+						mcpToolResult("updateJiraIssue", {
+							content: [{ type: "text", text: "LLM-4358 updated by the MCP fixture" }],
+						}),
+					],
+				},
+			},
+			responses: [
+				write.response,
+				modelReply('{"verdict":"requires-confirmation","reason":"This updates a Jira issue","riskScore":"high"}'),
+				modelReply("The annotated gateway write completed after approval."),
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Update LLM-4358 through the MCP gateway")
+			await waitForText(terminal, ALLOW_PROMPT, { timeoutMs: STREAM_TIMEOUT_MS })
+			expect(fixture.mcp.hasEvent("tool_called", { name: "updateJiraIssue" })).toBe(false)
+			trace.step("write permission prompt rendered before fixture execution")
+
+			terminal.submit("")
+			await waitForText(terminal, "The annotated gateway write completed after approval.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			const called = await fixture.mcp.waitForEvent("tool_called", {
+				where: {
+					name: "updateJiraIssue",
+					arguments: {
+						issueIdOrKey: "LLM-4358",
+						fields: { summary: "Updated through the MCP gateway" },
+					},
+				},
+				description: "approved Jira write",
+			})
+			expect(called.arguments).toEqual({
+				issueIdOrKey: "LLM-4358",
+				fields: { summary: "Updated through the MCP gateway" },
+			})
+			expect(toolResultText(fixture.fake.requests, write)).toContain("LLM-4358 updated by the MCP fixture")
+			const classifierRequests = fixture.fake.requests.filter(
+				(request) =>
+					request.url.startsWith("/openai/v1/chat/completions") &&
+					request.body !== null &&
+					typeof request.body === "object" &&
+					"model" in request.body &&
+					request.body.model === CLASSIFIER_MODEL.slug,
+			)
+			expect(classifierRequests).toHaveLength(1)
+			trace.step("one approval executed the write after exactly one classifier request")
 		},
 	)
 })
@@ -282,6 +443,8 @@ test("can call MCP after executing a plan started with --plan", async ({ termina
 		terminal,
 		{
 			artifactName: "mcp-stdio-after-plan",
+			providerId: "kimchi-dev",
+			models: [MAIN_MODEL, CLASSIFIER_MODEL],
 			extraArgs: ["--plan=true"],
 			extraEnv: { KIMCHI_PERMISSIONS: "plan" },
 			mcp: {
@@ -318,13 +481,25 @@ test("can call MCP after executing a plan started with --plan", async ({ termina
 			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
 			terminal.keyPress(Key.Enter)
 			trace.step("approved the plan and transitioned to execution")
-			await waitForText(terminal, "Allow the assistant to run this?", { timeoutMs: STREAM_TIMEOUT_MS })
-			terminal.keyPress(Key.Enter)
-			trace.step("approved the MCP call in auto mode")
 
 			await waitForText(terminal, "MCP remained available after plan approval.", {
 				timeoutMs: STREAM_TIMEOUT_MS,
 			})
+			const fullBuffer = terminal
+				.getBuffer()
+				.map((row: string[]) => row.join(""))
+				.join("\n")
+			expect(fullBuffer).not.toContain(ALLOW_PROMPT)
+			const classifierRequests = fixture.fake.requests.filter(
+				(request) =>
+					request.url.startsWith("/openai/v1/chat/completions") &&
+					request.body !== null &&
+					typeof request.body === "object" &&
+					"model" in request.body &&
+					request.body.model === CLASSIFIER_MODEL.slug,
+			)
+			expect(classifierRequests).toHaveLength(0)
+			trace.step("annotated read-only MCP call executed without approval")
 			const called = await fixture.mcp.waitForEvent("tool_called", {
 				where: { name: "echo", arguments: { message: "after-plan" } },
 			})

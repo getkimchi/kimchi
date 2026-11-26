@@ -9,13 +9,12 @@
  *     (inject.ts). When nothing clears the bar, NO FACTS are injected — an
  *     empty digest is the normal outcome for unrelated sessions; only the
  *     constant enabled-notice section goes out.
- *   - Cache contract: the digest is computed on the first agent start
- *     (turn 1 awaits it) and appended with identical bytes on EVERY start —
- *     the provider-facing prefix is stable from the very first request,
- *     so memory causes zero mid-session cache breaks. It is recomputed
- *     only after a compaction, where the prefix breaks anyway. A session
- *     whose digest came back empty injects only the constant notice — the
- *     model must know capture is automatic (it has no write tool).
+ *   - Cache contract: turn 1 waits for the digest within a bounded deadline,
+ *     then keeps the resulting prefix bytes on EVERY later start. An immediate
+ *     digest is reused verbatim; an empty, failed, or timed-out result selects
+ *     the constant notice-only prefix and never retries prefix injection.
+ *     Late facts arrive through progressive recall's conversation-tail
+ *     messages instead. Compaction, a memory toggle, or a successful /memory reset starts a new epoch.
  *   - `memory_search` is the pull-based supplement for anything the digest
  *     did not surface.
  *   - In-session management: the `/memory` command (same grammar as the
@@ -1139,7 +1138,10 @@ export function createMemoryExtension(deps: MemoryExtensionDeps = {}): (pi: Exte
 						state: undefined,
 						details: digestTelemetry,
 					})
-					return { systemPrompt: `${event.systemPrompt}${MEMORY_ENABLED_NOTICE}` }
+					if (!memoryActive()) return
+					// Null settles the notice-only epoch; stale outcomes leave the reset's undefined state to recompute.
+					if (!stale) digest = null
+					return { systemPrompt: `${event.systemPrompt}${memoryEnabledNotice()}` }
 				}
 				digest = outcome
 				if (digest) {

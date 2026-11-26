@@ -194,6 +194,15 @@ export interface AgentRecord {
 	pendingSteers?: string[]
 	/** The tool_use_id from the original Agent tool call. */
 	toolCallId?: string
+	/** Original delegated prompt, before manager-added worker protocol text. */
+	prompt?: string
+	/** Native child session id, captured as soon as the session is created. */
+	sessionId?: string
+	/** Owning parent session identity, captured synchronously at spawn. */
+	parentSessionId?: string
+	parentSessionFile?: string
+	/** Absolute child working directory, refined from the native session when available. */
+	cwd?: string
 	/** Path to the streaming output transcript file. */
 	outputFile?: string
 	/** The system prompt used for this agent run. */

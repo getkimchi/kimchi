@@ -90,9 +90,9 @@ describe("parseCollapseWorkMode", () => {
 })
 
 describe("readCollapseWorkMode", () => {
-	it("defaults to 'all' when no settings files exist", () => {
+	it("defaults to 'off' when no settings files exist", () => {
 		const { cwd } = setup()
-		expect(readCollapseWorkMode(cwd)).toBe("all")
+		expect(readCollapseWorkMode(cwd)).toBe("off")
 	})
 
 	it("reads the global harness setting", () => {
@@ -118,14 +118,14 @@ describe("readCollapseWorkMode", () => {
 	it("ignores the project file when projectTrusted is false", () => {
 		const { cwd, projectSettings } = setup()
 		writeFile(projectSettings, { collapseWork: "off" })
-		expect(readCollapseWorkMode(cwd, { projectTrusted: false })).toBe("all")
+		expect(readCollapseWorkMode(cwd, { projectTrusted: false })).toBe("off")
 	})
 
 	it("only reads the cwd it is given, never process.cwd()", () => {
 		const { cwd, projectSettings } = setup()
 		writeFile(projectSettings, { collapseWork: "off" })
 		const other = mkdtempSync(join(tmpdir(), "kimchi-collapse-work-other-"))
-		expect(readCollapseWorkMode(other, { projectTrusted: true })).toBe("all")
+		expect(readCollapseWorkMode(other, { projectTrusted: true })).toBe("off")
 		expect(readCollapseWorkMode(cwd, { projectTrusted: true })).toBe("off")
 		rmSync(other, { recursive: true, force: true })
 	})
@@ -133,13 +133,13 @@ describe("readCollapseWorkMode", () => {
 	it("ignores non-boolean, non-mode values and falls back to the default", () => {
 		const { cwd, globalSettings } = setup()
 		writeFile(globalSettings, { collapseWork: "yes" })
-		expect(readCollapseWorkMode(cwd)).toBe("all")
+		expect(readCollapseWorkMode(cwd)).toBe("off")
 	})
 
 	it("tolerates invalid JSON and falls back to the default", () => {
 		const { cwd, globalSettings } = setup()
 		writeFile(globalSettings, "{ not json")
-		expect(readCollapseWorkMode(cwd)).toBe("all")
+		expect(readCollapseWorkMode(cwd)).toBe("off")
 	})
 
 	it("tolerates invalid JSON in the project file by falling back to global", () => {
@@ -174,7 +174,7 @@ describe("readCollapseWorkMode", () => {
 	it("does not serve a cached global-only value to a trusted read of the same cwd", () => {
 		const { cwd, projectSettings } = setup()
 		const t0 = 1_000_000
-		expect(readCollapseWorkMode(cwd, { now: t0 })).toBe("all")
+		expect(readCollapseWorkMode(cwd, { now: t0 })).toBe("off")
 		writeFile(projectSettings, { collapseWork: "off" })
 		expect(readCollapseWorkMode(cwd, { now: t0, projectTrusted: true })).toBe("off")
 	})
@@ -400,6 +400,6 @@ describe("resolveCollapseWorkProjectTrust", () => {
 		setProjectScopeTrusted(cwd, true)
 		expect(readCollapseWorkMode(cwd, { projectTrusted: resolveCollapseWorkProjectTrust(cwd) })).toBe("off")
 		resetProjectScopeTrustForTests()
-		expect(readCollapseWorkMode(cwd, { projectTrusted: resolveCollapseWorkProjectTrust(cwd) })).toBe("all")
+		expect(readCollapseWorkMode(cwd, { projectTrusted: resolveCollapseWorkProjectTrust(cwd) })).toBe("off")
 	})
 })

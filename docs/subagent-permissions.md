@@ -1,6 +1,8 @@
 # Subagent permissions
 
-How Kimchi checks the tool calls of an in-process subagent.
+How Kimchi checks the tool calls of an in-process subagent. For what happens
+when the permission classifier itself fails, see
+[permission-classifier.md](permission-classifier.md).
 
 ## One gate, the main session's policy
 
@@ -17,8 +19,8 @@ The gate uses the policy of the session that started the subagent:
 The policy is read again on every tool call. If the main session switches to
 plan mode, the next call from a running subagent is read-only too.
 
-The same applies in the TUI, in print mode and over ACP. Remote sandbox agents
-are different. They run in another process and use that process's gate.
+Remote sandbox agents are different. They run in another process and use that
+process's gate.
 
 ## What each mode does
 
@@ -47,17 +49,49 @@ Two details:
 
 ## When a call needs a decision
 
-A subagent cannot open a permission prompt of its own. In `default` and `auto`
-mode, a call that is not read-only and that no rule allows is handled like this:
+A subagent uses its parent's policy and has no separate permission mode. If no
+interactive ACP route can handle an approval, `default` and `auto` mode handle a
+call that is not read-only and that no rule allows like this:
 
 1. The classifier judges the call. This is one classifier request per call.
-2. If the answer is `safe`, the call runs.
-3. If the answer is anything else, or the classifier fails, the call is
-   blocked.
+2. If the answer is `safe`, the call runs. No prompt is shown.
+3. If the classifier fails, or asks for confirmation, the main session asks the
+   user for the subagent. This works in the TUI and over ACP. The prompt names
+   the subagent and its task.
+4. The user answers:
+   - **Allow once** runs this one call.
+   - **Remember for this subagent** stores the rule in the subagent's own
+     session. The rule is kept when the subagent is resumed.
+   - **Deny** is returned to the subagent.
 
-A blocked subagent is told not to retry the call and to report that the main
-agent needs the user's approval. No permission request is sent to an ACP client
-for a subagent's own call.
+When a parent-root ACP approval route exists, an unexposed worker's request uses
+that route, including when the client did not advertise subagent support. If the
+worker has been announced as an ACP child, new requests use the child's own
+session ID. A request that had already started keeps its original session ID; a
+later announcement does not move it. These routes do not bypass the parent's
+policy, deny rules, or require a client to prompt the child. If a route cannot be
+resolved, the classifier/block result above remains the fail-closed fallback.
+
+The call is blocked when nobody can decide:
+
+- there is no place to ask (print mode, a headless ACP host),
+- the request cannot reach the main session,
+- nobody answers within five minutes after the prompt is shown.
+
+The subagent is then told not to retry the call and to report that it needs the
+user's approval.
+
+How the prompt waits for a free input, what the client sees over ACP, and what
+happens on a mode change are described in
+[Subagent approval in the main session](permission-classifier.md#subagent-approval-in-the-main-session).
+
+## Which subagent is asking
+
+Each subagent gate gets its parent session id and its task identity when the
+subagent starts. They do not change afterwards. Per-run state, such as the hold
+on the inactivity watchdog while a prompt is open, is kept separately for each
+run. Subagents that run at the same time cannot use each other's parent or
+watchdog state.
 
 ## Pre-approved calls from a host
 
@@ -72,9 +106,17 @@ and for the probe files it writes.
 - A pre-approval is checked after the deny rules, the plan-mode check and the
   read-only checks, and before the classifier. A deny rule or plan mode always
   wins.
+- Such a subagent never asks the user. A call the classifier does not clear is
+  blocked.
 - A host may pass one such factory. A spawn with two is refused.
 
 ## After `/branch` or `/clone`
 
-A subagent that keeps running after the session is replaced keeps the last
-policy it saw from its old parent. It does not fall back to "allow".
+A subagent that keeps running after the session is replaced:
+
+- keeps the last policy it saw from its old parent. It does not fall back to
+  "allow".
+- keeps its original parent session id. It cannot send an approval request to
+  the new session, so a call that needs approval is blocked.
+
+Start a new subagent from the new session when a call needs the user's approval.

@@ -1,4 +1,14 @@
 import type { ToolPermissionPrompter } from "../../extensions/permissions/prompter.js"
+import {
+	registerSessionPermissionPrompter,
+	type SessionPermissionPrompterSource,
+} from "../../extensions/permissions/session-prompter-registry.js"
+
+interface AcpPrompterRegistration {
+	prompter: ToolPermissionPrompter
+	source: SessionPermissionPrompterSource
+	remove: () => void
+}
 
 // MULTI-OWNER slots: concurrent same-id attaches (load+resume coalesce
 // separately) can both register before either installs its record — a plain
@@ -8,11 +18,22 @@ import type { ToolPermissionPrompter } from "../../extensions/permissions/prompt
 // the latest registration. Keep this paired with every ACP session
 // ownership path: load/new register, bind failures, session/close, and
 // process shutdown all need symmetric cleanup.
-const bySessionId = new Map<string, ToolPermissionPrompter[]>()
+const bySessionId = new Map<string, AcpPrompterRegistration[]>()
 
 export function registerAcpPrompter(sessionId: string, prompter: ToolPermissionPrompter): void {
 	const list = bySessionId.get(sessionId) ?? []
-	list.push(prompter)
+	const source: SessionPermissionPrompterSource = {
+		// Only select this transport in the context the host actually owns.
+		// Broadcasting a session must not steal another host's terminal prompt.
+		canPromptDirectly: (ctx) => ctx.mode === "rpc",
+		resolve: (ctx) => (ctx.mode === "rpc" ? prompter : undefined),
+	}
+	const registration: AcpPrompterRegistration = {
+		prompter,
+		source,
+		remove: registerSessionPermissionPrompter(sessionId, source),
+	}
+	list.push(registration)
 	bySessionId.set(sessionId, list)
 }
 
@@ -28,11 +49,12 @@ export function unregisterAcpPrompter(sessionId: string, expected?: ToolPermissi
 	if (!list) return true
 	if (expected === undefined) {
 		bySessionId.delete(sessionId)
+		for (const registration of list) registration.remove()
 		return true
 	}
-	const idx = list.lastIndexOf(expected)
+	const idx = list.findLastIndex((registration) => registration.prompter === expected)
 	if (idx < 0) return list.length === 0
-	list.splice(idx, 1)
+	for (const registration of list.splice(idx, 1)) registration.remove()
 	if (list.length === 0) {
 		bySessionId.delete(sessionId)
 		return true
@@ -42,5 +64,5 @@ export function unregisterAcpPrompter(sessionId: string, expected?: ToolPermissi
 
 export function getAcpPrompter(sessionId: string): ToolPermissionPrompter | undefined {
 	const list = bySessionId.get(sessionId)
-	return list?.[list.length - 1]
+	return list?.[list.length - 1]?.prompter
 }
