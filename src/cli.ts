@@ -812,15 +812,13 @@ async function cliMain(): Promise<void> {
 				console.error(`Error: @file path must be a file, not a directory: ${atFileArgs.directoryArgs[0]}`)
 				process.exit(1)
 			}
-			// Hidden one-time migration: a cached-latest regular TUI user is moved
-			// to fullscreen in global settings. Non-TUI modes return before this
-			// feature reads settings, checks cached versions, or persists state.
+			// Hidden one-time migration: a regular TUI user is moved to fullscreen
+			// in global settings. Non-TUI modes return before feature I/O.
 			const rawArgs = await applyOneTimeFullscreenSwitch({
 				args: atFileArgs.args,
 				isTerminalUi: isTerminalUiMode(atFileArgs.args, terminalIo),
 				agentDir,
 				cwd: process.cwd(),
-				currentVersion: getVersion(),
 			})
 
 			// Parse Kimchi-local CLI flags once before upstream pi-mono sees them.
