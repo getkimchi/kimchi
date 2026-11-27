@@ -6,7 +6,8 @@
 			"!dist/",
 			"!node_modules/",
 			"!src/core/export-html/",
-			"!src/extensions/mcp-adapter/app-bridge.bundle.js"
+			"!src/extensions/mcp-adapter/app-bridge.bundle.js",
+			"!src/extensions/review-submit/testdata"
 		]
 	},
 	"vcs": {
@@ -69,6 +70,19 @@
 					"suspicious": {
 						"noControlCharactersInRegex": "off",
 						"noExplicitAny": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["src/modes/acp/server.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noExcessiveLinesPerFile": {
+							"level": "error",
+							"options": { "maxLines": 5000 }
+						}
 					}
 				}
 			}

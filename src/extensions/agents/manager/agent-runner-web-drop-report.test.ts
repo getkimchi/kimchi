@@ -21,6 +21,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 		DefaultResourceLoader: vi.fn().mockImplementation(function () {
 			return {
 				reload: vi.fn().mockResolvedValue(undefined),
+				getExtensions: vi.fn(() => ({ extensions: [], errors: [] })),
 			}
 		}),
 		SessionManager: {
@@ -35,6 +36,13 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 		getAgentDir: vi.fn(() => process.env.PI_CODING_AGENT_DIR),
 	}
 })
+
+// Prevent the eagerly constructed worker gate from pulling main-session UI
+// modules into this partial Pi test environment. Gate behavior has its own suite.
+vi.mock("../../permissions/index.js", () => ({
+	createWorkerPermissionsExtension: vi.fn(() => function workerPermissionsStub() {}),
+	getPermissionsExtensionOptions: vi.fn(() => undefined),
+}))
 
 vi.mock("../../env.js", () => ({
 	detectEnv: vi.fn().mockResolvedValue({ os: "linux", shell: "bash" }),

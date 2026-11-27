@@ -106,7 +106,10 @@ describePosix("daemon tool execute (real processes)", () => {
 	})
 
 	it("instant-crash command surfaces the failure with log tail", async () => {
-		const result = await tool().execute("tc4", { command: "exit 1" }, undefined, undefined, fakeCtx(dir))
+		// A grace far longer than the test timeout: the crash must end the wait
+		// as soon as the process exits, so a slow runner cannot hide it.
+		const crashTool = createDaemonToolDefinition({ stateDir: dir, crashGraceMs: 60_000 })
+		const result = await crashTool.execute("tc4", { command: "exit 1" }, undefined, undefined, fakeCtx(dir))
 		const text = result.content[0].type === "text" ? result.content[0].text : ""
 		expect(text).toContain("exited immediately")
 		expect(result.details?.error).toBe("spawn-failed")

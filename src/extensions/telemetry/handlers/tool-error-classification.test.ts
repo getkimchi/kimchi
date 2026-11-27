@@ -20,6 +20,13 @@ import { describe, expect, it } from "vitest"
 import { type FermentFsmContext, FSM_STATES, transition } from "../../../ferment/fsm.js"
 import { SAFETY_LIMIT_REASON } from "../../bash-background/process-registry.js"
 import { throwIfTerminal } from "../../bash-background/terminal-status.js"
+import {
+	CLASSIFIER_INVALID_OUTPUT_BLOCK_REASON,
+	CLASSIFIER_NOT_CONFIGURED_BLOCK_REASON,
+	CLASSIFIER_SUBAGENT_GUIDANCE,
+	CLASSIFIER_UNAVAILABLE_BLOCK_REASON,
+	classifierBlockReasonCodeTail,
+} from "../../permissions/classifier-health.js"
 import fixtures from "./tool-error-classification.fixtures.json" with { type: "json" }
 import { classifyToolError } from "./tool-error-classification.js"
 
@@ -88,6 +95,18 @@ describe("classifyToolError — fixture replay (real export messages)", () => {
 		for (const v of Object.values(c.attrs ?? {})) {
 			expect(String(v)).not.toContain("2026-10-29")
 		}
+	})
+
+	it("retains classifier attribution before subagent approval guidance", () => {
+		const c = classifyToolError(
+			"write",
+			"Classifier: classifier error: minimax-m3 model is rate limited until 2026-10-29T23:55:00Z (model=minimax-m3 tool=write) Do not retry; report to the main agent that the call needs the user's approval. (no UI to confirm)",
+		)
+
+		expect(c.kind).toBe("blocked")
+		expect(c.attrs?.failure_code).toBe("rate_limited")
+		expect(c.attrs?.classifier_model).toBe("minimax-m3")
+		expect(c.attrs?.classifier_tool).toBe("write")
 	})
 
 	it("classifies the todo check-in gate block with its parsed revision", () => {
@@ -397,6 +416,47 @@ describe("classifyToolError — classifier gate free-text variants", () => {
 		// no attr is better than a polluted one.
 		expect(c.attrs?.classifier_model).toBeUndefined()
 		expect(c.attrs?.failure_code).toBe("other")
+	})
+})
+
+describe("classifyToolError — classifier outage fixed reasons", () => {
+	it("keeps the outage block in the blocked bucket with its failure code", () => {
+		const c = classifyToolError("bash", CLASSIFIER_UNAVAILABLE_BLOCK_REASON + classifierBlockReasonCodeTail("timeout"))
+		expect(c.kind).toBe("blocked")
+		expect(c.message).toBe("Classifier unavailable — fail closed")
+		expect(c.attrs?.failure_code).toBe("timeout")
+	})
+
+	it("recognizes the subagent guidance variant and its failure code", () => {
+		const c = classifyToolError(
+			"write",
+			CLASSIFIER_UNAVAILABLE_BLOCK_REASON +
+				CLASSIFIER_SUBAGENT_GUIDANCE +
+				classifierBlockReasonCodeTail("provider_error"),
+		)
+		expect(c.kind).toBe("blocked")
+		expect(c.attrs?.failure_code).toBe("provider_error")
+	})
+
+	it("maps static and per-input failure codes through their fixed reasons", () => {
+		const config = classifyToolError(
+			"bash",
+			CLASSIFIER_NOT_CONFIGURED_BLOCK_REASON + classifierBlockReasonCodeTail("no_api_key"),
+		)
+		expect(config.kind).toBe("blocked")
+		expect(config.attrs?.failure_code).toBe("no_api_key")
+
+		const invalid = classifyToolError(
+			"bash",
+			CLASSIFIER_INVALID_OUTPUT_BLOCK_REASON + classifierBlockReasonCodeTail("invalid_output"),
+		)
+		expect(invalid.kind).toBe("blocked")
+		expect(invalid.attrs?.failure_code).toBe("invalid_output")
+	})
+
+	it("does not absorb unknown text appended to a known base", () => {
+		const c = classifyToolError("bash", `${CLASSIFIER_UNAVAILABLE_BLOCK_REASON} unexpected free text`)
+		expect(c.kind).not.toBe("blocked")
 	})
 })
 

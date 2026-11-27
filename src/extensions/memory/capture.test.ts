@@ -78,7 +78,7 @@ import { readDeferredSupersede } from "./decision-outage.js"
 import { buildValuationState, TRIAGE_QUESTION_NAMES } from "./gates.js"
 import { acquireCaptureLock } from "./lock.js"
 import type { MemoryMetadata } from "./metadata.js"
-import { readTraceEvents, tracesDir } from "./trace.js"
+import { createTraceRecorder, readTraceEvents, tracesDir } from "./trace.js"
 import { usageLedgerPath } from "./usage-ledger.js"
 
 const msg = (role: "user" | "assistant", content: string): CaptureMessage => ({ role, content })
@@ -1368,6 +1368,11 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 	describe("drain tracing", () => {
 		beforeEach(() => vi.stubEnv("KIMCHI_MEMORY_TRACE_EXCHANGES", "full"))
 		afterEach(() => vi.unstubAllEnvs())
+		// By design the trace writer waits at most 50 ms, so capture never
+		// blocks on trace I/O. A busy CI runner can miss that, and the test then
+		// reads the file before it is written. Each run gets its own writer
+		// with room to finish, so each drain still has its own trace file.
+		const traced = () => ({ trace: createTraceRecorder({ writeTimeoutMs: 10_000 }) })
 		/** Events of one drain trace file (index -1 = newest). */
 		const drainEvents = (index = -1) => {
 			const files = readdirSync(tracesDir()).sort()
@@ -1379,6 +1384,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			const fake = makeFakeBackend()
 			const jobFile = writeJob("trace1", [msg("user", "my dog's name is Fred")])
 			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				...traced(),
 				llm: makeFakeLlm([]),
 				createBackend: () => Promise.resolve(fake.backend),
 			})
@@ -1417,6 +1423,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			const jobFile = writeJob("trace-triage", [msg("user", "skip me")])
 			const transcripts: string[] = []
 			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				...traced(),
 				llm: makeFakeLlm(transcripts),
 				createBackend: () => Promise.resolve(fake.backend),
 				decision: { gate: makeFakeD3({ triageP: 0.1 }), enabled: new Set(["triage"]) },
@@ -1459,6 +1466,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 				)
 			}
 			const captured = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				...traced(),
 				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
 				createBackend: () => Promise.resolve(fake.backend),
 				decision: { gate: makeFakeD3({ valuation: "discard", valuationP: 0.95 }), enabled: new Set(["valuation"]) },
@@ -1514,6 +1522,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 				)
 			}
 			await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+				...traced(),
 				llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
 				createBackend: () => Promise.resolve(fake.backend),
 			})
@@ -1550,6 +1559,7 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			vi.spyOn(console, "error").mockImplementation(() => {})
 			try {
 				await runCaptureWorker(["--job", jobFile, "--db", dbPath()], {
+					...traced(),
 					llm: { baseURL: "https://gw.test/v1", apiKey: "k", model: "m", fetchImpl },
 					createBackend: () => Promise.resolve(fake.backend),
 				})
@@ -1581,8 +1591,8 @@ describe("runCaptureWorker — pipeline orchestration (injected backend + LLM)",
 			let first: number
 			let second: number
 			try {
-				first = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], options)
-				second = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], options)
+				first = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], { ...options, ...traced() })
+				second = await runCaptureWorker(["--job", jobFile, "--db", dbPath()], { ...options, ...traced() })
 			} finally {
 				vi.restoreAllMocks()
 			}

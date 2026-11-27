@@ -10,8 +10,10 @@ import { loadWorkspaceFile } from "../../../sandbox/cloud/workspace-file.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { type AcpSessionCallbacks, AcpSessionDetachedError } from "../../../sandbox/worker/acp-client.js"
 import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
+import { runAsAgentWorker } from "../../agent-worker-context.js"
 import type { RemoteGitWorkflow } from "../../remote-run/git-workflow.js"
 import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
+import type { ReviewPermissionPolicy } from "../../review-runner/execution.js"
 import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { repoBasename } from "../../teleport/provisioning/paths.js"
@@ -57,6 +59,8 @@ import { addUsage, type LifetimeUsage } from "./usage.js"
 export type OnAgentComplete = (record: AgentRecord) => void
 export type OnAgentStart = (record: AgentRecord, ctx: ExtensionContext) => void
 export type OnAgentCompact = (record: AgentRecord, info: CompactionInfo) => void
+export type OnAgentSessionCreated = (record: AgentRecord, session: AgentSession) => void
+export type OnAgentSessionResumed = (record: AgentRecord, session: AgentSession, prompt: string) => void
 export type CompactionInfo = { reason: "manual" | "threshold" | "overflow"; tokensBefore: number }
 
 /** Default max concurrent background agents. */
@@ -85,6 +89,12 @@ export interface SpawnOptions {
 	cwd?: string
 	/** Inline extensions appended to the child session's loader (load even with extensions disabled). */
 	extensionFactories?: InlineExtension[]
+	/** Review execution controls bound to this child's private checkout and parent approvals. */
+	reviewExecution?: ReviewPermissionPolicy
+	/** Extra inline tool names the host activates for an isolated child. */
+	additionalToolNames?: readonly string[]
+	/** Keep project settings and configuration in the invoking session when cwd names a review worktree. */
+	isolateProjectConfiguration?: boolean
 	/** How inactivity is accounted; "model_only" keeps a running tool from counting as inactivity. */
 	inactivityMode?: InactivityMode
 	/** Ends the child session once the named tool completes and this returns true (an accepted terminal report). */
@@ -127,6 +137,8 @@ export interface SpawnOptions {
 	onAssistantUsage?: (usage: LifetimeUsage) => void
 	onRawNotification?: (params: SessionNotification) => void
 	onCompaction?: (info: CompactionInfo) => void
+	/** Original Agent tool call id. Captured before any asynchronous child work. */
+	toolCallId?: string
 }
 
 /** A queued-but-not-started agent, re-spawnable against a new pi/ctx
@@ -211,6 +223,9 @@ export class AgentManager {
 	private onComplete?: OnAgentComplete
 	private onStart?: OnAgentStart
 	private onCompact?: OnAgentCompact
+	private onSessionCreated?: OnAgentSessionCreated
+	private onSessionResumed?: OnAgentSessionResumed
+	private sessionCreatedRecords = new WeakSet<AgentRecord>()
 	private maxConcurrent: number
 
 	private queue: { id: string; args: SpawnArgs }[] = []
@@ -221,10 +236,14 @@ export class AgentManager {
 		maxConcurrent = DEFAULT_MAX_CONCURRENT,
 		onStart?: OnAgentStart,
 		onCompact?: OnAgentCompact,
+		onSessionCreated?: OnAgentSessionCreated,
+		onSessionResumed?: OnAgentSessionResumed,
 	) {
 		this.onComplete = onComplete
 		this.onStart = onStart
 		this.onCompact = onCompact
+		this.onSessionCreated = onSessionCreated
+		this.onSessionResumed = onSessionResumed
 		this.maxConcurrent = maxConcurrent
 		this.cleanupInterval = setInterval(() => this.cleanup(), 60_000)
 	}
@@ -292,6 +311,11 @@ export class AgentManager {
 			compactionCount: 0,
 			remote: effectiveOptions.remote,
 			gitWorkflow: effectiveOptions.gitWorkflow,
+			toolCallId: effectiveOptions.toolCallId,
+			prompt,
+			parentSessionId: ctx.sessionManager.getSessionId(),
+			parentSessionFile: ctx.sessionManager.getSessionFile(),
+			cwd: ctx.cwd,
 		}
 		this.agents.set(id, record)
 
@@ -330,7 +354,8 @@ export class AgentManager {
 		this.onStart?.(record, ctx)
 
 		let detachParentSignal: (() => void) | undefined
-		if (options.signal) {
+		if (options.signal?.aborted) this.abort(id)
+		else if (options.signal) {
 			const onParentAbort = () => this.abort(id)
 			options.signal.addEventListener("abort", onParentAbort, { once: true })
 			detachParentSignal = () => options.signal?.removeEventListener("abort", onParentAbort)
@@ -356,6 +381,11 @@ export class AgentManager {
 					maxDuration: options.maxDuration,
 					cwd: options.cwd,
 					extensionFactories: options.extensionFactories,
+					reviewExecution: options.reviewExecution,
+					additionalToolNames: options.additionalToolNames,
+					isolateProjectConfiguration: options.isolateProjectConfiguration,
+					agentId: record.id,
+					description: record.description,
 					workerReport: record.taskRef
 						? {
 								isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
@@ -406,7 +436,7 @@ export class AgentManager {
 						this.runtimeCleanups.set(record, cleanup)
 					},
 					onSessionCreated: (session) => {
-						record.session = session
+						this.handleSessionCreated(record, session)
 						if (record.pendingSteers?.length) {
 							for (const msg of record.pendingSteers) {
 								session.steer(msg).catch(() => {})
@@ -491,9 +521,19 @@ export class AgentManager {
 	 * Remote runs are single-turn (maxTurns: 1) with yolo: true. Multi-turn support,
 	 * budget enforcement, and timeout guards are planned for a follow-up PR.
 	 */
-	/** Creates the RemoteAgentSession adapter for a remote record and wires
-	 *  the activity-tracker hookup + transcript seed (shared by the initial
-	 *  run and steer continuations). */
+	private handleSessionCreated(record: AgentRecord, session: AgentSession): void {
+		record.cwd = session.sessionManager.getHeader()?.cwd ?? record.cwd
+		this.publishSessionCreated(record, session)
+	}
+
+	private publishSessionCreated(record: AgentRecord, session: AgentSession): void {
+		record.session = session
+		record.sessionId = session.sessionId
+		if (this.sessionCreatedRecords.has(record)) return
+		this.sessionCreatedRecords.add(record)
+		this.onSessionCreated?.(record, session)
+	}
+
 	private _prepareRemoteAdapter(record: AgentRecord, prompt: string, options: SpawnOptions): RemoteAgentSession {
 		const remoteSession = new RemoteAgentSession()
 		record.session = remoteSession as unknown as AgentSession
@@ -623,6 +663,7 @@ export class AgentManager {
 			onReady: async (acpClient, meta) => {
 				remoteSession.bindClient(acpClient, meta)
 				record.acpSessionId = continuation.acpSessionId
+				this.publishSessionCreated(record, remoteSession as unknown as AgentSession)
 				record.remoteSession ??= meta
 				options.onRemoteReady?.({ meta, acpSessionId: continuation.acpSessionId })
 			},
@@ -736,6 +777,7 @@ export class AgentManager {
 					record.acpSessionId = acpSessionId
 					record.remoteSession ??= meta
 				}
+				this.publishSessionCreated(record, remoteSession as unknown as AgentSession)
 				// Baseline capture (PR-first runs): HEAD at provisioning + the
 				// user's pre-existing dirty files. The runner awaits this before
 				// prompt() so the persisted running-state entry carries it. The
@@ -865,6 +907,8 @@ export class AgentManager {
 	): Promise<AgentRecord | undefined> {
 		const record = this.agents.get(id)
 		if (!record?.session) return undefined
+		// Hoisted: the runAsAgentWorker closure below would drop the narrowing.
+		const session = record.session
 		const purpose = options.purpose ?? "continuation"
 		if (this.getResumeBlockReason(id, purpose)) return record
 		const tierBudget = record.taskRef ? FERMENT_WORKER_BUDGETS[record.taskRef.budget_tier ?? "standard"] : undefined
@@ -916,35 +960,41 @@ export class AgentManager {
 			purpose === "finalize_report" && record.taskRef
 				? reportFinalizationPrompt(record.taskRef)
 				: withAgentReportProtocol(prompt ?? "", record.taskRef)
-		const resumePromise = resumeAgent(record.session, attemptPrompt, {
-			onToolActivity: (activity) => {
-				if (activity.status === "completed" || activity.status === "failed") record.toolUses++
-			},
-			onTurnEnd: (turnCount) => {
-				record.lastTurnCount = turnCount
-			},
-			onAssistantUsage: (usage) => {
-				addUsage(record.lifetimeUsage, usage)
-			},
-			onCompaction: (info) => {
-				record.compactionCount++
-				this.onCompact?.(record, info)
-			},
-			signal: abortController.signal,
-			maxTurns: attemptLimits.maxTurns,
-			tokenBudget: attemptTokenBudget,
-			minTokenBudget: purpose === "finalize_report" ? MIN_FINALIZE_TOKEN_BUDGET : undefined,
-			inactivityTimeout: options.inactivityTimeout,
-			inactivityMode: options.inactivityMode,
-			maxDuration: attemptLimits.maxDuration,
-			hardTurnLimit: record.taskRef?.kind === "ferment_step",
-			shouldTerminateAfterTool: (toolName) =>
-				(toolName === "submit_agent_report" && record.agentReport?.attempt_id === record.currentAttemptId) ||
-				options.shouldTerminateAfterTool?.(toolName) === true,
-			onRuntimeCleanupRegistered: (cleanup) => {
-				this.runtimeCleanups.set(record, cleanup)
-			},
-		})
+		// Resume gets a fresh async store for its watchdog hold. The worker-session
+		// binding restores the retained parent ID for telemetry; prompt identity
+		// remains in the existing worker permission role.
+		if (purpose === "continuation") this.onSessionResumed?.(record, session, prompt ?? "")
+		const resumePromise = runAsAgentWorker(() =>
+			resumeAgent(session, attemptPrompt, {
+				onToolActivity: (activity) => {
+					if (activity.status === "completed" || activity.status === "failed") record.toolUses++
+				},
+				onTurnEnd: (turnCount) => {
+					record.lastTurnCount = turnCount
+				},
+				onAssistantUsage: (usage) => {
+					addUsage(record.lifetimeUsage, usage)
+				},
+				onCompaction: (info) => {
+					record.compactionCount++
+					this.onCompact?.(record, info)
+				},
+				signal: abortController.signal,
+				maxTurns: attemptLimits.maxTurns,
+				tokenBudget: attemptTokenBudget,
+				minTokenBudget: purpose === "finalize_report" ? MIN_FINALIZE_TOKEN_BUDGET : undefined,
+				inactivityTimeout: options.inactivityTimeout,
+				inactivityMode: options.inactivityMode,
+				maxDuration: attemptLimits.maxDuration,
+				hardTurnLimit: record.taskRef?.kind === "ferment_step",
+				shouldTerminateAfterTool: (toolName) =>
+					(toolName === "submit_agent_report" && record.agentReport?.attempt_id === record.currentAttemptId) ||
+					options.shouldTerminateAfterTool?.(toolName) === true,
+				onRuntimeCleanupRegistered: (cleanup) => {
+					this.runtimeCleanups.set(record, cleanup)
+				},
+			}),
+		)
 		this.activeResumePromises.set(record, resumePromise)
 
 		try {

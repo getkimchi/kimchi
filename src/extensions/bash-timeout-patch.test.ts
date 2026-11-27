@@ -159,7 +159,10 @@ describe("bash finally-block killProcessTree: backgrounded processes killed on n
 				const deadline = Date.now() + timeoutMs
 				while (Date.now() < deadline) {
 					try {
-						return execSync(`cat ${markerFile} 2>/dev/null`, { encoding: "utf-8" }).trim()
+						// The shell creates the file before it writes the pid: an empty
+						// read means "not written yet", which a busy runner can catch.
+						const pid = execSync(`cat ${markerFile} 2>/dev/null`, { encoding: "utf-8" }).trim()
+						if (pid) return pid
 					} catch {
 						// File not written yet
 					}

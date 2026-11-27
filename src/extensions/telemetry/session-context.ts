@@ -6,8 +6,7 @@ import { isAcpSessionHost } from "../../modes/acp/state.js"
 import { readEffectiveTelemetryConfig } from "../../telemetry-policy.js"
 import { getOsMetadata } from "../../utils/os-metadata.js"
 import { getDetectedVersion } from "../../utils.js"
-import { isAgentWorker } from "../agent-worker-context.js"
-import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { getAgentWorkerParentSessionId, isAgentWorker } from "../agent-worker-context.js"
 import { getActiveFerment } from "../ferment/index.js"
 import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
 import type { TelemetryFermentV2Context } from "./ferment-v2-context.js"
@@ -71,6 +70,9 @@ export function _resetSharedAccumulators(): void {
 // ---------------------------------------------------------------------------
 // SessionContext — process-level telemetry state
 // ---------------------------------------------------------------------------
+
+/** Interactive TUI renderer a session started in; stamped as `tui_startup_mode`. */
+export type TuiStartupMode = "fullscreen" | "regular"
 
 export class TelemetryContext {
 	config: TelemetryConfig
@@ -157,6 +159,12 @@ export class TelemetryContext {
 	/** Count of steer.fired events emitted in this session, stamped on each
 	 *  fire as `steer_ordinal` (1-based) for per-kind sequencing analysis. */
 	steerFiredCount = 0
+	/** TUI mode captured at session_start from the live interactive renderer
+	 *  (`fullscreen` / `regular`), undefined outside the interactive TUI or when
+	 *  the renderer cannot be resolved. Snapshot semantics: later fullscreen /
+	 *  regular switches must not change it; stamped as `tui_startup_mode` on the
+	 *  session.start record. See handlers/session.ts. */
+	tuiStartupMode: TuiStartupMode | undefined
 	/** Most recent steer.fired in this session, recorded by the steer handler.
 	 *  `agent.interrupted` reads this to carry which steer (if any) preceded a
 	 *  user abort and how many turns ago (Chunk 4 of the P0 plan). */
@@ -208,6 +216,7 @@ export class TelemetryContext {
 		this.lastRoutedModel = undefined
 		this.steerFiredCount = 0
 		this.lastSteer = undefined
+		this.tuiStartupMode = undefined
 		this.toolOutcomeCallIds.clear()
 		// Session-scoped tracking state and enrichment context: a session_start
 		// on this instance means a fresh session — ferment maps, guard counters,
@@ -357,17 +366,17 @@ export class TelemetryContext {
 
 	/**
 	 * Returns the spawning (parent) session's pi session id when this process is
-	 * inside an Agent-subagent run, undefined otherwise. The Agent runner sets
-	 * KIMCHI_PARENT_SESSION_ID for the whole subagent run; the Agent-worker async
-	 * context (or KIMCHI_SUBAGENT=1) gates the check so parent-session events are
-	 * never attributed a parent.
+	 * inside an Agent-subagent run, undefined otherwise. The Agent runner captures
+	 * the owner in the worker's per-run context and retains it for resumes; a
+	 * sibling worker cannot replace it. A legacy subprocess retains its
+	 * launch-scoped environment fallback. Parent-session events never get a parent.
 	 *
 	 * Used for both the `session.parent_id` telemetry attribute and the
 	 * X-Parent-Session-Id provider header (chat_completions pipeline).
 	 */
 	getParentSessionId(): string | undefined {
 		if (!isAgentWorker()) return undefined
-		return process.env[PARENT_SESSION_ID_ENV_KEY]
+		return getAgentWorkerParentSessionId()
 	}
 
 	private getParentSessionAttribute(): TelemetryAttributes | undefined {

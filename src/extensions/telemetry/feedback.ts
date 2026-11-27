@@ -4,7 +4,7 @@ import type { TelemetryContext } from "./session-context.js"
 import { emitSurveyAnswered, type SurveyTelemetryDefinition } from "./survey.js"
 
 // PostHog survey definitions (created in PostHog on 2026-09-21 — do NOT create
-// new ones; the UUIDs are the wire contract with the kubecast posthog_mapping).
+// new ones; the UUIDs are the wire contract with the ingestor's PostHog mapping).
 
 /** "Kimchi TUI Post-turn rating" — Q1 single_choice (Good/Bad) + optional open "Why?" (RATING_REASON_QUESTION_ID). */
 const POST_TURN_RATING_SURVEY: SurveyTelemetryDefinition = {
@@ -26,8 +26,8 @@ const MODEL_SWITCH_SURVEY: SurveyTelemetryDefinition = {
 	options: [],
 }
 
-// Flow-context attribute names — the wire contract with kubecast's
-// posthog_mapping.go ("survey sent" mapping). Missing values must be omitted
+// Flow-context attribute names — the wire contract with the ingestor's
+// PostHog "survey sent" mapping. Missing values must be omitted
 // from extraAttrs, never sent as empty strings.
 //
 // Correlation to the rated run uses the standard request trace attrs

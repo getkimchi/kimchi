@@ -16,6 +16,7 @@ import {
 import type { McpAdapterOptions, McpConfig, ServerCacheEntry, ServerEntry } from "pi-mcp-adapter/types"
 import { getParsedCliArgs } from "../../cli-args.js"
 import { getConfiguredLegacyMcpKeys } from "../../config.js"
+import { registerMcpCallLookup } from "../../shared/mcp-call-lookup.js"
 import {
 	applyCooperativeTweak,
 	debugToolSurface,
@@ -28,7 +29,15 @@ import { isActionBlockedError } from "../deferred-action.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { observeToolFiles } from "../work-attribution/file-observations.js"
-import { DEFAULT_MCP_PROTOCOL_VERSION, getSharedMcpConfigPath, loadKimchiMcpConfig } from "./config.js"
+import { isReadOnlyQualifiedMcpGatewayTool } from "./call-catalog.js"
+import { McpCallCatalogStore } from "./call-catalog-store.js"
+import { describeMcpCall, parseMcpGatewayInput } from "./call-facts.js"
+import {
+	DEFAULT_MCP_PROTOCOL_VERSION,
+	getSharedMcpConfigPath,
+	type KimchiMcpConfigResult,
+	loadKimchiMcpConfig,
+} from "./config.js"
 import type { BuiltInGatewayServer } from "./gateway.js"
 import { buildBuiltinGatewayServer, getGatewayAddresses, hasGatewayAddress } from "./gateway.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
@@ -42,7 +51,7 @@ import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 import { installOfflineAccessAuthorizationUrlTransform } from "./oauth-offline-access.js"
 import { McpOAuthTurnContinuation } from "./oauth-turn-continuation.js"
 import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-trust.js"
-import { collectReadOnlyMcpWireNames, isReadOnlyQualifiedMcpGatewayTool } from "./read-only.js"
+import { collectReadOnlyMcpWireNames } from "./read-only.js"
 import { cleanupStrayMcpOAuthEntriesBestEffort } from "./stray-oauth-entry-cleanup.js"
 
 const MCP_PROXY_TOOL = "mcp"
@@ -58,6 +67,89 @@ function legacyMcpConfigWarning(cwd: string): string | undefined {
 	return `Kimchi MCP config ${keys.join(", ")} no longer controls MCP behavior. The MCP adapter's weighted search and output guard are now authoritative; remove the obsolete key${keys.length === 1 ? "" : "s"}.`
 }
 
+/** Where the adapter reads its servers from. The adapter options and the lookup refresh both derive from this. */
+type AdapterConfigSource = { kind: "programmatic" } | { kind: "file"; path: string }
+
+function adapterConfigSource(
+	selectedResult: KimchiMcpConfigResult,
+	callerServers: McpConfig["mcpServers"] | undefined,
+): AdapterConfigSource {
+	return callerServers || selectedResult.useProgrammaticConfig
+		? { kind: "programmatic" }
+		: { kind: "file", path: selectedResult.configPath ?? getSharedMcpConfigPath() }
+}
+
+function sameAdapterConfigSource(a: AdapterConfigSource, b: AdapterConfigSource): boolean {
+	return a.kind === "programmatic" ? b.kind === "programmatic" : b.kind === "file" && a.path === b.path
+}
+
+type McpGatewayServer = { name: string; entry: ServerEntry }
+
+interface EffectiveMcpConfigInput {
+	cwd: string
+	overridePath: string | undefined
+	projectTrusted: boolean
+	gateway: McpGatewayServer | undefined
+	callerServers: McpConfig["mcpServers"] | undefined
+	/** Results the caller already loaded to decide trust; reused so the trust decision covers the config used. */
+	loaded?: { projectResult: KimchiMcpConfigResult; userResult: KimchiMcpConfigResult }
+}
+
+interface EffectiveMcpConfig {
+	effectiveConfig: McpConfig
+	config: McpConfig
+	selectedResult: KimchiMcpConfigResult
+	gateway: McpGatewayServer | undefined
+	source: AdapterConfigSource
+}
+
+/**
+ * Loads the config by trust, merges caller servers, and adds the built-in gateway unless a configured server
+ * already holds its address or name. The effective config counts the gateway, so an otherwise-empty config
+ * does not suppress the proxy tool and strand the gateway's tools.
+ */
+function resolveEffectiveMcpConfig(input: EffectiveMcpConfigInput): EffectiveMcpConfig {
+	const { cwd, overridePath, projectTrusted, callerServers } = input
+	const selectedResult =
+		(projectTrusted ? input.loaded?.projectResult : input.loaded?.userResult) ??
+		(projectTrusted
+			? loadKimchiMcpConfig({ cwd, overridePath })
+			: loadKimchiMcpConfig({ cwd, includeProjectSources: false }))
+	// A user-configured server wins over the built-in gateway: by gateway address, or by holding the
+	// built-in's name at any address (the adapter refuses runtime registration for name collisions as well).
+	const adjusted = input.gateway
+	const gateway =
+		adjusted === undefined ||
+		selectedResult.config.mcpServers[adjusted.name] !== undefined ||
+		callerServers?.[adjusted.name] !== undefined ||
+		hasGatewayAddress(selectedResult.config, getGatewayAddresses())
+			? undefined
+			: adjusted
+	const config = callerServers
+		? { ...selectedResult.config, mcpServers: { ...selectedResult.config.mcpServers, ...callerServers } }
+		: selectedResult.config
+	const effectiveConfig =
+		gateway !== undefined ? { ...config, mcpServers: { ...config.mcpServers, [gateway.name]: gateway.entry } } : config
+	return {
+		effectiveConfig,
+		config,
+		selectedResult,
+		gateway,
+		source: adapterConfigSource(selectedResult, callerServers),
+	}
+}
+
+/** What the first session start decided; later starts refresh the lookup config from it. */
+interface FirstStartState {
+	projectTrusted: boolean
+	overridePath: string | undefined
+	cwd: string
+	/** The ctx.cwd the adapter reads its config with; options.cwd can differ from it. */
+	adapterCwd: string
+	gateway: McpGatewayServer | undefined
+	source: AdapterConfigSource
+}
+
 interface McpToolSurfacePolicy {
 	suppressedToolNames: Set<string>
 }
@@ -71,9 +163,10 @@ function createMcpToolSurfacePolicy(config: McpConfig): McpToolSurfacePolicy {
 	}
 }
 
-function isPlanningMode(pi: ExtensionAPI, ctx: ExtensionContext): boolean {
+function isPlanningMode(pi: ExtensionAPI, ctx: ExtensionContext, parentSessionId?: string): boolean {
 	const profile = getCurrentProfile(pi)
-	const permissionMode = getPermissionMode(ctx.sessionManager.getSessionId())?.mode
+	const sessionId = parentSessionId ?? ctx.sessionManager.getSessionId()
+	const permissionMode = getPermissionMode(sessionId)?.mode
 	const explicitPlan = getParsedCliArgs().options.plan === true
 
 	if (profile === "planning-ferment") return true
@@ -102,41 +195,15 @@ function isHiddenFromPlanning(toolName: string, isReadOnlyTool: (wireName: strin
 	return toolName === MCP_SCRIPT_TOOL || (toolName !== MCP_PROXY_TOOL && !isReadOnlyTool(toolName))
 }
 
-const PLAN_SEARCH_KEYS = new Set(["search", "searchMode", "regex", "includeSchemas", "limit", "offset", "server"])
-
-function hasOnlyKeys(params: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
-	return Object.keys(params).every((key) => allowed.has(key))
-}
-
-function hasValidServer(params: Record<string, unknown>): boolean {
-	return params.server === undefined || (typeof params.server === "string" && params.server.length > 0)
-}
-
 /** Positive allowlist for every adapter dispatch shape that is read-only in plan mode. */
 function isAllowlistedGatewayCall(
 	params: unknown,
 	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
 ): boolean {
-	if (typeof params !== "object" || params === null || Array.isArray(params)) return false
-	const input = params as Record<string, unknown>
-	const keys = Object.keys(input)
-	if (keys.length === 0) return true
-	if (keys.length === 1 && keys[0] === "instructions") return typeof input.instructions === "string"
-	if (keys.length === 1 && keys[0] === "server") return hasValidServer(input)
-	if (typeof input.describe === "string")
-		return hasOnlyKeys(input, new Set(["describe", "server"])) && hasValidServer(input)
-	if (typeof input.search === "string") return hasOnlyKeys(input, PLAN_SEARCH_KEYS) && hasValidServer(input)
-	if (
-		typeof input.tool === "string" &&
-		input.tool.length > 0 &&
-		hasOnlyKeys(input, new Set(["tool", "args", "server"]))
-	) {
-		return (
-			hasValidServer(input) &&
-			isReadOnlyGatewayTool(input.tool, typeof input.server === "string" ? input.server : undefined)
-		)
-	}
-	return false
+	// Plan keeps its existing read-only qualifier; the shared parser owns shape validation.
+	const call = parseMcpGatewayInput(params)
+	if (call.kind === "metadata") return true
+	return call.kind === "tool" && isReadOnlyGatewayTool(call.tool, call.server)
 }
 
 /** Planning never uses the file-attribution heuristic to authorize gateway state changes. */
@@ -195,16 +262,26 @@ function registerGatewayRuntimeServer(pi: ExtensionAPI, gateway: BuiltInGatewayS
 	}
 }
 
+function isAdapterOwnedTool(
+	pi: ExtensionAPI,
+	toolName: string,
+	owned: ReadonlyMap<string, ToolDefinition["parameters"]>,
+): boolean {
+	return pi.getAllTools().some((tool) => tool.name === toolName && tool.parameters === owned.get(toolName))
+}
+
 function createUpstreamApi(
 	pi: ExtensionAPI,
 	policy: McpToolSurfacePolicy,
+	registeredToolNames: Set<string>,
+	ownedToolParameters: Map<string, ToolDefinition["parameters"]>,
 	captureHandler: (event: CapturedUpstreamEvent, handler: UpstreamLifecycleHandler) => void,
 	getReadOnlyToolNames: (server?: string) => readonly string[],
 	isReadOnlyGatewayTool: (toolName: string, server?: string) => boolean,
 	oauthTurnContinuation?: McpOAuthTurnContinuation,
+	parentSessionId?: string,
 ): ExtensionAPI {
 	const visibility = createToolVisibility(pi)
-	const registeredToolNames = new Set<string>()
 	const adapterActiveNames = new Set<string>()
 	registerReadOnlyToolProvider(pi, () => {
 		const readOnlyNames = new Set(getReadOnlyToolNames())
@@ -238,6 +315,7 @@ function createUpstreamApi(
 				return (tool: ToolDefinition): void => {
 					if (policy.suppressedToolNames.has(tool.name)) return
 					registeredToolNames.add(tool.name)
+					ownedToolParameters.set(tool.name, tool.parameters)
 					adapterActiveNames.add(tool.name)
 					const brandedTool = {
 						...tool,
@@ -251,7 +329,7 @@ function createUpstreamApi(
 						...brandedTool,
 						execute: async (...args: Parameters<typeof execute>) => {
 							if (
-								isPlanningMode(target, args[4]) &&
+								isPlanningMode(target, args[4], parentSessionId) &&
 								isBlockedInPlanning(brandedTool.name, args[1], getReadOnlyToolNames, isReadOnlyGatewayTool)
 							) {
 								return blockedPlanningResult(brandedTool.name)
@@ -384,6 +462,8 @@ export interface KimchiMcpAdapterExtensionOptions {
 	lazyGatewayConnect?: boolean
 	/** Keep agent-started OAuth watchers inside their existing ACP tool/model run. */
 	holdOAuthTurn?: boolean
+	/** Main session whose live mode governs a subagent's MCP calls. */
+	parentSessionId?: string
 }
 
 export function createKimchiMcpAdapterExtension(options: KimchiMcpAdapterExtensionOptions = {}): ExtensionFactory {
@@ -400,6 +480,12 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	installMcpOAuthCallbackBranding()
 	pi.registerFlag("mcp-config", { description: "Path to MCP config file", type: "string" })
 	let policy: McpToolSurfacePolicy | undefined
+	// The store owns the private catalogs: only the adapter's current authenticated session may authorize private reads.
+	let catalogStore: McpCallCatalogStore | undefined
+	let firstStart: FirstStartState | undefined
+	let unregisterMcpCallLookup: (() => void) | undefined
+	const registeredToolNames = new Set<string>()
+	const ownedToolParameters = new Map<string, ToolDefinition["parameters"]>()
 	const upstreamHandlers: Record<CapturedUpstreamEvent, UpstreamLifecycleHandler[]> = {
 		input: [],
 		session_start: [],
@@ -407,8 +493,6 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 	let warnings: string[] = []
 	let sessionGeneration = 0
 	const oauthTurnContinuation = options.holdOAuthTurn ? new McpOAuthTurnContinuation() : undefined
-	// Only the adapter's current authenticated session may authorize private reads.
-	let privateCatalogs = new Map<string, ServerCacheEntry>()
 
 	// MCP status events arrive in bursts; one resnapshot after the burst settles
 	// avoids re-deriving the active set (and re-setting the snapshot flag) on
@@ -433,9 +517,58 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		for (const handler of upstreamHandlers.input) await handler(event, ctx)
 	})
 
+	/**
+	 * Re-reads the config the adapter re-reads on every session start. The first start's trust decision is reused,
+	 * and nothing here prompts or warns. Any state that no longer matches the first start fails closed with an
+	 * empty server config, so every MCP call falls back to the normal approval flow.
+	 */
+	function refreshLookupConfig(
+		store: McpCallCatalogStore,
+		saved: FirstStartState,
+		cwd: string,
+		adapterCwd: string,
+	): void {
+		// The adapter keeps its first programmatic config, so the lookup keeps it too.
+		if (saved.source.kind === "programmatic") return
+		const failClosed = (reason: string): void => {
+			store.setConfig({ mcpServers: {} })
+			debugToolSurface(() => `[mcp] call lookup failed closed: ${reason}`)
+		}
+		if (cwd !== saved.cwd) {
+			failClosed(`session cwd changed from ${saved.cwd} to ${cwd}`)
+			return
+		}
+		if (adapterCwd !== saved.adapterCwd) {
+			failClosed(`adapter session cwd changed from ${saved.adapterCwd} to ${adapterCwd}`)
+			return
+		}
+		try {
+			const { effectiveConfig, source, selectedResult } = resolveEffectiveMcpConfig({
+				cwd: saved.cwd,
+				overridePath: saved.overridePath,
+				projectTrusted: saved.projectTrusted,
+				gateway: saved.gateway,
+				callerServers: options.callerServers,
+			})
+			if (!sameAdapterConfigSource(source, saved.source)) {
+				failClosed("adapter config source changed since the first session start")
+				return
+			}
+			// Debug only: the first start's warnings already replay to the user, so the refresh adds no UI warnings.
+			for (const warning of selectedResult.warnings) {
+				debugToolSurface(() => `[mcp] call lookup refresh warning: ${warning}`)
+			}
+			store.setConfig(effectiveConfig)
+		} catch (error) {
+			failClosed(`config refresh failed: ${error instanceof Error ? error.message : String(error)}`)
+		}
+	}
+
 	pi.on("session_start", async (event, ctx) => {
+		unregisterMcpCallLookup?.()
+		unregisterMcpCallLookup = undefined
 		sessionGeneration++
-		privateCatalogs = new Map()
+		catalogStore?.resetPrivateCatalogs()
 		// A replacement path (new/fork/switch/resume) just invalidated the old pi;
 		// its pending resnapshot is obsolete.
 		clearStatusResync()
@@ -456,12 +589,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				userConfig: userResult.config,
 				...(explicitTrust === undefined ? {} : { explicitTrust }),
 			})
-			const selectedResult = projectTrusted ? projectResult : userResult
 			// The built-in gateway is a user-level server: registered after the
 			// trust-based selection, so it is present in untrusted projects too.
-			// A user-configured server wins over it — by gateway address, or by
-			// holding the built-in's name at any address (the adapter refuses
-			// runtime registration for name collisions as well).
 			const gatewayServer = options.builtinGateway ?? buildBuiltinGatewayServer()
 			// Children use startup metadata discovery without keep-alive; the
 			// discovery connection closes, and first tool use reconnects.
@@ -477,19 +606,23 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 							},
 						}
 					: gatewayServer
-			const gateway =
-				adjustedGatewayServer === undefined ||
-				selectedResult.config.mcpServers[adjustedGatewayServer.name] !== undefined ||
-				options.callerServers?.[adjustedGatewayServer.name] !== undefined ||
-				hasGatewayAddress(selectedResult.config, getGatewayAddresses())
-					? undefined
-					: adjustedGatewayServer
-			const config = options.callerServers
-				? {
-						...selectedResult.config,
-						mcpServers: { ...selectedResult.config.mcpServers, ...options.callerServers },
-					}
-				: selectedResult.config
+			const resolved = resolveEffectiveMcpConfig({
+				cwd,
+				overridePath,
+				projectTrusted,
+				gateway: adjustedGatewayServer,
+				callerServers: options.callerServers,
+				loaded: { projectResult, userResult },
+			})
+			const { effectiveConfig, config, selectedResult, gateway, source } = resolved
+			firstStart = {
+				projectTrusted,
+				overridePath,
+				cwd,
+				adapterCwd: ctx.cwd,
+				gateway: adjustedGatewayServer,
+				source,
+			}
 			const { warnings: oauthWarnings } = migrateLegacyOAuthCredentials(config, { cwd })
 			const legacyConfigWarning = legacyMcpConfigWarning(cwd)
 			warnings = [
@@ -498,18 +631,11 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				...(legacyConfigWarning === undefined ? [] : [legacyConfigWarning]),
 				...(projectTrusted ? [] : [MCP_PROJECT_TRUST_WARNING]),
 			]
-			// Count the gateway toward the tool-surface policy and plan-mode
-			// read-only classification, or an otherwise-empty config would suppress
-			// the proxy tool and strand the gateway's tools.
-			const effectiveConfig =
-				gateway !== undefined
-					? {
-							...config,
-							mcpServers: { ...config.mcpServers, [gateway.name]: gateway.entry },
-						}
-					: config
+			// effectiveConfig counts the gateway toward the tool-surface policy and plan-mode read-only classification.
 			const installedPolicy = createMcpToolSurfacePolicy(effectiveConfig)
 			policy = installedPolicy
+			const store = new McpCallCatalogStore(effectiveConfig, registeredToolNames)
+			catalogStore = store
 			// Lazy children register for initial runtime discovery without changing
 			// file-backed config, plugin paths, installs, or resume reloads.
 			const discoverGatewayAtStartup = options.lazyGatewayConnect === true && gateway !== undefined
@@ -518,8 +644,8 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 					const generation = sessionGeneration
 					return (serverName: string, entry: ServerCacheEntry): void => {
 						if (generation !== sessionGeneration) return
-						if (entry.cacheScope === "private") privateCatalogs.set(serverName, entry)
-						else privateCatalogs.delete(serverName)
+						if (entry.cacheScope === "private") store.setPrivateCatalog(serverName, entry)
+						else store.deletePrivateCatalog(serverName)
 					}
 				},
 				...(discoverGatewayAtStartup && gateway
@@ -528,7 +654,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 							initialRuntimeDiscoveryTimeoutMs: gateway.entry.requestTimeoutMs ?? LAZY_GATEWAY_REQUEST_TIMEOUT_MS,
 						}
 					: {}),
-				...(options.callerServers || selectedResult.useProgrammaticConfig
+				...(source.kind === "programmatic"
 					? { config, defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION }
 					: // Default the adapter's global config to the Studio-shared file so
 						// adapter write flows (compat imports, Jev settings, write-backs)
@@ -538,7 +664,7 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 						// negotiation (2026-07-28 with legacy fallback); explicit per-server
 						// `protocolVersion` values in mcp.json always win.
 						{
-							configPath: selectedResult.configPath ?? getSharedMcpConfigPath(),
+							configPath: source.path,
 							defaultProtocolVersion: DEFAULT_MCP_PROTOCOL_VERSION,
 						}),
 			}
@@ -549,15 +675,30 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 				createUpstreamApi(
 					pi,
 					installedPolicy,
+					registeredToolNames,
+					ownedToolParameters,
 					(upstreamEvent, handler) => {
 						upstreamHandlers[upstreamEvent].push(handler)
 					},
-					(server) => collectReadOnlyMcpWireNames(effectiveConfig, server, privateCatalogs),
-					(toolName, server) => isReadOnlyQualifiedMcpGatewayTool(effectiveConfig, toolName, server, privateCatalogs),
+					(server) => collectReadOnlyMcpWireNames(store.catalog().candidates, server),
+					(toolName, server) => isReadOnlyQualifiedMcpGatewayTool(store.catalog(), toolName, server),
 					oauthTurnContinuation,
+					options.parentSessionId,
 				),
 			)
 			if (gateway !== undefined && !discoverGatewayAtStartup) registerGatewayRuntimeServer(pi, gateway)
+		} else if (catalogStore !== undefined && firstStart !== undefined) {
+			refreshLookupConfig(catalogStore, firstStart, options.cwd ?? ctx.cwd, ctx.cwd)
+		}
+		if (catalogStore !== undefined) {
+			const store = catalogStore
+			unregisterMcpCallLookup = registerMcpCallLookup(pi, (toolName, input) => {
+				// Pi keeps the first registration per name, so a shadowed MCP name must not lend its annotation to another extension's tool.
+				if (!registeredToolNames.has(toolName) || !isAdapterOwnedTool(pi, toolName, ownedToolParameters)) {
+					return { kind: "not_mcp" }
+				}
+				return describeMcpCall(toolName, input, store.catalog())
+			})
 		}
 
 		for (const warning of warnings) {
@@ -590,9 +731,11 @@ function installMcpAdapterExtension(pi: ExtensionAPI, options: KimchiMcpAdapterE
 		}, STATUS_RESYNC_DEBOUNCE_MS)
 	})
 	pi.on("session_shutdown", () => {
+		unregisterMcpCallLookup?.()
+		unregisterMcpCallLookup = undefined
 		clearStatusResync()
 		sessionGeneration++
-		privateCatalogs.clear()
+		catalogStore?.resetPrivateCatalogs()
 		oauthTurnContinuation?.shutdown()
 	})
 }

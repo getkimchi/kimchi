@@ -130,6 +130,14 @@ export interface AcpFixtureOptions {
 	 * Defaults to `workDir` (the ACP protocol's session cwd).
 	 */
 	processCwd?: string
+	/**
+	 * Seconds a bash command may run before the tool moves it to the
+	 * background. Defaults to 2, so background-bash scenarios hand off fast.
+	 * Tests whose command must finish inside the tool call (real work, not a
+	 * scripted sleep) need more: under parallel CI load such a command can
+	 * take longer than 2s and then still runs when the turn ends.
+	 */
+	bashHandoffSeconds?: number
 }
 
 export interface StartAcpFixtureOptions extends AcpFixtureOptions {
@@ -161,7 +169,11 @@ export class RecordingClient {
 	 *  so tests asserting relative order between the two channels read this. */
 	readonly wireArrivalOrder: string[] = []
 
-	private permissionResolver: ((response: acp.RequestPermissionResponse) => acp.RequestPermissionResponse) | null = null
+	private permissionResolver:
+		| ((
+				response: acp.RequestPermissionResponse,
+		  ) => acp.RequestPermissionResponse | Promise<acp.RequestPermissionResponse>)
+		| null = null
 	private elicitationResolver: ((response: acp.CreateElicitationResponse) => acp.CreateElicitationResponse) | null =
 		null
 
@@ -239,6 +251,30 @@ export class RecordingClient {
 			const opt = req?.options.find((o) => o.kind === response.kind) ?? req?.options[0]
 			return { outcome: { outcome: "selected", optionId: opt?.optionId ?? "" } }
 		}
+	}
+
+	/**
+	 * Leave the next permission request unanswered, like a card the user has
+	 * not clicked yet. `received` resolves when the request has arrived;
+	 * `respond` answers it, at any later time.
+	 */
+	holdNextPermission(): {
+		received: Promise<acp.RequestPermissionRequest>
+		respond: (response: acp.RequestPermissionResponse) => void
+	} {
+		let arrived: (request: acp.RequestPermissionRequest) => void = () => {}
+		const received = new Promise<acp.RequestPermissionRequest>((resolve) => {
+			arrived = resolve
+		})
+		let respond: (response: acp.RequestPermissionResponse) => void = () => {}
+		const answer = new Promise<acp.RequestPermissionResponse>((resolve) => {
+			respond = resolve
+		})
+		this.permissionResolver = () => {
+			arrived(this.permissionRequests[this.permissionRequests.length - 1])
+			return answer
+		}
+		return { received, respond }
 	}
 
 	/** All agent_message_chunk text chunks concatenated, per session. */
@@ -500,7 +536,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				// Background-bash scenarios script short sleeps (3–6s) that must
 				// hand off; keep the e2e handoff at 2s instead of the 15s product
 				// default (covered by unit tests).
-				KIMCHI_E2E_BASH_HANDOFF_SECONDS: "2",
+				KIMCHI_E2E_BASH_HANDOFF_SECONDS: String(options.bashHandoffSeconds ?? 2),
 				// Keep the /v1/me identity lookup (telemetry pre-session) on the
 				// fake server; otherwise it would reach the real app API.
 				KIMCHI_REMOTE_ENDPOINT: fake.baseUrl,

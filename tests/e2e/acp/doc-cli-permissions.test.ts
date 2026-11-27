@@ -43,6 +43,12 @@ async function driveDocCliCreate(
 ): Promise<{ fixture: Awaited<ReturnType<typeof startAcpFixture>>; sessionId: string }> {
 	const fixture = await startAcpFixture({
 		artifactName,
+		// The create must finish inside the tool call, as it does for users
+		// (product handoff is 15s). The 2s e2e default moved it to the
+		// background on loaded CI runners, so the PDF was not there yet. 15s is
+		// a limit, not a wait (the create takes about 0.5s), and each test has
+		// a 30s timeout (STARTUP_TIMEOUT_MS).
+		bashHandoffSeconds: 15,
 		responses: [
 			{
 				toolCalls: [
@@ -126,6 +132,8 @@ it(
 			const marker = "PLANMODE_MARKER_X7F391"
 			const fixture = await startAcpFixture({
 				artifactName: "doc-cli-plan-read",
+				// The read runs the binary and parses a PDF: keep it inside the tool call.
+				bashHandoffSeconds: 15,
 				responses: [
 					{
 						toolCalls: [

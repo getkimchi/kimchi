@@ -248,6 +248,10 @@ test("check-in gate: ignoring staleness reminders escalates, a wrong confirm is 
 })
 
 test("plan submission: stale final list arms the check-in gate for the approval turn", async ({ terminal }) => {
+	let releaseApprovalResponse!: () => void
+	const approvalResponseGate = new Promise<void>((resolve) => {
+		releaseApprovalResponse = resolve
+	})
 	await runKimchiSession(
 		terminal,
 		{
@@ -268,7 +272,9 @@ test("plan submission: stale final list arms the check-in gate for the approval 
 				// stale list).
 				tool("submit_plan", { plan: "# Plan\n\n## Goal\n\nVerify the plan-submission check-in gate.\n" }),
 				// Approval turn: the first work tool is blocked by the armed gate…
-				tool("bash", { command: "printf 'never runs\n'" }),
+				// Hold its scripted response until the user actually approves so
+				// later requests cannot race past the review-menu interaction.
+				{ ...tool("bash", { command: "printf 'never runs\n'" }), holdUntil: approvalResponseGate },
 				// …the model reconciles (the plan was written and submitted)…
 				tool("mark_todo", { id: 1, status: "completed" }),
 				// …and execution work proceeds.
@@ -292,6 +298,7 @@ test("plan submission: stale final list arms the check-in gate for the approval 
 			expect(viewText(terminal)).toContain("Plan complete. How would you like to proceed?")
 			// Approve locally: the first option is "Execute the plan locally".
 			terminal.keyPress(Key.Enter)
+			releaseApprovalResponse()
 			await waitForText(terminal, "Plan executed. Ready for the next task.", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("approved locally; execution finished")
 

@@ -1,8 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, relative } from "node:path"
+import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+import ts from "typescript"
 import { describe, expect, it } from "vitest"
 import {
+	applyDebugPromptsOptOut,
 	CACHEABLE_OPTION_NAMES,
 	CLI_OPTIONS,
 	dropRetiredMultiModelArg,
@@ -15,12 +18,14 @@ import {
 	isPreDispatchValueFlag,
 	isProtocolOrPrintMode,
 	isTerminalUiMode,
+	normalizeBooleanFlagArgs,
 	normalizeResumeIdArgs,
 	parseCliArgs,
 	populateCliArgs,
 	resolveBashProcessLimitSeconds,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
+import { DANGEROUS_BYPASS_FLAG } from "./extensions/permissions/constants.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 
 describe("value-flag parsing", () => {
@@ -40,6 +45,12 @@ describe("value-flag parsing", () => {
 		expect(getParsedCliArgs().options.models).toBe("kimchi-dev/auto,kimchi-dev/glm-5.3")
 		populateCliArgs([])
 		expect(getParsedCliArgs().options.models).toBeUndefined()
+	})
+})
+
+describe("review writer limit parsing", () => {
+	it("preserves a negative equals-form value for structured validation", () => {
+		expect(parseCliArgs(["--review-writer-limit=-1"]).options["review-writer-limit"]).toBe("-1")
 	})
 })
 
@@ -113,6 +124,16 @@ describe("isTerminalUiMode", () => {
 	})
 })
 
+describe("pi value flags that precede a Kimchi permission boolean", () => {
+	it.each([
+		[["--name", "--yolo", "fix"]],
+		[["-n", "--auto", "fix"]],
+		[["--session-id", "--plan", "fix"]],
+	])("consumes the boolean as the option value for %j", (args) => {
+		expect(parseCliArgs(args).options).toEqual({})
+	})
+})
+
 describe("isPreDispatchValueFlag", () => {
 	it.each([
 		["--provider"],
@@ -133,6 +154,9 @@ describe("isPreDispatchValueFlag", () => {
 		["--skill"],
 		["--prompt-template"],
 		["--theme"],
+		["--name"],
+		["-n"],
+		["--session-id"],
 	])("detects %s as consuming a value during pre-dispatch scans", (arg) => {
 		expect(isPreDispatchValueFlag(arg)).toBe(true)
 	})
@@ -245,6 +269,16 @@ describe("isExperimentalFeaturesArg", () => {
 })
 
 describe("hasFermentOneshotArg (Chunk 7 gate composition)", () => {
+	it.each([
+		[["--ferment-oneshot"], true],
+		[["--ferment-oneshot=true"], true],
+		[["--ferment-oneshot=false"], false],
+		[["--print"], false],
+	])("agrees with the parsed value for %j", (args, expected) => {
+		expect(() => parseCliArgs(args)).not.toThrow()
+		expect(hasFermentOneshotArg(args)).toBe(expected)
+	})
+
 	it("returns true for the bare flag", () => {
 		expect(hasFermentOneshotArg(["--ferment-oneshot"])).toBe(true)
 	})
@@ -358,6 +392,16 @@ describe("resolveBashProcessLimitSeconds", () => {
 })
 
 describe("boolean =-form normalization", () => {
+	it.each(["ferment-oneshot", "init-git", "memory", "help"])("rejects an invalid explicit value for --%s", (name) => {
+		expect(() => parseCliArgs([`--${name}=junk`])).toThrow(
+			`--${name} expects a boolean (=true or =false); got --${name}="junk"`,
+		)
+	})
+
+	it("does not cache non-session booleans after validating them", () => {
+		expect(parseCliArgs(["--init-git=true", "--ferment-oneshot=false"]).options).toEqual({})
+	})
+
 	it('enables --yolo=true (previously the string "true" — silently ignored)', () => {
 		populateCliArgs(["--yolo=true", "fix tests"])
 		expect(getParsedCliArgs().options.yolo).toBe(true)
@@ -390,5 +434,334 @@ describe("cacheable option coverage", () => {
 		// miss, so the invariant is enforced here.
 		const missing = CACHEABLE_OPTION_NAMES.filter((name) => !CLI_OPTIONS[name])
 		expect(missing).toEqual([])
+	})
+})
+
+describe("hidden catalog options", () => {
+	it("parses hidden --debug-prompts as a boolean", () => {
+		expect(parseCliArgs(["--debug-prompts"]).options["debug-prompts"]).toBe(true)
+	})
+})
+
+const SRC_ROOT = join(import.meta.dirname, ".")
+
+/** Files whose registerFlag calls are intentionally not literal. */
+const NONLITERAL_REGISTRATION_ALLOWLIST: Record<string, string> = {
+	"src/extensions/mcp/index.ts": "forwards flags from the MCP probe via target.registerFlag(name, flag)",
+}
+
+/** Shared flag-name constants that registerFlag calls may use instead of a literal. */
+const FLAG_NAME_CONSTANTS: Record<string, string> = { DANGEROUS_BYPASS_FLAG }
+
+function listSourceFiles(dir: string): string[] {
+	const out: string[] = []
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		if (entry.name === "__mocks__") continue
+		const full = join(dir, entry.name)
+		if (entry.isDirectory()) out.push(...listSourceFiles(full))
+		else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) out.push(full)
+	}
+	return out
+}
+
+function isRegisterFlagCallee(callee: ts.Expression): boolean {
+	if (ts.isIdentifier(callee)) return callee.text === "registerFlag"
+	if (ts.isPropertyAccessExpression(callee)) return callee.name.text === "registerFlag"
+	if (ts.isElementAccessExpression(callee)) {
+		const arg = callee.argumentExpression
+		return ts.isStringLiteralLike(arg) && arg.text === "registerFlag"
+	}
+	return false
+}
+
+function resolveFlagName(node: ts.Expression): string | undefined {
+	if (ts.isStringLiteralLike(node)) return node.text
+	if (ts.isIdentifier(node) && Object.hasOwn(FLAG_NAME_CONSTANTS, node.text)) return FLAG_NAME_CONSTANTS[node.text]
+	return undefined
+}
+
+function collectFileViolations(
+	rel: string,
+	file: string,
+	text: string,
+	allowlist: Record<string, string> = NONLITERAL_REGISTRATION_ALLOWLIST,
+): string[] {
+	const violations: string[] = []
+	const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true)
+	const visit = (node: ts.Node): void => {
+		if (ts.isCallExpression(node) && isRegisterFlagCallee(node.expression)) visitRegistration(node)
+		ts.forEachChild(node, visit)
+	}
+	const visitRegistration = (call: ts.CallExpression): void => {
+		const [nameArg, defArg] = call.arguments
+		const name = nameArg && resolveFlagName(nameArg)
+		if (name === undefined) {
+			if (rel in allowlist) return
+			violations.push(`${rel}: nonliteral flag name ${nameArg?.getText(sf) ?? "<missing>"}`)
+			return
+		}
+		const typeProp =
+			defArg && ts.isObjectLiteralExpression(defArg)
+				? defArg.properties.find(
+						(p): p is ts.PropertyAssignment =>
+							ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "type",
+					)
+				: undefined
+		if (!typeProp || !ts.isStringLiteralLike(typeProp.initializer)) {
+			violations.push(`${rel}: --${name} has no literal type`)
+			return
+		}
+		const entry = CLI_OPTIONS[name]
+		if (!entry) violations.push(`${rel}: --${name} missing from CLI_OPTIONS`)
+		else if (entry.type !== typeProp.initializer.text) {
+			violations.push(`${rel}: --${name} type ${typeProp.initializer.text} != CLI_OPTIONS ${entry.type}`)
+		}
+	}
+	visit(sf)
+	return violations
+}
+
+function collectRegisteredFlagCatalogViolations(): string[] {
+	return listSourceFiles(SRC_ROOT).flatMap((file) =>
+		collectFileViolations(`src/${relative(SRC_ROOT, file).split("\\").join("/")}`, file, readFileSync(file, "utf8")),
+	)
+}
+
+describe("extension flag registration parity", () => {
+	it("every literal registerFlag call has a CLI_OPTIONS entry with the same name and type", () => {
+		const violations = collectRegisteredFlagCatalogViolations()
+		expect(violations).toEqual([])
+	})
+
+	it.each(
+		Object.keys(NONLITERAL_REGISTRATION_ALLOWLIST),
+	)("allowlist entry %s still covers a nonliteral registerFlag call", (rel) => {
+		const file = join(SRC_ROOT, rel.slice("src/".length))
+		const violations = collectFileViolations(rel, file, readFileSync(file, "utf8"), {})
+		expect(violations.some((v) => v.startsWith(`${rel}: nonliteral flag name`))).toBe(true)
+	})
+
+	it("still checks literal registrations in files allowlisted for nonliteral ones", () => {
+		const rel = "src/extensions/mcp/index.ts"
+		const text = 'pi.registerFlag("not-in-catalog", { type: "boolean" })\npi.registerFlag(name, flag)\n'
+		expect(collectFileViolations(rel, rel, text)).toEqual([`${rel}: --not-in-catalog missing from CLI_OPTIONS`])
+	})
+
+	it.each([
+		["a bare call", 'registerFlag("not-in-catalog", { type: "boolean" })'],
+		["element access", 'pi["registerFlag"]("not-in-catalog", { type: "boolean" })'],
+	])("checks registrations made through %s", (_label, text) => {
+		const rel = "src/extensions/example.ts"
+		expect(collectFileViolations(rel, rel, text)).toEqual([`${rel}: --not-in-catalog missing from CLI_OPTIONS`])
+	})
+
+	it("resolves known flag-name constants and checks them against the catalog", () => {
+		const rel = "src/extensions/example.ts"
+		const text =
+			'pi.registerFlag(DANGEROUS_BYPASS_FLAG, { type: "string" })\npi.registerFlag(OTHER_FLAG, { type: "boolean" })\n'
+		expect(collectFileViolations(rel, rel, text)).toEqual([
+			`${rel}: --${DANGEROUS_BYPASS_FLAG} type string != CLI_OPTIONS boolean`,
+			`${rel}: nonliteral flag name OTHER_FLAG`,
+		])
+	})
+})
+
+describe("normalizeBooleanFlagArgs", () => {
+	const affected = [
+		"plan",
+		"pr-watch",
+		"auto",
+		"yolo",
+		"dangerously-skip-permissions",
+		"no-auto-update",
+		"memory",
+		"debug-prompts",
+		"ferment-oneshot",
+		"init-git",
+	]
+
+	it.each([
+		[["--print", "--system-prompt", "--auto=false", "do work"]],
+		[["--print", "--system-prompt", "--auto", "do work"]],
+		[["--append-system-prompt", "--yolo=false", "do work"]],
+		[["--name", "--plan", "do work"]],
+		[["-t", "--auto=false", "do work"]],
+		[["--session-id", "--auto=false", "do work"]],
+	])("leaves a boolean that is another option's value unchanged: %j", (args) => {
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	it("keeps the system prompt and message when a boolean is the system prompt value", () => {
+		const parsed = parsePiArgs(normalizeBooleanFlagArgs(["--print", "--system-prompt", "--auto=false", "do work"]))
+		expect(parsed.systemPrompt).toBe("--auto=false")
+		expect(parsed.messages).toEqual(["do work"])
+	})
+
+	it("rewrites the flag occurrence and keeps the value occurrence of the same boolean", () => {
+		expect(normalizeBooleanFlagArgs(["--auto", "--system-prompt", "--auto", "x"])).toEqual([
+			"--auto=true",
+			"--system-prompt",
+			"--auto",
+			"x",
+		])
+	})
+
+	it("still rewrites a boolean after a --mode that has no value", () => {
+		expect(normalizeBooleanFlagArgs(["--mode", "--auto", "x"])).toEqual(["--mode", "--auto=true", "x"])
+	})
+
+	it("rewrites --auto before a positional prompt", () => {
+		expect(normalizeBooleanFlagArgs(["--print", "--auto", "do work"])).toEqual(["--print", "--auto=true", "do work"])
+	})
+
+	it.each(affected)("rewrites affected boolean --%s before a positional prompt", (name) => {
+		expect(normalizeBooleanFlagArgs(["--print", `--${name}`, "do work"])).toEqual([
+			"--print",
+			`--${name}=true`,
+			"do work",
+		])
+	})
+
+	it("rewrites --auto after a prompt-first invocation", () => {
+		expect(normalizeBooleanFlagArgs(["--print", "do work", "--auto"])).toEqual(["--print", "do work", "--auto=true"])
+	})
+
+	it("keeps explicit --auto=true unchanged", () => {
+		const args = ["--print", "--auto=true", "do work"]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	// pi turns any value of a boolean extension flag into true, so =false must not reach it.
+	it.each(affected)("drops explicit --%s=false so pi never reads it as on", (name) => {
+		const normalized = normalizeBooleanFlagArgs(["--print", `--${name}=false`, "do work"])
+		expect(normalized).toEqual(["--print", "do work"])
+		const parsed = parsePiArgs(normalized)
+		expect(parsed.unknownFlags.has(name)).toBe(false)
+		expect(parsed.messages).toEqual(["do work"])
+	})
+
+	it("keeps --dangerously-skip-permissions=false from enabling the bypass on either side", () => {
+		const normalized = normalizeBooleanFlagArgs(["--print", "--dangerously-skip-permissions=false", "do work"])
+		expect(parsePiArgs(normalized).unknownFlags.has("dangerously-skip-permissions")).toBe(false)
+		expect(parseCliArgs(normalized).options["dangerously-skip-permissions"]).toBeUndefined()
+	})
+
+	it("keeps =false for pi-known booleans and after the -- delimiter", () => {
+		const args = ["--print", "--verbose=false", "--", "--auto=false"]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	it("keeps the pi-known --verbose boolean exact", () => {
+		expect(normalizeBooleanFlagArgs(["--print", "--verbose", "do work"])).toEqual(["--print", "--verbose", "do work"])
+	})
+
+	it.each(["continue", "no-session", "approve"])("keeps pi-known --%s unchanged", (name) => {
+		const args = ["--print", `--${name}`]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	it("keeps --deny-tool and its separate string value unchanged", () => {
+		const args = ["--print", "--deny-tool", "write", "do work"]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	it("stops rewriting at the -- delimiter", () => {
+		const args = ["--print", "--", "--auto"]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	it("rewrites several adjacent Kimchi-only booleans", () => {
+		expect(normalizeBooleanFlagArgs(["--print", "--auto", "--yolo", "do work"])).toEqual([
+			"--print",
+			"--auto=true",
+			"--yolo=true",
+			"do work",
+		])
+	})
+
+	it("keeps --auto unchanged when it is the --model value", () => {
+		expect(normalizeBooleanFlagArgs(["--print", "--model", "--auto", "do work"])).toEqual([
+			"--print",
+			"--model",
+			"--auto",
+			"do work",
+		])
+	})
+
+	it("leaves an invalid explicit boolean value for the Kimchi parser to reject", () => {
+		const args = ["--print", "--auto=1", "do work"]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+		expect(() => parseCliArgs(args)).toThrow(/--auto expects a boolean/)
+	})
+
+	it("rewrites a trailing --auto without inventing a positional value", () => {
+		expect(normalizeBooleanFlagArgs(["--print", "--auto"])).toEqual(["--print", "--auto=true"])
+	})
+
+	it("leaves unknown third-party flags unchanged", () => {
+		const args = ["--print", "--future-extension-flag", "do work"]
+		expect(normalizeBooleanFlagArgs(args)).toEqual(args)
+	})
+
+	it("composes after stripping --enable-experimental-features", () => {
+		const stripped = stripExperimentalFeaturesArg(["--print", "--enable-experimental-features", "--auto", "do work"])
+		expect(normalizeBooleanFlagArgs(stripped)).toEqual(["--print", "--auto=true", "do work"])
+	})
+
+	it("does not mutate its input", () => {
+		const args = ["--print", "--auto", "do work"]
+		normalizeBooleanFlagArgs(args)
+		expect(args).toEqual(["--print", "--auto", "do work"])
+	})
+
+	it("normalizes --auto so Kimchi's parser reads true", () => {
+		expect(parseCliArgs(["--print", "--auto=true", "do work"]).options.auto).toBe(true)
+	})
+
+	it.each(affected)("preserves the prompt and unknown extension flag for rewritten --%s", (name) => {
+		const normalized = normalizeBooleanFlagArgs(["--print", `--${name}`, "do work"])
+		const parsed = parsePiArgs(normalized)
+		expect(parsed.messages).toEqual(["do work"])
+		expect(parsed.unknownFlags.has(name)).toBe(true)
+	})
+
+	const catalogBooleans = Object.keys(CLI_OPTIONS).filter((name) => CLI_OPTIONS[name].type === "boolean")
+	it.each(catalogBooleans)("keeps the positional prompt for every catalog boolean --%s", (name) => {
+		const normalized = normalizeBooleanFlagArgs(["--print", `--${name}`, "do work"])
+		const parsed = parsePiArgs(normalized)
+		expect(parsed.messages).toEqual(["do work"])
+		if (parsePiArgs([`--${name}`]).unknownFlags.has(name)) {
+			expect(normalized).toContain(`--${name}=true`)
+			expect(parsed.unknownFlags.has(name)).toBe(true)
+		} else {
+			expect(normalized).toContain(`--${name}`)
+		}
+	})
+})
+
+describe("applyDebugPromptsOptOut", () => {
+	const debugEnv = () => ({ KIMCHI_DEBUG_PROMPTS: "1", KIMCHI_DEBUG_SESSION: "abc" })
+
+	it("clears both debug env vars on an explicit --debug-prompts=false", () => {
+		const env = debugEnv()
+		applyDebugPromptsOptOut(["--print", "--debug-prompts=false", "x"], env)
+		expect(env).toEqual({})
+	})
+
+	it("uses the last value when the flag is repeated", () => {
+		const env = debugEnv()
+		applyDebugPromptsOptOut(["--debug-prompts", "--debug-prompts=false"], env)
+		expect(env).toEqual({})
+	})
+
+	it.each([
+		[["--debug-prompts"]],
+		[["--debug-prompts=true"]],
+		[["--debug-prompts=false", "--debug-prompts"]],
+		[["--print", "x"]],
+	])("keeps the debug env vars for %j", (args) => {
+		const env = debugEnv()
+		applyDebugPromptsOptOut(args, env)
+		expect(env).toEqual(debugEnv())
 	})
 })

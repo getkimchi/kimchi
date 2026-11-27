@@ -1,0 +1,384 @@
+import { computeServerHash } from "pi-mcp-adapter/metadata-cache"
+import type { CachedTool, McpConfig, MetadataCache, ServerCacheEntry } from "pi-mcp-adapter/types"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { isReadOnlyQualifiedMcpGatewayTool, snapshotMcpCallCatalog } from "./call-catalog.js"
+import { describeMcpCall } from "./call-facts.js"
+import { collectMcpToolCandidates, collectReadOnlyMcpWireNames } from "./read-only.js"
+
+const cacheState = vi.hoisted(() => ({
+	cache: undefined as MetadataCache | undefined,
+	loadMetadataCache: vi.fn<() => MetadataCache | undefined>(),
+}))
+const hashState = vi.hoisted(() => ({ throwFor: undefined as string | undefined }))
+
+vi.mock("pi-mcp-adapter/metadata-cache", async (importOriginal) => {
+	const original = await importOriginal<typeof import("pi-mcp-adapter/metadata-cache")>()
+	return {
+		...original,
+		computeServerHash: (definition: Parameters<typeof original.computeServerHash>[0]) => {
+			if (hashState.throwFor !== undefined && definition.command === hashState.throwFor) {
+				throw new Error(`Cannot hash ${definition.command}`)
+			}
+			return original.computeServerHash(definition)
+		},
+		loadMetadataCache: cacheState.loadMetadataCache,
+	}
+})
+
+function privateEntry(config: McpConfig, server: string, readOnlyHint: boolean): ServerCacheEntry {
+	return {
+		configHash: computeServerHash(config.mcpServers[server]),
+		cachedAt: Date.now(),
+		cacheScope: "private",
+		resources: [],
+		tools: [{ name: "get_issue", annotations: { readOnlyHint } }],
+	}
+}
+
+function persistentEntry(config: McpConfig, server: string): ServerCacheEntry {
+	return {
+		configHash: computeServerHash(config.mcpServers[server]),
+		cachedAt: Date.now(),
+		resources: [],
+		tools: [{ name: "get_issue", annotations: { readOnlyHint: true } }],
+	}
+}
+
+function staleCollisionSnapshot(stalePrefix: "none" | "server" = "none") {
+	const config: McpConfig = {
+		mcpServers: {
+			x: { url: "https://x.example/mcp", directTools: true, toolPrefix: stalePrefix },
+			a: { url: "https://a.example/mcp", directTools: true },
+		},
+	}
+	const stale = persistentEntry(config, "x")
+	stale.ttlMs = 1000
+	stale.cachedAt = Date.now() - 2000
+	stale.tools = [{ name: "get_issue", annotations: { readOnlyHint: false } }]
+	cacheState.cache = { version: 1, servers: { x: stale, a: persistentEntry(config, "a") } }
+	const catalog = snapshotMcpCallCatalog(config, new Map(), new Set(["mcp", "a_get_issue"]))
+	expect(catalog.staleServers).toEqual(new Set(["x"]))
+	expect(catalog.candidates.map((candidate) => candidate.serverName)).toEqual(["a"])
+	return catalog
+}
+
+describe("snapshotMcpCallCatalog", () => {
+	beforeEach(() => {
+		cacheState.cache = { version: 1, servers: {} }
+		cacheState.loadMetadataCache.mockReset().mockImplementation(() => cacheState.cache)
+		hashState.throwFor = undefined
+	})
+
+	it("loads persistent metadata at most once per snapshot", () => {
+		const config: McpConfig = { mcpServers: { docs: { url: "https://docs.example/mcp", directTools: true } } }
+		cacheState.cache = { version: 1, servers: { docs: persistentEntry(config, "docs") } }
+
+		snapshotMcpCallCatalog(config, new Map(), new Set(["mcp", "docs_get_issue"]))
+
+		expect(cacheState.loadMetadataCache).toHaveBeenCalledTimes(1)
+	})
+
+	it("sets expiresAt to the earliest valid persistent TTL", () => {
+		const config: McpConfig = {
+			mcpServers: {
+				docs: { url: "https://docs.example/mcp", directTools: true },
+				wiki: { url: "https://wiki.example/mcp", directTools: true },
+			},
+		}
+		const now = Date.now()
+		const docs = { ...persistentEntry(config, "docs"), cachedAt: now - 100, ttlMs: 1000 }
+		const wiki = { ...persistentEntry(config, "wiki"), cachedAt: now - 100, ttlMs: 500 }
+		cacheState.cache = { version: 1, servers: { docs, wiki } }
+		vi.spyOn(Date, "now").mockReturnValue(now)
+		try {
+			expect(snapshotMcpCallCatalog(config, new Map(), new Set()).expiresAt).toBe(now - 100 + 500)
+		} finally {
+			vi.restoreAllMocks()
+		}
+	})
+
+	it("ignores private, expired and TTL-less entries for expiresAt", () => {
+		const config: McpConfig = {
+			mcpServers: {
+				priv: { url: "https://priv.example/mcp", directTools: true },
+				old: { url: "https://old.example/mcp", directTools: true },
+				plain: { url: "https://plain.example/mcp", directTools: true },
+			},
+		}
+		const now = Date.now()
+		cacheState.cache = {
+			version: 1,
+			servers: {
+				priv: { ...persistentEntry(config, "priv"), ttlMs: 1000 },
+				old: { ...persistentEntry(config, "old"), cachedAt: now - 2000, ttlMs: 1000 },
+				plain: persistentEntry(config, "plain"),
+			},
+		}
+		const catalog = snapshotMcpCallCatalog(config, new Map([["priv", privateEntry(config, "priv", true)]]), new Set())
+		expect(catalog.staleServers).toEqual(new Set(["old"]))
+		expect(catalog.expiresAt).toBe(Number.POSITIVE_INFINITY)
+	})
+
+	// The adapter treats a ttlMs that is not a non-negative safe integer as "no TTL", so the
+	// entry stays valid; it must then contribute nothing to expiresAt.
+	it.each([
+		["fractional", 1000.5],
+		["huge unsafe-integer", Number.MAX_SAFE_INTEGER + 1],
+		["non-finite", Number.POSITIVE_INFINITY],
+		["negative", -5],
+	])("ignores a valid persistent entry with a %s ttlMs for expiresAt", (_label, ttlMs) => {
+		const config: McpConfig = { mcpServers: { docs: { url: "https://docs.example/mcp", directTools: true } } }
+		cacheState.cache = { version: 1, servers: { docs: { ...persistentEntry(config, "docs"), ttlMs } } }
+		const catalog = snapshotMcpCallCatalog(config, new Map(), new Set())
+		expect(catalog.staleServers.size).toBe(0)
+		expect(catalog.candidates.length).toBeGreaterThan(0)
+		expect(catalog.expiresAt).toBe(Number.POSITIVE_INFINITY)
+	})
+
+	it("keeps private catalog candidates isolated between session snapshots", () => {
+		const firstConfig: McpConfig = { mcpServers: { docs: { url: "https://first.example/mcp", directTools: true } } }
+		const secondConfig: McpConfig = { mcpServers: { docs: { url: "https://second.example/mcp", directTools: true } } }
+		const first = snapshotMcpCallCatalog(
+			firstConfig,
+			new Map([["docs", privateEntry(firstConfig, "docs", true)]]),
+			new Set(["docs_get_issue"]),
+		)
+		const second = snapshotMcpCallCatalog(
+			secondConfig,
+			new Map([["docs", privateEntry(secondConfig, "docs", false)]]),
+			new Set(["docs_get_issue"]),
+		)
+
+		expect(describeMcpCall("docs_get_issue", {}, first)).toMatchObject({ kind: "tool", evidence: "annotation_true" })
+		expect(describeMcpCall("docs_get_issue", {}, second)).toMatchObject({ kind: "tool", evidence: "annotation_false" })
+		expect(first.candidates).not.toBe(second.candidates)
+		expect(first.registeredToolNames).not.toBe(second.registeredToolNames)
+	})
+
+	it("reports stale persistent and mismatched private metadata", () => {
+		const config: McpConfig = { mcpServers: { docs: { url: "https://docs.example/mcp", directTools: true } } }
+		const expired = persistentEntry(config, "docs")
+		expired.ttlMs = 1000
+		expired.cachedAt = Date.now() - 2000
+		cacheState.cache = { version: 1, servers: { docs: expired } }
+		const persistent = snapshotMcpCallCatalog(config, new Map(), new Set(["docs_get_issue"]))
+		expect(describeMcpCall("mcp", { tool: "get_issue", server: "docs" }, persistent)).toEqual({
+			kind: "unresolved",
+			via: "gateway",
+			why: "stale",
+		})
+
+		const mismatched = { ...privateEntry(config, "docs", true), configHash: "another-config" }
+		const privateSnapshot = snapshotMcpCallCatalog(config, new Map([["docs", mismatched]]), new Set(["docs_get_issue"]))
+		expect(describeMcpCall("mcp", { tool: "get_issue", server: "docs" }, privateSnapshot)).toEqual({
+			kind: "unresolved",
+			via: "gateway",
+			why: "stale",
+		})
+	})
+
+	it("fails closed when a stale unprefixed server can own an unscoped gateway original name", () => {
+		const catalog = staleCollisionSnapshot()
+
+		expect(describeMcpCall("mcp", { tool: "get_issue" }, catalog)).toEqual({
+			kind: "unresolved",
+			via: "gateway",
+			why: "stale",
+		})
+	})
+
+	it("fails closed when a stale unprefixed server can shadow an exact gateway name", () => {
+		const catalog = staleCollisionSnapshot()
+
+		expect(describeMcpCall("mcp", { tool: "a_get_issue" }, catalog)).toEqual({
+			kind: "unresolved",
+			via: "gateway",
+			why: "stale",
+		})
+	})
+
+	it("fails closed when a stale unprefixed server can shadow an exact direct name", () => {
+		const catalog = staleCollisionSnapshot()
+
+		expect(describeMcpCall("a_get_issue", {}, catalog)).toEqual({
+			kind: "unresolved",
+			via: "direct",
+			why: "stale",
+		})
+	})
+
+	it("preserves healthy scoped and exact resolutions when a stale prefix cannot collide", () => {
+		const catalog = staleCollisionSnapshot("server")
+		const resolved = {
+			kind: "tool",
+			server: "a",
+			tool: "get_issue",
+			evidence: "annotation_true",
+		}
+
+		expect(describeMcpCall("mcp", { tool: "get_issue", server: "a" }, catalog)).toEqual({
+			...resolved,
+			via: "gateway",
+		})
+		expect(describeMcpCall("mcp", { tool: "a_get_issue" }, catalog)).toEqual({ ...resolved, via: "gateway" })
+		expect(describeMcpCall("a_get_issue", {}, catalog)).toEqual({ ...resolved, via: "direct" })
+	})
+
+	it("treats a server whose config hash throws as stale without failing other servers", () => {
+		const config: McpConfig = {
+			mcpServers: {
+				broken: { command: "broken", directTools: true },
+				docs: { command: "docs", directTools: true },
+			},
+		}
+		const privateCatalogs = new Map([
+			["broken", privateEntry(config, "broken", true)],
+			["docs", privateEntry(config, "docs", true)],
+		])
+		hashState.throwFor = "broken"
+
+		const catalog = snapshotMcpCallCatalog(config, privateCatalogs, new Set(["broken_get_issue", "docs_get_issue"]))
+
+		expect(catalog.staleServers.has("broken")).toBe(true)
+		expect(describeMcpCall("broken_get_issue", {}, catalog)).toMatchObject({ kind: "unresolved" })
+		expect(describeMcpCall("docs_get_issue", {}, catalog)).toMatchObject({
+			kind: "tool",
+			server: "docs",
+			evidence: "annotation_true",
+		})
+	})
+
+	it("reports disabled configured servers", () => {
+		const config: McpConfig = {
+			mcpServers: { docs: { url: "https://docs.example/mcp", directTools: true, disabled: true } },
+		}
+		cacheState.cache = { version: 1, servers: { docs: persistentEntry(config, "docs") } }
+		const snapshot = snapshotMcpCallCatalog(config, new Map(), new Set(["mcp", "mcp__docs"]))
+		expect(describeMcpCall("mcp", { tool: "get_issue", server: "docs" }, snapshot)).toEqual({
+			kind: "unresolved",
+			via: "gateway",
+			why: "disabled",
+		})
+		expect(snapshot.candidates).toEqual([])
+	})
+})
+
+describe("isReadOnlyQualifiedMcpGatewayTool", () => {
+	const config: McpConfig = {
+		mcpServers: {
+			alpha: { url: "https://a.example/mcp", directTools: true },
+			beta: { url: "https://b.example/mcp", directTools: true, toolPrefix: "none" },
+		},
+	}
+	function setCache(config: McpConfig, tools: Record<string, CachedTool[]>): MetadataCache {
+		const cache: MetadataCache = { version: 1, servers: {} }
+		for (const [name, definition] of Object.entries(config.mcpServers)) {
+			cache.servers[name] = {
+				configHash: computeServerHash(definition),
+				cachedAt: Date.now(),
+				resources: [],
+				tools: tools[name] ?? [],
+			}
+		}
+		cacheState.cache = cache
+		return cache
+	}
+
+	function isReadOnly(
+		config: McpConfig,
+		toolName: string,
+		server?: string,
+		privateCatalogs?: ReadonlyMap<string, ServerCacheEntry>,
+	): boolean {
+		return isReadOnlyQualifiedMcpGatewayTool(
+			snapshotMcpCallCatalog(config, privateCatalogs ?? new Map(), new Set()),
+			toolName,
+			server,
+		)
+	}
+
+	beforeEach(() => {
+		cacheState.loadMetadataCache.mockReset().mockImplementation(() => cacheState.cache)
+		setCache(config, {
+			alpha: [{ name: "get_issue" }, { name: "create_issue" }, { name: "stats", annotations: { readOnlyHint: true } }],
+			beta: [{ name: "fetch_items" }],
+		})
+	})
+
+	it("authorizes only the current session's matching private catalog", () => {
+		cacheState.cache = { version: 1, servers: {} }
+		const privateEntry = {
+			configHash: computeServerHash(config.mcpServers.alpha),
+			cachedAt: Date.now(),
+			resources: [],
+			tools: [{ name: "getJiraIssue", annotations: { readOnlyHint: true } }],
+			cacheScope: "private" as const,
+		}
+		expect(isReadOnly(config, "getJiraIssue", "alpha")).toBe(false)
+		expect(isReadOnly(config, "getJiraIssue", "alpha", new Map([["alpha", privateEntry]]))).toBe(true)
+		expect(isReadOnly(config, "alpha_getJiraIssue", "alpha", new Map())).toBe(false)
+		const currentCatalog = new Map([["alpha", privateEntry]])
+		expect(
+			collectReadOnlyMcpWireNames(collectMcpToolCandidates(config, cacheState.cache ?? null, currentCatalog), "alpha"),
+		).toEqual(["alpha_getJiraIssue"])
+		expect(
+			isReadOnly(
+				config,
+				"getJiraIssue",
+				"alpha",
+				new Map([["alpha", { ...privateEntry, configHash: "another-authorization-context" }]]),
+			),
+		).toBe(false)
+	})
+
+	it("accepts original names when they resolve to one read-only tool", () => {
+		expect(isReadOnly(config, "get_issue", "alpha")).toBe(true)
+		expect(isReadOnly(config, "get_issue")).toBe(true)
+		expect(isReadOnly(config, "create_issue", "alpha")).toBe(false)
+	})
+
+	it("fails closed for ambiguous unscoped originals but allows server-scoped matches", () => {
+		const collisionConfig = { ...config, settings: { toolPrefix: "none" as const } }
+		setCache(collisionConfig, {
+			alpha: [{ name: "get_access", annotations: { readOnlyHint: false } }],
+			beta: [{ name: "get_access", annotations: { readOnlyHint: true } }],
+		})
+		expect(isReadOnly(collisionConfig, "get_access")).toBe(false)
+		expect(isReadOnly(collisionConfig, "get_access", "alpha")).toBe(false)
+		expect(isReadOnly(collisionConfig, "get_access", "beta")).toBe(true)
+	})
+
+	it("qualifies cached resource-backed read tools", () => {
+		const resourceConfig: McpConfig = { mcpServers: { alpha: { ...config.mcpServers.alpha } } }
+		const cache = setCache(resourceConfig, { alpha: [] })
+		cache.servers.alpha.resources = [{ name: "figjam", uri: "file:///board" }]
+
+		expect(isReadOnly(resourceConfig, "read_figjam", "alpha")).toBe(true)
+		expect(isReadOnly(resourceConfig, "alpha_read_figjam", "alpha")).toBe(true)
+	})
+
+	it("preserves displayed-name precedence when an original alias names another tool", () => {
+		setCache(config, {
+			alpha: [{ name: "get_issue", annotations: { readOnlyHint: true } }],
+			beta: [{ name: "get_issue", annotations: { readOnlyHint: false } }],
+		})
+		expect(isReadOnly(config, "get_issue")).toBe(false)
+		expect(isReadOnly(config, "alpha_get_issue")).toBe(true)
+	})
+
+	it("rejects a tool name that two servers' prefixes match with equal length", () => {
+		const config: McpConfig = {
+			// Under "short", both names strip to the prefix "jira".
+			mcpServers: {
+				jira: { command: "jira", toolPrefix: "short" },
+				"jira-mcp": { command: "jira-mcp", toolPrefix: "short" },
+			},
+		}
+		cacheState.cache = {
+			version: 1,
+			servers: { jira: persistentEntry(config, "jira"), "jira-mcp": persistentEntry(config, "jira-mcp") },
+		}
+
+		expect(isReadOnly(config, "jira_get_issue")).toBe(false)
+	})
+})

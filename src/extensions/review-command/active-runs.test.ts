@@ -1,0 +1,474 @@
+import { type ChildProcess, fork } from "node:child_process"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { fileURLToPath } from "node:url"
+import { Key, matchesKey } from "@earendil-works/pi-tui"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { createCommandContext, sendTerminalInput } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { stripExpectedNodeSqliteWarning } from "../review-submit/process-test-utils.js"
+import {
+	acquireReviewOperation,
+	cancelActiveReview,
+	isReviewTerminalInputActive,
+	registerPendingReview,
+} from "./active-runs.js"
+import { runReviewCommand } from "./command.js"
+import reviewCommandExtension from "./index.js"
+import { currentReviewHost, currentReviewOwnerIdentity } from "./owner-identity.js"
+import { createLocalReviewRunDirectory } from "./run-directory.js"
+
+const activeRunsProcess = fileURLToPath(new URL("./active-runs-process.ts", import.meta.url))
+
+type ProcessMessage = { id?: string; type?: string; code?: string; token?: string }
+
+function startActiveRunsProcess(root: string, id: string, mode: "stall" | "normal") {
+	const child = fork(activeRunsProcess, [root, id, mode], {
+		execArgv: ["--import", "tsx"],
+		silent: true,
+		env: {
+			PATH: process.env.PATH,
+			HOME: root,
+			SystemRoot: process.env.SystemRoot,
+			TEMP: process.env.TEMP,
+			TMP: process.env.TMP,
+		},
+	})
+	const messages: ProcessMessage[] = []
+	child.on("message", (message: ProcessMessage) => messages.push(message))
+	let stderr = ""
+	child.stderr?.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk))
+	const completed = new Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }>((resolve) => {
+		child.once("close", (code, signal) => resolve({ code, signal, stderr }))
+	})
+	return { child, messages, completed }
+}
+
+function stopChildren(children: ChildProcess[]): void {
+	for (const child of children) {
+		try {
+			child.kill("SIGCONT")
+		} catch {
+			// Already running or exited.
+		}
+		child.kill("SIGKILL")
+	}
+}
+
+const temporaryDirectories: string[] = []
+
+afterEach(() => {
+	for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true })
+})
+
+function sandbox(): { root: string; outputRoot: string; checkoutPath: string } {
+	const root = mkdtempSync(join(tmpdir(), "review-active-runs-"))
+	temporaryDirectories.push(root)
+	return { root, outputRoot: join(root, "review-output"), checkoutPath: root }
+}
+
+describe("active local review runs", () => {
+	it("uses distinct directories, rejects concurrency, and releases its persistent lock after cleanup", async () => {
+		const ctx = createCommandContext()
+		const { outputRoot, checkoutPath } = sandbox()
+		const firstDir = await createLocalReviewRunDirectory(outputRoot)
+		const first = await acquireReviewOperation(ctx, checkoutPath, firstDir)
+		expect(existsSync(join(outputRoot, "active-review.json"))).toBe(true)
+		const competingDir = await createLocalReviewRunDirectory(outputRoot)
+		expect(competingDir.runDir).not.toBe(firstDir.runDir)
+		await expect(acquireReviewOperation(ctx, checkoutPath, competingDir)).rejects.toMatchObject({
+			code: "review_in_progress",
+		})
+		await first.finish()
+		await expect(first.completion).resolves.toBeUndefined()
+		expect(existsSync(join(outputRoot, "active-review.json"))).toBe(false)
+		const second = await acquireReviewOperation(ctx, checkoutPath, competingDir)
+		await second.finish()
+	})
+
+	it("leaves no lock behind when owner identity lookup fails", async () => {
+		const ctx = createCommandContext()
+		const { outputRoot, checkoutPath } = sandbox()
+		const runDir = await createLocalReviewRunDirectory(outputRoot)
+		const ownerIdentity = async () => ({ hostname: currentReviewHost(), startIdentity: "test-owner" })
+
+		await expect(
+			acquireReviewOperation(ctx, checkoutPath, runDir, async () => {
+				throw new Error("identity lookup failed")
+			}),
+		).rejects.toThrow("identity lookup failed")
+		expect(existsSync(runDir.lockPath)).toBe(false)
+
+		const retry = await acquireReviewOperation(ctx, checkoutPath, runDir, ownerIdentity)
+		expect(existsSync(runDir.lockPath)).toBe(true)
+		await retry.finish()
+	})
+
+	it("waits for active cleanup during session shutdown", async () => {
+		const ctx = createCommandContext()
+		const { outputRoot, checkoutPath } = sandbox()
+		const { api, emit } = createExtensionApi()
+		reviewCommandExtension(api)
+		const runDir = await createLocalReviewRunDirectory(outputRoot)
+		const operation = await acquireReviewOperation(ctx, checkoutPath, runDir)
+		const shutdown = emit("session_shutdown", {}, ctx)
+		expect(operation.cancelled).toBe(true)
+		await operation.finish()
+		await expect(shutdown).resolves.toBeDefined()
+	})
+
+	it.each([
+		["legacy Esc", "\u001b", Key.escape],
+		["legacy Ctrl+C", "\u0003", Key.ctrl("c")],
+		["Kitty Esc", "\u001b[27u", Key.escape],
+		["Kitty Ctrl+C", "\u001b[99;5u", Key.ctrl("c")],
+	])("aborts the active operation on %s terminal input", async (_name, sequence, key) => {
+		expect(matchesKey(sequence, key)).toBe(true)
+		const ctx = createCommandContext()
+		const { outputRoot, checkoutPath } = sandbox()
+		const runDir = await createLocalReviewRunDirectory(outputRoot)
+		const operation = await acquireReviewOperation(ctx, checkoutPath, runDir)
+		expect(isReviewTerminalInputActive(ctx.sessionManager.getSessionId())).toBe(true)
+		sendTerminalInput(ctx, sequence)
+		expect(operation.cancelled).toBe(true)
+		await operation.finish()
+		expect(isReviewTerminalInputActive(ctx.sessionManager.getSessionId())).toBe(false)
+	})
+
+	it("transfers terminal cancellation from pending setup to the active operation", async () => {
+		const ctx = createCommandContext()
+		const { outputRoot, checkoutPath } = sandbox()
+		const pending = registerPendingReview(ctx)
+		pending.captureInput()
+		const runDir = await createLocalReviewRunDirectory(outputRoot)
+		const operation = await acquireReviewOperation(ctx, checkoutPath, runDir, undefined, pending.signal)
+		pending.releaseInput()
+
+		sendTerminalInput(ctx, "\u001b")
+		expect(pending.signal.aborted).toBe(false)
+		expect(operation.cancelled).toBe(true)
+		await operation.finish()
+		pending.finish()
+	})
+
+	it("reclaims PID reuse when the current process has a different start identity", async () => {
+		const ctx = createCommandContext()
+		const { outputRoot, checkoutPath } = sandbox()
+		const runDir = await createLocalReviewRunDirectory(outputRoot)
+		writeFileSync(
+			join(outputRoot, "active-review.json"),
+			JSON.stringify({
+				token: "reused-pid-owner",
+				pid: process.pid,
+				owner_host: currentReviewHost(),
+				owner_start: "different-process-start",
+				checkoutPath,
+				runDir: runDir.runDir,
+			}),
+		)
+		const operation = await acquireReviewOperation(ctx, checkoutPath, runDir)
+		const current = JSON.parse(readFileSync(join(outputRoot, "active-review.json"), "utf8"))
+		const owner = await currentReviewOwnerIdentity()
+		expect(current.token).not.toBe("reused-pid-owner")
+		expect(current).toMatchObject({
+			pid: process.pid,
+			owner_host: owner.hostname,
+			owner_start: owner.startIdentity,
+			runDir: runDir.runDir,
+		})
+		await operation.finish()
+	})
+
+	it("preserves another host's lock even when its PID cannot exist locally", async () => {
+		const ctx = createCommandContext()
+		const { outputRoot, checkoutPath } = sandbox()
+		const runDir = await createLocalReviewRunDirectory(outputRoot)
+		const lockPath = join(outputRoot, "active-review.json")
+		writeFileSync(
+			lockPath,
+			JSON.stringify({
+				token: "foreign-owner",
+				pid: 2 ** 30,
+				owner_host: "another-host.invalid",
+				owner_start: "different-process-start",
+				checkoutPath,
+				runDir: runDir.runDir,
+			}),
+		)
+		await expect(acquireReviewOperation(ctx, checkoutPath, runDir)).rejects.toThrow(
+			/another host|remove only this file/,
+		)
+		expect(JSON.parse(readFileSync(lockPath, "utf8")).token).toBe("foreign-owner")
+	})
+
+	it("blocks a live local lock whose host and process-start identity match", async () => {
+		const ctx = createCommandContext()
+		const { outputRoot, checkoutPath } = sandbox()
+		const runDir = await createLocalReviewRunDirectory(outputRoot)
+		const owner = await currentReviewOwnerIdentity()
+		const lockPath = join(outputRoot, "active-review.json")
+		writeFileSync(
+			lockPath,
+			JSON.stringify({
+				token: "live-owner",
+				pid: process.pid,
+				owner_host: owner.hostname,
+				owner_start: owner.startIdentity,
+				checkoutPath,
+				runDir: runDir.runDir,
+			}),
+		)
+		await expect(acquireReviewOperation(ctx, checkoutPath, runDir)).rejects.toMatchObject({
+			code: "review_in_progress",
+		})
+		expect(JSON.parse(readFileSync(lockPath, "utf8")).token).toBe("live-owner")
+	})
+
+	it("reclaims a stale lock left by a dead process without deleting old run artifacts", async () => {
+		const ctx = createCommandContext()
+		const { outputRoot, checkoutPath } = sandbox()
+		const runDir = await createLocalReviewRunDirectory(outputRoot)
+		const oldArtifact = join(runDir.runDir, "summary.json")
+		writeFileSync(oldArtifact, "{}")
+		writeFileSync(
+			join(outputRoot, "active-review.json"),
+			JSON.stringify({
+				token: "dead-owner",
+				pid: 2 ** 30,
+				owner_host: currentReviewHost(),
+				owner_start: "dead-process-start",
+				checkoutPath,
+				runDir: runDir.runDir,
+			}),
+		)
+		const operation = await acquireReviewOperation(ctx, checkoutPath, runDir)
+		expect(existsSync(oldArtifact)).toBe(true)
+		const current = JSON.parse(readFileSync(join(outputRoot, "active-review.json"), "utf8"))
+		expect(current.token).not.toBe("dead-owner")
+		await operation.finish()
+		expect(existsSync(oldArtifact)).toBe(true)
+	})
+
+	it("allows exactly one winner when two acquirers reclaim the same stale lock", { timeout: 20_000 }, async () => {
+		const { root } = sandbox()
+		const owner = await currentReviewOwnerIdentity()
+		const ownerIdentity = async () => owner
+		for (let trial = 0; trial < 200; trial += 1) {
+			const outputRoot = join(root, `race-${trial}`)
+			const lockPath = join(outputRoot, "active-review.json")
+			mkdirSync(join(outputRoot, "runs"), { recursive: true })
+			writeFileSync(
+				lockPath,
+				JSON.stringify({
+					token: "dead-owner",
+					pid: 999_999,
+					owner_host: currentReviewHost(),
+					owner_start: "dead-process-start",
+				}),
+			)
+			const operations: Awaited<ReturnType<typeof acquireReviewOperation>>[] = []
+			const acquire = (id: string) => {
+				const ctx = createCommandContext()
+				ctx.sessionManager.getSessionId = () => `race-${trial}-${id}`
+				return acquireReviewOperation(
+					ctx,
+					join(root, id),
+					{ runDir: join(outputRoot, "runs", id), lockPath },
+					ownerIdentity,
+				).then(
+					(operation) => {
+						operations.push(operation)
+						return "ok"
+					},
+					(error: unknown) => (error as { code?: string }).code,
+				)
+			}
+
+			const results = await Promise.all([acquire("a"), acquire("b")])
+			expect(results.sort()).toEqual(["ok", "review_in_progress"].sort())
+			expect(operations).toHaveLength(1)
+			await Promise.all(operations.map((operation) => operation.finish()))
+			expect(readdirSync(outputRoot).sort()).toEqual([".active-review.lock.sqlite", "runs"])
+		}
+	})
+
+	it("keeps a live lock in place when a reclaimer is delayed", async () => {
+		const { root } = sandbox()
+		const outputRoot = join(root, "out")
+		const lockPath = join(outputRoot, "active-review.json")
+		mkdirSync(join(outputRoot, "runs"), { recursive: true })
+		writeFileSync(
+			lockPath,
+			JSON.stringify({
+				token: "dead-owner",
+				pid: 999_999,
+				owner_host: currentReviewHost(),
+				owner_start: "dead-process-start",
+			}),
+		)
+		const owner = await currentReviewOwnerIdentity()
+		const ownerIdentity = async () => owner
+		const acquire = (id: string, identity = ownerIdentity, hooks?: Parameters<typeof acquireReviewOperation>[5]) => {
+			const ctx = createCommandContext()
+			ctx.sessionManager.getSessionId = () => `delayed-${id}`
+			return acquireReviewOperation(
+				ctx,
+				join(root, id),
+				{ runDir: join(outputRoot, "runs", id), lockPath },
+				identity,
+				undefined,
+				hooks,
+			)
+		}
+		let releaseB!: () => void
+		const bGate = new Promise<void>((resolve) => {
+			releaseB = resolve
+		})
+		let markBRead!: () => void
+		const bRead = new Promise<void>((resolve) => {
+			markBRead = resolve
+		})
+
+		const b = acquire("b", ownerIdentity, {
+			beforeStaleRename: async () => {
+				markBRead()
+				await bGate
+			},
+		})
+		await bRead
+		const a = await acquire("a")
+		const published = JSON.parse(readFileSync(lockPath, "utf8")) as { token: string }
+		expect(published.token).not.toBe("dead-owner")
+
+		releaseB()
+		await expect(b).rejects.toMatchObject({ code: "review_in_progress" })
+		expect(JSON.parse(readFileSync(lockPath, "utf8")).token).toBe(published.token)
+		await expect(acquire("c")).rejects.toMatchObject({ code: "review_in_progress" })
+		expect(JSON.parse(readFileSync(lockPath, "utf8")).token).toBe(published.token)
+
+		await a.finish()
+		expect(existsSync(lockPath)).toBe(false)
+		expect(readdirSync(outputRoot).sort()).toEqual([".active-review.lock.sqlite", "runs"])
+	})
+
+	it("cleans a published primary lock when SQLite release fails", async () => {
+		const ctx = createCommandContext()
+		const { outputRoot, checkoutPath } = sandbox()
+		const runDir = await createLocalReviewRunDirectory(outputRoot)
+
+		await expect(
+			acquireReviewOperation(ctx, checkoutPath, runDir, undefined, undefined, {
+				beforeRelease: async () => {
+					throw new Error("injected SQLite release failure")
+				},
+			}),
+		).rejects.toThrow("injected SQLite release failure")
+		expect(existsSync(runDir.lockPath)).toBe(false)
+
+		const retry = await acquireReviewOperation(ctx, checkoutPath, runDir)
+		await retry.finish()
+	})
+
+	it.skipIf(process.platform === "win32")(
+		"keeps a SIGSTOPped holder exclusive without a crash",
+		{ timeout: 30_000 },
+		async () => {
+			const { root } = sandbox()
+			const outputRoot = join(root, "out")
+			const lockPath = join(outputRoot, "active-review.json")
+			mkdirSync(join(outputRoot, "runs"), { recursive: true })
+			writeFileSync(
+				lockPath,
+				JSON.stringify({
+					token: "dead-owner",
+					pid: 999_999,
+					owner_host: currentReviewHost(),
+					owner_start: "dead-process-start",
+				}),
+			)
+			const holder = startActiveRunsProcess(outputRoot, "holder", "stall")
+			const children = [holder.child]
+			let waiter: ReturnType<typeof startActiveRunsProcess> | undefined
+			try {
+				await vi.waitFor(() =>
+					expect(holder.messages.some((message) => message.type === "before_stale_rename")).toBe(true),
+				)
+				process.kill(holder.child.pid as number, "SIGSTOP")
+				waiter = startActiveRunsProcess(outputRoot, "waiter", "normal")
+				children.push(waiter.child)
+
+				await new Promise((resolve) => setTimeout(resolve, 2_500))
+				expect(waiter.messages.some((message) => message.type === "acquired")).toBe(false)
+				expect(JSON.parse(readFileSync(lockPath, "utf8")).token).toBe("dead-owner")
+
+				process.kill(holder.child.pid as number, "SIGCONT")
+				holder.child.send("continue")
+				await vi.waitFor(() => expect(holder.messages.some((message) => message.type === "acquired")).toBe(true))
+				await vi.waitFor(() =>
+					expect(
+						waiter?.messages.some((message) => message.type === "error" && message.code === "review_in_progress"),
+					).toBe(true),
+				)
+				const holderToken = holder.messages.find((message) => message.type === "acquired")?.token
+				expect(JSON.parse(readFileSync(lockPath, "utf8")).token).toBe(holderToken)
+				holder.child.send("finish")
+
+				const [holderResult, waiterResult] = await Promise.all([holder.completed, waiter.completed])
+				expect(holderResult.code).toBe(0)
+				expect(waiterResult.code).toBe(0)
+				expect(stripExpectedNodeSqliteWarning(holderResult.stderr)).toBe("")
+				expect(stripExpectedNodeSqliteWarning(waiterResult.stderr)).toBe("")
+			} finally {
+				stopChildren(children)
+			}
+		},
+	)
+
+	it("honors cancellation that arrives while the target is still resolving", async () => {
+		const { root } = sandbox()
+		const ctx = createCommandContext()
+		ctx.cwd = root
+		const { api } = createExtensionApi()
+		let finishResolve!: () => void
+		const resolving = new Promise<void>((resolve) => {
+			finishResolve = resolve
+		})
+		let targetSignal: AbortSignal | undefined
+		const runPanel = vi.fn(async () => ({
+			progress: { coverage: { status: "complete", unfinished_lenses: [] } },
+			findings: [],
+			summaryPath: "unused",
+		}))
+		const run = runReviewCommand("working-tree --lens spec", ctx, api, {
+			dependencies: {
+				cleanSnapshots: async () => [],
+				recoverWorktrees: async () => [],
+				readSettings: () => ({ requiredLenses: [], checkDefinitions: [] }) as never,
+				resolveTarget: async (_request, options) => {
+					targetSignal = options.signal
+					await resolving
+					return {
+						scope: {
+							kind: "working-tree",
+							checkoutPath: root,
+							files: { changed: 1 },
+							pinned: { baseSha: "a", headSha: "b" },
+						},
+						cleanup: async () => {},
+					} as never
+				},
+				resolvePanel: () => ({ lenses: [], slotCount: 1 }) as never,
+				runPanel: runPanel as never,
+			},
+		})
+		await vi.waitFor(() => expect(targetSignal).toBeDefined())
+
+		await cancelActiveReview(ctx.sessionManager.getSessionId())
+		finishResolve()
+		await run
+
+		expect(targetSignal?.aborted).toBe(true)
+		expect(runPanel).not.toHaveBeenCalled()
+	})
+})

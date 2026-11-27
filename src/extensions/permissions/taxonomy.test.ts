@@ -39,10 +39,23 @@ describe("classifyTool", () => {
 		expect(isReadOnlyTool("lsp_rename")).toBe(false)
 	})
 
+	it("classifies inspection-only DAP results as read-only", () => {
+		expect(classifyTool("debug_locals")).toBe("readOnly")
+		expect(classifyTool("debug_backtrace")).toBe("readOnly")
+		expect(classifyTool("debug_last_error")).toBe("unknown")
+		expect(classifyTool("debug_eval")).toBe("unknown")
+		expect(classifyTool("debug_set_variable")).toBe("unknown")
+	})
+
 	it("classifies workflow output tools as read-only without widening the submit namespace", () => {
 		expect(classifyTool("workflow_submit_result")).toBe("readOnly")
 		expect(classifyTool("workflow_submit_questions")).toBe("readOnly")
+		expect(classifyTool("submit_agent_report")).toBe("readOnly")
 		expect(classifyTool("workflow_submit_deployment")).toBe("unknown")
+	})
+
+	it("classifies todo reconciliation as read-only control plane", () => {
+		expect(classifyTool("confirm_todos")).toBe("readOnly")
 	})
 
 	it("heuristic classifies read-named custom tools as read-only", () => {

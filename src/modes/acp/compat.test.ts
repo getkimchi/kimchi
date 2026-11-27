@@ -199,6 +199,7 @@ describe("wire compat", () => {
 					return kimchi.extMethod("session/set_model", params as Record<string, unknown>)
 				},
 			)
+			.onRequest("*", ({ method, params }) => kimchi.extMethod(method, params as Record<string, unknown>))
 		agentApp.connect(agentStream)
 		const clientApp = createClient()
 			.onNotification(methods.client.session.update, () => {})
@@ -245,5 +246,12 @@ describe("wire compat", () => {
 			modelId: "test/test-model",
 		})
 		expect(result).toEqual({})
+	})
+
+	it("returns method-not-found for an unknown method without params", async () => {
+		const client = wireUp(new CompatFakeSession("wire-unknown-method"))
+
+		await client.request(methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+		await expect(client.request("_tck/does_not_exist")).rejects.toMatchObject({ code: -32601 })
 	})
 })

@@ -44,7 +44,11 @@ export default defineConfig({
 		// Per-file isolated home: os.homedir() reads USERPROFILE on Windows and
 		// ignores HOME, so per-test HOME stubs alone don't protect the real profile.
 		// Relies on the default isolate: true, which reruns the setup for each file.
-		setupFiles: ["./tests/setup/isolated-home.ts", "./tests/setup/work-ledger.ts"],
+		setupFiles: [
+			"./tests/setup/isolated-home.ts",
+			"./tests/setup/work-ledger.ts",
+			"./tests/setup/event-loop-jitter.ts",
+		],
 		env: {
 			// Pin locale so toLocaleString() produces consistent comma-separated
 			// numbers across developer machines and CI regardless of system locale.
@@ -69,6 +73,9 @@ export default defineConfig({
 			// so vi.mock() can target it without a "missing specifier" error.
 			"@earendil-works/pi-coding-agent/dist/utils/clipboard-image.js": stubPath,
 		},
+		// The protocol's timestamp codec uses Temporal, which Node exposes behind
+		// its harmony flag before it exposes it natively (Bun supplies it directly).
+		execArgv: ["--harmony-temporal"],
 		// Isolate test files to prevent mock leakage between tests
 		pool: "forks",
 		// Cap the fork pool. The default (one fork per CPU core) spawns a dozen-plus full Node

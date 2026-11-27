@@ -19,6 +19,7 @@ import * as eventBuilder from "./events.js"
 import { reportJournalProblems } from "./ledger/import.js"
 import * as outbox from "./ledger/outbox.js"
 import { backendFor, readRecords } from "./ledger/records.js"
+import type { Batch } from "./protocol.js"
 import * as queue from "./queue.js"
 import {
 	HOLD_EXPIRY_MS,
@@ -40,6 +41,7 @@ import {
 	reconcileReporting,
 	resetReportingPassGates,
 	serverLimit,
+	TranslationPreludeTimeoutError,
 } from "./worker.js"
 
 const config = vi.hoisted(() => ({ key: "test-key", endpoint: "https://api.example" }))
@@ -127,6 +129,48 @@ const capturedReport = () => vi.mocked(eventBuilder.buildEvents).mock.calls.at(-
 /** Every request each connected group of works passed to the producer. */
 const capturedRequests = () => vi.mocked(eventBuilder.buildEvents).mock.calls.flatMap(([, report]) => report.requests)
 const deliver = () => deliverSnapshots(directory, "/project", new AbortController().signal, () => {})
+const eventUploads = () => http.mock.calls.filter(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))
+
+async function seedCoverageEvents(storedKey: string, count: number, alternates: readonly string[] = []): Promise<void> {
+	const actual = await vi.importActual<typeof outbox>("./ledger/outbox.js")
+	for (let index = 0; index < count; index++) {
+		const key = alternates[index % alternates.length] ?? storedKey
+		actual.observeEvents(
+			directory,
+			key,
+			[
+				{
+					entityId: `aaaaaaaa-aaaa-4aaa-8aaa-${index.toString(16).padStart(12, "0")}`,
+					source: "codex",
+					sourceVersion: "test",
+					deviceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+					observeTime: "2026-10-24T00:00:00.123456789Z",
+					coverage: { code: "observed", count: "1" },
+				},
+			],
+			[],
+			() => {},
+		)
+	}
+	vi.spyOn(outbox, "pendingBatch").mockImplementation(actual.pendingBatch)
+}
+
+function acceptEventBatches(
+	onBatch?: (attempt: number, batch: Batch) => Response | undefined | Promise<Response | undefined>,
+): void {
+	let attempts = 0
+	http.mockImplementation(async (input, init) => {
+		if (String(input).endsWith("api-keys:verify")) return Response.json({ organizationId: org, userId: user })
+		const batch: Batch = JSON.parse(String(init?.body)).batch
+		const intercepted = await onBatch?.(++attempts, batch)
+		if (intercepted) return intercepted
+		return Response.json({
+			batchId: batch.id,
+			receipts: batch.events.map((event) => ({ id: event.id, revision: event.revision, status: "accepted" })),
+		})
+	})
+}
+
 async function seedLinked(priced = true) {
 	const at = "2026-10-04T12:00:00.000Z"
 	const common = {
@@ -252,6 +296,31 @@ describe("account-fenced reporting delivery", () => {
 	it("makes no authentication request when the event outbox is empty", async () => {
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
 		expect(http).not.toHaveBeenCalled()
+	})
+	it("preserves cooperative journal-prefix verification during capture", async () => {
+		const importer = vi.spyOn(summary, "importWorkRecordsAsync")
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(importer).toHaveBeenCalledWith(directory, expect.any(Function), expect.any(Function), true)
+	})
+	it("stamps the gate from delivery-only status instead of historical aggregation", async () => {
+		await seedCoverageEvents(accountKey(content.account), 1)
+		acceptEventBatches()
+		const fullStatus = vi.spyOn(outbox, "readOutboxStatus").mockImplementation(() => {
+			throw new Error("historical aggregation must not gate delivery")
+		})
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(1)
+		expect(fullStatus).not.toHaveBeenCalled()
+	})
+	it("delivers from the projection rather than aggregating the full status", async () => {
+		await seedCoverageEvents(accountKey(content.account), 1)
+		acceptEventBatches()
+		const fullStatus = vi.spyOn(outbox, "readOutboxStatus").mockImplementation(() => {
+			throw new Error("full status aggregation must not run during delivery")
+		})
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(1)
+		expect(fullStatus).not.toHaveBeenCalled()
 	})
 	it.each([
 		"backoff",
@@ -429,6 +498,127 @@ describe("account-fenced reporting delivery", () => {
 		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
 		expect(posts()).toHaveLength(1)
 		expect(http.mock.calls.some(([url]) => String(url).endsWith("pr-cost-events:batchIngest"))).toBe(true)
+	})
+
+	it("delivers canonical-equivalent legacy account keys and drains beyond the old attempt cap", async () => {
+		const legacyKey = accountKey({ ...content.account, apiUrl: "https://app.kimchi.dev/api" })
+		config.endpoint = "https://api.cast.ai"
+		await seedCoverageEvents(legacyKey, 400)
+		acceptEventBatches()
+		const statusCalls = vi.spyOn(outbox, "outboxDeliveryStatus")
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(4)
+		expect(statusCalls).toHaveBeenCalledTimes(1)
+		expect(http.mock.calls.filter(([url]) => String(url).endsWith("api-keys:verify"))).toHaveLength(1)
+		expect(outbox.readOutboxStatus(directory).find((status) => status.accountKey === legacyKey)).toMatchObject({
+			pending: 0,
+			acknowledged: 400,
+			batches: 0,
+		})
+		expect(
+			outbox.readOutboxStatus(directory).find((status) => status.accountKey === accountKey(content.account)),
+		).toBeUndefined()
+	})
+
+	it("does not treat a legacy URL belonging to another organization as the credential", async () => {
+		const foreignKey = accountKey({ ...content.account, apiUrl: "https://app.kimchi.dev/api", organizationId: user })
+		config.endpoint = "https://api.cast.ai"
+		await seedCoverageEvents(foreignKey, 1)
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(0)
+		expect(JSON.parse(backendFor(directory).getNote("pr-cost-delivery", foreignKey) ?? "{}").error).toBe(
+			"PR reporting is waiting for the original account",
+		)
+	})
+
+	it("stops draining event batches when the pass's deadline cancels the fourth upload", async () => {
+		const storedKey = accountKey(content.account)
+		await seedCoverageEvents(storedKey, 500)
+		const controller = new AbortController()
+		acceptEventBatches((attempt) => {
+			if (attempt === 4) controller.abort()
+			return undefined
+		})
+		await deliverEvents(directory, "/project", controller.signal, () => {})
+		expect(eventUploads()).toHaveLength(4)
+		expect(outbox.readOutboxStatus(directory).find((status) => status.accountKey === storedKey)).toMatchObject({
+			pending: 200,
+			acknowledged: 300,
+		})
+	})
+
+	it("delivers two canonical-equivalent own keys with one verification and status read", async () => {
+		const legacyKey = accountKey({ ...content.account, apiUrl: "https://app.kimchi.dev/api" })
+		const currentKey = accountKey({ ...content.account, apiUrl: "https://api.cast.ai" })
+		config.endpoint = "https://api.cast.ai"
+		await seedCoverageEvents(currentKey, 400, [legacyKey, currentKey])
+		acceptEventBatches()
+		const statusCalls = vi.spyOn(outbox, "outboxDeliveryStatus")
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(4)
+		expect(statusCalls).toHaveBeenCalledTimes(1)
+		expect(http.mock.calls.filter(([url]) => String(url).endsWith("api-keys:verify"))).toHaveLength(1)
+		for (const key of [legacyKey, currentKey])
+			expect(outbox.readOutboxStatus(directory).find((status) => status.accountKey === key)).toMatchObject({
+				pending: 0,
+				acknowledged: 200,
+				batches: 0,
+			})
+	})
+
+	it.each([
+		{
+			label: "a different user",
+			key: accountKey({ ...content.account, apiUrl: "https://app.kimchi.dev/api", userId: requestId }),
+		},
+		{
+			label: "a non-UUID user",
+			key: accountKey({ ...content.account, apiUrl: "https://app.kimchi.dev/api", userId: "not-a-uuid" }),
+		},
+		{ label: "a malformed stored key", key: "not-json" },
+	])("defers $label without sending its events", async ({ key }) => {
+		config.endpoint = "https://api.cast.ai"
+		await seedCoverageEvents(key, 1)
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(0)
+		expect(JSON.parse(backendFor(directory).getNote("pr-cost-delivery", key) ?? "{}").error).toBe(
+			"PR reporting is waiting for the original account",
+		)
+	})
+
+	it("retains pending events and backoff when a later batch is rate limited", async () => {
+		const storedKey = accountKey(content.account)
+		await seedCoverageEvents(storedKey, 500)
+		acceptEventBatches((attempt) =>
+			attempt === 4 ? new Response("rate-limited", { status: 429, headers: { "Retry-After": "120" } }) : undefined,
+		)
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(4)
+		expect(outbox.readOutboxStatus(directory).find((status) => status.accountKey === storedKey)).toMatchObject({
+			pending: 200,
+			acknowledged: 300,
+			batches: 1,
+		})
+		const retry = JSON.parse(backendFor(directory).getNote("pr-cost-delivery", storedKey) ?? "{}")
+		expect(retry).toMatchObject({ attempts: 1, error: "PR cost event upload returned HTTP 429" })
+		expect(retry.retryAt - Date.now()).toBeGreaterThan(60_000)
+		expect(backendFor(directory).getOutboxBatch(storedKey)).not.toBeUndefined()
+	})
+
+	it("stops after consent changes between batches and retains remaining events", async () => {
+		const storedKey = accountKey(content.account)
+		await seedCoverageEvents(storedKey, 500)
+		acceptEventBatches(async (attempt) => {
+			if (attempt === 2) await setReportingEnabled(directory, false)
+			return undefined
+		})
+		await deliverEvents(directory, "/project", new AbortController().signal, () => {})
+		expect(eventUploads()).toHaveLength(2)
+		expect(outbox.readOutboxStatus(directory).find((status) => status.accountKey === storedKey)).toMatchObject({
+			pending: 400,
+			acknowledged: 100,
+			batches: 1,
+		})
 	})
 
 	it("keeps an event batch without an error when the credential changes during its upload", async () => {
@@ -1812,7 +2002,8 @@ describe("repository identity for work without a PR", () => {
 		expect(posts()).toHaveLength(1)
 		await run()
 		expect(lookup).toHaveBeenCalledTimes(2)
-		const next = Date.now() + 31_000
+		// The group with the unresolved identity waits out its retry window before looking up again.
+		const next = Date.now() + 5 * 60_000 + 1_000
 		vi.spyOn(Date, "now").mockReturnValue(next)
 		lookup.mockResolvedValue({ provider: "github", host: "github.com", name: "team/slow", id: "99" })
 		await run()
@@ -2076,8 +2267,10 @@ describe("incremental translation", () => {
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
 		})
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		// The first chunk leaves the pass without time for another.
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
 			clock.mockReturnValue(start + 4_800)
@@ -2152,6 +2345,69 @@ describe("incremental translation", () => {
 		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(3)
 	})
 
+	it("backs off a group whose translation prelude exceeds its time limit", async () => {
+		await seedLinked()
+		const backend = backendFor(directory)
+		const build = vi.mocked(eventBuilder.buildEvents)
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		build.mockRejectedValueOnce(new TranslationPreludeTimeoutError("PR reporting translation time limit exceeded"))
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		try {
+			await run()
+			expect(Object.keys(JSON.parse(backend.getNote("agent", "translation-stalled") ?? "{}"))).toHaveLength(1)
+			expect(backend.getNote("agent", "translation-plan")).toBeUndefined()
+			expect(backend.getNote("agent", "translation-progress")).toBeUndefined()
+			expect(backend.markedRecords()).not.toEqual([])
+
+			// The identical group does not pay for another prelude until its retry window expires.
+			await run()
+			expect(build).toHaveBeenCalledTimes(1)
+			expect((await readReportingState(directory)).error).toBe(
+				"Some PR cost events are waiting for complete original evidence or a repository identity",
+			)
+
+			clock.mockReturnValue(start + 5 * 60_000 + 1_000)
+			await run()
+			expect(build).toHaveBeenCalledTimes(2)
+		} finally {
+			clock.mockRestore()
+		}
+	})
+
+	it("does not stall a group when its parent capture is cancelled", async () => {
+		await seedLinked()
+		const backend = backendFor(directory)
+		const controller = new AbortController()
+		vi.mocked(eventBuilder.buildEvents).mockImplementationOnce(() => {
+			const reason = new TranslationPreludeTimeoutError("PR reporting translation time limit exceeded")
+			controller.abort(reason)
+			return Promise.reject(reason)
+		})
+		await reconcileReporting(directory, "/project", controller.signal, () => {})
+		expect(backend.getNote("agent", "translation-stalled")).toBeUndefined()
+		expect(backend.getNote("agent", "translation-plan")).toBeUndefined()
+		expect(backend.markedRecords()).not.toEqual([])
+		expect((await readReportingState(directory)).error).toBeUndefined()
+	})
+
+	it("does not stall on an unrelated error with the prelude timeout message", async () => {
+		await seedLinked()
+		vi.mocked(eventBuilder.buildEvents).mockRejectedValueOnce(new Error("PR reporting translation time limit exceeded"))
+		await reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		expect(backendFor(directory).getNote("agent", "translation-stalled")).toBeUndefined()
+	})
+
+	it("does not stall on a reconciliation lease failure", async () => {
+		await seedLinked()
+		await expect(
+			reconcileReporting(directory, "/project", new AbortController().signal, () => {
+				throw new Error("lease lost")
+			}),
+		).rejects.toThrow("lease lost")
+		expect(backendFor(directory).getNote("agent", "translation-stalled")).toBeUndefined()
+	})
+
 	it("a corrupt stalled note discards the windows rather than freezing every pass", async () => {
 		await seedLinked()
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))
@@ -2172,7 +2428,7 @@ describe("incremental translation", () => {
 			expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
 			// The group still reports its own waiting state; a corrupt note never becomes a capture failure.
 			expect((await readReportingState(directory)).error).toBe(
-				"Some PR cost events are waiting for complete original evidence",
+				"Some PR cost events are waiting for complete original evidence or a repository identity",
 			)
 			clock.mockReturnValue(Date.now() + 30_000)
 			await run()
@@ -2210,9 +2466,39 @@ describe("incremental translation", () => {
 		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
 	})
 
-	it("a later attempt that resolves the group lifts its stalled window", async () => {
+	it("a group whose repository identity stays unknown waits out the retry window instead of rebuilding each pass", async () => {
 		await seedLinked()
 		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({ accounts: [], units: [], unresolved: [] })
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		const clock = vi.spyOn(Date, "now")
+		const start = Date.now()
+		try {
+			// The next 30 s tick, past the lookup cooldown: the unchanged group does not re-pay its prelude.
+			clock.mockReturnValue(start + 31_000)
+			await run()
+			expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+			// The group reports that it waits, not a capture failure.
+			expect((await readReportingState(directory)).error).toBe(
+				"Some PR cost events are waiting for complete original evidence or a repository identity",
+			)
+			clock.mockReturnValue(start + 5 * 60_000 + 1_000)
+			await run()
+			expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+		} finally {
+			clock.mockRestore()
+		}
+		// Unsettled identities keep the markers for a later round.
+		expect(backendFor(directory).markedRecords()).not.toEqual([])
+	})
+
+	it("a later attempt that resolves the group lifts its stalled window", async () => {
+		await seedLinked()
+		const lookup = vi
+			.spyOn(providerApi, "lookupRepositoryIdentity")
+			.mockRejectedValue(new LookupError("offline", "retry"))
 		vi.mocked(eventBuilder.buildEvents).mockResolvedValueOnce({
 			accounts: [],
 			units: [],
@@ -2224,6 +2510,7 @@ describe("incremental translation", () => {
 		const backend = backendFor(directory)
 		const stamped = backend.getNote("agent", "translation-stalled")
 		expect(Object.keys(JSON.parse(stamped ?? "{}"))).toHaveLength(1)
+		lookup.mockResolvedValue({ provider: "github", host: "github.com", name: "example/repo", id: "42" })
 		const clock = vi.spyOn(Date, "now")
 		try {
 			clock.mockReturnValue(Date.now() + 5 * 60_000 + 1_000)
@@ -2256,8 +2543,10 @@ describe("incremental translation", () => {
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
 		})
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		// The first chunk leaves the pass without time for another: the notes suspend the group mid-way.
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
 			clock.mockReturnValue(start + 4_800)
@@ -2303,8 +2592,10 @@ describe("incremental translation", () => {
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
 		})
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
 			clock.mockReturnValue(start + 4_800)
 		})
@@ -2342,8 +2633,10 @@ describe("incremental translation", () => {
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
 		})
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
 			clock.mockReturnValue(start + 4_800)
 		})
@@ -2357,6 +2650,280 @@ describe("incremental translation", () => {
 		const observed = () =>
 			vi.mocked(outbox.observeEvents).mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
 		expect(observed()).toEqual(entities)
+		expect(backendFor(directory).markedRecords()).toEqual([])
+	})
+
+	it("a suspended group resumes its plan when records arrive between passes, and leaves only them marked", async () => {
+		await seedLinked()
+		const account = accountKey(content.account)
+		const entities = Array.from({ length: 250 }, (_, index) => `entity-${index}`)
+		const facts = entities.map((entityId) => ({
+			entityId,
+			source: "kimchi",
+			sourceVersion: "test",
+			deviceId: requestId,
+			observeTime: "2026-10-04T12:00:00Z",
+			coverage: { code: "fixture", count: "1" },
+		}))
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [{ account: content.account, facts, recordHashes: [] }],
+			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
+			unresolved: [],
+		})
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
+		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
+		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
+			clock.mockReturnValue(start + 4_800)
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		clock.mockRestore()
+		const backend = backendFor(directory)
+		const before = new Set(backend.markedRecords().map((row) => row.recordHash))
+		// A live session appends to the same work while the group is suspended: a new marker joins the group.
+		await appendFile(
+			join(directory, "work-attribution", "source.jsonl"),
+			`${JSON.stringify({
+				version: 1,
+				type: "request",
+				workId: "55555555-5555-4555-8555-555555555555",
+				sessionId: "private-session",
+				recordedAt: "2026-10-04T12:05:00.000Z",
+				requestId: "66666666-6666-4666-8666-666666666666",
+				startedAt: "2026-10-04T12:05:00.000Z",
+				scope: { account: content.account, repository: "/private/repo/.git" },
+			})}\n`,
+		)
+		await run()
+		// The plan carried over despite the new record: one build, every planned entity committed.
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		const observed = () =>
+			vi.mocked(outbox.observeEvents).mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
+		expect(observed()).toEqual(entities)
+		// Only the planned markers cleared; the record captured after the plan waits for its own round.
+		const left = backend.markedRecords()
+		expect(left).toHaveLength(1)
+		expect(before.has(left[0].recordHash)).toBe(false)
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+		expect(backend.markedRecords()).toEqual([])
+	})
+
+	it("an unsettled resumed plan leaves new markers ready for the next round", async () => {
+		await seedLinked()
+		vi.spyOn(providerApi, "lookupRepositoryIdentity").mockRejectedValue(new LookupError("offline", "retry"))
+		const account = accountKey(content.account)
+		const entities = Array.from({ length: 250 }, (_, index) => `entity-${index}`)
+		const facts = entities.map((entityId) => ({
+			entityId,
+			source: "kimchi",
+			sourceVersion: "test",
+			deviceId: requestId,
+			observeTime: "2026-10-04T12:00:00Z",
+			coverage: { code: "fixture", count: "1" },
+		}))
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [{ account: content.account, facts, recordHashes: [] }],
+			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
+			unresolved: [],
+		})
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
+		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
+		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
+			clock.mockReturnValue(start + 4_800)
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		clock.mockRestore()
+		const backend = backendFor(directory)
+		expect(backend.getNote("agent", "translation-plan")).toBeDefined()
+
+		await appendFile(
+			join(directory, "work-attribution", "source.jsonl"),
+			`${JSON.stringify({
+				version: 1,
+				type: "request",
+				workId: "55555555-5555-4555-8555-555555555555",
+				sessionId: "private-session",
+				recordedAt: "2026-10-04T12:05:00.000Z",
+				requestId: "66666666-6666-4666-8666-666666666666",
+				startedAt: "2026-10-04T12:05:00.000Z",
+				scope: { account: content.account, repository: "/private/repo/.git" },
+			})}\n`,
+		)
+		await run()
+		// The old plan resumes without another prelude, but its added marker does not rest with the old result.
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		expect(Object.keys(JSON.parse(backend.getNote("agent", "translation-stalled") ?? "{}"))).toHaveLength(0)
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+		expect(Object.keys(JSON.parse(backend.getNote("agent", "translation-stalled") ?? "{}"))).toHaveLength(1)
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+		expect(backend.markedRecords()).not.toEqual([])
+	})
+
+	it("a suspended plan is rebuilt when a marker it covers is no longer pending", async () => {
+		await seedLinked()
+		const account = accountKey(content.account)
+		const entities = Array.from({ length: 250 }, (_, index) => `entity-${index}`)
+		vi.mocked(eventBuilder.buildEvents).mockResolvedValue({
+			accounts: [
+				{
+					account: content.account,
+					facts: entities.map((entityId) => ({
+						entityId,
+						source: "kimchi",
+						sourceVersion: "test",
+						deviceId: requestId,
+						observeTime: "2026-10-04T12:00:00Z",
+						coverage: { code: "fixture", count: "1" },
+					})),
+					recordHashes: [],
+				},
+			],
+			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
+			unresolved: [],
+		})
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
+		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
+		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
+			clock.mockReturnValue(start + 4_800)
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		clock.mockRestore()
+		const backend = backendFor(directory)
+		// Another process finished one of the plan's records in between: the plan no longer describes pending work.
+		const [first] = backend.markedRecords()
+		backend.tx(() => backend.clearTranslation(first.recordHash))
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(2)
+		expect(backend.markedRecords()).toEqual([])
+	})
+
+	it("a plan whose construction outlasts the pass is saved and resumed, not rebuilt every pass", async () => {
+		await seedLinked()
+		const account = accountKey(content.account)
+		const entities = Array.from({ length: 150 }, (_, index) => `entity-${index}`)
+		const built = {
+			accounts: [
+				{
+					account: content.account,
+					facts: entities.map((entityId) => ({
+						entityId,
+						source: "kimchi",
+						sourceVersion: "test",
+						deviceId: requestId,
+						observeTime: "2026-10-04T12:00:00Z",
+						coverage: { code: "fixture", count: "1" },
+					})),
+					recordHashes: [],
+				},
+			],
+			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
+			unresolved: [],
+		}
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
+		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
+		// A large group's read, report and event build take longer than one 5 s pass.
+		vi.mocked(eventBuilder.buildEvents).mockImplementation(async () => {
+			clock.mockReturnValue(start + 6_000)
+			return built
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		clock.mockRestore()
+		const backend = backendFor(directory)
+		// The finished prelude is kept even though the pass had no time left to commit a chunk.
+		expect(backend.getNote("agent", "translation-plan")).toBeDefined()
+		expect((await readReportingState(directory)).error).toBeUndefined()
+		await run()
+		expect(eventBuilder.buildEvents).toHaveBeenCalledTimes(1)
+		const observed = vi
+			.mocked(outbox.observeEvents)
+			.mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
+		expect(observed).toEqual(entities)
+		expect(backend.markedRecords()).toEqual([])
+	})
+
+	it("the suspended group resumes before another changed group can take over the plan slot", async () => {
+		await seedLinked()
+		const big = "55555555-5555-4555-8555-555555555555"
+		const small = "11111111-1111-4111-8111-111111111111"
+		const smallRequest = (index: number) => ({
+			version: 1,
+			type: "request",
+			workId: small,
+			sessionId: "other-session",
+			recordedAt: `2026-10-04T12:0${index}:00.000Z`,
+			requestId: `7777777${index}-7777-4777-8777-777777777777`,
+			startedAt: `2026-10-04T12:0${index}:00.000Z`,
+			scope: { account: content.account, repository: "/private/repo/.git" },
+		})
+		const journal = join(directory, "work-attribution", "source.jsonl")
+		await appendFile(journal, `${JSON.stringify(smallRequest(1))}\n`)
+		const account = accountKey(content.account)
+		const fixture = (prefix: string, count: number) => {
+			const ids = Array.from({ length: count }, (_, index) => `${prefix}-${index}`)
+			return {
+				ids,
+				built: {
+					accounts: [
+						{
+							account: content.account,
+							facts: ids.map((entityId) => ({
+								entityId,
+								source: "kimchi",
+								sourceVersion: "test",
+								deviceId: requestId,
+								observeTime: "2026-10-04T12:00:00Z",
+								coverage: { code: "fixture", count: "1" },
+							})),
+							recordHashes: [],
+						},
+					],
+					units: ids.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
+					unresolved: [],
+				},
+			}
+		}
+		const bigGroup = fixture("big", 250)
+		const smallGroup = fixture("small", 1)
+		const ofBig = (stored: readonly { workId: string }[]) => stored.some((row) => row.workId === big)
+		vi.mocked(eventBuilder.buildEvents).mockImplementation(async (stored) =>
+			ofBig(stored) ? bigGroup.built : smallGroup.built,
+		)
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
+		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
+		// The small group (first by work id) completes; the big group's first chunk then exhausts the pass.
+		vi.mocked(outbox.observeEvents).mockImplementation((_dir, _account, list) => {
+			if (list[0]?.entityId === "big-0") clock.mockReturnValue(start + 4_800)
+		})
+		const run = () => reconcileReporting(directory, "/project", new AbortController().signal, () => {})
+		await run()
+		clock.mockRestore()
+		const bigBuilds = () => vi.mocked(eventBuilder.buildEvents).mock.calls.filter(([stored]) => ofBig(stored)).length
+		expect(bigBuilds()).toBe(1)
+		// The small group changes again while the big one is suspended.
+		await appendFile(journal, `${JSON.stringify(smallRequest(2))}\n`)
+		await run()
+		// The big group resumed its plan instead of losing the slot to the small group's rebuild.
+		expect(bigBuilds()).toBe(1)
+		const observed = vi
+			.mocked(outbox.observeEvents)
+			.mock.calls.flatMap(([, , list]) => list.map((fact) => fact.entityId))
+		expect(observed).toEqual(expect.arrayContaining(bigGroup.ids))
 		expect(backendFor(directory).markedRecords()).toEqual([])
 	})
 

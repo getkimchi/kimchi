@@ -12,6 +12,11 @@ function call(name: string, status: "running" | "ok" | "error" | "cancelled" = "
 	return { id: `root/${name}`, name, args: JSON.stringify(args), status }
 }
 
+/** A call whose args preview Pi cut: it keeps 200 characters and ends them with dots. */
+function cutCall(name: string, id: string, args: unknown) {
+	return { id, name, args: `${JSON.stringify(args).slice(0, 197)}...`, status: "ok" as const }
+}
+
 function failed(text: string): AgentToolResult<unknown> {
 	return { content: [{ type: "text", text }], details: {} }
 }
@@ -43,6 +48,43 @@ describe("codemodeActionSummary", () => {
 				],
 			}),
 		).toBe("read 1 file, searched for 1 pattern")
+	})
+
+	it("counts calls apart when Pi cut their args preview", () => {
+		// The directory fills the preview, so both previews below are the same text.
+		const dir = "d".repeat(200)
+		expect(
+			codemodeActionSummary({
+				calls: [
+					cutCall("read", "root/1", { path: `${dir}/one.txt` }),
+					cutCall("read", "root/2", { path: `${dir}/two.txt` }),
+					call("read", "ok", { path: "a.ts" }),
+					call("read", "ok", { path: "a.ts" }),
+					cutCall("grep", "root/5", { pattern: `${dir}one` }),
+					cutCall("grep", "root/6", { pattern: `${dir}two` }),
+				],
+			}),
+		).toBe("read 3 files, searched for 2 patterns")
+	})
+
+	it("counts two equal calls twice when their args preview is cut", () => {
+		// A cut preview cannot say whether the two calls read the same file.
+		const path = `${"d".repeat(200)}/one.txt`
+		expect(
+			codemodeActionSummary({ calls: [cutCall("read", "root/1", { path }), cutCall("read", "root/2", { path })] }),
+		).toBe("read 2 files")
+	})
+
+	it("counts a call without an args preview on its own", () => {
+		expect(
+			codemodeActionSummary({
+				calls: [
+					{ id: "root/1", name: "read", status: "ok" },
+					call("read", "ok", { path: "a.ts" }),
+					call("read", "ok", { path: "a.ts" }),
+				],
+			}),
+		).toBe("read 2 files")
 	})
 
 	it("names the tool when every other call is the same tool", () => {
@@ -111,6 +153,42 @@ describe("codemodeFailureReason", () => {
 				),
 			),
 		).toBe("TypeError: cannot read property 'items' of undefined")
+	})
+
+	it("ignores the marker in the script's own output", () => {
+		expect(
+			codemodeFailureReason(
+				failed(
+					"Script failed\nWall time 0.0 seconds\nOutput:\napp.log:17: Script error: disk full\nScript error:\nnot the reason\nScript error:\nTypeError: cannot read property 'items' of undefined\n    at <anonymous> (codemode.js:3:8)\n\nNo tool calls were made.",
+				),
+			),
+		).toBe("TypeError: cannot read property 'items' of undefined")
+	})
+
+	it("keeps an error message that contains the marker whole", () => {
+		expect(
+			codemodeFailureReason(
+				failed(
+					"Script failed\nWall time 0.0 seconds\nOutput:\n\nScript error:\nError: upstream said: Script error: disk full\n    at <anonymous> (codemode.js:1:7)\n\nNo tool calls were made.",
+				),
+			),
+		).toBe("Error: upstream said: Script error: disk full")
+	})
+
+	it("finds the marker that Pi's truncation glues to its notice", () => {
+		// Pi's result for long output: the header block, then one text block
+		// whose kept tail starts at the error marker, right after the notice.
+		const result: AgentToolResult<unknown> = {
+			content: [
+				{ type: "text", text: "Script failed\nWall time 0.0 seconds\nOutput:\n" },
+				{
+					type: "text",
+					text: "Warning: truncated output (original token count: 2500)\nTotal output lines: 401\n\nline 1\nline 2…400 tokens truncated…Script error:\nError: upstream failed\n    at <anonymous> (codemode.js:9:3)\n\n[Full output: /tmp/out.txt (read with offset/limit)]",
+				},
+			],
+			details: {},
+		}
+		expect(codemodeFailureReason(result)).toBe("Error: upstream failed")
 	})
 
 	it("returns the first line of an error thrown before the script ran", () => {

@@ -112,7 +112,9 @@ describe("optional PR reporting", () => {
 			finished = true
 		})
 		try {
-			await vi.waitFor(() => expect(finished).toBe(true), { timeout: 100 })
+			// The read stays blocked until `finally`, so a longer limit cannot pass a
+			// handler that waits for it. A stall past a short limit failed it falsely.
+			await vi.waitFor(() => expect(finished).toBe(true), { timeout: 3_000 })
 			expect(supervisor.requestWorkReconciliation).not.toHaveBeenCalled()
 		} finally {
 			release(state)
