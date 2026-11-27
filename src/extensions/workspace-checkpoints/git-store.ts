@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
-import { dirname, join, resolve, sep } from "node:path"
+import { basename, dirname, join, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
@@ -74,10 +74,35 @@ function skipped(reason: SkipReason, path: string): SkippedPath {
 	return { path, reason }
 }
 
+const CREDENTIAL_BASENAMES = new Set([
+	".npmrc",
+	".netrc",
+	".pypirc",
+	".pgpass",
+	".git-credentials",
+	"id_rsa",
+	"id_dsa",
+	"id_ecdsa",
+	"id_ed25519",
+	"credentials.json",
+	"service-account.json",
+	"service_account.json",
+	"secrets.json",
+	"secret.json",
+	"token.json",
+])
+
 function excluded(path: string, nestedDirectory: boolean): SkippedPath | undefined {
 	const parts = path.split("/")
 	const name = parts.at(-1) ?? path
-	if (name === ".env" || name.startsWith(".env.")) return skipped("credentials", path)
+	if (
+		name === ".env" ||
+		name.startsWith(".env.") ||
+		CREDENTIAL_BASENAMES.has(name) ||
+		parts.some((part) => part === ".ssh" || part === ".gnupg")
+	) {
+		return skipped("credentials", path)
+	}
 	if (parts.some((part) => GENERATED_DIRS.has(part))) return skipped("generated", path)
 	if (nestedDirectory) return skipped("nested repository", path)
 	return undefined
@@ -96,8 +121,10 @@ export class WorkspaceGitStore {
 	static async open(root: string, gitDir: string, timeoutMs = 30_000): Promise<WorkspaceGitStore> {
 		const canonicalRoot = await realpath(root)
 		const store = new WorkspaceGitStore(canonicalRoot, gitDir, timeoutMs)
-		await mkdir(dirname(gitDir), { recursive: true })
+		await mkdir(dirname(gitDir), { recursive: true, mode: 0o700 })
+		await chmod(dirname(gitDir), 0o700)
 		await store.run(["init", "--bare", gitDir], { cwd: canonicalRoot })
+		await chmod(gitDir, 0o700)
 		return store
 	}
 
@@ -282,8 +309,8 @@ export class WorkspaceGitStore {
 	}
 
 	private async restoreFile(treeSha: string, path: string): Promise<void> {
-		await this.ensureParent(path)
-		const target = join(this.root, path)
+		const parent = await this.ensureParent(path)
+		const target = join(parent, basename(path))
 		const existing = await lstat(target).catch(() => undefined)
 		if (existing?.isSymbolicLink()) throw new Error(`Refusing to replace symlink ${path}`)
 		const content = await this.privateGit(["show", `${treeSha}:${path}`])
@@ -292,12 +319,37 @@ export class WorkspaceGitStore {
 		if (mode.startsWith("100755 ")) await chmod(target, 0o755)
 	}
 
-	private async ensureParent(path: string): Promise<void> {
-		const parent = dirname(join(this.root, path))
-		await mkdir(parent, { recursive: true })
-		const canonical = await realpath(parent)
+	private async ensureParent(path: string): Promise<string> {
+		const gitDir = await this.main(["rev-parse", "--absolute-git-dir"]).catch(() => join(this.root, ".git"))
+		let current = this.root
+		for (const component of dirname(path).split("/")) {
+			current = join(current, component)
+			if (current === gitDir || current.startsWith(`${gitDir}${sep}`)) {
+				throw new Error(`Refusing to write into Git metadata through ${path}`)
+			}
+			const info = await lstat(current).catch(() => undefined)
+			if (info?.isSymbolicLink()) throw new Error(`Refusing to follow symlinked checkpoint parent ${current}`)
+			if (info && !info.isDirectory()) throw new Error(`Checkpoint parent is not a directory: ${current}`)
+		}
+		const canonical = await realpath(dirname(join(this.root, path)))
 		if (canonical !== this.root && !canonical.startsWith(`${this.root}${sep}`)) {
 			throw new Error(`Checkpoint path ${path} resolves outside the workspace`)
+		}
+		await mkdir(canonical, { recursive: true })
+		return canonical
+	}
+
+	private async assertSafetyPathsCovered(beforeTree: string, entries: string[]): Promise<void> {
+		for (let i = 0; i < entries.length; i++) {
+			const operation = entries[i]
+			const path = normalizeRelative(entries[++i])
+			if (operation === "D") continue
+			const preserved = await this.privateText(["cat-file", "-e", `${beforeTree}:${path}`])
+				.then(() => true)
+				.catch(() => false)
+			if (!preserved) {
+				throw new Error(`Refusing to restore ${path}: its current contents are not covered by the safety checkpoint`)
+			}
 		}
 	}
 
@@ -317,6 +369,7 @@ export class WorkspaceGitStore {
 			checkpoint,
 		])
 		const entries = differences.toString("utf8").split("\0").filter(Boolean)
+		await this.assertSafetyPathsCovered(beforeTree, entries)
 		let restoredPaths = 0
 		for (let i = 0; i < entries.length; i++) {
 			const change = entries[i]
@@ -368,6 +421,6 @@ export async function writeCheckpointMetadata(dir: string, record: CheckpointRec
 	await mkdir(dir, { recursive: true })
 	const target = join(dir, `${record.id}.json`)
 	const temporary = `${target}.${randomUUID()}.tmp`
-	await writeFile(temporary, JSON.stringify(record, null, 2))
+	await writeFile(temporary, JSON.stringify(record, null, 2), { mode: 0o600 })
 	await rename(temporary, target)
 }

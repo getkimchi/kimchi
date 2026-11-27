@@ -1,9 +1,19 @@
 import { execFile } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { storageKey } from "./git-store.js"
 import { CheckpointStore } from "./store.js"
 
 const execFileAsync = promisify(execFile)
@@ -145,5 +155,66 @@ describe("CheckpointStore", () => {
 		const twoAgain = await open("two")
 		expect(oneAgain.checkpointIds).toEqual(one.checkpointIds)
 		expect(twoAgain.checkpointIds).toEqual(two.checkpointIds)
+	})
+
+	it("skips credential files rather than copying them into checkpoint history", async () => {
+		write(".npmrc", "//registry.example/:_authToken=fake-token")
+		write("id_rsa", "fake-private-key")
+		write(".netrc", "machine example.com login fake password fake")
+		const store = await open()
+		const checkpoint = await store.capture({ trigger: "session-start" })
+		expect(checkpoint.skippedPaths).toEqual(
+			expect.arrayContaining([
+				{ path: ".npmrc", reason: "credentials" },
+				{ path: ".netrc", reason: "credentials" },
+				{ path: "id_rsa", reason: "credentials" },
+			]),
+		)
+		expect(checkpoint.includedPathPreview).not.toEqual(expect.arrayContaining([".npmrc", ".netrc", "id_rsa"]))
+	})
+
+	it("refuses to follow a symlinked parent into Git hooks", async () => {
+		mkdirSync(join(repo, "dir", "hooks"), { recursive: true })
+		write("dir/hooks/pre-commit", "CHECKPOINT_PAYLOAD")
+		const store = await open()
+		const checkpoint = await store.capture({ trigger: "session-start" })
+		rmSync(join(repo, "dir"), { recursive: true, force: true })
+		symlinkSync(".git", join(repo, "dir"))
+		await expect(store.restore(checkpoint.id)).rejects.toThrow("symbolic link")
+		expect(readFileSync(join(repo, "seed.txt"), "utf8")).toBe("original\n")
+		expect(() => statSync(join(repo, ".git", "hooks", "pre-commit"))).toThrow("ENOENT")
+	})
+
+	it("refuses to overwrite a large untracked file omitted by the safety checkpoint", async () => {
+		write("artifact.bin", "old candidate")
+		const store = await open()
+		const checkpoint = await store.capture({ trigger: "manual", label: "old" })
+		rmSync(join(repo, "artifact.bin"))
+		await store.capture({ trigger: "turn-end" })
+		write("artifact.bin", new Uint8Array(11 * 1024 * 1024))
+		await expect(store.restore(checkpoint.id)).rejects.toThrow(
+			"current contents are not covered by the safety checkpoint",
+		)
+		expect(statSync(join(repo, "artifact.bin")).size).toBe(11 * 1024 * 1024)
+	})
+
+	it("preserves ignored untracked contents omitted by the safety checkpoint", async () => {
+		writeFileSync(join(repo, ".git", "info", "exclude"), "local.json\n")
+		write("local.json", "old-candidate")
+		const store = await open()
+		const checkpoint = await store.capture({ trigger: "manual", label: "old" })
+		write("local.json", "LOCAL_CREDENTIAL=do-not-lose")
+		await store.capture({ trigger: "turn-end" })
+		await store.restore(checkpoint.id)
+		expect(readFileSync(join(repo, "local.json"), "utf8")).toBe("LOCAL_CREDENTIAL=do-not-lose")
+	})
+
+	it("creates owner-only snapshot repositories and metadata", async () => {
+		const store = await open()
+		const checkpoint = await store.capture({ trigger: "session-start" })
+		const root = join(state, storageKey(realpathSync(repo), "session-one"))
+		expect(statSync(root).mode & 0o777).toBe(0o700)
+		expect(statSync(join(root, "repo.git")).mode & 0o777).toBe(0o700)
+		expect(statSync(join(root, "checkpoints", `${checkpoint.id}.json`)).mode & 0o777).toBe(0o600)
 	})
 })

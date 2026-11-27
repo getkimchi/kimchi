@@ -20,7 +20,8 @@ The feature requires Git and a repository. Other workspaces get a logged unavail
 - `write-tree` deduplicates unchanged content. Consecutive mutation triggers without an intervening trigger may coalesce. If another mutation arrives first, another capture is taken; a multi-file change is never silently treated as one atomic checkpoint at request time.
 - Tracked changes, eligible untracked files, shell edits, and subagent edits are captured. File contents are binary-safe.
 - The private index is separate from the project. Project refs, stash, hooks, index, branches, and history are not modified.
-- Git metadata, nested repositories, common dependency/build directories, `.env`/`.env.*` files, and untracked files larger than 10 MiB are excluded. Exclusions are returned in the checkpoint result so a missing required artifact cannot silently masquerade as a successful full capture.
+- Git metadata, nested repositories, common dependency/build directories, `.env`/`.env.*` files, and untracked files larger than 10 MiB are excluded. Common credential paths such as `.npmrc`, `.netrc`, private keys, and credential JSON files are also excluded. Exclusions are returned in the checkpoint result so a missing required artifact cannot silently masquerade as a successful full capture.
+- Per-session state directories are mode `0700` and checkpoint metadata files are mode `0600`. Project Git history is never used as secret-removal storage.
 - Capture failures are logged rather than breaking the session. Shutdown waits at most ten seconds for the owning session's pending capture; other sessions' queues and stores remain untouched.
 - Hard process death, incomplete in-flight writes, services, databases, networks, and external process state are outside this mechanism's guarantee.
 
@@ -32,7 +33,7 @@ The feature requires Git and a repository. Other workspaces get a logged unavail
 - `list` — inspect the current session's checkpoint IDs, labels, capture history, and exclusions.
 - `restore` — restore an explicitly named checkpoint.
 
-Restore first saves the current workspace as a safety checkpoint. It only handles tracked project paths from the checkpoint store and never deletes unrelated untracked work. It refuses cross-workspace and cross-branch restore. Restoration is always deliberate; there is no automatic "last green" rollback on failure, resume, or cancellation.
+Restore first saves the current workspace as a safety checkpoint. It refuses symlinked path components and writes into `.git`, and rejects targets whose current bytes are not covered by that checkpoint. It preserves unrelated untracked work and refuses cross-workspace and cross-branch restores. Restoration is always deliberate; there is no automatic "last green" rollback on failure, resume, or cancellation.
 
 ## Deadline finalization
 
