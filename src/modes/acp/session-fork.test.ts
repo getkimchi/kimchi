@@ -85,6 +85,10 @@ function makeHarness(options: { source?: ForkFakeSession; coldLoader?: boolean; 
 			const path = savedSessionPath(agentDir, params.cwd, params.sessionId)
 			const session = new ForkFakeSession(params.sessionId, path)
 			session.branch = SessionManager.open(path).getBranch()
+			const modelChange = session.branch.findLast((entry) => entry.type === "model_change")
+			if (modelChange) await session.setModel({ provider: modelChange.provider, id: modelChange.modelId })
+			const thinkingChange = session.branch.findLast((entry) => entry.type === "thinking_level_change")
+			if (thinkingChange) session.setThinkingLevel(thinkingChange.thinkingLevel)
 			return asSession(session)
 		},
 	})
@@ -152,6 +156,49 @@ describe("ACP session/fork", () => {
 			"cold transcript",
 		)
 		expect(readFileSync(sourcePath, "utf8")).toBe(sourceBefore)
+	})
+
+	it("filters inherited child associations and stamps affirmative ACP provenance", async () => {
+		const setup = makeHarness({ coldLoader: true })
+		const sourcePath = savedSource(setup.agentDir, setup.cwd, "source-with-child", "source transcript")
+		const manager = SessionManager.open(sourcePath)
+		manager.appendCustomEntry("subagents:record", {
+			id: "child-task",
+			agentId: "Reviewer",
+			sessionId: "child-session",
+			parentSessionId: "source-with-child",
+			toolCallId: "parent-spawn",
+			description: "Review source",
+			cwd: "/tmp/child-review",
+			sessionFile: "/tmp/child.jsonl",
+		})
+		const before = readFileSync(sourcePath, "utf8")
+
+		const result = await setup.agent.forkSession({ sessionId: "source-with-child", cwd: setup.cwd, mcpServers: [] })
+
+		const forkPath = savedSessionPath(setup.agentDir, setup.cwd, result.sessionId)
+		const forkContents = readFileSync(forkPath, "utf8")
+		expect(forkContents).not.toContain('"customType":"subagents:record"')
+		expect(forkContents.split("\n")[1]).toContain('"customType":"kimchi:acp-fork"')
+		expect(readFileSync(sourcePath, "utf8")).toBe(before)
+		expect(forkContents).toContain("source transcript")
+	})
+
+	it("rejects a parented source without affirmative ACP-fork provenance", async () => {
+		const setup = makeHarness({ coldLoader: true })
+		const directory = sessionDir(setup.agentDir, setup.cwd)
+		const manager = SessionManager.create(setup.cwd, directory, {
+			id: "unknown-child",
+			parentSession: "/tmp/unknown-parent.jsonl",
+		})
+		manager.appendMessage({ role: "user", content: [{ type: "text", text: "child transcript" }], timestamp: 1 })
+		const sourcePath = manager.getSessionFile()
+		if (!sourcePath) throw new Error("expected child transcript")
+
+		await expect(
+			setup.agent.forkSession({ sessionId: "unknown-child", cwd: setup.cwd, mcpServers: [] }),
+		).rejects.toMatchObject({ code: -32602 })
+		expect(setup.loadRequests).toEqual([])
 	})
 
 	it("preserves lineage and settings when Pi assigned a path and in-memory config before persistence", async () => {

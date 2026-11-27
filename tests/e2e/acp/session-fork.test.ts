@@ -5,6 +5,68 @@ import { expect, it } from "vitest"
 import { startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
 
+it("does not adopt delegated sessions when forking and reopening", async () => {
+	const fixture = await startAcpFixture({
+		artifactName: "fork-does-not-adopt-child",
+		clientCapabilities: { subagents: {} },
+		responses: [
+			{
+				match: (request) => requestBody(request).includes(PARENT_REQUEST),
+				toolCalls: [
+					{
+						function: {
+							name: "Agent",
+							arguments: JSON.stringify({
+								prompt: CHILD_TASK,
+								description: "Durable child",
+								subagent_type: "general-purpose",
+							}),
+						},
+					},
+				],
+			},
+			{
+				forSubagent: true,
+				match: (request) => requestBody(request).includes(CHILD_TASK),
+				toolCalls: [
+					{
+						function: { name: "read", arguments: JSON.stringify({ path: "child-source.txt" }) },
+					},
+				],
+			},
+			{ forSubagent: true, stream: [CHILD_RESULT] },
+			{ stream: ["Parent accepted the child result."] },
+		],
+	})
+	try {
+		const sourceId = await newSession(fixture, fixture.workDir)
+		expect((await prompt(fixture, sourceId, PARENT_REQUEST)).stopReason).toBe("end_turn")
+		const announcement = fixture.client.sessionUpdates.find(({ update }) => update.sessionUpdate === "subagent_update")
+		if (announcement?.update.sessionUpdate !== "subagent_update") {
+			throw new Error("Missing child announcement")
+		}
+
+		const fork = await fixture.conn.request("session/fork", {
+			sessionId: sourceId,
+			cwd: fixture.workDir,
+			mcpServers: [],
+		})
+		const childUpdates = () =>
+			fixture.client.sessionUpdates.filter(
+				({ sessionId, update }) => sessionId === fork.sessionId && update.sessionUpdate === "subagent_update",
+			)
+		expect(childUpdates()).toHaveLength(0)
+		expect(logFor(fixture.homeDir, fork.sessionId)).not.toContain('"customType":"subagents:record"')
+
+		await fixture.conn.request("session/close", { sessionId: fork.sessionId })
+		await fixture.conn.request("session/resume", { sessionId: fork.sessionId, cwd: fixture.workDir, mcpServers: [] })
+
+		expect(childUpdates()).toHaveLength(0)
+	} finally {
+		await fixture.stop()
+	}
+}, 90_000)
+
 it("forks a source at its tip and activates an independent session without replay", async () => {
 	const fixture = await startAcpFixture({
 		artifactName: "session-fork",
@@ -62,6 +124,14 @@ it("forks a source at its tip and activates an independent session without repla
 }, 90_000)
 
 const branchFixturePath = fileURLToPath(new URL("../fixtures/session-fork-branch.js", import.meta.url))
+
+const CHILD_TASK = "Read child-source.txt and return the persisted child marker."
+const PARENT_REQUEST = "Delegate the durable child investigation."
+const CHILD_RESULT = "persisted-child-result"
+
+function requestBody(request: { body?: unknown }): string {
+	return JSON.stringify(request.body ?? {})
+}
 
 function logFor(homeDir: string, id: string): string {
 	const root = join(homeDir, ".config", "kimchi", "harness", "sessions")

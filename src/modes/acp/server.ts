@@ -191,7 +191,6 @@ import {
 	ACP_REATTACH_MID_TURN_META_KEY,
 	buildToolCallId,
 } from "../../sandbox/worker/acp-protocol.js"
-import { getSessionRoles } from "../../session-visibility.js"
 import {
 	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
 	type BashBackgroundSettleData,
@@ -1330,6 +1329,7 @@ export class KimchiAcpAgent {
 		if (params.configOptions?.length) {
 			throw RequestError.invalidParams(undefined, "initial configOptions are not supported for session forks")
 		}
+		this.rejectSubagentMutation(params.sessionId)
 
 		const source = this.sessions.get(params.sessionId)
 		if (source?.turn || source?.unsolicitedTurn || source?.pendingPrompts?.size || source?.session.isCompacting) {
@@ -1360,7 +1360,7 @@ export class KimchiAcpAgent {
 			throw RequestError.invalidParams(undefined, `unknown or unsaved source session ${params.sessionId}`)
 		}
 
-		let header: Pick<SessionHeader, "id" | "cwd"> | null
+		let header: Pick<SessionHeader, "id" | "cwd" | "parentSession"> | null
 		try {
 			header = readSessionHeader(sourcePath)
 		} catch (err) {
@@ -1375,6 +1375,9 @@ export class KimchiAcpAgent {
 		}
 		if (!header || header.id !== params.sessionId) {
 			throw RequestError.invalidParams(undefined, `source session header id does not match ${params.sessionId}`)
+		}
+		if (header.parentSession && !hasAcpForkProvenance(sourcePath)) {
+			throw RequestError.invalidParams(undefined, `subagent session ${params.sessionId} is read-only`)
 		}
 		const expectedSourceCwd = source?.cwd ?? params.cwd
 		if (header.cwd !== expectedSourceCwd) {
@@ -1417,7 +1420,13 @@ export class KimchiAcpAgent {
 			// In-memory managers migrate entries and regenerate the selected
 			// branch without registering staging paths in Pi's process-wide live
 			// session set or rewriting the source file.
-			const stagedSource = SessionManager.inMemory(params.cwd, undefined, sourceEntries)
+			const independentEntries = sourceEntries.filter(
+				(entry) => entry.type !== "custom" || entry.customType !== "subagents:record",
+			)
+			// In-memory managers migrate entries and regenerate the selected
+			// branch without registering staging paths in Pi's process-wide live
+			// session set or rewriting the source file.
+			const stagedSource = SessionManager.inMemory(params.cwd, undefined, independentEntries)
 			const liveLeafId = source?.session.sessionManager.getLeafId()
 			if (liveLeafId) stagedSource.branch(liveLeafId)
 			const leafId = stagedSource.getLeafId()
@@ -1436,7 +1445,15 @@ export class KimchiAcpAgent {
 			}
 			mkdirSync(sessionDir, { recursive: true })
 			forkedPath = join(sessionDir, `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`)
-			const contents = `${[forkHeader, ...stagedSource.getEntries()].map((entry) => JSON.stringify(entry)).join("\n")}\n`
+			const provenance = {
+				type: "custom",
+				customType: ACP_FORK_ENTRY_TYPE,
+				data: { sourceSessionId: params.sessionId },
+				id: randomUUID(),
+				parentId: null,
+				timestamp,
+			}
+			const contents = `${[forkHeader, provenance, ...stagedSource.getEntries()].map((entry) => JSON.stringify(entry)).join("\n")}\n`
 			writeFileSync(forkedPath, contents, { flag: "wx" })
 		} catch (err) {
 			if (forkedPath) rmSync(forkedPath, { force: true })
@@ -1519,15 +1536,6 @@ export class KimchiAcpAgent {
 		}
 	}
 
-	private async restoreEmptySessionOptions(session: AgentSession): Promise<void> {
-		const { model, thinkingLevel } = emptySessionInitialOptions(
-			session.sessionManager,
-			getSessionModelRegistry(session),
-		)
-		if (model) await session.setModel(model, { persist: false })
-		if (thinkingLevel) session.setThinkingLevel(thinkingLevel)
-	}
-
 	private async loadSessionFresh(params: LoadSessionRequest, replayHistory: boolean): Promise<LoadSessionResponse> {
 		// Atomic ownership transfer mirrors newSession but covers the full
 		// register → replay → respond path: a throw at any point after the
@@ -1544,7 +1552,6 @@ export class KimchiAcpAgent {
 		let ownPrompter: ReturnType<typeof createAcpPermissionPrompter> | undefined
 		let ownFlagController: SessionPermissionFlagController | undefined
 		try {
-			await this.restoreEmptySessionOptions(session)
 			// Defensive: pi reads the sessionId from the JSONL header, not the
 			// filename, so a corrupted / hand-edited session whose header id
 			// disagrees with the requested id would land under the wrong key in
@@ -4486,6 +4493,15 @@ function readSessionHeader(sessionPath: string): Pick<SessionHeader, "id" | "cwd
 	return parseSessionHeader(readFileSync(sessionPath, "utf-8"))
 }
 
+const ACP_FORK_ENTRY_TYPE = "kimchi:acp-fork"
+
+/** The positive lineage proof accepted from an ACP-created fork. Unknown or
+ * unreadable parented files retain the default read-only boundary. */
+function hasAcpForkProvenance(sessionPath: string): boolean {
+	const provenance = parseSessionEntries(readSessionHeaderPeek(sessionPath).raw)[1]
+	return provenance?.type === "custom" && provenance.customType === ACP_FORK_ENTRY_TYPE
+}
+
 function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 	return async (params: ListSessionsRequest) => {
 		// Build the set of roots to enumerate: cwd (when present) plus any
@@ -4694,12 +4710,8 @@ export function defaultSessionLoader(
 		if (header.cwd !== cwd) {
 			throw RequestError.invalidParams(undefined, `session cwd ${header.cwd} does not match requested cwd ${cwd}`)
 		}
-		if (header.parentSession) {
-			const candidates = await SessionManager.list(cwd, sessionDir)
-			const parented = candidates.find((candidate) => candidate.path === sessionPath)
-			if (!parented || (await getSessionRoles([parented])).has(parented)) {
-				throw RequestError.invalidParams(undefined, `subagent session ${params.sessionId} is read-only`)
-			}
+		if (header.parentSession && !hasAcpForkProvenance(sessionPath)) {
+			throw RequestError.invalidParams(undefined, `subagent session ${params.sessionId} is read-only`)
 		}
 		let sessionManager: SessionManager
 		try {
