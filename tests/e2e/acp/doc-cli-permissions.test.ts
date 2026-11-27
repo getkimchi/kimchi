@@ -43,11 +43,9 @@ async function driveDocCliCreate(
 ): Promise<{ fixture: Awaited<ReturnType<typeof startAcpFixture>>; sessionId: string }> {
 	const fixture = await startAcpFixture({
 		artifactName,
-		// The create must finish inside the tool call, as it does for users
-		// (product handoff is 15s). The 2s e2e default moved it to the
-		// background on loaded CI runners, so the PDF was not there yet. 15s is
-		// a limit, not a wait (the create takes about 0.5s), and each test has
-		// a 30s timeout (STARTUP_TIMEOUT_MS).
+		// Prefer the product's 15s handoff limit (not a fixed wait) so the
+		// create usually finishes inside the original tool call. A user-facing
+		// session can still hand off early, so completion is awaited below.
 		bashHandoffSeconds: 15,
 		responses: [
 			{
@@ -75,6 +73,17 @@ async function driveDocCliCreate(
 			update.sessionUpdate === "agent_message_chunk" &&
 			update.content.type === "text" &&
 			update.content.text.includes("PDF created."),
+	)
+	// A background handoff lets the model turn finish while the command keeps
+	// running. Wait for THIS call's terminal update before checking its file;
+	// accepting either terminal status lets the assertions below report errors.
+	await waitForSessionUpdate(
+		fixture,
+		sessionId,
+		(update) =>
+			update.sessionUpdate === "tool_call_update" &&
+			(update.status === "completed" || update.status === "failed") &&
+			update._meta?.piToolCallId === "call_doccli",
 	)
 	return { fixture, sessionId }
 }

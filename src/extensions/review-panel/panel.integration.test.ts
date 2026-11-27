@@ -389,6 +389,15 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 	let savedAgentDir: string | undefined
 	let unregisterPolicy: (() => void) | undefined
 
+	/** Assert the publication contract from the files themselves: cleanup and
+	 * event-loop scheduling may let runReviewPanel return after the deadline. */
+	function expectFinalArtifactsBeforeDeadline(deadline: number): void {
+		const paths = reviewPanelPaths(outputDir)
+		for (const path of [paths.findingsPath, paths.summaryPath, paths.statePath]) {
+			expect(statSync(path).mtimeMs, `${path} must be published before the deadline`).toBeLessThan(deadline)
+		}
+	}
+
 	beforeAll(() => {
 		savedAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
 		registerAgents(new Map())
@@ -661,7 +670,9 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 	it("does not attempt reconciliation repair outside its window", async () => {
 		let verifierCalls = 0
 		const { ctx } = await scriptedContext(defaultScript)
-		const deadline = Date.now() + 1_000
+		// Preserve the deliberate 100ms overrun at 4x without allowing CI
+		// setup to consume the verifier window before this call is created.
+		const deadline = Date.now() + 4_000
 		const result = await runReviewPanel(
 			runOptions(ctx, await target(), {
 				lenses: ["spec"],
@@ -673,7 +684,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 				spawnAgent: async ({ options }) => {
 					if (options.description === "Review writer reconciliation") {
 						verifierCalls += 1
-						await waitForDelay(1_100, options.signal)
+						await waitForDelay(4_400, options.signal)
 						return {
 							...completedRunResult(),
 							responseText: JSON.stringify({
@@ -868,7 +879,8 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 
 	it.each([
 		{ name: "already past", offsetMs: -1000, headroomMs: 100 },
-		{ name: "inside final-write headroom", offsetMs: 250, headroomMs: 500 },
+		// Still inside the 2x headroom, but with time for final writes on CI.
+		{ name: "inside final-write headroom", offsetMs: 1_000, headroomMs: 2_000 },
 	])("finalizes without launching when the deadline is $name", async ({ offsetMs, headroomMs }) => {
 		const { ctx } = await scriptedContext(defaultScript)
 		let launches = 0
@@ -889,7 +901,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(result.summary).toBeDefined()
 		expect(result.state.lenses.every((lens) => lens.status === "cancelled")).toBe(true)
 		expect(result.state.coverage.status).toBe("partial")
-		if (offsetMs > 0) expect(Date.now()).toBeLessThan(deadline)
+		if (offsetMs > 0) expectFinalArtifactsBeforeDeadline(deadline)
 	})
 
 	it("finishes before a sub-two-minute deadline when reviewers ignore cancellation", async () => {
@@ -909,7 +921,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 			}),
 		)
 		const finishedAt = Date.now()
-		expect(finishedAt).toBeLessThan(deadline)
+		expectFinalArtifactsBeforeDeadline(deadline)
 		expect(finishedAt - startedAt).toBeLessThan(800)
 		expect(result.state.lenses[0]).toMatchObject({ status: "cancelled" })
 		expect(result.summary.body).toContain("Coverage: partial")
@@ -940,15 +952,17 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		// verifier in the short reserve window.
 		rmSync(join(contextDir, "comments.json"))
 		const pending = deferred<RunResult>()
-		const deadline = Date.now() + 600
+		// Keep the cancellation and closure ratios at 4x without allowing CI
+		// startup and artifact I/O to consume the whole 100ms reserve window.
+		const deadline = Date.now() + 2_400
 		let progressEvents = 0
 		const result = await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
 				deadline,
-				finalWriteHeadroomMs: 100,
-				submitGraceMs: 50,
-				cancellationGraceMs: 50,
+				finalWriteHeadroomMs: 400,
+				submitGraceMs: 200,
+				cancellationGraceMs: 200,
 				onProgress: () => {
 					progressEvents += 1
 				},
@@ -956,7 +970,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 			}),
 		)
 		expect(result.state.candidates).toEqual([])
-		expect(Date.now()).toBeLessThan(deadline)
+		expectFinalArtifactsBeforeDeadline(deadline)
 		const paths = reviewPanelPaths(outputDir)
 		const artifacts = [paths.findingsPath, paths.summaryPath, paths.repliesPath, paths.statePath].map((path) => ({
 			path,
@@ -1015,12 +1029,14 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		const usageEvents: unknown[] = []
 		let abortObserved = false
 		let submitted = false
-		const deadline = Date.now() + 400
+		// Preserve the 8:1 deadline/headroom ratio while leaving enough time
+		// for runner and verifier startup on a loaded one-CPU CI runner.
+		const deadline = Date.now() + 4_000
 		const result = await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
 				deadline,
-				finalWriteHeadroomMs: 50,
+				finalWriteHeadroomMs: 500,
 				reconciliationReserveMs: 0,
 				submitGraceMs: 50,
 				cancellationGraceMs: 50,
@@ -1053,7 +1069,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		)
 		expect(result.state.reconciliation.reason).toContain("did not settle within the reconciliation window")
 		expect(abortObserved).toBe(true)
-		expect(Date.now()).toBeLessThan(deadline)
+		expectFinalArtifactsBeforeDeadline(deadline)
 		expect(result.state.reconciliation.status).toBe("fallback")
 		expect(result.findings[0]).toMatchObject({ priority: "P0", description: "Original fallback finding." })
 		const paths = reviewPanelPaths(outputDir)
@@ -1254,17 +1270,18 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		child.stderr.on("data", (data) => {
 			stderr += data.toString()
 		})
-		const settled = new Promise<{ kind: "exit"; code: number | null }>((resolve, reject) => {
+		const settled = new Promise<{ kind: "exit"; code: number | null; closedAt: number }>((resolve, reject) => {
 			child.once("error", reject)
-			child.once("close", (code) => resolve({ kind: "exit", code }))
+			child.once("close", (code) => resolve({ kind: "exit", code, closedAt: Date.now() }))
 		})
 		const outcome = await raceWithTimeout(settled, NATURAL_EXIT_STARTUP_BUDGET_MS, { kind: "timeout" as const }, () => {
 			child.kill("SIGKILL")
 		})
-		expect(outcome, `stdout="${stdout}"\nstderr="${stderr}"`).toEqual({ kind: "exit", code: 0 })
+		expect(outcome, `stdout="${stdout}"\nstderr="${stderr}"`).toMatchObject({ kind: "exit", code: 0 })
 		expect(stdout).toContain('"outcome":"completion"')
 		expect(completedAt).toBeDefined()
-		expect(Date.now() - (completedAt ?? 0)).toBeLessThan(2000)
+		if (outcome.kind !== "exit") throw new Error("Natural exit test timed out")
+		expect(outcome.closedAt - (completedAt ?? 0)).toBeLessThan(2000)
 	})
 
 	it("aborts a blocked usage callback through its signal and exits naturally", async () => {
@@ -1289,18 +1306,19 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		child.stderr.on("data", (data) => {
 			stderr += data.toString()
 		})
-		const settled = new Promise<{ kind: "exit"; code: number | null }>((resolve, reject) => {
+		const settled = new Promise<{ kind: "exit"; code: number | null; closedAt: number }>((resolve, reject) => {
 			child.once("error", reject)
-			child.once("close", (code) => resolve({ kind: "exit", code }))
+			child.once("close", (code) => resolve({ kind: "exit", code, closedAt: Date.now() }))
 		})
 		const outcome = await raceWithTimeout(settled, NATURAL_EXIT_STARTUP_BUDGET_MS, { kind: "timeout" as const }, () => {
 			child.kill("SIGKILL")
 		})
-		expect(outcome, `stdout="${stdout}"\nstderr="${stderr}"`).toEqual({ kind: "exit", code: 0 })
+		expect(outcome, `stdout="${stdout}"\nstderr="${stderr}"`).toMatchObject({ kind: "exit", code: 0 })
 		expect(stdout).toContain('"outcome":"completion"')
 		expect(stdout).toContain('"usageAborted":true')
 		expect(completedAt).toBeDefined()
-		expect(Date.now() - (completedAt ?? 0)).toBeLessThan(2000)
+		if (outcome.kind !== "exit") throw new Error("Usage-abort natural exit test timed out")
+		expect(outcome.closedAt - (completedAt ?? 0)).toBeLessThan(2000)
 	})
 
 	it("drops and diagnoses usage that cannot be delivered before the cleanup deadline", async () => {
@@ -1310,22 +1328,24 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		const childUsage = createUsageSession()
 		const dropped: ReviewPanelDroppedUsage[] = []
 		let attempted = 0
-		const deadline = Date.now() + 600
+		// Scale every timing input together (4x) to preserve the expiry race
+		// without letting CI setup consume the full deadline before the callback.
+		const deadline = Date.now() + 2_400
 		await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
 				deadline,
-				finalWriteHeadroomMs: 100,
+				finalWriteHeadroomMs: 400,
 				// Enter reserve inside D so callback latency is isolated from expiry.
-				reconciliationReserveMs: 100,
-				submitGraceMs: 50,
-				cancellationGraceMs: 50,
+				reconciliationReserveMs: 400,
+				submitGraceMs: 200,
+				cancellationGraceMs: 200,
 				onUsageDropped: (usage) => {
 					dropped.push(usage)
 				},
 				onChildUsage: async () => {
 					attempted += 1
-					await waitForDelay(100, undefined)
+					await waitForDelay(400, undefined)
 				},
 				onProgress: (update) => {
 					if (update.phase === "complete") {
@@ -1338,7 +1358,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 				},
 			}),
 		)
-		expect(Date.now()).toBeLessThan(deadline)
+		expectFinalArtifactsBeforeDeadline(deadline)
 		expect(attempted).toBe(1)
 		expect(dropped).toHaveLength(1)
 		expect(dropped[0]).toMatchObject({

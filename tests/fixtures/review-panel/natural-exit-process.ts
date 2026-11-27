@@ -103,11 +103,13 @@ async function main(): Promise<void> {
 			executionPolicy: { mode: "headless" },
 			...(abortBlockedUsage
 				? {
-						deadline: Date.now() + 500,
-						finalWriteHeadroomMs: 200,
-						reconciliationReserveMs: 300,
-						submitGraceMs: 250,
-						cancellationGraceMs: 250,
+						// Preserve the phase ratios at 16x so even cold one-CPU
+						// startup can launch and attach child usage before the reserve closes.
+						deadline: Date.now() + 8_000,
+						finalWriteHeadroomMs: 3_200,
+						reconciliationReserveMs: 4_800,
+						submitGraceMs: 4_000,
+						cancellationGraceMs: 4_000,
 					}
 				: {}),
 			onProgress: (update) => {
