@@ -179,15 +179,13 @@ process.stdout.write(JSON.stringify({ reads, bad }));`,
 			],
 			{ stdio: ["ignore", "pipe", "inherit"] },
 		)
-
-		for (let i = 0; i < 60; i++) {
-			await syncPiAuth(authPath, modelsPath, `key-${i}`)
-		}
-
-		const result = await new Promise<{ reads: number; bad: number }>((resolve, reject) => {
+		// Listen before the writes: on a slow runner the 60 writes can outlast the
+		// reader, and an exit event with no listener left this test hanging.
+		// "close" (not "exit") also waits until all stdout has been read.
+		const result = new Promise<{ reads: number; bad: number }>((resolve, reject) => {
 			let out = ""
 			reader.stdout?.on("data", (chunk) => (out += chunk))
-			reader.on("exit", () => {
+			reader.on("close", () => {
 				try {
 					resolve(JSON.parse(out.trim()))
 				} catch (error) {
@@ -196,9 +194,18 @@ process.stdout.write(JSON.stringify({ reads, bad }));`,
 			})
 			reader.on("error", reject)
 		})
+		// Handled now; the await below still throws. A reader error during the
+		// writes would otherwise be an unhandled rejection for the whole run.
+		result.catch(() => {})
 
-		expect(result.reads).toBeGreaterThan(0)
-		expect(result.bad).toBe(0)
+		for (let i = 0; i < 60; i++) {
+			await syncPiAuth(authPath, modelsPath, `key-${i}`)
+		}
+
+		const { reads, bad } = await result
+
+		expect(reads).toBeGreaterThan(0)
+		expect(bad).toBe(0)
 		expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([])
 	}, 30_000)
 
