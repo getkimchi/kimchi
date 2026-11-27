@@ -32,6 +32,7 @@ import { loadConfig } from "../../config.js"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { notifyUser } from "../../utils/notify-user.js"
+import { watchQueuedUserInput } from "../../utils/queued-input-watch.js"
 import { createDeferredReveal } from "../deferred-reveal.js"
 import { getRawErrorMessage } from "../error-preservation.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
@@ -168,13 +169,13 @@ function waitForAgentCompletion(
 	return new Promise((resolve) => {
 		let done = false
 		let timer: ReturnType<typeof setTimeout> | undefined
-		let inputTimer: ReturnType<typeof setInterval> | undefined
+		let stopInputWatch: (() => void) | undefined
 		const onAbort = () => finish("aborted")
 		function finish(outcome: AgentWaitOutcome) {
 			if (done) return
 			done = true
 			if (timer) clearTimeout(timer)
-			if (inputTimer) clearInterval(inputTimer)
+			stopInputWatch?.()
 			signal?.removeEventListener("abort", onAbort)
 			resolve(outcome)
 		}
@@ -191,21 +192,11 @@ function waitForAgentCompletion(
 			// Queue inspection is advisory: stale sessions and other probe
 			// failures mean no observed input, never a rejected wait or an
 			// exception escaping this polling interval.
-			const inputQueued = () => {
-				try {
-					return hasPendingUserInput()
-				} catch {
-					return false
-				}
-			}
-			if (inputQueued()) {
-				finish("user_input")
-				return
-			}
-			inputTimer = setInterval(() => {
-				if (inputQueued()) finish("user_input")
-			}, USER_INPUT_POLL_MS)
-			inputTimer.unref?.()
+			stopInputWatch = watchQueuedUserInput(hasPendingUserInput, () => finish("user_input"), {
+				pollIntervalMs: USER_INPUT_POLL_MS,
+				suppressProbeErrors: true,
+			})
+			if (done) return
 		}
 		if (timeoutMs > 0) {
 			timer = setTimeout(() => finish("timed_out"), timeoutMs)
