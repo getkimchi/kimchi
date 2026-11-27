@@ -2575,6 +2575,16 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					record.outputFile = fgOutputFile.replace("placeholder", spawnedId)
 					writeInitialEntry(record.outputFile, spawnedId, params.prompt as string, ctx.cwd)
 				}
+				// Either early return can leave the child completing in the
+				// background, where only this candidate preserves the retry guard.
+				if (explicitTokenBudget != null) {
+					budgetRetryCandidates.set(spawnedId, {
+						budget: explicitTokenBudget,
+						subagentType,
+						description: params.description as string,
+						prompt: params.prompt as string,
+					})
+				}
 
 				// A queued user message releases only the tool wait. The foreground
 				// child keeps running and stays joinable while pi injects the steer.
@@ -2619,14 +2629,6 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					const joinMode = resolveJoinMode(getDefaultJoinMode(), true)
 					if (record && joinMode) {
 						record.joinMode = joinMode
-					}
-					if (explicitTokenBudget != null) {
-						budgetRetryCandidates.set(spawnedId, {
-							budget: explicitTokenBudget,
-							subagentType,
-							description: params.description as string,
-							prompt: params.prompt as string,
-						})
 					}
 					if (joinMode != null && joinMode !== "async") {
 						currentBatchAgents.push({ id: spawnedId, joinMode })

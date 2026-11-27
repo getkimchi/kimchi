@@ -1964,10 +1964,17 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 		tool: ReturnType<typeof getRegisteredTool>,
 		ctx: unknown,
 		callId: string,
+		extraParams: Record<string, unknown> = {},
 	): Promise<{ content: { type: string; text: string }[] }> {
 		return tool.execute(
 			callId,
-			{ prompt: "do work", description: "test", subagent_type: "general-purpose", run_in_background: false },
+			{
+				prompt: "do work",
+				description: "test",
+				subagent_type: "general-purpose",
+				run_in_background: false,
+				...extraParams,
+			},
 			undefined,
 			undefined,
 			ctx,
@@ -2025,6 +2032,29 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 		record.status = "completed"
 		record.result = "finished after the steer"
 		run.resolve("finished after the steer")
+	})
+
+	it("keeps the explicit-budget retry safeguard after a foreground user-input yield", async () => {
+		vi.useFakeTimers()
+		const { piMock, manager, run, live, tool } = setupDeferredForeground()
+		const execPromise = startForegroundExecute(tool, live.ctx, "call-fg-user-input-budget", { token_budget: 100 })
+		const record = [...manager._records.values()][0]
+		vi.mocked(live.ctx.hasPendingMessages).mockReturnValue(true)
+		await vi.advanceTimersByTimeAsync(100)
+		await execPromise
+
+		record.status = "aborted"
+		record.abortReason = "token_budget"
+		record.completedAt = Date.now()
+		try {
+			manager.onComplete(record)
+			const retry = await startForegroundExecute(tool, live.ctx, "call-fg-retry-after-yield", { token_budget: 200 })
+			expect(retry.content[0]?.text).toContain("Agent retry blocked")
+			expect(manager.spawn).toHaveBeenCalledTimes(1)
+		} finally {
+			run.resolve("aborted")
+			await piMock.getHandler<{ message: { role: string } }>("message_start")({ message: { role: "user" } }, live.ctx)
+		}
 	})
 
 	it("returns the Ctrl+B backgrounding text from captured values when the session is replaced mid-run", async () => {
