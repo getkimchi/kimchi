@@ -1,12 +1,12 @@
 /**
- * Tool-surface invariance: toggling ferment on/off must change only ferment's
- * own tools, never unrelated surfaces like codemode or tool_search.
+ * Tool-surface invariance: toggling legacy Ferment (V1) on/off must change only
+ * its own tools, never unrelated surfaces like codemode or tool_search.
  *
  * Regression context: every chat turn used to apply the "idle" tool profile,
  * which unioned the full registered-tool registry into the model's surface.
- * With ferment enabled (the default), that idle snapshot activated upstream's
+ * With V1 enabled (then the default), that idle snapshot activated upstream's
  * default-inactive extension tools (`codemode`, `tool_search`) even when the
- * user never configured them — while a ferment-disabled session skipped the
+ * user never configured them, while a V1-disabled session skipped the
  * snapshot and correctly kept them out. The idle profile now derives from the
  * active surface upstream maintains, so both toggles behave identically.
  *
@@ -54,17 +54,17 @@ function recordedToolNames(requests: RecordedRequest[]): string[] {
 	return [...names]
 }
 
-for (const fermentEnabled of [true, false]) {
-	test(`ferment ${fermentEnabled ? "enabled" : "disabled"}: default-off tools stay out of the chat surface`, async ({
+for (const legacyEnabled of [true, false]) {
+	test(`legacy ferment ${legacyEnabled ? "enabled" : "disabled"}: default-off tools stay out of the chat surface`, async ({
 		terminal,
 	}) => {
 		await runKimchiSession(
 			terminal,
 			{
-				artifactName: `tool-surface-ferment-${fermentEnabled ? "on" : "off"}-no-defaulttools`,
+				artifactName: `tool-surface-legacy-ferment-${legacyEnabled ? "on" : "off"}-no-defaulttools`,
 				responses: [{ stream: ["Hello."] }],
 				seedHome(homeDir) {
-					patchHarnessSettings(homeDir, { resources: { "extensions.ferment": fermentEnabled } })
+					patchHarnessSettings(homeDir, { resources: { "extensions.ferment-legacy": legacyEnabled } })
 				},
 			},
 			async (fixture, trace) => {
@@ -79,7 +79,7 @@ for (const fermentEnabled of [true, false]) {
 				expect(tools).toContain("write")
 				expect(tools).toContain("codemode")
 				expect(tools).not.toContain("tool_search")
-				expect(tools.includes("list_ferments")).toBe(fermentEnabled)
+				expect(tools.includes("list_ferments")).toBe(legacyEnabled)
 				trace.step("wire surface checked")
 			},
 		)
@@ -89,17 +89,17 @@ for (const fermentEnabled of [true, false]) {
 		{ setting: "-codemode", tool: "codemode", expected: false },
 		{ setting: "+tool_search", tool: "tool_search", expected: true },
 	] as const) {
-		test(`ferment ${fermentEnabled ? "enabled" : "disabled"}: defaultTools ${setting} survives`, async ({
+		test(`legacy ferment ${legacyEnabled ? "enabled" : "disabled"}: defaultTools ${setting} survives`, async ({
 			terminal,
 		}) => {
 			await runKimchiSession(
 				terminal,
 				{
-					artifactName: `tool-surface-ferment-${fermentEnabled ? "on" : "off"}-${setting === "-codemode" ? "minus-codemode" : "plus-tool-search"}`,
+					artifactName: `tool-surface-legacy-ferment-${legacyEnabled ? "on" : "off"}-${setting === "-codemode" ? "minus-codemode" : "plus-tool-search"}`,
 					responses: [{ stream: ["Hello."] }],
 					seedHome(homeDir) {
 						patchHarnessSettings(homeDir, {
-							resources: { "extensions.ferment": fermentEnabled },
+							resources: { "extensions.ferment-legacy": legacyEnabled },
 							defaultTools: [setting],
 						})
 					},

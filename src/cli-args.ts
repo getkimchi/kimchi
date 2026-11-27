@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util"
 import { parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
 import { type CliMode, getCliModeArg, PROTOCOL_MODES } from "./cli-modes.js"
+import { fermentLegacyOffMessage, isFermentLegacyEnabled } from "./extensions/ferment/resource.js"
 
 // Re-export the shared leaf-module helpers so existing callers can keep
 // importing them from cli-args.ts without touching their import paths.
@@ -84,11 +85,11 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 	},
 	"ferment-oneshot": {
 		type: "boolean",
-		description: "Bootstrap the initial prompt as an automated one-shot ferment.",
+		description: "Legacy Ferment only: bootstrap the initial prompt as an automated one-shot ferment.",
 	},
 	"init-git": {
 		type: "boolean",
-		description: "When the ferment cwd is not a git repo, run `git init` instead of skipping.",
+		description: "Legacy Ferment only: when the ferment cwd is not a git repo, run `git init` instead of skipping.",
 	},
 	provider: {
 		type: "string",
@@ -522,6 +523,28 @@ export function isExperimentalFeaturesArg(args: string[]): boolean {
  * so suppression must compose. */
 export function hasFermentOneshotArg(args: readonly string[]): boolean {
 	return args.some((a) => a === "--ferment-oneshot" || a === "--ferment-oneshot=true" || a === "ferment-oneshot=true")
+}
+
+/** Error text for a V1-only flag used while the legacy Ferment is off. Returns
+ * `undefined` when legacy is on (including an org FORCE_ON lock) or when no
+ * V1-only flag is present, so callers can gate without re-checking the flags. */
+export function fermentLegacyFlagError(args: readonly string[]): string | undefined {
+	const flag =
+		mentionsFlag(args, "--ferment-oneshot") || hasFermentOneshotArg(args)
+			? "--ferment-oneshot"
+			: mentionsFlag(args, "--init-git")
+				? "--init-git"
+				: undefined
+	if (flag === undefined) return undefined
+	if (isFermentLegacyEnabled()) return undefined
+	return `${fermentLegacyOffMessage(flag)}\nOr remove ${flag} from the command.`
+}
+
+/** True for `--flag` and any `--flag=<value>`. With legacy off the flag is not
+ * registered, so upstream rejects every value (even `=false`) as an unknown
+ * option. The gate must catch them all to show its own message instead. */
+function mentionsFlag(args: readonly string[], flag: string): boolean {
+	return args.some((a) => a === flag || a.startsWith(`${flag}=`))
 }
 
 export function stripExperimentalFeaturesArg(args: string[]): string[] {

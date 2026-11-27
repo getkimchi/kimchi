@@ -1,5 +1,5 @@
 /**
- * E2E TUI tests for the `/ferment progress` overlay.
+ * E2E TUI tests for the `/ferment-legacy progress` overlay.
  *
  * Covers: the overlay opens and shows the ferment name, progress bar, phase
  * list, the "human:" timing line, and the correct step count (1/2) after a
@@ -27,13 +27,13 @@ import { mkdirSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
 const NOW = "2026-01-01T00:00:00.000Z"
 
-test("/ferment progress overlay shows ferment name, progress bar, phase list, and correct step count", async ({
+test("/ferment-legacy progress overlay shows ferment name, progress bar, phase list, and correct step count", async ({
 	terminal,
 }) => {
 	const FERMENT_ID = randomUUID()
@@ -45,6 +45,7 @@ test("/ferment progress overlay shows ferment name, progress bar, phase list, an
 		terminal,
 		{
 			artifactName: "ferment-progress-overlay",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			// Three WAITING pads absorb the resume-nudge LLM turn that fires
 			// when "Resume" is chosen, plus any continuation nudges afterward.
@@ -126,8 +127,8 @@ test("/ferment progress overlay shows ferment name, progress bar, phase list, an
 			await waitForText(terminal, "Waiting.", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("resume-nudge turn rendered — terminal stable")
 
-			terminal.submit("/ferment progress")
-			trace.step("submitted /ferment progress")
+			terminal.submit("/ferment-legacy progress")
+			trace.step("submitted /ferment-legacy progress")
 
 			// The overlay usually opens on L1, but a buffered Enter from the
 			// submit can race the phase-list select and auto-drill into L2.

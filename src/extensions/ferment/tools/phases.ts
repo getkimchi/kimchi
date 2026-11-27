@@ -170,7 +170,7 @@ function formatManualPhaseBoundaryWait(
 			`**Next:** "${nextPhase.name}".`,
 			"",
 			"Manual continuation policy stopped here.",
-			`The ferment is paused. Do not call activate_ferment_phase yet. To continue later, the user can run /ferment resume for ferment_id "${ferment.id}", or choose Continue from /ferment list.`,
+			`The ferment is paused. Do not call activate_ferment_phase yet. To continue later, the user can run /ferment-legacy resume for ferment_id "${ferment.id}", or choose Continue from /ferment-legacy list.`,
 			"Do not ask a generic follow-up question in chat.",
 		].join("\n") + reasonLine
 	)
@@ -933,7 +933,7 @@ ${renderGateGuidance("complete_ferment_phase")}`,
 			if (!outcome.ok) return failedToolResult(outcome.error, f)
 			return toolOk(
 				withNextActionHint(
-					`Phase marked as failed: ${params.reason}. Use activate_ferment_phase to retry, skip_ferment_phase to bypass, or ask the user to run /ferment abandon if the ferment should stop.`,
+					`Phase marked as failed: ${params.reason}. Use activate_ferment_phase to retry, skip_ferment_phase to bypass, or ask the user to run /ferment-legacy abandon if the ferment should stop.`,
 					outcome.ferment,
 				),
 			)

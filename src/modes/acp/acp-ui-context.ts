@@ -27,6 +27,7 @@ import {
 	type ToolCallUpdate,
 } from "@agentclientprotocol/sdk/unstable"
 import type { ExtensionUIContext, Theme as ThemeType } from "@earendil-works/pi-coding-agent"
+import { isInCommandReplyScope } from "../../shared/command-reply-scope.js"
 import {
 	type AcpExtMethod,
 	AVAILABLE_EXT_METHODS,
@@ -104,6 +105,22 @@ export function createAcpUIContext(
 				...payload,
 			})
 			.catch((err) => logError(acpMethod, err))
+	}
+
+	// Plain clients ignore pi_notify, so a command whose only reply is a notify
+	// would look like it did nothing. Notifies sent while a command handler
+	// runs are also sent as agent text, with the same shape as other km.
+	// replies. pi_notify still goes out for clients that render it.
+	function mirrorCommandReply(message: string): void {
+		if (!isInCommandReplyScope(sessionId)) return
+		send({
+			sessionId,
+			update: {
+				sessionUpdate: "agent_message_chunk",
+				messageId: `km.${randomUUID()}`,
+				content: { type: "text", text: `${message}\n\n` },
+			},
+		})
 	}
 
 	// One warning per method per session — extensions probe setStatus/setWidget
@@ -325,10 +342,12 @@ export function createAcpUIContext(
 
 		notify(message, type) {
 			notify({ method: "notify", message, notifyType: type })
+			mirrorCommandReply(message)
 		},
 
 		showError(message) {
 			notify({ method: "notify", message, notifyType: "error" })
+			mirrorCommandReply(message)
 		},
 
 		setEditorText(text) {

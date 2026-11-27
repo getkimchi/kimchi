@@ -86,9 +86,20 @@ describe("handleListResources", () => {
 		const memory = result.resources.find((r) => r.id === "extensions.memory")
 		expect(memory).toMatchObject({ orgPolicy: "ON", locked: false, enabled: true })
 		// Unmentioned resources carry no policy fields.
-		const ferment = result.resources.find((r) => r.id === "extensions.ferment-v2")
+		const ferment = result.resources.find((r) => r.id === "extensions.ferment-legacy")
 		expect(ferment?.orgPolicy).toBeUndefined()
 		expect(ferment?.locked).toBe(false)
+	})
+
+	it("reports legacy Ferment as locked off when it inherits the extensions.ferment FORCE_OFF", async () => {
+		await setOrgPolicyForTests({ resources: { "extensions.ferment": "FORCE_OFF" } })
+
+		const result = handleListResources({ settingsPath }) as {
+			resources: Array<{ id: string; orgPolicy?: string; locked?: boolean; enabled: boolean }>
+		}
+
+		const legacy = result.resources.find((r) => r.id === "extensions.ferment-legacy")
+		expect(legacy).toMatchObject({ orgPolicy: "FORCE_OFF", locked: true, enabled: false })
 	})
 })
 
@@ -165,6 +176,18 @@ describe("handleSetResourceEnabled", () => {
 		expect(err.code).toBe(-32600)
 		expect(err.message).toContain("tools.web_search")
 		expect(err.message).toContain("locked off")
+		expect(existsSync(settingsPath)).toBe(false)
+	})
+
+	it("rejects enabling legacy Ferment under the inherited extensions.ferment FORCE_OFF", async () => {
+		await setOrgPolicyForTests({ resources: { "extensions.ferment": "FORCE_OFF" } })
+
+		const err = thrownRequestError(() =>
+			handleSetResourceEnabled({ settingsPath }, { resourceId: "extensions.ferment-legacy", enabled: true }),
+		)
+
+		expect(err.code).toBe(-32600)
+		expect(err.message).toContain("locked off by your organization through extensions.ferment")
 		expect(existsSync(settingsPath)).toBe(false)
 	})
 

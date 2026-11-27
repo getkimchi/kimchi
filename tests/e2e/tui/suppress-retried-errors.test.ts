@@ -14,7 +14,7 @@
  * 4. Non-retryable error — a 400 bad_request surfaces a sanitized message
  *    instead of the raw error.
  * 5. Ferment pause — a running ferment that hits an error surfaces the
- *    sanitized message with "Run /ferment resume to continue."
+ *    sanitized message with "Run /ferment-legacy resume to continue."
  * 6. Audit retention — the raw provider error is retained in the session log
  *    even when the user-facing message is sanitized.
  * 7. Cancellation is not an error — pressing Esc mid-stream writes NO
@@ -40,7 +40,7 @@ import {
 	viewText,
 	waitForText,
 } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -280,11 +280,12 @@ const SCOPE_PAYLOAD = JSON.stringify({
 	],
 })
 
-test("ferment pause on error surfaces sanitized message with /ferment resume hint", async ({ terminal }) => {
+test("ferment pause on error surfaces sanitized message with /ferment-legacy resume hint", async ({ terminal }) => {
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "suppress-retried-errors-ferment-pause",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			seedHome: seedFastRetries,
@@ -314,10 +315,10 @@ test("ferment pause on error surfaces sanitized message with /ferment resume hin
 			trace.step("ready prompt visible")
 
 			// Enter ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment")
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy")
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("intent prompt visible")
@@ -343,7 +344,7 @@ test("ferment pause on error surfaces sanitized message with /ferment resume hin
 			trace.step("sanitized error message visible")
 
 			// Verify the ferment resume hint is present (may wrap across lines).
-			expect(fullText(terminal)).toMatch(/Run\s*\/ferment\s*resume\s*to\s*continue/)
+			expect(fullText(terminal)).toMatch(/Run\s*\/ferment-legacy\s*resume\s*to\s*continue/)
 			trace.step("ferment resume hint present")
 
 			// Verify no vLLM internals leaked.

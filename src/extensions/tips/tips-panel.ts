@@ -12,7 +12,8 @@ interface TipGroup {
 
 const KNOWN_LABELS: Record<string, string> = {
 	"kimchi.general": "General",
-	"kimchi.ferment": "Ferment",
+	// V2 now owns the name "Ferment", and the V1 tips all point at /ferment-legacy.
+	"kimchi.ferment": "Ferment (legacy)",
 	"kimchi.billing": "Billing",
 }
 

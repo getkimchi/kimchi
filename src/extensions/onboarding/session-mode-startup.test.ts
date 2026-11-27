@@ -5,8 +5,12 @@ import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { TUI } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
 import { writeSessionModeWizardSeenAt } from "../../config.js"
+import { isResourceEnabled } from "../../resources/store.js"
+import { FERMENT_V2_RESOURCE_ID } from "../ferment-v2/constants.js"
 import { globalTipRegistry } from "../tips/registry.js"
 import { createSessionModeOnboardingForStartup } from "./session-mode-startup.js"
+
+vi.mock("../../resources/store.js", () => ({ isResourceEnabled: vi.fn(() => true) }))
 
 type SessionStartHandler = (event: unknown, ctx: unknown) => unknown
 type TerminalInputHandler = (data: string) => { consume?: boolean } | undefined
@@ -36,6 +40,7 @@ function createHarness(options: {
 	configPath: string
 	now: () => Date
 	startFerment?: Mock
+	shouldSkip?: () => boolean
 }) {
 	const handlers = new Map<string, SessionStartHandler>()
 	const api = {
@@ -88,6 +93,7 @@ function createHarness(options: {
 			})
 		}),
 		notify: vi.fn(),
+		setEditorText: vi.fn(),
 	}
 	const ctx = { hasUI: true, ui }
 	const extension = createSessionModeOnboardingForStartup({
@@ -98,6 +104,7 @@ function createHarness(options: {
 		configPath: options.configPath,
 		now: options.now,
 		startFerment: options.startFerment,
+		shouldSkip: options.shouldSkip,
 	})
 
 	extension(api)
@@ -233,5 +240,38 @@ describe("session mode startup integration", () => {
 		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
 		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
 		expect(startFerment).toHaveBeenCalledWith({ pi: harness.api, ctx: harness.ctx })
+	})
+
+	it("default Ferment choice prefills the V2 command in the editor", async () => {
+		const harness = createHarness({ configPath, now })
+		await harness.start()
+
+		harness.input("\r")
+		await harness.settle()
+
+		expect(harness.ui.setEditorText).toHaveBeenCalledWith("/ferment ")
+	})
+
+	it("skips the wizard and records nothing when Ferment V2 is disabled", async () => {
+		vi.mocked(isResourceEnabled).mockImplementation((id) => id !== FERMENT_V2_RESOURCE_ID)
+		try {
+			const harness = createHarness({ configPath, now })
+			await harness.start()
+
+			expect(isResourceEnabled).toHaveBeenCalledWith(FERMENT_V2_RESOURCE_ID)
+			expect(harness.ui.setWidget).not.toHaveBeenCalled()
+			expect(harness.ui.onTerminalInput).not.toHaveBeenCalled()
+			expect(existsSync(configPath)).toBe(false)
+		} finally {
+			vi.mocked(isResourceEnabled).mockImplementation(() => true)
+		}
+	})
+
+	it("still honors a caller shouldSkip when Ferment V2 is enabled", async () => {
+		const harness = createHarness({ configPath, now, shouldSkip: () => true })
+		await harness.start()
+
+		expect(harness.ui.setWidget).not.toHaveBeenCalled()
+		expect(existsSync(configPath)).toBe(false)
 	})
 })

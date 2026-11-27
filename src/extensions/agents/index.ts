@@ -912,7 +912,7 @@ export async function spawnFermentV2VerifierAgent(
 	}
 
 	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_FERMENT_VERIFIER, prompt, {
-		description: "Ferment V2 verifier",
+		description: "Ferment verifier",
 		visibility: "system",
 		model: opts.model,
 		cwd: opts.cwd,
@@ -1471,7 +1471,10 @@ export default function (pi: ExtensionAPI) {
 					} catch (err) {
 						if (!isStaleCtxError(err)) throw err
 					}
-					ui?.notify("Cloud agent finished after abort; ferment stays paused — /ferment resume to continue.", "info")
+					ui?.notify(
+						"Cloud agent finished after abort; ferment stays paused — /ferment-legacy resume to continue.",
+						"info",
+					)
 				}
 				agentActivity.delete(record.id)
 				widget.markFinished(record.id)

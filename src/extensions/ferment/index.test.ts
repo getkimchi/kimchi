@@ -26,6 +26,7 @@ import {
 	getPendingPlanReview,
 	setPendingPlanReview,
 } from "./plan-review.js"
+import { isFermentLegacyLoadedAndEnabled, resetFermentLegacyLoadedForTests } from "./resource.js"
 import { createDefaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import {
 	clearActiveFermentId,
@@ -165,6 +166,20 @@ function makeActiveFerment(status: Ferment["status"]): Ferment {
 		updatedAt: "2026-01-01T00:00:00.000Z",
 	}
 }
+
+describe("fermentExtension load marker", () => {
+	afterEach(resetFermentLegacyLoadedForTests)
+
+	it("marks the legacy Ferment as loaded when the factory runs", () => {
+		vi.stubEnv("KIMCHI_ENABLE_RESOURCES", "extensions.ferment-legacy")
+		resetFermentLegacyLoadedForTests()
+		expect(isFermentLegacyLoadedAndEnabled()).toBe(false)
+
+		registerFermentExtension()
+
+		expect(isFermentLegacyLoadedAndEnabled()).toBe(true)
+	})
+})
 
 describe("fermentExtension tips", () => {
 	it("registers a contextual provider backed by the active Ferment state", () => {
@@ -408,7 +423,7 @@ describe("fermentExtension one-shot bootstrap", () => {
 describe("/ferment command", () => {
 	it('strips the new subcommand from /ferment new "Title"', async () => {
 		const { commands } = registerFermentExtension()
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		const title = `Rewrite login ${randomUUID()}`
 
@@ -428,7 +443,7 @@ describe("/ferment command", () => {
 			setActive: vi.fn(),
 		}
 		const { commands, pi } = registerFermentExtension(runtime)
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		const title = `Injected runtime ${randomUUID()}`
 
@@ -1623,7 +1638,7 @@ describe("fermentExtension abort handling", () => {
 		await turnEnd({ message: abortedMessage([{ type: "text", text: "x" }]) }, ctx)
 
 		expect(storage.get(ferment.id)?.status).toBe("paused")
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment-legacy resume"))
 		expect(pi.sendMessage).not.toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
 			expect.anything(),
@@ -1641,7 +1656,7 @@ describe("fermentExtension abort handling", () => {
 		await turnEnd({ message: abortedMessage([{ type: "text", text: "x" }]) }, ctx)
 
 		expect(storage.get(ferment.id)?.status).toBe(status)
-		expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
+		expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("/ferment-legacy resume"))
 		expect(pi.sendMessage).not.toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: expect.stringMatching(/ferment_(continuation|scoping_)/),
@@ -1704,7 +1719,7 @@ describe("fermentExtension abort handling", () => {
 
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Failed to pause"))
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("simulated storage failure"))
-		expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
+		expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("/ferment-legacy resume"))
 		// Nudge paths still skipped despite the failure.
 		expect(pi.sendMessage).not.toHaveBeenCalledWith(
 			expect.objectContaining({ customType: "ferment_continuation_nudge" }),

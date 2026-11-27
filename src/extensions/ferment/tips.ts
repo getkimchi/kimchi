@@ -6,32 +6,32 @@ export const FERMENT_TIPS = {
 	continuationPolicy: {
 		id: "continuation-policy",
 		scope: "contextual",
-		message: "Use `/ferment auto` to keep going; `/ferment manual` stops at phase boundaries.",
+		message: "`/ferment-legacy auto` keeps going; `/ferment-legacy manual` pauses at phases.",
 	},
 	progressNavigation: {
 		id: "progress-navigation",
 		scope: "contextual",
-		message: "Open Ferment progress with `/ferment progress`.",
+		message: "Open Ferment progress with `/ferment-legacy progress`.",
 	},
 	switchFerments: {
 		id: "switch-ferments",
 		scope: "contextual",
-		message: "Switch active Ferments with `/ferment switch <name>`.",
+		message: "Switch active Ferments with `/ferment-legacy switch <name>`.",
 	},
 	pauseResume: {
 		id: "pause-resume",
 		scope: "contextual",
-		message: "Pause work with `/ferment pause`; resume with `/ferment resume`.",
+		message: "Pause work with `/ferment-legacy pause`; resume with `/ferment-legacy resume`.",
 	},
 	reviewWork: {
 		id: "review-work",
 		scope: "contextual",
-		message: "Review completed work with `/ferment progress`.",
+		message: "Review completed work with `/ferment-legacy progress`.",
 	},
 	startFerment: {
 		id: "start-ferment",
 		scope: "general",
-		message: "Run `/ferment` to start or list Ferments.",
+		message: "Run `/ferment-legacy` to start or list Ferments.",
 	},
 } as const satisfies Record<string, Tip>
 

@@ -1,5 +1,7 @@
 # Ferment — Autonomous Project Execution
 
+> **Legacy notice.** This document describes Ferment V1. V1 is legacy under `extensions.ferment-legacy` and `/ferment-legacy`. It is off by default, and it will be removed. `/ferment` now runs Ferment V2. For V2, see [ferment-v2.md](ferment-v2.md). If your organization locks `extensions.ferment` off, the legacy Ferment is locked off too, unless the organization sets its own policy for `extensions.ferment-legacy`. Legacy Ferment does not load over ACP.
+
 Ferment is Kimchi's multi-session project mode. Give it a goal, it breaks the work into phases and steps, executes them using subagent workers, grades the results, and resumes automatically across sessions until the project is complete.
 
 ## The core idea

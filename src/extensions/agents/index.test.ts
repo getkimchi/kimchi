@@ -813,7 +813,7 @@ describe("spawnFermentV2VerifierAgent", () => {
 		expect(type).toBe("Verifier")
 		expect(prompt).toBe("verify the work")
 		expect(options).toMatchObject({
-			description: "Ferment V2 verifier",
+			description: "Ferment verifier",
 			visibility: "system",
 			model: verifierModel,
 			cwd: ctx.cwd,
@@ -1097,7 +1097,7 @@ describe("user abort suppresses the remote completion dropdown", () => {
 		manager.onComplete(record)
 
 		expect(vi.mocked(handleRemoteCompletion)).not.toHaveBeenCalled()
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"), "info")
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment-legacy resume"), "info")
 	})
 
 	it("still shows the dropdown when no abort happened", () => {

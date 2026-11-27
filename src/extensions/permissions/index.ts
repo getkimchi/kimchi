@@ -54,6 +54,7 @@ import {
 } from "../ferment/elevation-gate.js"
 import { appendRefEntry } from "../ferment/nudge.js"
 import { CLOUD_DECISION_OPTION, EXECUTE_LOCAL_DECISION_OPTION } from "../ferment/plan-review.js"
+import { isFermentLegacyLoadedAndEnabled } from "../ferment/resource.js"
 import { defaultFermentRuntime } from "../ferment/runtime.js"
 import { safeSendMessage } from "../ferment/safe-send.js"
 import {
@@ -69,6 +70,7 @@ import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
+import { isFermentPermitted } from "../ferment-v2/session-policy.js"
 import { createBlockedDialogActivity, withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { decideAutoMcpCall } from "../mcp/auto-policy.js"
@@ -210,6 +212,9 @@ const PLAN_MODE_TOOL_SET = new Set(getToolsForProfile("planning-adhoc").map((too
  */
 const PLAN_MODE_MCP_NOTE =
 	"\n\nPlan mode is active: the `mcp` gateway is restricted to read-only operations (status, search, describe, server instructions, and read-only-qualified tool calls). All non-read-only `mcp__*` server tools are hidden while plan mode is on; read-only `mcp__*` tools remain available. Install/auth actions, explicit reconnects, and write-capable gateway calls are blocked. Hidden tools and mutating operations work again after the user leaves plan mode. If the user's request needs a mutating MCP operation, say it is unavailable in plan mode instead of reporting a connection or login problem."
+
+export const FERMENT_ENABLED_AFTER_START_NOTICE =
+	"Ferment was turned on after kimchi started, so this plan runs without Ferment. Restart kimchi to use Ferment."
 
 // Tools that auto-approve in headless/auto modes without LLM classification.
 // `agent`/`get_subagent_result`/`steer_subagent` are the agents-extension
@@ -1034,12 +1039,18 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		// the approved plan is now executing — pre-approval planning todos must
 		// not be reported as plan progress.
 		pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
-		if (isResourceEnabled(FERMENT_V2_RESOURCE_ID)) {
-			const executor = getFermentV2PlanExecutor(pi)
-			if (!executor) {
-				ctx.ui.notify("Could not start the approved plan automatically.", "error")
-				return
-			}
+		// The setting is read live, so a V2 enable after startup finds no
+		// executor. V2 loads only at startup, so fall through to the plain path
+		// instead of dropping the approved plan. An ACP client that did not opt
+		// into Ferment also takes the plain path, without the restart notice.
+		const fermentEnabled = isFermentPermitted() && isResourceEnabled(FERMENT_V2_RESOURCE_ID)
+		const executor = fermentEnabled ? getFermentV2PlanExecutor(pi) : undefined
+		if (fermentEnabled && !executor) {
+			// Without this the user expects a Ferment run and gets a plain one
+			// with no reason given.
+			notifyUser(ctx, FERMENT_ENABLED_AFTER_START_NOTICE, "info")
+		}
+		if (executor) {
 			try {
 				await executor(
 					{
@@ -1051,7 +1062,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 					ctx,
 				)
 			} catch {
-				ctx.ui.notify("Could not start the approved plan automatically.", "error")
+				notifyUser(ctx, "Could not start the approved plan automatically.", "error")
 			}
 			return
 		}
@@ -1593,7 +1604,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				})
 
 				const DECLINE = "Rework the plan"
-				const START_AS_FERMENT = "Start as ferment"
+				const START_AS_FERMENT = "Start as ferment (legacy)"
 
 				const options: string[] = []
 				// Org policy: a plan-only policy leaves no mode an approved plan can
@@ -1611,7 +1622,9 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				}
 				options.push(DECLINE)
 				// Org policy: without an executable mode, ferment cannot run — hide it.
-				if (isFermentRunnable()) options.push(START_AS_FERMENT)
+				// Legacy must also be loaded, not only on: a mid-session enable
+				// leaves no V1 tools or scheduler to run the ferment.
+				if (isFermentRunnable() && isFermentLegacyLoadedAndEnabled()) options.push(START_AS_FERMENT)
 
 				void withBlocked(pi.events, "Plan complete", () =>
 					withWorkingHidden(ctx, () =>
@@ -1780,6 +1793,21 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 				}
 				await executeLocally()
 			} else if (payload.decision === "start_ferment") {
+				// Legacy-off gate: V1 "Start as ferment" is inert unless the legacy
+				// Ferment was loaded at startup and is still on. The review is already
+				// consumed, so no menu is left: tell the user to ask the agent to submit
+				// the plan again and choose Execute, and release the slug so the next submission starts a fresh review.
+				// Plan mode stays on, like "rework", so the user can resubmit.
+				if (!isFermentLegacyLoadedAndEnabled()) {
+					activePlanSlug = undefined
+					notifyUser(
+						ctx,
+						"Start as ferment needs the legacy Ferment, which is off. Ask the agent to submit the plan again, then choose Execute.",
+						"warning",
+					)
+					notifyPlanReviewClosed(ctx.sessionManager.getSessionId())
+					return
+				}
 				// Converted into a ferment — same release as the execute path.
 				activePlanSlug = undefined
 				// ── Tool-swap contract ────────────────────────────────────────────────
@@ -1850,7 +1878,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 						if (pi.events) emitFermentCreated(pi.events, draft)
 						appendRefEntry(pi, draft.id)
 						ctx.ui?.notify?.(
-							`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment list to resume and scope it interactively.`,
+							`Saved draft ferment "${draft.name}". The plan didn't include a "## Chunks" section, so it wasn't auto-scoped. Use /ferment-legacy list to resume and scope it interactively.`,
 						)
 						// A blocked release already warned and closed the review — done.
 						if (getRuntimePermissionMode().mode === "plan" && !releaseFromPlanForApproval(ctx)) return

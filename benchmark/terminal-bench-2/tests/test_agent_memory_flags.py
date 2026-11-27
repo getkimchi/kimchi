@@ -27,7 +27,31 @@ def _agent(memory: bool) -> Kimchi:
 
 def test_memory_env_prefix_when_enabled() -> None:
     command = _agent(memory=True)._kimchi_command("")
-    assert command.startswith("KIMCHI_ENABLE_RESOURCES=extensions.memory ")
+    # The prefix appends any KIMCHI_ENABLE_RESOURCES already in the exec env
+    # (e.g. extensions.ferment-legacy for the ferment-oneshot arm) instead of
+    # replacing it.
+    assert command.startswith(
+        "KIMCHI_ENABLE_RESOURCES=extensions.memory${KIMCHI_ENABLE_RESOURCES:+,$KIMCHI_ENABLE_RESOURCES} "
+    )
+
+
+def test_memory_env_prefix_composes_with_exec_env_in_shell() -> None:
+    import subprocess
+
+    prefix = _agent(memory=True)._kimchi_command("").split(" ", 1)[0]
+    script = f'{prefix} sh -c \'printf "%s" "$KIMCHI_ENABLE_RESOURCES"\''
+    merged = subprocess.run(
+        ["sh", "-c", script],
+        env={"PATH": "/usr/bin:/bin", "KIMCHI_ENABLE_RESOURCES": "extensions.ferment-legacy"},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert merged == "extensions.memory,extensions.ferment-legacy"
+    alone = subprocess.run(
+        ["sh", "-c", script], env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, check=True
+    ).stdout
+    assert alone == "extensions.memory"
 
 
 def test_no_memory_env_when_disabled() -> None:

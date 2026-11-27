@@ -90,7 +90,7 @@ it("resumes a verifier that ended without submitting, completes headless, and de
 				homeDir,
 				workDir,
 				sessionPath,
-				"/ferment-v2 Reply with exactly NO_TODO_DRAFT and no other characters.",
+				"/ferment Reply with exactly NO_TODO_DRAFT and no other characters.",
 			)
 			const failure = `timedOut=${result.timedOut} code=${result.code}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
@@ -109,7 +109,7 @@ it("resumes a verifier that ended without submitting, completes headless, and de
 	)
 })
 
-it("keeps --print alive across continue and exits only after Ferment V2 evaluates met", {
+it("keeps --print alive across continue and exits only after Ferment evaluates met", {
 	timeout: 25_000,
 }, async () => {
 	await withFermentV2PrintFixture(
@@ -159,7 +159,7 @@ it("pauses --print and exits nonzero when final-answer delivery fails", {
 				lastEvaluation: { verdict: "met" },
 			})
 			expect(result.stdout, failure).not.toContain("VERIFIED_FINAL_AFTER_EVALUATION")
-			expect(result.stdout, failure).not.toContain("Ferment V2 complete.")
+			expect(result.stdout, failure).not.toContain("Ferment complete.")
 			expect(readFileSync(sessionPath, "utf-8"), failure).not.toContain("UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN")
 		},
 	)
@@ -219,7 +219,7 @@ it("answers a resumed --print prompt instead of crashing on the session_start re
 			expect(
 				JSON.stringify(fake.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))),
 				failure,
-			).not.toContain("The user resumed the Kimchi session Ferment V2.")
+			).not.toContain("The user resumed the Kimchi session Ferment.")
 			expect(fermentV2Runs.at(-1)?.status, failure).toBe("blocked")
 		},
 	)
@@ -269,7 +269,7 @@ it("exits --print after update_ferment_v2 blocked persists final turn usage", { 
 	)
 })
 
-it("exits --print cleanly after the Ferment V2 token budget is reached", { timeout: 25_000 }, async () => {
+it("exits --print cleanly after the Ferment token budget is reached", { timeout: 25_000 }, async () => {
 	const models = resolveModels([{ ...DEFAULT_MODEL, contextWindow: 262_144, maxTokens: 16_384 }])
 	await withFermentV2PrintFixture(
 		{
@@ -291,12 +291,7 @@ it("exits --print cleanly after the Ferment V2 token budget is reached", { timeo
 			],
 		},
 		async ({ fake, homeDir, workDir, sessionPath }) => {
-			const result = await runFermentV2Print(
-				homeDir,
-				workDir,
-				sessionPath,
-				"/ferment-v2 --tokens 10 implement feature A",
-			)
+			const result = await runFermentV2Print(homeDir, workDir, sessionPath, "/ferment --tokens 10 implement feature A")
 			const fermentV2Runs = readFermentV2Journal(sessionPath)
 			const failure = `timedOut=${result.timedOut} code=${result.code} sessionExists=${existsSync(sessionPath)}\nstdout=${result.stdout}\nstderr=${result.stderr}`
 
@@ -576,7 +571,7 @@ function writeKimchiConfig(homeDir: string, fakeBaseUrl: string, models = resolv
 		join(configDir, "config.json"),
 		JSON.stringify({ apiKey: "fake", llmEndpoint: fakeBaseUrl, skillPaths: [], migrationState: "done" }),
 	)
-	writeFileSync(join(harnessDir, "settings.json"), JSON.stringify({ resources: { "extensions.ferment-v2": true } }))
+	writeFileSync(join(harnessDir, "settings.json"), JSON.stringify({}))
 	writeFileSync(
 		join(harnessDir, "models.json"),
 		JSON.stringify({
@@ -605,7 +600,7 @@ function runFermentV2Print(
 	homeDir: string,
 	workDir: string,
 	sessionPath: string,
-	prompt = "/ferment-v2 implement feature A",
+	prompt = "/ferment implement feature A",
 	permissionMode: "default" | "auto" | "yolo" = "yolo",
 	extraEnv: Record<string, string> = {},
 ) {

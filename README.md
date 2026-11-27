@@ -104,33 +104,37 @@ Two tags are added automatically to every request and do not count toward the 10
 
 User-defined tags (added via `/tags add`) are persisted with the session: once a session has its own tag set (created by any `/tags add`, `/tags remove`, or `/tags clear`), it fully overrides the defaults above and is restored when the session resumes. `KIMCHI_TAGS` must be set per session; it is the strongest source while present.
 
-## Ferment V2
+## Ferment
 
-Ferment V2 is an experimental, branch-scoped objective controller. It keeps one objective active across turns, uses the normal Todo tools for tactical work, and does not create Ferment phases, workers, or worktrees. See the [Ferment V2 runtime guide](docs/ferment-v2.md) for the lifecycle and persistence contract.
+Ferment (formerly Ferment V2) is the branch-scoped objective controller behind `/ferment`. It keeps one objective active across turns, uses the normal Todo tools for tactical work, and does not create legacy Ferment phases, workers, or worktrees. See the [Ferment runtime guide](docs/ferment-v2.md) for the lifecycle and persistence contract.
 
-Enable **Ferment V2** under `/resources` → **Experimental**, then restart Kimchi. It is disabled by default.
+Ferment is on by default. Its resource is `extensions.ferment`; turn it off under `/resources` if you do not want it. The previous Ferment (V1) is now the legacy Ferment under `/ferment-legacy` (see below).
+
+If you turned Ferment V2 on and the old Ferment off (`extensions.ferment-v2: true` and `extensions.ferment: false`), Ferment is now off for you, because `extensions.ferment` now names the new Ferment. Turn it back on with: `kimchi resources enable extensions.ferment`.
+
+> **Old V1 commands.** `/ferment` no longer runs V1 subcommands. A V1 command such as `/ferment list` or `/ferment delete <name>` shows a hint and starts nothing. Any other text is a new objective and starts an autonomous run. To use V1, enable `extensions.ferment-legacy`, restart, and use `/ferment-legacy`.
 
 | Command | Description |
 |---------|-------------|
-| `/ferment-v2 <objective>` | Create an objective, or confirm replacement of an unfinished Ferment V2 run |
-| `/ferment-v2 --tokens <n\|k\|m> <objective>` | Create an objective with a token budget, such as `--tokens 50k` |
-| `/ferment-v2` | Show the current objective, status, revision, and latest completion evaluation |
-| `/ferment-v2 edit [objective]` | Edit in place and redirect work to the new revision |
-| `/ferment-v2 pause` | Stop automatic continuation without aborting a running tool |
-| `/ferment-v2 resume` | Reactivate the current run |
-| `/ferment-v2 clear` | Clear the run from the current session branch |
+| `/ferment <objective>` | Create an objective, or confirm replacement of an unfinished Ferment run |
+| `/ferment --tokens <n\|k\|m> <objective>` | Create an objective with a token budget, such as `--tokens 50k` |
+| `/ferment` | Show the current objective, status, revision, and latest completion evaluation |
+| `/ferment edit [objective]` | Edit in place and redirect work to the new revision |
+| `/ferment pause` | Stop automatic continuation without aborting a running tool |
+| `/ferment resume` | Reactivate the current run |
+| `/ferment clear` | Clear the run from the current session branch |
 
-Ferment V2 state is stored in the native session journal, so restart, resume, rewind, and fork follow the selected branch. An old turn cannot update an edited or replaced run because model updates must match both its ID and revision.
+Ferment state is stored in the native session journal, so restart, resume, rewind, and fork follow the selected branch. An old turn cannot update an edited or replaced run because model updates must match both its ID and revision.
 
-At `turn_end`, Ferment V2 checkpoints the current session's assistant usage and active time. Reaching a token budget stops continuation before evaluation and changes the run to `budget_limited`. At the later settled checkpoint, an executing verifier subagent (read/bash/grep/find/ls, unlimited turns and duration) returns `met`, `impossible`, or `continue` only while the pending-input, tool-availability, identity, and stop-condition gates permit. The `fermenting time` counter counts active agent turns; cancellation, repeated errors, unchanged continuation, or evaluator unavailability pause the run. Runtime accounting is for the current session; the Terminal-Bench adapter separately aggregates valid usage from all discovered session files, including nested or child files.
+At `turn_end`, Ferment checkpoints the current session's assistant usage and active time. Reaching a token budget stops continuation before evaluation and changes the run to `budget_limited`. At the later settled checkpoint, an executing verifier subagent (read/bash/grep/find/ls, unlimited turns and duration) returns `met`, `impossible`, or `continue` only while the pending-input, tool-availability, identity, and stop-condition gates permit. The `fermenting time` counter counts active agent turns; cancellation, repeated errors, unchanged continuation, or evaluator unavailability pause the run. Runtime accounting is for the current session; the Terminal-Bench adapter separately aggregates valid usage from all discovered session files, including nested or child files.
 
-Ferment V2 directs the agent to track tactical progress in the normal Todos widget. `update_ferment_v2 complete` records an optional runtime completion claim and ends the working turn; it never completes the run by itself. The claim response stays hidden while evaluation runs. In interactive mode, a `met` verdict still requires a visible, fully completed Todo list for the current revision; headless mode has no visible widget and may proceed directly from evidenced `met`. Both start one buffered final-answer turn. `update_ferment_v2 blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
+Ferment directs the agent to track tactical progress in the normal Todos widget. `update_ferment_v2 complete` records an optional runtime completion claim and ends the working turn; it never completes the run by itself. The claim response stays hidden while evaluation runs. In interactive mode, a `met` verdict still requires a visible, fully completed Todo list for the current revision; headless mode has no visible widget and may proceed directly from evidenced `met`. Both start one buffered final-answer turn. `update_ferment_v2 blocked` remains immediate. Regular work tools remain available while the list is created or reconciled.
 
-Evaluation details stay out of the visible transcript. `/ferment-v2` shows the evaluation count, latest verdict/reason, and the verifier usage breakdown; the executing verifier runs on the first usable model from `evaluatorModels` that is not the implementer's session model, in a hidden child session that executes checks in the working tree. Todo observations are valid only for the current session, Ferment V2 ID, and revision. User objective and Todo mutations wait for active work to settle before changing that state.
+Evaluation details stay out of the visible transcript. `/ferment` shows the evaluation count, latest verdict/reason, and the verifier usage breakdown; the executing verifier runs on the first usable model from `evaluatorModels` that is not the implementer's session model, in a hidden child session that executes checks in the working tree. Todo observations are valid only for the current session, Ferment ID, and revision. User objective and Todo mutations wait for active work to settle before changing that state.
 
 ### Settings
 
-Ferment V2's policy numbers are adjustable. Edit `~/.config/kimchi/harness/settings.json` directly, under a single `fermentV2` key:
+Ferment's policy numbers are adjustable. Edit `~/.config/kimchi/harness/settings.json` directly, under a single `fermentV2` key (the stored name is unchanged):
 
 ```json
 {
@@ -146,30 +150,28 @@ Ferment V2's policy numbers are adjustable. Edit `~/.config/kimchi/harness/setti
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `autoResume` | `true` | Whether to automatically queue a continuation turn for a resumed active Ferment V2 run on session start. |
-| `maxUnchangedContinuations` | `3` | Consecutive continuation turns without recorded progress before the Ferment V2 run pauses itself. |
-| `maxConsecutiveErrors` | `3` | Consecutive agent-error turns before the Ferment V2 run pauses itself. |
-| `defaultTokenBudget` | unset | Token budget applied to `/ferment-v2 <objective>` when `--tokens` isn't given. An explicit `--tokens` always overrides this. |
+| `autoResume` | `true` | Whether to automatically queue a continuation turn for a resumed active Ferment run on session start. |
+| `maxUnchangedContinuations` | `3` | Consecutive continuation turns without recorded progress before the Ferment run pauses itself. |
+| `maxConsecutiveErrors` | `3` | Consecutive agent-error turns before the Ferment run pauses itself. |
+| `defaultTokenBudget` | unset | Token budget applied to `/ferment <objective>` when `--tokens` isn't given. An explicit `--tokens` always overrides this. |
 | `evaluationTimeoutMs` | unset | Optional wall-clock cap on one executing-verifier run, in milliseconds. Default: no cap. A timed-out verifier run is not retried. |
 | `evaluatorModels` | `["kimchi-dev/glm-5.3", "kimchi-dev/kimi-k3"]` | Ordered model refs for the executing verifier. The first usable entry that is not the implementer's session model wins; the session model is the fallback. |
 
 Only non-default values need to be specified; missing or invalid keys fall back to their default rather than failing the extension. The full verifier evidence, integrity-guard, and failure-handling rules are in the [runtime guide](docs/ferment-v2.md).
 
-## Ferment -- cross-session project management
+## Legacy Ferment (V1) -- cross-session project management
 
-Ferment is Kimchi's progressive-refinement project mode for multi-session work. Instead of starting from scratch each chat, Ferment persists a structured plan (goal, phases, steps) as a JSON state file.
+> **Legacy.** This section describes Ferment V1, now the legacy Ferment under `/ferment-legacy` and the experimental resource `extensions.ferment-legacy`. It is off by default and will be removed in a later release. Turn it on with `kimchi resources enable extensions.ferment-legacy` (or under `/resources` → **Experimental**), then restart Kimchi. `/ferment` runs the new Ferment described above. If your organization locks `extensions.ferment` off, the legacy Ferment is locked off too, unless the organization sets its own policy for `extensions.ferment-legacy`.
+
+Legacy Ferment is Kimchi's progressive-refinement project mode for multi-session work. Instead of starting from scratch each chat, Ferment persists a structured plan (goal, phases, steps) as a JSON state file.
 
 ### Quick start
 
-```bash
-kimchi --ferment "Build Tetris"
-```
-
-Or inside an active session:
+With `extensions.ferment-legacy` enabled, inside an active session:
 
 ```
-/ferment new "Build Tetris"    # create a ferment
-/ferment auto                   # keep going until done or blocked
+/ferment-legacy new "Build Tetris"    # create a ferment
+/ferment-legacy auto                   # keep going until done or blocked
 ```
 
 ### Concepts
@@ -188,10 +190,10 @@ All lifecycle transitions are validated by a deterministic finite state machine 
 draft -> planned -> running -> [paused] -> complete
 ```
 
-1. **draft** -- created via `/ferment new`, agent collects goal and phases conversationally
+1. **draft** -- created via `/ferment-legacy new`, agent collects goal and phases conversationally
 2. **planned** -- `scope_ferment` sets goal, criteria, constraints, phase breakdown
 3. **running** -- `activate_ferment_phase` starts a phase, agent executes steps
-4. **paused** -- user intervention required, or paused with `/ferment pause`
+4. **paused** -- user intervention required, or paused with `/ferment-legacy pause`
 5. **complete** -- all phases terminal
 
 ### Continuation policy
@@ -200,38 +202,38 @@ Controls whether the active ferment advances across phase boundaries.
 
 | Policy | Behavior | Command |
 |--------|----------|---------|
-| **manual** | Ask before moving to the next phase | `/ferment manual` |
-| **automated** | Keep going until complete, blocked, paused, or user input is needed | `/ferment auto` |
+| **manual** | Ask before moving to the next phase | `/ferment-legacy manual` |
+| **automated** | Keep going until complete, blocked, paused, or user input is needed | `/ferment-legacy auto` |
 
-Pause/resume is separate: `/ferment pause` stops the ferment, `/ferment resume` continues it using the current policy. `/ferment exit` leaves Ferment mode without deleting or abandoning the ferment; planned/running work is paused first, active Ferment UI/tools are cleared, and you can later select it from `/ferment list` or `/ferment switch`.
+Pause/resume is separate: `/ferment-legacy pause` stops the ferment, `/ferment-legacy resume` continues it using the current policy. `/ferment-legacy exit` leaves Ferment mode without deleting or abandoning the ferment; planned/running work is paused first, active Ferment UI/tools are cleared, and you can later select it from `/ferment-legacy list` or `/ferment-legacy switch`.
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `/ferment` | Start a new ferment via prompt |
-| `/ferment new "Name"` | Create new ferment |
-| `/ferment switch <id>` | Resume by ID prefix or name |
-| `/ferment delete <id>` | Delete permanently |
-| `/ferment export` | Export stats to JSON |
-| `/ferment progress` | Open phase/step navigator overlay |
-| `/ferment manual` | Set manual continuation policy |
-| `/ferment auto` | Set automated continuation policy |
-| `/ferment pause` | Pause the active ferment lifecycle |
-| `/ferment resume` | Resume the active ferment lifecycle |
-| `/ferment exit` | Leave Ferment mode without deleting the ferment |
+| `/ferment-legacy` | Start a new ferment via prompt |
+| `/ferment-legacy new "Name"` | Create new ferment |
+| `/ferment-legacy switch <id>` | Resume by ID prefix or name |
+| `/ferment-legacy delete <id>` | Delete permanently |
+| `/ferment-legacy export` | Export stats to JSON |
+| `/ferment-legacy progress` | Open phase/step navigator overlay |
+| `/ferment-legacy manual` | Set manual continuation policy |
+| `/ferment-legacy auto` | Set automated continuation policy |
+| `/ferment-legacy pause` | Pause the active ferment lifecycle |
+| `/ferment-legacy resume` | Resume the active ferment lifecycle |
+| `/ferment-legacy exit` | Leave Ferment mode without deleting the ferment |
 
 ### Recovery
 
 Every session writes a `ferment_reference` entry in the session log. On next start, the harness reads this entry and resumes from the exact state.
 
-```bash
+```
 # Day 1
-$ kimchi --ferment "Build Tetris"
+/ferment-legacy new "Build Tetris"
 # ... agent works, crashes, terminal closes ...
 
-# Day 2
-$ kimchi --ferment "Build Tetris"
+# Day 2: start kimchi in the same project
+/ferment-legacy switch "Build Tetris"
 # -> Rehydrates state, continues Phase 2 exactly where it left off
 ```
 
@@ -246,7 +248,7 @@ $ kimchi --ferment "Build Tetris"
     <timestamp>.jsonl    -- chat history + tool calls
 ```
 
-Every mutation is persisted as an append-only event with pre/post state hashes, enabling full auditability. Stats (phase/step counts, timing, model usage, grade distributions) are computed on demand from the snapshot and exported via `/ferment export`.
+Every mutation is persisted as an append-only event with pre/post state hashes, enabling full auditability. Stats (phase/step counts, timing, model usage, grade distributions) are computed on demand from the snapshot and exported via `/ferment-legacy export`.
 
 For full documentation see `docs/ferment.md` and `docs/ferment-storage-schema.md`.
 

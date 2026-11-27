@@ -4,7 +4,7 @@ import { join, resolve } from "node:path"
 import { expect, test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import type { FakeResponseScript } from "./support/fake-openai-server.js"
-import { REPO_ROOT, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, REPO_ROOT, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -30,6 +30,7 @@ test("phase completion replaces open progress with an answerable Continue prompt
 			terminal,
 			{
 				artifactName: "ferment-progress-boundary",
+				env: FERMENT_LEGACY_ENV,
 				gitInit: true,
 				responses: [
 					tool("complete_ferment_phase", {
@@ -76,7 +77,7 @@ test("phase completion replaces open progress with an answerable Continue prompt
 			},
 			async (_fixture, trace) => {
 				await graderRequest
-				terminal.submit("/ferment progress")
+				terminal.submit("/ferment-legacy progress")
 				await waitForText(terminal, "human:", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 				trace.step("progress open while phase grading is held")
 				finishGrading()

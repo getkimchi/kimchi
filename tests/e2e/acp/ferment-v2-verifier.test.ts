@@ -1,17 +1,17 @@
-// ACP integration: the Ferment V2 executing verifier on the ACP surface.
+// ACP integration: the Ferment executing verifier on the ACP surface.
 //
 // Dual-surface parity for the verifier slice: an explicit completion claim
 // spawns the `Verifier` subagent (a separate session whose system prompt
 // carries the objective and host-gathered facts), its executed bash check is
 // stamped with an evidence ID the verdict cites, and the accepted verdict
-// completes the Ferment V2 — observable through the shared notify streams
+// completes the Ferment — observable through the shared notify streams
 // the IDE client receives.
 
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, expect, it } from "vitest"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
-import { newSession, prompt, type ScenarioResult, waitFor } from "./support/scenarios.js"
+import { commandNames, newSession, prompt, type ScenarioResult, waitFor } from "./support/scenarios.js"
 
 let fixture: AcpFixture | undefined
 
@@ -56,7 +56,7 @@ it("sends a failing claim back with a finding, re-checks the fix, and completes"
 	const active = await startAcpFixture({
 		artifactName: "ferment-v2-verifier-round-trip",
 		extraArgs: ["--yolo"],
-		settings: { resources: { "extensions.ferment-v2": true } },
+		clientMeta: { "kimchi.dev": { ferment: true } },
 		responses: [
 			// Review 1: the check shows the wrong content; the verifier records the
 			// finding and continues.
@@ -122,15 +122,22 @@ it("sends a failing claim back with a finding, re-checks the fix, and completes"
 	fixture = active
 	const session = await newSession(active, active.workDir)
 
+	const names = await waitFor(
+		() => commandNames(active, session),
+		(found) => found.includes("bug"),
+	)
+	expect(names.filter((name) => name === "ferment")).toHaveLength(1)
+	expect(names).not.toContain("ferment-v2")
+
 	const running: ScenarioResult = await prompt(
 		active,
 		session,
-		`/ferment-v2 create ${outputFile} containing exactly done and verify it`,
+		`/ferment create ${outputFile} containing exactly done and verify it`,
 	)
 	expect(running.stopReason).not.toBe("ERROR")
 
 	const notifiedMessages = () => active.client.extNotifications.map((n) => JSON.stringify(n.params))
-	await waitFor(notifiedMessages, (records) => records.some((record) => record.includes("Ferment V2 complete.")))
+	await waitFor(notifiedMessages, (records) => records.some((record) => record.includes("Ferment complete.")))
 
 	const verifierRequests = chatRequests(active).filter(isFermentV2VerifierRequest)
 	expect(verifierRequests).toHaveLength(4)

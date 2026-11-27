@@ -30,8 +30,13 @@ function makeTui(rows = 40) {
 describe("sourceToLabel", () => {
 	it("maps known sources", () => {
 		expect(sourceToLabel("kimchi.general")).toBe("General")
-		expect(sourceToLabel("kimchi.ferment")).toBe("Ferment")
+		expect(sourceToLabel("kimchi.ferment")).toBe("Ferment (legacy)")
 		expect(sourceToLabel("kimchi.billing")).toBe("Billing")
+	})
+
+	it("labels V1 tips as legacy so they are not confused with Ferment V2", () => {
+		expect(sourceToLabel("kimchi.ferment")).not.toBe("Ferment")
+		expect(sourceToLabel("kimchi.ferment")).toBe("Ferment (legacy)")
 	})
 
 	it("strips kimchi prefix and capitalizes unknown sources", () => {
@@ -59,7 +64,7 @@ describe("createTipsPanel", () => {
 			expect(text).toContain("General")
 			expect(text).toContain("1. First tip.")
 			expect(text).toContain("2. Second tip.")
-			expect(text).toContain("Ferment")
+			expect(text).toContain("Ferment (legacy)")
 			expect(text).toContain("3. Ferment tip.")
 		})
 

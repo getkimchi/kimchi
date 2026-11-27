@@ -6,8 +6,9 @@ import type {
 } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { resetCommandReplyScopesForTests, withCommandReplyScope } from "../../shared/command-reply-scope.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
-import { ADVERTISED_CAPABILITIES, CAPABILITIES_KEY } from "./capabilities.js"
+import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_NOTIFICATIONS, CAPABILITIES_KEY } from "./capabilities.js"
 
 type ExtMethod = (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>
 type ExtNotification = (method: string, params: Record<string, unknown>) => Promise<void>
@@ -896,6 +897,96 @@ describe("createAcpUIContext — fire-and-forget notifications", () => {
 				title: "My session",
 			},
 		})
+	})
+})
+
+describe("createAcpUIContext — command replies as agent text", () => {
+	afterEach(() => {
+		resetCommandReplyScopesForTests()
+	})
+
+	function agentTextChunks(send: ReturnType<typeof makeConn>["send"]) {
+		return send.mock.calls
+			.map(([params]) => params.update)
+			.filter((update) => update.sessionUpdate === "agent_message_chunk")
+	}
+
+	it("mirrors notify as agent text inside a command reply scope", async () => {
+		const { conn, extNotification, send } = makeConn()
+		const ui = createAcpUIContext(conn, "sess-1", undefined, send)
+		await withCommandReplyScope("sess-1", async () => {
+			ui.notify("No Ferment is currently set.", "warning")
+		})
+		await new Promise((r) => setImmediate(r))
+		expect(send).toHaveBeenCalledTimes(1)
+		const [params] = send.mock.calls[0]
+		expect(params.sessionId).toBe("sess-1")
+		expect(params.update).toEqual({
+			sessionUpdate: "agent_message_chunk",
+			messageId: expect.stringMatching(/^km\./),
+			content: { type: "text", text: "No Ferment is currently set.\n\n" },
+		})
+		expect(extNotification).toHaveBeenCalledTimes(1)
+		expect(extNotification.mock.calls[0][0]).toBe(AVAILABLE_EXT_NOTIFICATIONS.pi_notify)
+		expect(extNotification.mock.calls[0][1]).toMatchObject({
+			method: "notify",
+			message: "No Ferment is currently set.",
+			notifyType: "warning",
+		})
+	})
+
+	it("does not mirror outside a scope", async () => {
+		const { conn, extNotification, send } = makeConn()
+		const ui = createAcpUIContext(conn, "sess-1", undefined, send)
+		ui.notify("Ferment paused.", "info")
+		ui.showError("boom")
+		await new Promise((r) => setImmediate(r))
+		expect(agentTextChunks(send)).toHaveLength(0)
+		expect(extNotification).toHaveBeenCalledTimes(2)
+	})
+
+	it("does not mirror into another session's scope", async () => {
+		const { conn, extNotification, send } = makeConn()
+		const uiA = createAcpUIContext(conn, "sess-a", undefined, send)
+		const uiB = createAcpUIContext(conn, "sess-b", undefined, send)
+		await withCommandReplyScope("sess-a", async () => {
+			uiB.notify("Ferment paused.", "info")
+			uiA.notify("No Ferment is currently set.", "warning")
+		})
+		await new Promise((r) => setImmediate(r))
+		const chunks = send.mock.calls.filter(([params]) => params.update.sessionUpdate === "agent_message_chunk")
+		expect(chunks).toHaveLength(1)
+		expect(chunks[0][0].sessionId).toBe("sess-a")
+		expect(extNotification).toHaveBeenCalledTimes(2)
+	})
+
+	it("mirrors ui.error too", async () => {
+		const { conn, extNotification, send } = makeConn()
+		const ui = createAcpUIContext(conn, "sess-1", undefined, send)
+		await withCommandReplyScope("sess-1", async () => {
+			ui.showError("Ferment state is corrupt.")
+		})
+		await new Promise((r) => setImmediate(r))
+		expect(agentTextChunks(send)).toEqual([
+			{
+				sessionUpdate: "agent_message_chunk",
+				messageId: expect.stringMatching(/^km\./),
+				content: { type: "text", text: "Ferment state is corrupt.\n\n" },
+			},
+		])
+		expect(extNotification.mock.calls[0][1]).toMatchObject({ notifyType: "error" })
+	})
+
+	it("does not mirror status, widget or editor text updates", async () => {
+		const { conn, send } = makeConn()
+		const ui = createAcpUIContext(conn, "sess-1", fullClientCapabilities(), send)
+		await withCommandReplyScope("sess-1", async () => {
+			ui.setStatus("ferment", "Ferment active")
+			ui.setWidget("ferment", ["line"])
+			ui.setEditorText("draft")
+		})
+		await new Promise((r) => setImmediate(r))
+		expect(agentTextChunks(send)).toHaveLength(0)
 	})
 })
 

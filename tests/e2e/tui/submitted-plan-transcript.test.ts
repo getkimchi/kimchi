@@ -60,7 +60,19 @@ test("reworking a plan prints the complete revision and approval keeps it in cha
 					stream: [],
 					toolCalls: [{ function: { name: "submit_plan", arguments: JSON.stringify({ plan: revised }) } }],
 				},
-				{ stream: ["APPROVED_PLAN_EXECUTION_STARTED"] },
+				// Ferment is on by default, so approval starts a plan execution run;
+				// blocking it ends the run after the requested execution turn.
+				{
+					stream: ["APPROVED_PLAN_EXECUTION_STARTED"],
+					toolCalls: [
+						{
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "blocked", reason: "Waiting for review." }),
+							},
+						},
+					],
+				},
 			],
 		},
 		async (fixture, trace) => {
@@ -79,6 +91,7 @@ test("reworking a plan prints the complete revision and approval keeps it in cha
 			trace.step("the full tool-only revision is printed before the unchanged approval menu")
 			terminal.keyPress(Key.Enter)
 			await waitForText(terminal, "APPROVED_PLAN_EXECUTION_STARTED")
+			await waitForText(terminal, "Plan execution blocked.")
 			expect(fullText(terminal)).toContain("Keep the existing cache interface.")
 			for (let index = 1; index <= 60; index++) expect(fullText(terminal)).toContain(`Revised requirement ${index}.`)
 			expect(

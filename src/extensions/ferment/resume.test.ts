@@ -493,7 +493,7 @@ describe("resumeFerment still-paused state", () => {
 		expect(pausedNotice).toBeDefined()
 		const noticeText = pausedNotice?.content?.map((c) => c.text ?? "").join("") ?? ""
 		expect(noticeText).toContain("currently paused")
-		expect(noticeText).toContain("/ferment resume")
+		expect(noticeText).toContain("/ferment-legacy resume")
 		expect(maybeInjectScopingStopNudge(h.pi, draft.id, ["read"], "stop")).toEqual({
 			kind: "claimed",
 			reason: "exhausted",
@@ -689,7 +689,7 @@ describe("saved Ferment work attribution", () => {
 	it.each([
 		"planned",
 		"paused",
-	])("adopts saved work through /ferment resume after Leave paused (%s)", async (status) => {
+	])("adopts saved work through /ferment-legacy resume after Leave paused (%s)", async (status) => {
 		const ferment = h.eventStorage.create("Saved work", undefined, process.cwd())
 		const apply = createApplyAndPersist(h.runtime)
 		expect(

@@ -18,7 +18,7 @@ import {
 	STREAM_TIMEOUT_MS,
 	waitForText,
 } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -56,6 +56,7 @@ test("plan review dialog appears in one-shot mode after propose_ferment_scoping"
 		terminal,
 		{
 			artifactName: "plan-review-oneshot",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			extraArgs: ["--ferment-oneshot=true"],

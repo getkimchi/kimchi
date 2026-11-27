@@ -1,6 +1,6 @@
 import { test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -11,6 +11,7 @@ test.fail("ferment phase-review separator is not selectable", async ({ terminal 
 		terminal,
 		{
 			artifactName: "ferment-phase-review",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			responses: [
 				// Scoping nudge -> model proposes scoping.
@@ -43,13 +44,13 @@ test.fail("ferment phase-review separator is not selectable", async ({ terminal 
 			],
 		},
 		async (_fixture, trace) => {
-			// Stage 1: enter ferment. Type then Enter separately — one-shot "/ferment\r" can
+			// Stage 1: enter ferment. Type then Enter separately — one-shot "/ferment-legacy\r" can
 			// race startup and skip the intent prompt.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-			trace.step("typed /ferment")
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
+			trace.step("typed /ferment-legacy")
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
 			trace.step("intent prompt visible")
 

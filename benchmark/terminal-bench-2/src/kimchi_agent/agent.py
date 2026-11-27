@@ -79,8 +79,14 @@ ANTHROPIC_PROVIDER = "anthropic"
 KIMCHI_INFRA_BREAKER_THRESHOLD_ENV = "KIMCHI_INFRA_BREAKER_THRESHOLD"
 KIMCHI_BENCHMARK_INFRA_BREAKER_DEFAULT_ATTEMPTS = "3"
 KIMCHI_EXIT_OUTPUT_TAIL_LINES = 20
-FERMENT_V2_RESOURCE_ID = "extensions.ferment-v2"
-FERMENT_V2_SLASH_COMMAND = "/ferment-v2"
+# The new Ferment (formerly V2) owns /ferment and its resource,
+# extensions.ferment, is on by default, so the V2 arm needs no resource pin.
+FERMENT_SLASH_COMMAND = "/ferment"
+# --ferment-oneshot is V1-only; kimchi exits 2 unless the legacy resource is on.
+FERMENT_LEGACY_RESOURCE_ID = "extensions.ferment-legacy"
+# The one-shot arm runs V1, so the new Ferment (which owns /ferment) is turned off.
+FERMENT_RESOURCE_ID = "extensions.ferment"
+KIMCHI_ENABLE_RESOURCES_ENV = "KIMCHI_ENABLE_RESOURCES"
 KIMCHI_ERROR_CLASSIFICATION_TYPE = "kimchi_error_classification"
 KIMCHI_INFRA_ERROR_EXIT_CODE = 74
 RETRYABLE_API_ERROR_MESSAGE_LIMIT = 2_000
@@ -222,6 +228,18 @@ def _validate_model_name(model_name: str | None) -> None:
         raise ValueError(
             f"--model must be qualified as <provider>/<id> (got {model_name!r}); use e.g. kimchi-dev/kimi-k2.7"
         )
+
+
+def _merge_enabled_resources(existing: str | None, resource_id: str) -> str:
+    """Append ``resource_id`` to a comma-separated KIMCHI_ENABLE_RESOURCES value.
+
+    Keeps every existing entry in order, drops blanks, and does not duplicate
+    ``resource_id`` when it is already listed.
+    """
+    ids = [entry.strip() for entry in (existing or "").split(",") if entry.strip()]
+    if resource_id not in ids:
+        ids.append(resource_id)
+    return ",".join(ids)
 
 
 def _resolve_infra_breaker_threshold(value: str | None) -> str:
@@ -578,6 +596,9 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
         ferment_env: dict[str, str] = {}
         if self._resolved_flags.get("ferment-oneshot"):
             ferment_env["KIMCHI_FERMENTS_DIR"] = f"{CONTAINER_LOGS_DIR}/ferments"
+            ferment_env[KIMCHI_ENABLE_RESOURCES_ENV] = _merge_enabled_resources(
+                self._get_env(KIMCHI_ENABLE_RESOURCES_ENV), FERMENT_LEGACY_RESOURCE_ID
+            )
 
         env = {
             # Configure Kimchi's own harness-level breaker for benchmark runs.
@@ -713,7 +734,7 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
 
     def _stdin_payload(self, instruction: str) -> str:
         """What to pipe to kimchi, when it is not the instruction verbatim."""
-        return f"{FERMENT_V2_SLASH_COMMAND} {instruction}" if self._ferment_v2_enabled else instruction
+        return f"{FERMENT_SLASH_COMMAND} {instruction}" if self._ferment_v2_enabled else instruction
 
     def _pre_launch_commands(self, instruction: str) -> list[str]:
         """Shell commands to run in the launch pipeline, before kimchi starts."""
@@ -819,8 +840,10 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
             # Read by kimchi through pi's SettingsManager: disables upstream
             # threshold auto-compaction and both ferment compaction paths.
             settings["compaction"] = {"enabled": False}
-        if self._ferment_v2_enabled:
-            settings["resources"] = {FERMENT_V2_RESOURCE_ID: True}
+        if self._resolved_flags.get("ferment-oneshot"):
+            # A settings override beats KIMCHI_ENABLE_RESOURCES, so the V1 arm
+            # does not run with the new Ferment on.
+            settings["resources"] = {FERMENT_RESOURCE_ID: False}
 
         settings_json = json.dumps(settings, separators=(",", ":"))
         return (
@@ -918,8 +941,15 @@ class Kimchi(HarborCompatMixin, BaseInstalledAgent):
 
         # The memory-on arm of A/B runs enables the extension via the
         # KIMCHI_ENABLE_RESOURCES env var — a per-resource transient enable,
-        # not a CLI flag and not the global experimental switch.
-        memory_env = "KIMCHI_ENABLE_RESOURCES=extensions.memory " if self._memory_enabled else ""
+        # not a CLI flag and not the global experimental switch. It appends any
+        # value already in the exec env (e.g. the ferment-oneshot legacy
+        # enable) rather than replacing it.
+        memory_env = (
+            f"{KIMCHI_ENABLE_RESOURCES_ENV}=extensions.memory"
+            f"${{{KIMCHI_ENABLE_RESOURCES_ENV}:+,${KIMCHI_ENABLE_RESOURCES_ENV}}} "
+            if self._memory_enabled
+            else ""
+        )
 
         return (
             f"{memory_env}{shlex.quote(BINARY_PATH)} "

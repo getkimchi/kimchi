@@ -1,6 +1,7 @@
 import { expect, it } from "vitest"
 import {
 	getClientOptedIntoArtifacts,
+	getClientOptedIntoFerment,
 	getClientOptedIntoMcpOAuthTurn,
 	getClientOptedIntoModelEffort,
 	getClientOptedIntoPRMonitoring,
@@ -36,6 +37,20 @@ it.each([
 	{ flags: { backgroundRuns: true, prMonitoring: true }, allowed: true },
 ])("requires both PR monitoring and background-run support: $flags", ({ flags, allowed }) => {
 	expect(getClientOptedIntoPRMonitoring(flags ? { _meta: { "kimchi.dev": flags } } : undefined)).toBe(allowed)
+})
+
+// Ferment V2 is not fully tested over ACP, so only an explicit `true` opts in.
+it.each([
+	{ flags: undefined, allowed: false },
+	{ flags: {}, allowed: false },
+	{ flags: { ferment: false }, allowed: false },
+	{ flags: { ferment: "true" }, allowed: false },
+	{ flags: { ferment: 1 }, allowed: false },
+	{ flags: { backgroundRuns: true }, allowed: false },
+	{ flags: { ferment: true }, allowed: true },
+	{ flags: { ferment: true, backgroundRuns: false }, allowed: true },
+])("requires an explicit Ferment opt-in, independent of background runs: $flags", ({ flags, allowed }) => {
+	expect(getClientOptedIntoFerment(flags ? { _meta: { "kimchi.dev": flags } } : undefined)).toBe(allowed)
 })
 
 it.each([

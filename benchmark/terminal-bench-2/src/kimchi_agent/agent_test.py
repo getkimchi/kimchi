@@ -199,7 +199,10 @@ async def test_disable_compaction_writes_harness_setting(tmp_path: Path) -> None
     )
 
 
-async def test_ferment_v2_kwarg_enables_resource_and_prepends_command(tmp_path: Path) -> None:
+async def test_ferment_v2_kwarg_prepends_ferment_command_without_resource_override(tmp_path: Path) -> None:
+    # The new Ferment owns /ferment and extensions.ferment is on by default, so
+    # the V2 arm only rewrites the prompt; it must not pin the retired
+    # extensions.ferment-v2 id (inert) or send the unregistered /ferment-v2.
     agent = RecordingKimchi(
         logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
         model_name="kimchi-dev/kimi-k2.6",
@@ -210,12 +213,10 @@ async def test_ferment_v2_kwarg_enables_resource_and_prepends_command(tmp_path: 
         await agent.run("implement the task", object(), AgentContext())
 
     command = agent.agent_commands[0]
-    assert "printf '%s' '/ferment-v2 implement the task'" in command
-    assert "--ferment-v2" not in command
-    assert (
-        '{"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
-        '"resources":{"extensions.ferment-v2":true}}' in command
-    )
+    assert "printf '%s' '/ferment implement the task'" in command
+    assert "ferment-v2" not in command
+    assert '{"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6"}' in command
+    assert '"resources"' not in command
 
 
 async def test_ferment_v2_kwarg_shares_harness_settings_write(tmp_path: Path) -> None:
@@ -231,8 +232,91 @@ async def test_ferment_v2_kwarg_shares_harness_settings_write(tmp_path: Path) ->
     command = agent.agent_commands[0]
     assert (
         '{"defaultProvider":"kimchi-dev","defaultModel":"kimi-k2.6",'
-        '"compaction":{"enabled":false},"resources":{"extensions.ferment-v2":true}}' in command
+        '"compaction":{"enabled":false}}' in command
     )
+    assert "printf '%s' '/ferment implement the task'" in command
+
+
+async def test_ferment_v2_off_sends_instruction_verbatim(tmp_path: Path) -> None:
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("implement the task", object(), AgentContext())
+
+    assert "printf '%s' 'implement the task'" in agent.agent_commands[0]
+
+
+async def test_ferment_oneshot_enables_legacy_resource_when_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # --ferment-oneshot is V1-only; with extensions.ferment-legacy off kimchi
+    # exits 2, so the oneshot arm must enable the legacy resource itself.
+    monkeypatch.delenv("KIMCHI_ENABLE_RESOURCES", raising=False)
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        **{"ferment-oneshot": True},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("implement the task", object(), AgentContext())
+
+    assert agent.agent_envs[0]["KIMCHI_ENABLE_RESOURCES"] == "extensions.ferment-legacy"
+    assert "--ferment-oneshot" in agent.agent_commands[0]
+
+
+async def test_ferment_oneshot_merges_legacy_into_existing_enable_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KIMCHI_ENABLE_RESOURCES", "extensions.memory, skills.example")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        **{"ferment-oneshot": True},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("implement the task", object(), AgentContext())
+
+    assert (
+        agent.agent_envs[0]["KIMCHI_ENABLE_RESOURCES"]
+        == "extensions.memory,skills.example,extensions.ferment-legacy"
+    )
+
+
+async def test_ferment_oneshot_prefers_extra_env_and_does_not_duplicate_legacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KIMCHI_ENABLE_RESOURCES", "extensions.ignored")
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+        extra_env={"KIMCHI_ENABLE_RESOURCES": "extensions.ferment-legacy,extensions.memory"},
+        **{"ferment-oneshot": True},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("implement the task", object(), AgentContext())
+
+    assert agent.agent_envs[0]["KIMCHI_ENABLE_RESOURCES"] == "extensions.ferment-legacy,extensions.memory"
+
+
+async def test_no_ferment_oneshot_leaves_enable_resources_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("KIMCHI_ENABLE_RESOURCES", raising=False)
+    agent = RecordingKimchi(
+        logs_dir=tmp_path / "jobs" / "run-1" / "task__trial" / "agent",
+        model_name="kimchi-dev/kimi-k2.6",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.run("implement the task", object(), AgentContext())
+
+    assert "KIMCHI_ENABLE_RESOURCES" not in agent.agent_envs[0]
 
 
 def test_multi_model_selection_is_rejected(tmp_path: Path) -> None:

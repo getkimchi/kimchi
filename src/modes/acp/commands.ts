@@ -2,6 +2,8 @@ import type { AvailableCommand } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-agent"
 
 import { isExperimentalFeaturesEnabled } from "../../extensions/experimental.js"
+import { isFermentV2LoadedAndEnabled } from "../../extensions/ferment-v2/availability.js"
+import { FERMENT_V2_COMMAND_NAME } from "../../extensions/ferment-v2/constants.js"
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
 import {
 	type AcpSkillInfo,
@@ -49,6 +51,12 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 		input: { hint: "Optional instructions, or an action: watch, monitor, status, or stop." },
 	},
 ]
+
+export const FERMENT_AVAILABLE_COMMAND: AvailableCommand = {
+	name: FERMENT_V2_COMMAND_NAME,
+	description: SLASH_COMMANDS.ferment.hint,
+	input: { hint: "The objective, or edit, pause, resume, or clear." },
+}
 
 /**
  * Custom session-log entry recording a /compact command invocation.
@@ -104,6 +112,10 @@ export function composeAvailableCommands(
 ): AvailableCommand[] {
 	return [
 		...AVAILABLE_COMMANDS.filter(({ name }) => (name !== "pr-watch" || prMonitoring) && (name !== "review" || review)),
+		// The palette is not built from registered commands. Ferment loads only
+		// when it was on at startup and the client opted in, so this covers both
+		// gates. The `/ferment` stub (Ferment off) is not listed.
+		...(isFermentV2LoadedAndEnabled() ? [FERMENT_AVAILABLE_COMMAND] : []),
 		...buildSkillAvailableCommands(Array.from(skillCommands.values())),
 	]
 }

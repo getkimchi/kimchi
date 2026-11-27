@@ -13,6 +13,7 @@
 import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
+import { isAcpSessionHost } from "../../modes/acp/state.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import {
 	consumePlanReviewContext,
@@ -55,6 +56,7 @@ import {
 import { setPendingPlanReviewTrigger } from "./plan-review-trigger.js"
 import { buildFermentPromptBlock } from "./prompt-block.js"
 import { withWorkingHidden } from "./prompt-ui.js"
+import { markFermentLegacyLoaded } from "./resource.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
 import { scheduleFermentWakeUp, scheduleNextFermentAction } from "./scheduler.js"
@@ -154,6 +156,9 @@ const fermentRequestRenderer: MessageRenderer<FermentRequestMessageDetails> = (m
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime) {
+	// Legacy Ferment is not supported over ACP. Only Ferment V2 is, behind a client opt-in.
+	if (isAcpSessionHost()) return
+	markFermentLegacyLoaded()
 	// Wire pi.events into the runtime so createApplyAndPersist can emit domain
 	// events for every state mutation without importing from telemetry.
 	runtime.events = pi.events
@@ -584,7 +589,7 @@ export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRunti
 	EntryTriggerRegistry.register("/ferment-new", (event) => {
 		if (event.kind !== "slash-command") return { kind: "noop" }
 		if (event.command !== "new") return { kind: "noop" }
-		return { kind: "enter-mode", mode: "ferment", reason: "/ferment new <intent>" }
+		return { kind: "enter-mode", mode: "ferment", reason: "/ferment-legacy new <intent>" }
 	})
 	EntryTriggerRegistry.register("KIMCHI_ACTIVE_FERMENT", (event) => {
 		if (event.kind !== "env-var") return { kind: "noop" }

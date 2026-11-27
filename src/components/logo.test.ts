@@ -18,6 +18,21 @@ const { LogoHeader } = await import("./logo.js")
 const ANSI_ESCAPE = /\x1b\[[\d;]*m/g
 const stripAnsi = (s: string): string => s.replace(ANSI_ESCAPE, "")
 
+// Extract only the right-column text from each structured content row and join
+// the fragments. Rows render as `│ <left> │ <right> │`, so flattening whole rows
+// with `.join(" ")` would interleave the left column and the divider between
+// right-column fragments wrapped across lines. Joining only the right-column
+// fragments reconstructs the right-column prose contiguously.
+const rightColumnText = (lines: string[]): string =>
+	lines
+		.slice(1, -1)
+		.map((l) => {
+			const parts = stripAnsi(l).split("│")
+			return parts.length >= 4 ? parts[parts.length - 2].trim() : ""
+		})
+		.filter((s) => s.length > 0)
+		.join(" ")
+
 function createMockTheme(): Theme {
 	const COLOR_CODE: Record<string, string> = {
 		accent: "\x1b[36m",
@@ -52,7 +67,7 @@ describe("LogoHeader", () => {
 
 	it("renders a bordered two-column layout at width 120", () => {
 		const theme = createMockTheme()
-		const header = new LogoHeader(theme)
+		const header = new LogoHeader(theme, { isFermentAvailable: () => true })
 		const lines = header.render(120)
 
 		// First and last lines are borders
@@ -80,10 +95,13 @@ describe("LogoHeader", () => {
 		expect(lines.length).toBeGreaterThan(11)
 
 		// Contains right column content
-		const rightText = lines.slice(1, -1).map(stripAnsi).join(" ")
+		const rightText = rightColumnText(lines)
 		expect(rightText).toContain("Kimchi's special:")
 		expect(rightText).toContain("/ferment")
-		expect(rightText).toContain("exit")
+		expect(rightText).toContain("to work on one objective until it is verified done")
+		expect(rightText).toContain("/ferment pause")
+		expect(rightText).toContain("/ferment resume")
+		expect(rightText).not.toContain("/ferment exit")
 
 		// Contains a horizontal rule in the right column
 		const hrRow = lines.slice(1, -1).find((l) => {
@@ -100,7 +118,7 @@ describe("LogoHeader", () => {
 
 	it("wraps right column text at width 60", () => {
 		const theme = createMockTheme()
-		const header = new LogoHeader(theme)
+		const header = new LogoHeader(theme, { isFermentAvailable: () => true })
 		const lines = header.render(60)
 
 		// Should still be a bordered box
@@ -114,7 +132,7 @@ describe("LogoHeader", () => {
 		expect(rightText).toContain("Kimchi")
 		expect(rightText).toContain("special")
 		expect(rightText).toContain("ferment")
-		expect(rightText).toContain("exit")
+		expect(rightText).toContain("pause")
 
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(60)
@@ -123,7 +141,7 @@ describe("LogoHeader", () => {
 
 	it("degrades gracefully at narrow width 45", () => {
 		const theme = createMockTheme()
-		const header = new LogoHeader(theme)
+		const header = new LogoHeader(theme, { isFermentAvailable: () => true })
 		const lines = header.render(45)
 
 		// Still has borders and dividers
@@ -135,7 +153,7 @@ describe("LogoHeader", () => {
 		expect(rightChars).toMatch(/K/i)
 		expect(rightChars).toMatch(/s\s*p\s*e\s*c/i)
 		expect(rightChars).toMatch(/f\s*e\s*r\s*m/i)
-		expect(rightChars).toMatch(/e\s*x\s*i\s*t/i)
+		expect(rightChars).toMatch(/p\s*a\s*u\s*s\s*e/i)
 		const contentRows = lines.slice(1, -1)
 		const rowsWithRightContent = contentRows.filter((l) => {
 			const stripped = stripAnsi(l)
@@ -150,7 +168,7 @@ describe("LogoHeader", () => {
 
 	it("uses accent color for borders, divider, and highlighted commands", () => {
 		const theme = createMockTheme()
-		const header = new LogoHeader(theme)
+		const header = new LogoHeader(theme, { isFermentAvailable: () => true })
 		const lines = header.render(120)
 
 		// Borders use accent ANSI
@@ -161,12 +179,27 @@ describe("LogoHeader", () => {
 		// Highlighted commands use theme.fg("accent", ...) which wraps with accent + reset
 		const rightSection = lines.slice(1, -1).join("\n")
 		expect(rightSection).toContain("\x1b[36m/ferment\x1b[0m")
-		expect(rightSection).toContain("\x1b[36m/ferment exit\x1b[0m")
+		expect(rightSection).toContain("\x1b[36m/ferment pause\x1b[0m")
+		expect(rightSection).toContain("\x1b[36m/ferment resume\x1b[0m")
+	})
+
+	it("uses the V2 ferment tip text and never mentions /ferment exit", () => {
+		const theme = createMockTheme()
+		const header = new LogoHeader(theme, { isFermentAvailable: () => true })
+		const lines = header.render(120)
+		const rightText = rightColumnText(lines)
+
+		expect(rightText).toContain("/ferment")
+		expect(rightText).toContain("to work on one objective until it is verified done")
+		for (const line of lines) {
+			expect(stripAnsi(line)).not.toContain("/ferment exit")
+		}
 	})
 
 	it("shows a long blocked-Community notice instead of the secondary ferment tip", () => {
 		const theme = createMockTheme()
 		const header = new LogoHeader(theme, {
+			isFermentAvailable: () => true,
 			getRightColumnNotice: () =>
 				"You are using the Community tier. You can bring your own inference to the harness. To use Kimchi inference, upgrade to Coder.",
 		})
@@ -181,6 +214,81 @@ describe("LogoHeader", () => {
 		expect(rightText).toContain("upgrade")
 		expect(rightText).toContain("to Coder.")
 		expect(rightText).not.toContain("ferment exit")
+	})
+
+	describe("Ferment availability", () => {
+		it("shows the /ferment tips when the caller reports Ferment available", () => {
+			const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => true })
+			const rightText = rightColumnText(header.render(120))
+
+			expect(rightText).toContain("Kimchi's special:")
+			expect(rightText).toContain("Use /ferment to work on one objective until it is verified done.")
+			expect(rightText).toContain("/ferment pause")
+			expect(rightText).toContain("/ferment resume")
+		})
+
+		it("shows neutral tips and no /ferment text when Ferment is not available", () => {
+			const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => false })
+			const lines = header.render(120)
+			const rightText = rightColumnText(lines)
+
+			expect(rightText).toContain("Getting started:")
+			expect(rightText).toContain("Type / to see the commands you can use.")
+			expect(rightText).toContain("Use /help to learn what kimchi can do.")
+			expect(rightText).not.toContain("Kimchi's special")
+			for (const line of lines) {
+				expect(stripAnsi(line)).not.toContain("ferment")
+			}
+		})
+
+		it("highlights the neutral commands in the accent color", () => {
+			const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => false })
+			const rightSection = header.render(120).slice(1, -1).join("\n")
+
+			expect(rightSection).toContain("\x1b[36m/\x1b[0m")
+			expect(rightSection).toContain("\x1b[36m/help\x1b[0m")
+		})
+
+		it("keeps the Community notice in place of the second tip when Ferment is not available", () => {
+			const header = new LogoHeader(createMockTheme(), {
+				isFermentAvailable: () => false,
+				getRightColumnNotice: () => "You are using the Community tier.",
+			})
+			const lines = header.render(120)
+			const rightText = rightColumnText(lines)
+
+			expect(rightText).toContain("Type / to see the commands you can use.")
+			expect(rightText).toContain("You are using the Community tier.")
+			expect(rightText).not.toContain("/help")
+			for (const line of lines) {
+				expect(stripAnsi(line)).not.toContain("ferment")
+			}
+		})
+
+		it("reads availability on every render, so a mid-session change shows at once", () => {
+			let available = true
+			const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => available })
+
+			expect(rightColumnText(header.render(120))).toContain("/ferment")
+			available = false
+			expect(rightColumnText(header.render(120))).not.toContain("/ferment")
+			available = true
+			expect(rightColumnText(header.render(120))).toContain("/ferment")
+		})
+
+		it("shows neutral tips when the caller gives no check", () => {
+			const header = new LogoHeader(createMockTheme())
+			const rightText = rightColumnText(header.render(120))
+			expect(rightText).toContain("Getting started:")
+			expect(rightText).not.toContain("/ferment")
+		})
+
+		it.each([1, 10, 30, 60])("never exceeds width %i with the neutral tips", (width) => {
+			const header = new LogoHeader(createMockTheme(), { isFermentAvailable: () => false })
+			for (const line of header.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			}
+		})
 	})
 
 	it("centers the logo and info lines vertically as a unit", () => {

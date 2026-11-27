@@ -16,7 +16,6 @@ test("stopping a run preserves a paused goal that can be edited, resumed and cle
 		terminal,
 		{
 			artifactName: "ferment-v2-stop-edit-resume",
-			seedHome: enableFermentV2Mode,
 			responses: [
 				{ stream: Array.from({ length: 40 }, () => "Still working. "), textDelayMs: 500 },
 				{
@@ -34,39 +33,38 @@ test("stopping a run preserves a paused goal that can be edited, resumed and cle
 			],
 		},
 		async (fixture, trace) => {
-			terminal.submit(`/ferment-v2 ${objective}`)
+			terminal.submit(`/ferment ${objective}`)
 			expect(fermentV2Snapshot(await waitForChatRequest(fixture.fake.requests, 1))).toMatchObject({ objective })
-			await waitForText(terminal, "◈ Ferment V2: running · Build a complete OAuth login and", { timeoutMs: 5_000 })
+			await waitForText(terminal, "◈ Ferment: running · Build a complete OAuth login and", { timeoutMs: 5_000 })
 			terminal.keyCtrlC()
-			await waitForText(terminal, "◈ Ferment V2: paused · Build a complete OAuth login and", { timeoutMs: 5_000 })
+			await waitForText(terminal, "◈ Ferment: paused · Build a complete OAuth login and", { timeoutMs: 5_000 })
 			trace.step("the short name survives pausing while the model receives the complete objective")
-			terminal.submit("/ferment-v2 edit finish authenticated setup")
-			await waitForText(terminal, "◈ Ferment V2: paused · finish authenticated setup", { timeoutMs: 5_000 })
+			terminal.submit("/ferment edit finish authenticated setup")
+			await waitForText(terminal, "◈ Ferment: paused · finish authenticated setup", { timeoutMs: 5_000 })
 			expect(chatRequests(fixture.fake.requests)).toHaveLength(1)
 			trace.step("editing while paused did not start work")
-			terminal.submit("/ferment-v2 resume")
+			terminal.submit("/ferment resume")
 			const request = await waitForChatRequest(fixture.fake.requests, 2)
 			expect(fermentV2Snapshot(request)).toMatchObject({
 				objective: "finish authenticated setup",
 				status: "active",
 			})
-			await waitForText(terminal, "◈ Ferment V2: blocked · finish authenticated setup", { timeoutMs: 5_000 })
+			await waitForText(terminal, "◈ Ferment: blocked · finish authenticated setup", { timeoutMs: 5_000 })
 			trace.step("resume used the new objective and surfaced its blockage")
-			terminal.submit("/ferment-v2 clear")
-			await waitForText(terminal, "Ferment V2 cleared.", { timeoutMs: 5_000 })
+			terminal.submit("/ferment clear")
+			await waitForText(terminal, "Ferment cleared.", { timeoutMs: 5_000 })
 			expect(viewText(terminal).split("\n").slice(-4).join("\n")).not.toContain("◈")
 		},
 	)
 })
 
-test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({ terminal }) => {
+test("Ferment leaves Plan mode, writes, and completes", async ({ terminal }) => {
 	const outputFile = "plan-mode-ferment.txt"
 	const acceptedFinal = "PLAN_MODE_FERMENT_COMPLETE"
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "ferment-v2-from-plan-mode",
-			seedHome: enableFermentV2Mode,
 			extraArgs: ["--plan=true"],
 			// The classifier resolves the kimchi-dev ladder provider-exactly, so the
 			// classifier model needs the dated slug under provider kimchi-dev (with
@@ -157,14 +155,14 @@ test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({
 		},
 		async (fixture, trace) => {
 			await waitForText(terminal, /plan(?: → shift\+tab)? · basic\b/, { timeoutMs: STARTUP_TIMEOUT_MS })
-			terminal.submit(`/ferment-v2 create ${outputFile} containing exactly done and verify it`)
-			await waitForText(terminal, "Ferment V2 created.", { timeoutMs: 5_000 })
+			terminal.submit(`/ferment create ${outputFile} containing exactly done and verify it`)
+			await waitForText(terminal, "Ferment created.", { timeoutMs: 5_000 })
 			await waitForText(terminal, /auto(?: → shift\+tab)? · basic\b/, { timeoutMs: 5_000 })
 			await waitForText(terminal, acceptedFinal, { timeoutMs: 15_000 })
-			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Ferment complete.", { timeoutMs: 5_000 })
 			expect(readFileSync(join(fixture.workDir, outputFile), "utf-8")).toBe("done")
 			expect(fullText(terminal)).not.toContain(
-				"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
+				"Ferment requires the Ferment and Todo tools to be enabled before it can run.",
 			)
 			expect(fullText(terminal)).not.toContain("Plan mode: tool write is not available")
 			const verifierRequests = fixture.fake.requests.filter(isVerifierRequest)
@@ -174,7 +172,7 @@ test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({
 	)
 })
 
-test("experimental Ferment V2 continues after automatic compaction and then completes", async ({ terminal }) => {
+test("Ferment continues after automatic compaction and then completes", async ({ terminal }) => {
 	const planningResponse: FakeResponseScript = {
 		stream: ["Creating a tactical plan."],
 		textDelayMs: 500,
@@ -201,7 +199,7 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 		usage: { prompt_tokens: 19_500, completion_tokens: 0 },
 	}
 	const compactionResponse: FakeResponseScript = {
-		stream: [`${COMPACTION_SUMMARY_MARKER}: the Ferment V2 plan is ready and implementation remains.`],
+		stream: [`${COMPACTION_SUMMARY_MARKER}: the Ferment plan is ready and implementation remains.`],
 	}
 	const finishTodosResponse: FakeResponseScript = {
 		stream: ["Working toward the session objective.", " Verification is complete."],
@@ -242,7 +240,7 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 		terminal,
 		{
 			artifactName: "ferment-v2-mode",
-			seedHome: (homeDir) => enableFermentV2Mode(homeDir, { reserveTokens: 1_000, keepRecentTokens: 1 }),
+			seedHome: (homeDir) => enableCompaction(homeDir, { reserveTokens: 1_000, keepRecentTokens: 1 }),
 			// 20k window keeps the ~10k-token projection floor below threshold
 			// (19k) so only the scripted 19.5k usage crosses: one compaction.
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 20_000, maxTokens: 1024 }],
@@ -258,11 +256,11 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 		},
 		async (fixture, trace) => {
 			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
-			expect(viewText(terminal)).not.toContain("Ferment V2")
-			trace.step("no Ferment V2 segment before a run exists, with the experimental resource enabled")
+			expect(viewText(terminal)).not.toContain("◈ Ferment")
+			trace.step("no Ferment status segment before a run exists, with the default resource enabled")
 
-			terminal.submit("/ferment-v2 --tokens 20k implement feature A")
-			await waitForText(terminal, "Ferment V2 created.", { timeoutMs: 5_000 })
+			terminal.submit("/ferment --tokens 20k implement feature A")
+			await waitForText(terminal, "Ferment created.", { timeoutMs: 5_000 })
 
 			const fermentV2 = fermentV2Snapshot(await waitForChatRequest(fixture.fake.requests, 1))
 			expect(fermentV2).toMatchObject({
@@ -270,7 +268,7 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 				status: "active",
 				tokenBudget: 20_000,
 			})
-			trace.step("model received canonical Ferment V2 context")
+			trace.step("model received canonical Ferment context")
 			await waitForText(terminal, "Implement feature A", { timeoutMs: 5_000 })
 			// 1.3.0_rechecks compaction at run-prepare time, interposing the
 			// compaction cycle between the planning stream's chunks — these
@@ -278,16 +276,16 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 			await waitForText(terminal, "The plan is ready; implementation still remains.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForText(terminal, "Compacted from", { timeoutMs: STREAM_TIMEOUT_MS })
 
-			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
-			terminal.submit("/ferment-v2")
+			await waitForText(terminal, "Ferment complete.", { timeoutMs: 5_000 })
+			terminal.submit("/ferment")
 			await waitForText(terminal, "Evaluations: 1", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Last evaluation: met", { timeoutMs: 5_000 })
 			const finalView = viewText(terminal)
-			expect(finalView).not.toContain("Ferment V2 not met")
+			expect(finalView).not.toContain("Ferment not met")
 			expect(finalView).not.toContain("fermenting time")
-			expect(finalView).not.toContain("Ferment V2 complete in")
-			expect(finalView).not.toContain("Get Ferment V2")
-			expect(finalView).not.toContain("Update Ferment V2")
+			expect(finalView).not.toContain("Ferment complete in")
+			expect(finalView).not.toContain("Get Ferment")
+			expect(finalView).not.toContain("Update Ferment")
 			await new Promise((resolve) => setTimeout(resolve, 2_000))
 			const requests = chatRequests(fixture.fake.requests)
 			expect(requests).toHaveLength(8)
@@ -297,18 +295,18 @@ test("experimental Ferment V2 continues after automatic compaction and then comp
 			// from the deterministic host path, not a verifier run. The claim at the end
 			// ran the verifier: one executing bash check plus the verdict.
 			expect(requests.filter(isVerifierRequest)).toHaveLength(2)
-			trace.step("Ferment V2 compacted, continued deterministically from the summary, then completed on its claim")
+			trace.step("Ferment compacted, continued deterministically from the summary, then completed on its claim")
 		},
 	)
 })
 
-test("experimental Ferment V2 continues after manual compaction interrupts a turn", async ({ terminal }) => {
+test("Ferment continues after manual compaction interrupts a turn", async ({ terminal }) => {
 	const manualCompactionSummaryMarker = "FERMENT_V2_MANUAL_COMPACTION_SUMMARY"
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "ferment-v2-mode-manual-compaction",
-			seedHome: (homeDir) => enableFermentV2Mode(homeDir, { reserveTokens: 1_000, keepRecentTokens: 1 }),
+			seedHome: (homeDir) => enableCompaction(homeDir, { reserveTokens: 1_000, keepRecentTokens: 1 }),
 			// Same 20k-window guard as the auto-compaction test: the /compact
 			// below must be the only summarization request in the wire.
 			models: [{ slug: "basic", displayName: "Fake Basic", contextWindow: 20_000, maxTokens: 1024 }],
@@ -335,7 +333,7 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 						{ delta: { content: " This interrupted response must not finish." }, delayMs: 5_000 },
 					],
 				},
-				{ stream: [`${manualCompactionSummaryMarker}: resume the active Ferment V2.`] },
+				{ stream: [`${manualCompactionSummaryMarker}: resume the active Ferment.`] },
 				{
 					stream: ["Resumed after manual compaction."],
 					toolCalls: [
@@ -370,7 +368,7 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 		async (fixture, trace) => {
 			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
 
-			terminal.submit("/ferment-v2 --tokens 20k finish after manual compaction")
+			terminal.submit("/ferment --tokens 20k finish after manual compaction")
 			await waitForChatRequest(fixture.fake.requests, 2)
 			await waitForCookingAnimation(terminal)
 			await new Promise((resolve) => setTimeout(resolve, 750))
@@ -378,9 +376,9 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 			// Same upstream pi compaction-cycle budget as the auto-compaction test above.
 			await waitForText(terminal, "Work is underway before manual compaction.", { timeoutMs: STREAM_TIMEOUT_MS })
 			await waitForText(terminal, "Compacted from", { timeoutMs: 5_000 })
-			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Ferment complete.", { timeoutMs: 5_000 })
 
-			terminal.submit("/ferment-v2")
+			terminal.submit("/ferment")
 			await waitForText(terminal, "Status: complete", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Last evaluation: met", { timeoutMs: 5_000 })
 			const requests = chatRequests(fixture.fake.requests)
@@ -392,14 +390,12 @@ test("experimental Ferment V2 continues after manual compaction interrupts a tur
 			).toBe(true)
 			expect(JSON.stringify(requests[2]?.body)).toContain("You are a context summarization assistant")
 			expect(JSON.stringify(requests[3]?.body)).toContain(manualCompactionSummaryMarker)
-			trace.step("manual compaction interrupted a turn, retained context, and Ferment V2 resumed to completion")
+			trace.step("manual compaction interrupted a turn, retained context, and Ferment resumed to completion")
 		},
 	)
 })
 
-test("experimental Ferment V2 edit fences stale output and Todos without cancelling the active response", async ({
-	terminal,
-}) => {
+test("Ferment edit fences stale output and Todos without cancelling the active response", async ({ terminal }) => {
 	const finishedRevisionOne = "REVISION_ONE_RESPONSE_FINISHED"
 	const retainedTodo = "Keep current plan"
 	const staleTodo = "STALE_REVISION_ONE_PLAN"
@@ -407,7 +403,6 @@ test("experimental Ferment V2 edit fences stale output and Todos without cancell
 		terminal,
 		{
 			artifactName: "ferment-v2-mode-edit-keeps-active-turn",
-			seedHome: enableFermentV2Mode,
 			models: [{ slug: "thinking-model", displayName: "Fake Thinking", reasoning: true }],
 			extraArgs: ["--model", "thinking-model"],
 			responses: [
@@ -440,16 +435,16 @@ test("experimental Ferment V2 edit fences stale output and Todos without cancell
 			terminal.submit("")
 			await waitForText(terminal, `Added todo: ${retainedTodo}`, { timeoutMs: 5_000 })
 
-			terminal.submit("/ferment-v2 original objective")
-			await waitForText(terminal, "Ferment V2 created.", { timeoutMs: 5_000 })
+			terminal.submit("/ferment original objective")
+			await waitForText(terminal, "Ferment created.", { timeoutMs: 5_000 })
 			await waitForChatRequest(fixture.fake.requests, 1)
 			await waitForText(terminal, "Thinking", { timeoutMs: 5_000, full: false })
 
-			terminal.submit("/ferment-v2 edit")
-			await waitForText(terminal, "Edit Ferment V2", { timeoutMs: 3_000 })
+			terminal.submit("/ferment edit")
+			await waitForText(terminal, "Edit Ferment", { timeoutMs: 3_000 })
 			terminal.keyPress("u", { ctrl: true })
 			terminal.submit("revised objective")
-			await waitForText(terminal, "Ferment V2 updated to revision 2.", { timeoutMs: 3_000 })
+			await waitForText(terminal, "Ferment updated to revision 2.", { timeoutMs: 3_000 })
 			expect(fullText(terminal)).not.toContain(finishedRevisionOne)
 			await waitForText(terminal, "Thought for", { timeoutMs: 10_000 })
 			const revisedRequest = await waitForChatRequest(fixture.fake.requests, 2)
@@ -473,7 +468,7 @@ test("experimental Ferment V2 edit fences stale output and Todos without cancell
 				fixture.fake.requests.find((request) => request.url.startsWith("/openai/v1/chat/completions"))?.aborted,
 			).toBe(false)
 			expect(fullText(terminal)).not.toContain("Operation aborted")
-			expect(fullText(terminal)).not.toContain("Ferment V2 paused because the agent turn was cancelled.")
+			expect(fullText(terminal)).not.toContain("Ferment paused because the agent turn was cancelled.")
 			trace.step(
 				"edit fenced stale output and Todos, refreshed native context, then delivered its control after settlement",
 			)
@@ -481,7 +476,7 @@ test("experimental Ferment V2 edit fences stale output and Todos without cancell
 	)
 })
 
-test("experimental Ferment V2 edit updates the revision while a tool is still running", async ({ terminal }) => {
+test("Ferment edit updates the revision while a tool is still running", async ({ terminal }) => {
 	const toolMarker = "REVISION_ONE_TOOL_FINISHED"
 	// Keep this command below the two-second Bash handoff: this workflow
 	// exercises an edit during a synchronous tool, without cohort reminders.
@@ -489,7 +484,6 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 		terminal,
 		{
 			artifactName: "ferment-v2-mode-edit-during-tool",
-			seedHome: enableFermentV2Mode,
 			responses: [
 				{
 					stream: ["Starting revision one command."],
@@ -513,12 +507,12 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 		async (fixture, trace) => {
 			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
 
-			terminal.submit("/ferment-v2 original objective")
+			terminal.submit("/ferment original objective")
 			await waitForText(terminal, "Starting revision one command.", { timeoutMs: 5_000 })
 			await waitForText(terminal, "sleep 1", { timeoutMs: 5_000 })
 
-			terminal.submit("/ferment-v2 edit revised objective")
-			await waitForText(terminal, "Ferment V2 updated to revision 2.", { timeoutMs: 1_500 })
+			terminal.submit("/ferment edit revised objective")
+			await waitForText(terminal, "Ferment updated to revision 2.", { timeoutMs: 1_500 })
 			expect(fullText(terminal)).not.toContain(toolMarker)
 			await waitForText(terminal, toolMarker, { timeoutMs: 10_000 })
 
@@ -537,7 +531,7 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 			expect(chatRequests(fixture.fake.requests).slice(0, 3).some(isVerifierRequest)).toBe(false)
 			await waitForText(terminal, "Revision two instructions received after settlement.", { timeoutMs: 5_000 })
 			expect(fullText(terminal)).not.toContain("Operation aborted")
-			expect(fullText(terminal)).not.toContain("Ferment V2 paused because the agent turn was cancelled.")
+			expect(fullText(terminal)).not.toContain("Ferment paused because the agent turn was cancelled.")
 			trace.step(
 				"tool finished without cancellation, its next request used revision 2, and the edit control arrived after settlement",
 			)
@@ -545,7 +539,7 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 	)
 })
 
-test("experimental Ferment V2 evaluates an explicit completion claim without extra nudges", async ({ terminal }) => {
+test("Ferment evaluates an explicit completion claim without extra nudges", async ({ terminal }) => {
 	const firstHiddenCandidate = "CLAIM_CANDIDATE_MUST_STAY_HIDDEN_UNTIL_VERDICT"
 	const secondHiddenCandidate = "REVISED_CLAIM_CANDIDATE"
 	const acceptedFinal = "CLAIM_CANDIDATE_ACCEPTED"
@@ -553,7 +547,6 @@ test("experimental Ferment V2 evaluates an explicit completion claim without ext
 		terminal,
 		{
 			artifactName: "ferment-v2-mode-gated-text-only-completion",
-			seedHome: enableFermentV2Mode,
 			models: [{ slug: "thinking-model", displayName: "Fake Thinking", reasoning: true }],
 			extraArgs: ["--model", "thinking-model"],
 			responses: [
@@ -638,9 +631,9 @@ test("experimental Ferment V2 evaluates an explicit completion claim without ext
 		async (fixture, trace) => {
 			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
 
-			terminal.submit("/ferment-v2 finish the task")
+			terminal.submit("/ferment finish the task")
 			await waitForText(terminal, acceptedFinal, { timeoutMs: 20_000 })
-			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Ferment complete.", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Prompt summary", { timeoutMs: 5_000 })
 			const requests = chatRequests(fixture.fake.requests)
 			expect(requests).toHaveLength(9)
@@ -658,7 +651,7 @@ test("experimental Ferment V2 evaluates an explicit completion claim without ext
 	)
 })
 
-test("experimental Ferment V2 reveals the final answer only after evaluation accepts it", async ({ terminal }) => {
+test("Ferment reveals the final answer only after evaluation accepts it", async ({ terminal }) => {
 	const earlyHiddenCandidate = "EARLY_CANDIDATE_BEFORE_TODOS_MUST_STAY_HIDDEN"
 	const privateEmail = "candidate-owner@example.com"
 	const firstHiddenCandidate = `UNVERIFIED_CANDIDATE_MUST_STAY_HIDDEN ${privateEmail}`
@@ -669,7 +662,6 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 		terminal,
 		{
 			artifactName: "ferment-v2-mode-evaluation-gate",
-			seedHome: enableFermentV2Mode,
 			env: { KIMCHI_ENABLE_RESOURCES: "extensions.pii-redaction" },
 			// Keep this evaluation scenario above the SDK's 16K compaction reserve;
 			// the fake model's default 8K window triggers unrelated compaction.
@@ -796,10 +788,10 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 		async (fixture, trace) => {
 			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
 
-			terminal.submit("/ferment-v2 finish behind the evaluator gate")
+			terminal.submit("/ferment finish behind the evaluator gate")
 			await waitForText(terminal, "Thought for", { timeoutMs: 5_000 })
 			expect(fullText(terminal)).not.toContain(visibleThinking)
-			trace.step("active Ferment V2 preserves the normal thinking block")
+			trace.step("active Ferment preserves the normal thinking block")
 			await waitForChatRequest(fixture.fake.requests, 2)
 			expect(fullText(terminal)).not.toContain(earlyHiddenCandidate)
 			const firstEvaluatorRequest = await waitForChatRequest(fixture.fake.requests, 5)
@@ -823,11 +815,11 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 			// The rejected-completion narration is interstitial commentary, which
 			// folds once the next tool call runs. Wait for the stable end state;
 			// the request above already proves the rebuilt Todo moved through it.
-			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Ferment complete.", { timeoutMs: 5_000 })
 			trace.step("rejected completion rebuilt the settled Todo list before further work")
 
 			await waitForText(terminal, acceptedFinal, { timeoutMs: 5_000 })
-			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Ferment complete.", { timeoutMs: 5_000 })
 			expect(fullText(terminal)).toContain("Thought for")
 			expect(fullText(terminal)).not.toContain(earlyHiddenCandidate)
 			expect(fullText(terminal)).not.toContain(firstHiddenCandidate)
@@ -851,7 +843,7 @@ test("experimental Ferment V2 reveals the final answer only after evaluation acc
 	)
 })
 
-test("experimental Ferment V2 preserves exact output when accepted final delivery resumes", async ({ terminal }) => {
+test("Ferment preserves exact output when accepted final delivery resumes", async ({ terminal }) => {
 	const sessionFile = "accepted-final-restart.jsonl"
 	const exactOutput = "EXACT-FINAL-RESTART-PAYLOAD"
 	await runKimchiSession(
@@ -868,14 +860,13 @@ test("experimental Ferment V2 preserves exact output when accepted final deliver
 					stream: [exactOutput],
 				},
 			],
-			seedHome(homeDir, workDir) {
-				enableFermentV2Mode(homeDir)
+			seedHome(_homeDir, workDir) {
 				writeAcceptedFermentV2Session(join(workDir, sessionFile), workDir, exactOutput)
 			},
 		},
 		async (fixture, trace) => {
 			await waitForText(terminal, exactOutput, { timeoutMs: 5_000 })
-			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+			await waitForText(terminal, "Ferment complete.", { timeoutMs: 5_000 })
 			const requests = chatRequests(fixture.fake.requests)
 			expect(requests).toHaveLength(1)
 			expect(requests.filter(isVerifierRequest)).toHaveLength(0)
@@ -888,13 +879,12 @@ test("experimental Ferment V2 preserves exact output when accepted final deliver
 	)
 })
 
-test("experimental Ferment V2 pauses when an accepted final answer cannot be delivered", async ({ terminal }) => {
+test("Ferment pauses when an accepted final answer cannot be delivered", async ({ terminal }) => {
 	const hiddenCandidate = "UNDELIVERED_CANDIDATE_MUST_STAY_HIDDEN"
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "ferment-v2-mode-final-delivery-error",
-			seedHome: enableFermentV2Mode,
 			responses: [
 				verifierCheck("verifier-delivery-check", "pwd"),
 				verifierSubmit("met", "The verified work satisfies the objective."),
@@ -946,14 +936,14 @@ test("experimental Ferment V2 pauses when an accepted final answer cannot be del
 		async (_fixture, trace) => {
 			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
 
-			terminal.submit("/ferment-v2 finish before delivery")
-			await waitForText(terminal, "Ferment V2 paused because its final answer could not be delivered.", {
+			terminal.submit("/ferment finish before delivery")
+			await waitForText(terminal, "Ferment paused because its final answer could not be delivered.", {
 				timeoutMs: 10_000,
 			})
 			expect(fullText(terminal)).not.toContain(hiddenCandidate)
-			expect(fullText(terminal)).not.toContain("Ferment V2 complete.")
+			expect(fullText(terminal)).not.toContain("Ferment complete.")
 
-			terminal.submit("/ferment-v2")
+			terminal.submit("/ferment")
 			await waitForText(terminal, "Status: paused", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Last evaluation: met", { timeoutMs: 5_000 })
 			trace.step("accepted work stayed non-complete when the final answer stream failed")
@@ -961,7 +951,7 @@ test("experimental Ferment V2 pauses when an accepted final answer cannot be del
 	)
 })
 
-test("experimental Ferment V2 pauses after the same unresolved gap repeats three times", async ({ terminal }) => {
+test("Ferment pauses after the same unresolved gap repeats three times", async ({ terminal }) => {
 	const repeatedGap = "The same objective requirement remains unverified."
 	const responses = Array.from(
 		{ length: 4 },
@@ -1028,17 +1018,16 @@ test("experimental Ferment V2 pauses after the same unresolved gap repeats three
 		terminal,
 		{
 			artifactName: "ferment-v2-mode-repeated-gap",
-			seedHome: enableFermentV2Mode,
 			responses,
 		},
 		async (fixture, trace) => {
 			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
 
-			terminal.submit("/ferment-v2 verify the same requirement")
-			await waitForText(terminal, "Ferment V2 paused after 3 stalled continuation turns.", {
+			terminal.submit("/ferment verify the same requirement")
+			await waitForText(terminal, "Ferment paused after 3 stalled continuation turns.", {
 				timeoutMs: 15_000,
 			})
-			terminal.submit("/ferment-v2")
+			terminal.submit("/ferment")
 			await waitForText(terminal, "Status: paused", { timeoutMs: 5_000 })
 			await waitForText(terminal, "Evaluations: 4", { timeoutMs: 5_000 })
 			// Four verifier runs, each an executing bash check plus its verdict.
@@ -1048,13 +1037,12 @@ test("experimental Ferment V2 pauses after the same unresolved gap repeats three
 	)
 })
 
-test("experimental Ferment V2 shows the reason when work is blocked", async ({ terminal }) => {
+test("Ferment shows the reason when work is blocked", async ({ terminal }) => {
 	const blockedReason = "Needs a user-owned API token."
 	await runKimchiSession(
 		terminal,
 		{
 			artifactName: "ferment-v2-mode-blocked",
-			seedHome: (homeDir) => enableFermentV2Mode(homeDir),
 			responses: [
 				{
 					stream: ["I cannot continue without user input."],
@@ -1073,23 +1061,22 @@ test("experimental Ferment V2 shows the reason when work is blocked", async ({ t
 		async (fixture, trace) => {
 			await waitForText(terminal, "ask anything or type / for commands", { timeoutMs: STARTUP_TIMEOUT_MS })
 
-			terminal.submit("/ferment-v2 finish the authenticated setup")
-			await waitForText(terminal, "Ferment V2 blocked.", { timeoutMs: 5_000 })
-			terminal.submit("/ferment-v2")
+			terminal.submit("/ferment finish the authenticated setup")
+			await waitForText(terminal, "Ferment blocked.", { timeoutMs: 5_000 })
+			terminal.submit("/ferment")
 			await waitForText(terminal, "Status: blocked", { timeoutMs: 5_000 })
 			await waitForText(terminal, `Blocked reason: ${blockedReason}`, { timeoutMs: 5_000 })
 			await new Promise((resolve) => setTimeout(resolve, 500))
 			expect(chatRequests(fixture.fake.requests)).toHaveLength(1)
-			trace.step("blocked Ferment V2 reports its persisted reason without an evaluator call")
+			trace.step("blocked Ferment reports its persisted reason without an evaluator call")
 		},
 	)
 })
 
-function enableFermentV2Mode(homeDir: string, compaction?: { reserveTokens: number; keepRecentTokens: number }): void {
+function enableCompaction(homeDir: string, compaction: { reserveTokens: number; keepRecentTokens: number }): void {
 	const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
 	const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>
-	settings.resources = { "extensions.ferment-v2": true }
-	if (compaction) settings.compaction = { enabled: true, ...compaction }
+	settings.compaction = { enabled: true, ...compaction }
 	writeFileSync(settingsPath, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8")
 }
 
@@ -1189,7 +1176,7 @@ function fermentV2Snapshot(request: FakeResponseRequest): {
 } {
 	const context = collectStrings(request.body).find((value) => value.includes("<kimchi_session_ferment_v2>"))
 	const match = context?.match(/<kimchi_session_ferment_v2>\s*(\{[\s\S]*?\})\s*Persistent objective continuation/)
-	if (!match) throw new Error(`No canonical Ferment V2 context found in request: ${JSON.stringify(request.body)}`)
+	if (!match) throw new Error(`No canonical Ferment context found in request: ${JSON.stringify(request.body)}`)
 	return JSON.parse(match[1])
 }
 

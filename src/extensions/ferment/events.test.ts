@@ -746,7 +746,7 @@ describe("turn_end connection error recovery", () => {
 		expect(notify).toHaveBeenCalledWith(
 			expect.stringContaining("The model provider is temporarily unavailable (provider unavailable)"),
 		)
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Run /ferment resume to continue."))
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Run /ferment-legacy resume to continue."))
 	})
 
 	it("never leaks vLLM internals / cluster IPs / SSL context pointers to the user", async () => {
@@ -790,7 +790,7 @@ describe("turn_end connection error recovery", () => {
 		expect(
 			notifyCalls.some((t) => t.includes("The model provider is temporarily unavailable (provider unavailable)")),
 		).toBe(true)
-		expect(notifyCalls.some((t) => t.includes("Run /ferment resume to continue."))).toBe(true)
+		expect(notifyCalls.some((t) => t.includes("Run /ferment-legacy resume to continue."))).toBe(true)
 	})
 })
 

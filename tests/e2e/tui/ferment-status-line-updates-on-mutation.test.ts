@@ -16,7 +16,7 @@
 
 import { test } from "@microsoft/tui-test"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -47,6 +47,7 @@ test("ferment status-line segment updates after activate_ferment_phase tool call
 		terminal,
 		{
 			artifactName: "ferment-status-line-updates-on-mutation",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			responses: [
 				// Turn 1: orientation text then propose_ferment_scoping.
@@ -108,10 +109,10 @@ test("ferment status-line segment updates after activate_ferment_phase tool call
 			trace.step("ready prompt visible")
 
 			// Stage 2: enter ferment.
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
 			terminal.submit("")
-			trace.step("ran /ferment")
+			trace.step("ran /ferment-legacy")
 
 			// Stage 3: intent prompt.
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STREAM_TIMEOUT_MS })

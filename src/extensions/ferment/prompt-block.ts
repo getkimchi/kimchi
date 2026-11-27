@@ -49,7 +49,7 @@ function buildPlannerSupplement(f: Ferment, continuationPolicy: ContinuationPoli
 
 ${SCOPING_DISCOVERY_GUIDANCE}
 
-On the first scoping turn after \`/ferment\`, draft \`title\`/\`goal\`/\`success_criteria\`/\`constraints\`/\`assumptions\`/\`phases\`/\`charter\` from the user's free-form intent and call \`propose_ferment_scoping\` with all of them in ONE call. The title is required and should be a concise 3-5 word Ferment name.
+On the first scoping turn after \`/ferment-legacy\`, draft \`title\`/\`goal\`/\`success_criteria\`/\`constraints\`/\`assumptions\`/\`phases\`/\`charter\` from the user's free-form intent and call \`propose_ferment_scoping\` with all of them in ONE call. The title is required and should be a concise 3-5 word Ferment name.
 
 Before calling \`propose_ferment_scoping\`, run the meh-test and record it in \`self_critique\`: read your goal/success_criteria/constraints back as if presenting them to the user as THE summary of what they will get. If "meh — you missed the point" is a plausible reaction, the criteria are missing load-bearing dimensions of the request (appearance, feel, global coherence, tone) — strengthen the criteria or write down why the gap is deliberate.
 
@@ -185,7 +185,7 @@ function buildCurrentStateSection(f: Ferment): string {
 }
 
 function buildPausedWarning(f: Ferment): string {
-	return `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_ferment_phase, start_ferment_step, complete_ferment_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /ferment resume.`
+	return `\n\n## Ferment Paused\n\nFerment "${f.name}" is paused by the user. Do NOT call any ferment tools (activate_ferment_phase, start_ferment_step, complete_ferment_step, etc.) — they will be rejected. Acknowledge any pending question briefly and wait for the user to resume with /ferment-legacy resume.`
 }
 
 /**

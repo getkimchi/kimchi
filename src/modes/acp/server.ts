@@ -126,6 +126,7 @@ import { resolveMarkerForDisplay } from "../../extensions/display-budget.js"
 import { readE2eSeam } from "../../extensions/e2e-seam.js"
 import { getRawErrorMessage } from "../../extensions/error-preservation.js"
 import { clearRatingWindow } from "../../extensions/feedback/rating-window.js"
+import { setFermentPermitted } from "../../extensions/ferment-v2/session-policy.js"
 import { installKimchiOAuth } from "../../extensions/login/flow.js"
 import { convertAcpMcpServers } from "../../extensions/mcp/acp-config.js"
 import type { KimchiMcpAdapterExtensionOptions } from "../../extensions/mcp/index.js"
@@ -209,8 +210,10 @@ import {
 	ADVERTISED_CAPABILITIES,
 	AVAILABLE_EXT_METHODS,
 	BACKGROUND_RUNS_CAPABILITY,
+	FERMENT_CAPABILITY,
 	getClientOptedIntoArtifacts,
 	getClientOptedIntoBackgroundRuns,
+	getClientOptedIntoFerment,
 	getClientOptedIntoMcpOAuthTurn,
 	getClientOptedIntoModelEffort,
 	getClientOptedIntoPRMonitoring,
@@ -640,6 +643,7 @@ export class KimchiAcpAgent {
 		// server creates.
 		setBackgroundRunsPermitted(getClientOptedIntoBackgroundRuns(request.clientCapabilities))
 		setPRMonitoringPermitted(getClientOptedIntoPRMonitoring(request.clientCapabilities))
+		setFermentPermitted(getClientOptedIntoFerment(request.clientCapabilities))
 
 		const modelRuntime = await createSsoAwareModelRuntime(this.agentDir)
 		const modelRegistry = new ModelRegistry(modelRuntime)
@@ -721,6 +725,7 @@ export class KimchiAcpAgent {
 					[BACKGROUND_RUNS_CAPABILITY]: true,
 					[MCP_OAUTH_TURN_CAPABILITY]: true,
 					[PR_MONITORING_CAPABILITY]: true,
+					[FERMENT_CAPABILITY]: true,
 					[MODEL_EFFORT_CAPABILITY]: MODEL_EFFORT_VERSION,
 					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
 					// methods. Clients gate their SSO UI on this flag.

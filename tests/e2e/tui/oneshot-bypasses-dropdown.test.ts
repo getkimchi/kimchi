@@ -13,7 +13,7 @@
 
 import { expect, Key, test } from "@microsoft/tui-test"
 import { fullText, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -45,6 +45,7 @@ test("--ferment-oneshot bypasses the plan-complete dropdown and enters ferment l
 		terminal,
 		{
 			artifactName: "oneshot-bypasses-dropdown",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			responses: [
 				// In oneshot mode the model calls scope_ferment, which scopes

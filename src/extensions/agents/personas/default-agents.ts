@@ -627,7 +627,7 @@ Do not iterate beyond the verification needed. Once you have checked the load-be
 			{
 				name: AGENT_FERMENT_VERIFIER,
 				displayName: AGENT_FERMENT_VERIFIER,
-				description: "Ferment V2 verifier — executes checks in the working tree and reports evidence-backed findings",
+				description: "Ferment verifier — executes checks in the working tree and reports evidence-backed findings",
 				// write creates probes and baseline test copies; the host's guard confines
 				// it to new repository files and the disposable baseline worktree.
 				builtinToolNames: [

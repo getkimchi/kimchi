@@ -3,6 +3,7 @@ import { readHideTips, writeHideTips } from "../../config.js"
 import { AUTO_UPDATE_TIP } from "../auto-update/tips.js"
 import { subscribeBillingStatus } from "../billing/status.js"
 import { createBillingTipProvider } from "../billing/tips.js"
+import { isFermentLegacyLoadedAndEnabled } from "../ferment/resource.js"
 import { FERMENT_TIPS } from "../ferment/tips.js"
 import { createGeneralTipProvider, GENERAL_TIPS } from "./general-tips.js"
 import { TipPresenter } from "./presenter.js"
@@ -231,10 +232,10 @@ export default function tipsExtension(options: TipsExtensionOptions = {}): Exten
 }
 
 /**
- * Collect all known tips — both static definitions and dynamically registered
- * third-party providers. Static tip arrays (GENERAL_TIPS, FERMENT_TIPS) are
- * always included regardless of runtime state, so the /tips panel shows the
- * full catalog.
+ * Collect the tips for the /tips panel: static definitions and registered
+ * third-party providers. GENERAL_TIPS are always included. FERMENT_TIPS are
+ * included only when the legacy Ferment loaded at startup and is still on,
+ * because they name /ferment-legacy commands.
  */
 function collectAllTips(registry: TipRegistry): TipCandidate[] {
 	const seen = new Set<string>()
@@ -246,10 +247,13 @@ function collectAllTips(registry: TipRegistry): TipCandidate[] {
 		all.push({ ...tip, source: "kimchi.general" })
 	}
 
-	// Static ferment tips — all of them, regardless of ferment state
-	for (const tip of Object.values(FERMENT_TIPS)) {
-		seen.add(tip.id)
-		all.push({ ...tip, source: "kimchi.ferment" })
+	// V1 tips name /ferment-legacy commands. Those commands exist only when
+	// legacy Ferment was on at startup, so a mid-session enable must not show them.
+	if (isFermentLegacyLoadedAndEnabled()) {
+		for (const tip of Object.values(FERMENT_TIPS)) {
+			seen.add(tip.id)
+			all.push({ ...tip, source: "kimchi.ferment" })
+		}
 	}
 
 	// Static auto-update tip — always shown in the catalog regardless of

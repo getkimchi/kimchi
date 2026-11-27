@@ -24,6 +24,7 @@ import { getActiveAnchor } from "../shared/active-anchor.js"
 import { refreshGitBranch } from "../utils.js"
 import { getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
 import { isBareExitAlias } from "./exit-utils.js"
+import { createFermentV2AvailabilityCheck } from "./ferment-v2/availability.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
 import { isReviewTerminalInputActive } from "./review-command/active-runs.js"
@@ -448,6 +449,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 			const logo = new LogoHeader(theme, {
 				getBranch: () => branchPoller.getBranch(),
 				getRightColumnNotice: getCommunityTierHeaderNotice,
+				isFermentAvailable: createFermentV2AvailabilityCheck(pi),
 			})
 			const header: DisposableComponent = {
 				render: (w) => logo.render(w),

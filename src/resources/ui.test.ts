@@ -81,14 +81,14 @@ describe("ResourceManagerComponent", () => {
 		const experimentalTab = component.render(160).join("\n")
 
 		expect(experimentalTab).toContain("Experimental")
-		expect(experimentalTab).toContain("extensions.ferment-v2")
-		expect(isResourceEnabled("extensions.ferment-v2")).toBe(false)
+		expect(experimentalTab).toContain("extensions.ferment-legacy")
+		expect(isResourceEnabled("extensions.ferment-legacy")).toBe(false)
 
 		component.handleInput(" ")
 
-		expect(isResourceEnabled("extensions.ferment-v2")).toBe(true)
+		expect(isResourceEnabled("extensions.ferment-legacy")).toBe(true)
 		const extensions = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "extensions")
-		expect(extensions.render(160).join("\n")).not.toContain("extensions.ferment-v2")
+		expect(extensions.render(160).join("\n")).not.toContain("extensions.ferment-legacy")
 	})
 
 	it("org-locked resources show an org-locked value and cannot be toggled", async () => {
@@ -112,6 +112,31 @@ describe("ResourceManagerComponent", () => {
 		component.handleInput(" ")
 		expect(isResourceEnabled("tools.web_search")).toBe(false)
 		expect(getResourceOverride("tools.web_search")).toBeUndefined()
+	})
+
+	it("shows legacy Ferment as org-locked when the lock is inherited from extensions.ferment", async () => {
+		await setOrgPolicyForTests({ resources: { "extensions.ferment": "FORCE_OFF" } })
+		const theme = {
+			fg: (_color: string, text: string) => text,
+			bg: (_color: string, text: string) => text,
+			bold: (text: string) => text,
+		} as unknown as Theme
+		const component = createResourceManager({ requestRender: vi.fn() } as unknown as TUI, theme, vi.fn(), "plugins")
+		component.handleInput("\t")
+		component.handleInput("\t")
+
+		// Wide enough that the lock note is not wrapped.
+		const rendered = component.render(300).join("\n")
+		expect(rendered).toContain("extensions.ferment-legacy")
+		expect(rendered).toContain("disabled (org-locked)")
+		expect(rendered).toContain(
+			"Managed by your organization: locked off through extensions.ferment (it cannot be enabled locally).",
+		)
+
+		// The row is inert, so the user cannot write a setting that would do nothing.
+		component.handleInput(" ")
+		expect(isResourceEnabled("extensions.ferment-legacy")).toBe(false)
+		expect(getResourceOverride("extensions.ferment-legacy")).toBeUndefined()
 	})
 
 	it("aligns the value column across rows", async () => {

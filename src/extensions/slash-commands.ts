@@ -12,7 +12,7 @@ export const SLASH_COMMANDS = {
 	theme: { hint: "Select color theme" },
 	"customize-status-line": { hint: "Choose which status line elements are shown" },
 	status: { hint: "Show version, login, session, model, and MCP status" },
-	ferment: { hint: "Run task in background" },
+	ferment: { hint: "Work on one objective until it is verified done" },
 	todos: { hint: "Open todo overlay / manage short-lived todo items" },
 	work: { hint: "Show, start, or continue work and link its PRs" },
 	review: { hint: "Review a working tree or branch with a reviewer panel" },

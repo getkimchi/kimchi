@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent"
-import { startInteractiveFerment } from "../ferment/commands.js"
+import { isResourceEnabled } from "../../resources/store.js"
+import { FERMENT_V2_COMMAND_NAME, FERMENT_V2_RESOURCE_ID } from "../ferment-v2/constants.js"
 import sessionModeOnboardingExtension, { buildSessionModeLaunchContext } from "./session-mode.js"
 
 export interface SessionModeStartupOptions {
@@ -14,11 +15,7 @@ export interface SessionModeStartupOptions {
 }
 
 export function createSessionModeOnboardingForStartup(options: SessionModeStartupOptions): ExtensionFactory {
-	const startFerment =
-		options.startFerment ??
-		(({ pi, ctx }) => {
-			return startInteractiveFerment({ pi, ctx })
-		})
+	const startFerment = options.startFerment ?? (({ ctx }) => ctx.ui.setEditorText(`/${FERMENT_V2_COMMAND_NAME} `))
 
 	return sessionModeOnboardingExtension({
 		launchContext: buildSessionModeLaunchContext(options.rawArgs, {
@@ -28,7 +25,7 @@ export function createSessionModeOnboardingForStartup(options: SessionModeStartu
 		}),
 		configPath: options.configPath,
 		now: options.now,
-		shouldSkip: options.shouldSkip,
+		shouldSkip: () => options.shouldSkip?.() === true || !isResourceEnabled(FERMENT_V2_RESOURCE_ID),
 		onOutcome: (outcome, ctx, pi) => {
 			if (outcome === "ferment") return startFerment({ pi, ctx })
 		},

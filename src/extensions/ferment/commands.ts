@@ -31,6 +31,7 @@ import {
 	handleStepAction,
 } from "./progress-overlay.js"
 import { promptEditor } from "./prompt-ui.js"
+import { FERMENT_LEGACY_COMMAND_NAME } from "./resource-id.js"
 import { restoreFermentWork, resumeFerment } from "./resume.js"
 import { defaultFermentRuntime, type FermentRuntime } from "./runtime.js"
 import { safeSendMessage } from "./safe-send.js"
@@ -68,7 +69,7 @@ function sendLifecycleCommandBreadcrumb(
 	active: ReturnType<FermentRuntime["getActive"]>,
 ): void {
 	const target = active ? `"${active.name}" [${active.status}]` : "no active ferment"
-	sendBreadcrumb(pi, `Command /ferment ${command} requested for ${target}.`, "step")
+	sendBreadcrumb(pi, `Command /ferment-legacy ${command} requested for ${target}.`, "step")
 }
 
 function refreshActiveFermentForLifecycleCommand(
@@ -114,7 +115,7 @@ const FERMENT_SUBCOMMAND_COMPLETIONS: FermentArgumentCompletion[] = [
 ]
 
 const FERMENT_COMMAND_USAGE =
-	'Unknown /ferment command. Use /ferment, /ferment new "Name", /ferment progress, /ferment list, /ferment switch <id-or-name>, /ferment pause, /ferment resume, or /ferment exit.'
+	'Unknown /ferment-legacy command. Use /ferment-legacy, /ferment-legacy new "Name", /ferment-legacy progress, /ferment-legacy list, /ferment-legacy switch <id-or-name>, /ferment-legacy pause, /ferment-legacy resume, or /ferment-legacy exit.'
 
 const FERMENT_REVISE_COMPLETIONS: FermentArgumentCompletion[] = [
 	{ value: "revise goal", label: "goal", description: "Revise the ferment goal" },
@@ -212,12 +213,12 @@ export async function startInteractiveFerment({
 	const active = runtime.getActive()
 	if (active && active.status === "running") {
 		ctx.ui.notify(
-			`A ferment is already running: "${active.name}". Use /ferment progress to check status or /ferment switch to change.`,
+			`A ferment is already running: "${active.name}". Use /ferment-legacy progress to check status or /ferment-legacy switch to change.`,
 		)
 		return
 	}
 	if (!ctx.hasUI) {
-		ctx.ui.notify('No UI available. Use /ferment new "Name" instead.')
+		ctx.ui.notify('No UI available. Use /ferment-legacy new "Name" instead.')
 		return
 	}
 
@@ -254,7 +255,7 @@ export async function startFermentForIntent({
 	const active = runtime.getActive()
 	if (active && active.status === "running") {
 		ctx.ui.notify(
-			`A ferment is already running: "${active.name}". Use /ferment progress to check status or /ferment switch to change.`,
+			`A ferment is already running: "${active.name}". Use /ferment-legacy progress to check status or /ferment-legacy switch to change.`,
 		)
 		return undefined
 	}
@@ -307,7 +308,9 @@ function setManualContinuationPolicy(pi: ExtensionAPI, ctx: ExtensionContext, ru
 		return
 	}
 	if (active.status === "paused") {
-		ctx.ui.notify(`Continuation policy set to manual. "${active.name}" is paused; run /ferment resume to resume.`)
+		ctx.ui.notify(
+			`Continuation policy set to manual. "${active.name}" is paused; run /ferment-legacy resume to resume.`,
+		)
 		applyFermentRuntimeToolProfile(pi, runtime)
 		return
 	}
@@ -341,7 +344,9 @@ function setAutomatedContinuationPolicy(pi: ExtensionAPI, ctx: ExtensionContext,
 	clearFermentDegraded(active.id)
 
 	if (active.status === "paused") {
-		ctx.ui.notify(`Continuation policy set to automated. "${active.name}" is paused; run /ferment resume to resume.`)
+		ctx.ui.notify(
+			`Continuation policy set to automated. "${active.name}" is paused; run /ferment-legacy resume to resume.`,
+		)
 		applyFermentRuntimeToolProfile(pi, runtime)
 		return
 	}
@@ -387,13 +392,13 @@ async function confirmManualPhaseBoundaryForCommand(
 			clearLifecycleGuard(active.id)
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 			runtime.clearPendingPlanReview(active.id)
-			ctx.ui.notify(`Paused "${outcome.ferment.name}". Type /ferment resume to resume.`)
+			ctx.ui.notify(`Paused "${outcome.ferment.name}". Type /ferment-legacy resume to resume.`)
 			return true
 		}
 	}
 
 	ctx.ui.notify(
-		`"${active.name}" is waiting before "${nextPhaseName}". Choose Continue from /ferment list to continue now, or run /ferment auto to make future phase boundaries automatic.`,
+		`"${active.name}" is waiting before "${nextPhaseName}". Choose Continue from /ferment-legacy list to continue now, or run /ferment-legacy auto to make future phase boundaries automatic.`,
 	)
 	return true
 }
@@ -402,7 +407,7 @@ async function openFermentProgress(pi: ExtensionAPI, ctx: ExtensionContext, runt
 	const applyAndPersist = createApplyAndPersist(runtime)
 	const active = runtime.getActive()
 	if (!active) {
-		ctx.ui.notify("No active ferment. Start one with /ferment.")
+		ctx.ui.notify("No active ferment. Start one with /ferment-legacy.")
 		return
 	}
 
@@ -656,10 +661,11 @@ function exitFermentMode(pi: ExtensionAPI, ctx: ExtensionCommandContext, runtime
 }
 
 function formatExitDetail(status: string): string {
-	if (status === "paused") return "It is paused and can be selected later from /ferment list or /ferment switch."
+	if (status === "paused")
+		return "It is paused and can be selected later from /ferment-legacy list or /ferment-legacy switch."
 	if (status === "complete" || status === "abandoned")
-		return `It remains ${status} and is still available from /ferment list.`
-	return `It remains ${status} and can be selected later from /ferment list or /ferment switch.`
+		return `It remains ${status} and is still available from /ferment-legacy list.`
+	return `It remains ${status} and can be selected later from /ferment-legacy list or /ferment-legacy switch.`
 }
 
 export class FermentCommandController {
@@ -681,7 +687,7 @@ export class FermentCommandController {
 		if (command.type === "list") {
 			const items = storage.list().sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 			if (items.length === 0) {
-				ctx.ui.notify("No ferments. Use /ferment to start one.")
+				ctx.ui.notify("No ferments. Use /ferment-legacy to start one.")
 				return { handled: true }
 			}
 
@@ -778,7 +784,7 @@ export class FermentCommandController {
 
 			if (active.status === "paused") {
 				clearLifecycleGuard(active.id)
-				const message = `"${active.name}" is already paused. Type /ferment resume to resume.`
+				const message = `"${active.name}" is already paused. Type /ferment-legacy resume to resume.`
 				sendBreadcrumb(pi, message, "ack")
 				ctx.ui.notify(message)
 				applyFermentRuntimeToolProfile(pi, runtime)
@@ -796,7 +802,7 @@ export class FermentCommandController {
 			clearLifecycleGuard(active.id)
 			setActiveFermentAndApplyProfile(pi, runtime, outcome.ferment)
 			runtime.clearPendingPlanReview(active.id)
-			const message = `Paused "${outcome.ferment.name}". Type /ferment resume to resume.`
+			const message = `Paused "${outcome.ferment.name}". Type /ferment-legacy resume to resume.`
 			sendBreadcrumb(pi, message, "ack")
 			ctx.ui.notify(message)
 			ctx.abort()
@@ -855,7 +861,7 @@ export class FermentCommandController {
 		if (command.type === "delete") {
 			const target = command.target
 			if (!target) {
-				ctx.ui.notify('Usage: /ferment delete <full-id> or /ferment delete "Name"')
+				ctx.ui.notify('Usage: /ferment-legacy delete <full-id> or /ferment-legacy delete "Name"')
 				return { handled: true }
 			}
 			try {
@@ -879,7 +885,7 @@ export class FermentCommandController {
 		if (command.type === "switch") {
 			const target = command.target
 			if (!target) {
-				ctx.ui.notify('Usage: /ferment switch <full-id> or /ferment switch "Name"')
+				ctx.ui.notify('Usage: /ferment-legacy switch <full-id> or /ferment-legacy switch "Name"')
 				return { handled: true }
 			}
 			try {
@@ -891,7 +897,7 @@ export class FermentCommandController {
 
 				const wtCheck = checkWorktree(f, ctx.cwd)
 				if (wtCheck.severity === "block" && !command.force) {
-					ctx.ui.notify(`${wtCheck.message}\n\nUse /ferment switch --force "${target}" to override.`)
+					ctx.ui.notify(`${wtCheck.message}\n\nUse /ferment-legacy switch --force "${target}" to override.`)
 					return { handled: true }
 				}
 
@@ -1009,7 +1015,7 @@ export class FermentCommandController {
 			}
 
 			ctx.ui.notify(
-				"Usage: /ferment revise goal | criteria | constraints\n\nTo revise phases, ask the agent to update them.",
+				"Usage: /ferment-legacy revise goal | criteria | constraints\n\nTo revise phases, ask the agent to update them.",
 			)
 			return { handled: true }
 		}
@@ -1035,7 +1041,7 @@ export class FermentCommandController {
 		if (command.type === "one-shot") {
 			const active = runtime.getActive()
 			if (active && active.status === "running") {
-				ctx.ui.notify(`A ferment is already running: "${active.name}". Use /ferment progress to check status.`)
+				ctx.ui.notify(`A ferment is already running: "${active.name}". Use /ferment-legacy progress to check status.`)
 				return { handled: true }
 			}
 			// Org policy: without an executable mode, ferment cannot run — refuse
@@ -1048,7 +1054,7 @@ export class FermentCommandController {
 			let resolvedIntent = intent
 			if (!resolvedIntent) {
 				if (!ctx.hasUI) {
-					ctx.ui.notify('Usage: /ferment one-shot "description of what to build"')
+					ctx.ui.notify('Usage: /ferment-legacy one-shot "description of what to build"')
 					return { handled: true }
 				}
 				const typed = await promptEditor(ctx, "🍺  One-shot: what should be done?", {
@@ -1107,7 +1113,7 @@ export class FermentCommandController {
 		const active = runtime.getActive()
 		if (active && active.status === "running") {
 			ctx.ui.notify(
-				`A ferment is already running: "${active.name}". Use /ferment progress to check status or /ferment switch to change.`,
+				`A ferment is already running: "${active.name}". Use /ferment-legacy progress to check status or /ferment-legacy switch to change.`,
 			)
 			return { handled: true }
 		}
@@ -1125,7 +1131,7 @@ export class FermentCommandController {
 		let scopingIntent: string | undefined = rawName || undefined
 		if (!rawName) {
 			if (!ctx.hasUI || (!ctx.ui.editor && !ctx.ui.input)) {
-				ctx.ui.notify('Usage: /ferment new "Name"')
+				ctx.ui.notify('Usage: /ferment-legacy new "Name"')
 				return { handled: true }
 			}
 			const typed = await promptEditor(ctx, "🍺  What would you like to ferment?", {
@@ -1174,8 +1180,8 @@ export class FermentCommandController {
 export function registerFermentCommands(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
 	const fermentCommandController = new FermentCommandController()
 
-	pi.registerCommand("ferment", {
-		description: 'Manage ferments: /ferment list, /ferment new "Name", /ferment one-shot "task", /ferment switch <id>',
+	pi.registerCommand(FERMENT_LEGACY_COMMAND_NAME, {
+		description: `Legacy Ferment (V1): /${FERMENT_LEGACY_COMMAND_NAME} list, /${FERMENT_LEGACY_COMMAND_NAME} new "Name", /${FERMENT_LEGACY_COMMAND_NAME} switch <id>`,
 		getArgumentCompletions: (prefix) => getFermentArgumentCompletions(prefix, runtime),
 		async handler(args, ctx) {
 			const raw = args.trim()

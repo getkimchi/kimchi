@@ -248,7 +248,7 @@ describe("Ferment V2 reducer", () => {
 	})
 
 	it("rejects empty objectives and preserves objectives longer than 4,000 characters", () => {
-		expect(() => createFermentV2(undefined, " \n ", "ferment-v2-a", T1)).toThrow("Ferment V2 objective cannot be empty")
+		expect(() => createFermentV2(undefined, " \n ", "ferment-v2-a", T1)).toThrow("Ferment objective cannot be empty")
 		expect(createFermentV2(undefined, "x".repeat(4_001), "ferment-v2-a", T1).objective).toHaveLength(4_001)
 		expect(
 			editFermentV2(createFermentV2(undefined, "old", "ferment-v2-a", T1), "ferment-v2-a", 1, "x".repeat(4_001), T2)
@@ -289,12 +289,12 @@ describe("Ferment V2 reducer", () => {
 		const fermentV2 = createFermentV2(undefined, "old", "ferment-v2-a", T1)
 
 		expect(() => editFermentV2(fermentV2, "ferment-v2-b", 1, "new", T2)).toThrow(
-			/current Ferment V2 is ferment-v2-a revision 1/,
+			/current Ferment is ferment-v2-a revision 1/,
 		)
 		expect(() => setFermentV2Status(fermentV2, "ferment-v2-a", 2, "complete", T2)).toThrow(
-			/current Ferment V2 is ferment-v2-a revision 1/,
+			/current Ferment is ferment-v2-a revision 1/,
 		)
-		expect(() => clearFermentV2(undefined, "ferment-v2-a", 1)).toThrow("no current Ferment V2 exists")
+		expect(() => clearFermentV2(undefined, "ferment-v2-a", 1)).toThrow("no current Ferment exists")
 	})
 
 	it("accumulates Ferment V2 time and tokens while rejecting another Ferment V2 ID", () => {
@@ -310,9 +310,7 @@ describe("Ferment V2 reducer", () => {
 			timeUsedMs: 2_500,
 			updatedAt: T2,
 		})
-		expect(() => addFermentV2Accounting(accounted, "ferment-v2-b", 1, 1, T2)).toThrow(
-			/current Ferment V2 is ferment-v2-a/,
-		)
+		expect(() => addFermentV2Accounting(accounted, "ferment-v2-b", 1, 1, T2)).toThrow(/current Ferment is ferment-v2-a/)
 	})
 
 	it("accumulates verifier usage per run while rejecting another Ferment V2 ID", () => {
@@ -371,7 +369,7 @@ describe("Ferment V2 reducer", () => {
 				},
 				T3,
 			),
-		).toThrow(/current Ferment V2 is ferment-v2-a/)
+		).toThrow(/current Ferment is ferment-v2-a/)
 	})
 
 	it("round-trips the baseline through the journal and preserves it on objective edit", () => {
@@ -416,7 +414,7 @@ describe("Ferment V2 reducer", () => {
 		const fermentV2 = createFermentV2(undefined, "old", "ferment-v2-a", T1)
 
 		expect(setFermentV2Status(fermentV2, "ferment-v2-a", 1, "blocked", T2, "  ")).toMatchObject({
-			blockedReason: "Ferment V2 marked blocked.",
+			blockedReason: "Ferment marked blocked.",
 		})
 		expect(
 			setFermentV2Status(fermentV2, "ferment-v2-a", 1, "blocked", T2, "x".repeat(1_001)).blockedReason,
@@ -499,7 +497,7 @@ describe("Ferment V2 reducer", () => {
 				{ verdict: "met", reason: "all checks pass", evaluatedAt: T2 },
 				T2,
 			),
-		).toThrow(/current Ferment V2 is ferment-v2-a revision 1/)
+		).toThrow(/current Ferment is ferment-v2-a revision 1/)
 	})
 
 	it("persists the same-model-as-implementer evaluation flag through replay", () => {
@@ -535,7 +533,7 @@ describe("Ferment V2 reducer", () => {
 		expect(edited.evaluatorModelWarned).toBe(true)
 
 		expect(() => markFermentV2EvaluatorModelWarned(warned, "ferment-v2-a", 2, T3)).toThrow(
-			/current Ferment V2 is ferment-v2-a revision 1/,
+			/current Ferment is ferment-v2-a revision 1/,
 		)
 	})
 
@@ -547,7 +545,7 @@ describe("Ferment V2 reducer", () => {
 			set: setFermentV2ConsecutiveErrorTurns,
 			invalidId: "ferment-v2-b",
 			invalidRevision: 1,
-			error: /current Ferment V2 is ferment-v2-a/,
+			error: /current Ferment is ferment-v2-a/,
 		},
 		{
 			name: "unchanged-continuation",
@@ -556,7 +554,7 @@ describe("Ferment V2 reducer", () => {
 			set: setFermentV2UnchangedContinuationTurns,
 			invalidId: "ferment-v2-a",
 			invalidRevision: 2,
-			error: /current Ferment V2 is ferment-v2-a revision 1/,
+			error: /current Ferment is ferment-v2-a revision 1/,
 		},
 	] as const)("sets and clears the $name counter, omitting it at zero", ({
 		field,

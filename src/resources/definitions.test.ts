@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { FERMENT_V2_RESOURCE_ID } from "../extensions/ferment-v2/constants.js"
 import { getResourceDefinitions } from "./definitions.js"
 
 let dir: string
@@ -113,14 +114,34 @@ describe("resource definitions", () => {
 		})
 	})
 
-	it("registers Ferment V2 as an opt-in experimental feature", () => {
-		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.ferment-v2")).toMatchObject({
+	it("maps extensions.ferment to Ferment V2, on by default and not experimental", () => {
+		const resource = getResourceDefinitions().find((candidate) => candidate.id === FERMENT_V2_RESOURCE_ID)
+		expect(resource?.id).toBe("extensions.ferment")
+		expect(resource).toMatchObject({
+			kind: "extensions",
+			label: "Ferment",
+			defaultEnabled: true,
+			restartRequired: true,
+		})
+		expect(resource?.experimental).toBeFalsy()
+	})
+
+	it("registers extensions.ferment-legacy as experimental and off", () => {
+		expect(getResourceDefinitions().find((resource) => resource.id === "extensions.ferment-legacy")).toMatchObject({
 			kind: "extensions",
 			experimental: true,
-			label: "Ferment V2",
+			label: "Ferment (legacy)",
 			defaultEnabled: false,
 			restartRequired: true,
 		})
+	})
+
+	it("keeps the retired extensions.ferment-v2 id unregistered so old overrides are inert", () => {
+		expect(getResourceDefinitions().some((candidate) => candidate.id === "extensions.ferment-v2")).toBe(false)
+	})
+
+	it("has exactly one definition with id extensions.ferment", () => {
+		expect(getResourceDefinitions().filter((candidate) => candidate.id === "extensions.ferment")).toHaveLength(1)
 	})
 
 	it('registers the side chat "Add to side chat" button as a default-off extension resource', () => {

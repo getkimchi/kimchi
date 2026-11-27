@@ -279,7 +279,12 @@ test("plan submission: stale final list arms the check-in gate for the approval 
 				tool("mark_todo", { id: 1, status: "completed" }),
 				// …and execution work proceeds.
 				tool("bash", { command: "printf 'executed\n'" }),
-				{ stream: ["Plan executed. Ready for the next task."] },
+				// Ferment is on by default, so approval starts a plan execution run;
+				// blocking it ends the run here instead of continuing automatically.
+				{
+					...tool("update_ferment_v2", { status: "blocked", reason: "Waiting for the next task." }),
+					stream: ["Plan executed. Ready for the next task."],
+				},
 			],
 		},
 		async (fixture, trace) => {
@@ -309,7 +314,7 @@ test("plan submission: stale final list arms the check-in gate for the approval 
 			// The first new request must be the approval turn, carrying both the
 			// approval and the deferred submission check-in. This proves execution
 			// did not consume queued fake responses before the user approved.
-			expect(bodies[requestsAtReview]).toContain("The user approved the plan")
+			expect(bodies[requestsAtReview]).toContain("Implement the approved plan below")
 			expect(bodies[requestsAtReview]).toContain("The plan was submitted for review")
 			expect(bodies[requestsAtReview]).toContain("Plan submitted")
 			expect(bodies.findIndex((body) => body.includes("check-in pending (input revision 1)"))).toBeGreaterThan(

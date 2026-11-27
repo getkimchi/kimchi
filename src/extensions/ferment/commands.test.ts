@@ -358,7 +358,7 @@ describe("FermentCommandController", () => {
 
 		expect(result).toEqual({ handled: true })
 		expect(h.storage.list()).toHaveLength(0)
-		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Unknown /ferment command"))
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Unknown /ferment-legacy command"))
 	})
 
 	it("treats /ferment exit without an active ferment as a no-op", async () => {
@@ -399,7 +399,9 @@ describe("FermentCommandController", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_breadcrumb",
-				content: [expect.objectContaining({ text: 'Command /ferment exit requested for "Draft Exit" [draft].' })],
+				content: [
+					expect.objectContaining({ text: 'Command /ferment-legacy exit requested for "Draft Exit" [draft].' }),
+				],
 			}),
 			{ triggerTurn: false },
 		)
@@ -465,7 +467,9 @@ describe("FermentCommandController", () => {
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_breadcrumb",
-				content: [expect.objectContaining({ text: 'Command /ferment exit requested for "Stale Exit" [running].' })],
+				content: [
+					expect.objectContaining({ text: 'Command /ferment-legacy exit requested for "Stale Exit" [running].' }),
+				],
 			}),
 			{ triggerTurn: false },
 		)
@@ -474,7 +478,7 @@ describe("FermentCommandController", () => {
 				customType: "ferment_ack",
 				content: [
 					expect.objectContaining({
-						text: 'Exited Ferment mode for "Stale Exit". It is paused and can be selected later from /ferment list or /ferment switch.',
+						text: 'Exited Ferment mode for "Stale Exit". It is paused and can be selected later from /ferment-legacy list or /ferment-legacy switch.',
 					}),
 				],
 			}),
@@ -515,7 +519,7 @@ describe("FermentCommandController", () => {
 		expect(h.runtime.setActive).toHaveBeenLastCalledWith(undefined)
 		expect(h.pi.setActiveTools).toHaveBeenLastCalledWith(["read", "bash"])
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(
-			'Exited Ferment mode for "Complete Exit". It remains complete and is still available from /ferment list.',
+			'Exited Ferment mode for "Complete Exit". It remains complete and is still available from /ferment-legacy list.',
 		)
 	})
 
@@ -596,7 +600,7 @@ describe("FermentCommandController", () => {
 		)
 
 		expect(result).toEqual({ handled: true })
-		expect(h.ctx.ui.notify).toHaveBeenCalledWith('Usage: /ferment one-shot "description of what to build"')
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith('Usage: /ferment-legacy one-shot "description of what to build"')
 		expect(h.storage.list()).toHaveLength(0)
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
@@ -748,7 +752,7 @@ describe("continuation policy reset on new ferment creation", () => {
 			ui: { ...h.ctx.ui, confirm: vi.fn().mockResolvedValue(true) },
 		}) as unknown as ExtensionCommandContext
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler('new "Next ferment"', interactiveCtx)
 
@@ -768,7 +772,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler('new "Registered Command"', h.ctx)
 
@@ -794,7 +798,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand?.getArgumentCompletions) throw new Error("ferment completions were not registered")
 
 		const completions = await fermentCommand.getArgumentCompletions("pa")
@@ -877,7 +881,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler(`switch "${target.name}"`, h.ctx)
 
@@ -921,7 +925,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler(`switch "${paused.ferment.name}"`, h.ctx)
 
@@ -975,7 +979,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 
 		await fermentCommand.handler("auto", h.ctx)
@@ -1010,7 +1014,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("manual", h.ctx)
 
@@ -1055,7 +1059,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("manual", h.ctx)
 
@@ -1102,14 +1106,14 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("auto", h.ctx)
 
 		active = h.storage.get(active.id) ?? active
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(active.status).toBe("paused")
-		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("run /ferment resume"))
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("run /ferment-legacy resume"))
 		// paused ferment with no phase activated => profileForFerment returns "planning"
 		// => planning-ferment tools via the shared catalog (read, grep, find, ls,
 		// web_fetch, web_search, propose_ferment_scoping, scope_ferment,
@@ -1134,7 +1138,7 @@ describe("registerFermentCommands", () => {
 		expect(result).toEqual({ handled: true })
 		expect(h.runtime.getContinuationPolicy()).toBe("manual")
 		expect(h.storage.get(ferment.id)).not.toHaveProperty("mode")
-		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Unknown /ferment command"))
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Unknown /ferment-legacy command"))
 		expect(h.pi.sendMessage).not.toHaveBeenCalled()
 	})
 
@@ -1152,7 +1156,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		expect(commands.has("progress")).toBe(false)
 
@@ -1357,7 +1361,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("auto", h.ctx)
 
@@ -1403,7 +1407,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("list", ctx)
 
@@ -1464,7 +1468,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("list", ctx)
 
@@ -1523,7 +1527,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("pause", h.ctx)
 
@@ -1535,7 +1539,7 @@ describe("registerFermentCommands", () => {
 			expect.objectContaining({
 				customType: "ferment_breadcrumb",
 				content: [
-					expect.objectContaining({ text: 'Command /ferment pause requested for "Running Ferment" [running].' }),
+					expect.objectContaining({ text: 'Command /ferment-legacy pause requested for "Running Ferment" [running].' }),
 				],
 			}),
 			{ triggerTurn: false },
@@ -1544,7 +1548,9 @@ describe("registerFermentCommands", () => {
 			expect.objectContaining({
 				customType: "ferment_breadcrumb",
 				details: expect.objectContaining({ variant: "ack" }),
-				content: [expect.objectContaining({ text: 'Paused "Running Ferment". Type /ferment resume to resume.' })],
+				content: [
+					expect.objectContaining({ text: 'Paused "Running Ferment". Type /ferment-legacy resume to resume.' }),
+				],
 			}),
 			{ triggerTurn: false },
 		)
@@ -1592,14 +1598,14 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("pause", h.ctx)
 
 		active = h.storage.get(active.id) ?? active
 		expect(active.status).toBe("paused")
 		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("already paused"))
-		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"))
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("/ferment-legacy resume"))
 		expect(h.ctx.abort).not.toHaveBeenCalled()
 	})
 
@@ -1617,18 +1623,20 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("pause", h.ctx)
 
 		expect(h.storage.get(running.id)?.status).toBe("paused")
 		expect(h.runtime.getActive()?.status).toBe("paused")
-		expect(h.ctx.ui.notify).toHaveBeenCalledWith('Paused "Stale Active Pause". Type /ferment resume to resume.')
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith('Paused "Stale Active Pause". Type /ferment-legacy resume to resume.')
 		expect(h.pi.sendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				customType: "ferment_breadcrumb",
 				content: [
-					expect.objectContaining({ text: 'Command /ferment pause requested for "Stale Active Pause" [running].' }),
+					expect.objectContaining({
+						text: 'Command /ferment-legacy pause requested for "Stale Active Pause" [running].',
+					}),
 				],
 			}),
 			{ triggerTurn: false },
@@ -1649,7 +1657,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("resume", h.ctx)
 
@@ -1661,7 +1669,9 @@ describe("registerFermentCommands", () => {
 			expect.objectContaining({
 				customType: "ferment_breadcrumb",
 				content: [
-					expect.objectContaining({ text: 'Command /ferment resume requested for "Stale Active Resume" [running].' }),
+					expect.objectContaining({
+						text: 'Command /ferment-legacy resume requested for "Stale Active Resume" [running].',
+					}),
 				],
 			}),
 			{ triggerTurn: false },
@@ -1689,7 +1699,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("resume", h.ctx)
 
@@ -1737,7 +1747,7 @@ describe("registerFermentCommands", () => {
 		expect(active.phases[0].status).toBe("active")
 
 		// Step 2: Call /ferment pause → status becomes "paused", steps reset to "pending"
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("pause", h.ctx)
 
@@ -1754,7 +1764,7 @@ describe("registerFermentCommands", () => {
 		active = h.storage.get(active.id) ?? active
 		expect(h.runtime.getContinuationPolicy()).toBe("automated")
 		expect(active.status).toBe("paused")
-		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("run /ferment resume"))
+		expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("run /ferment-legacy resume"))
 
 		// Step 4: Call /ferment resume → lifecycle resumes using the current policy
 		await fermentCommand.handler("resume", h.ctx)
@@ -1809,7 +1819,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("resume", h.ctx)
 
@@ -1821,7 +1831,9 @@ describe("registerFermentCommands", () => {
 			expect.objectContaining({
 				customType: "ferment_breadcrumb",
 				content: [
-					expect.objectContaining({ text: 'Command /ferment resume requested for "Manual Resume Ferment" [paused].' }),
+					expect.objectContaining({
+						text: 'Command /ferment-legacy resume requested for "Manual Resume Ferment" [paused].',
+					}),
 				],
 			}),
 			{ triggerTurn: false },
@@ -1890,7 +1902,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("resume", h.ctx)
 
@@ -1954,7 +1966,7 @@ describe("registerFermentCommands", () => {
 		} as unknown as ExtensionAPI
 		registerFermentCommands(pi, h.runtime)
 
-		const fermentCommand = commands.get("ferment")
+		const fermentCommand = commands.get("ferment-legacy")
 		if (!fermentCommand) throw new Error("ferment command was not registered")
 		await fermentCommand.handler("resume", ctx)
 

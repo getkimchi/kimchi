@@ -21,9 +21,14 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { resetOrgPolicyForTests } from "../../org-policy.js"
+import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
+import { isInCommandReplyScope } from "../../shared/command-reply-scope.js"
 import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
+import { runAsAgentWorker } from "../agent-worker-context.js"
 import { clearPermissionModeEnv, getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "../permissions/mode-controller-registry.js"
 import { PERMISSION_EVENTS } from "../permissions/permissions-events.js"
@@ -33,10 +38,12 @@ import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "../todos/store.js"
 import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoItem } from "../todos/types.js"
+import { isFermentV2LoadedAndEnabled, resetFermentV2LoadedForTests } from "./availability.js"
 import {
 	FERMENT_V2_CONTEXT_MESSAGE_TYPE,
 	FERMENT_V2_CONTROL_MESSAGE_TYPE,
 	FERMENT_V2_CUSTOM_ENTRY_TYPE,
+	FERMENT_V2_PLAN_ONLY_MESSAGE,
 	FERMENT_V2_TOOL_NAMES,
 	GET_FERMENT_V2_TOOL_NAME,
 	RESPOND_TO_FERMENT_V2_FINDING_TOOL_NAME,
@@ -111,11 +118,44 @@ type ToolConfig = {
 	}>
 }
 
+describe("Ferment V2 loaded marker", () => {
+	let agentDir: string
+	const savedAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "ferment-v2-extension-loaded-"))
+		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
+		resetFermentV2LoadedForTests()
+		resetOrgPolicyForTests()
+	})
+
+	afterEach(() => {
+		resetFermentV2LoadedForTests()
+		resetOrgPolicyForTests()
+		if (savedAgentDir === undefined) Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
+		else process.env.KIMCHI_CODING_AGENT_DIR = savedAgentDir
+		rmSync(agentDir, { recursive: true, force: true })
+	})
+
+	it("marks Ferment as loaded when the extension runs", () => {
+		const harness = createExtensionApi()
+		fermentV2Extension(harness.api)
+		expect(isFermentV2LoadedAndEnabled()).toBe(true)
+	})
+
+	it("does not mark Ferment as loaded in an agent worker", async () => {
+		const harness = createExtensionApi()
+		await runAsAgentWorker(async () => fermentV2Extension(harness.api))
+		expect(isFermentV2LoadedAndEnabled()).toBe(false)
+	})
+})
+
 describe("Ferment V2 extension", () => {
 	let harness: ReturnType<typeof createHarness>
 	let cwd: string
 
 	beforeEach(async () => {
+		resetFermentV2LoadedForTests()
 		__resetTodoStore()
 		evaluateFermentV2Mock.mockReset().mockResolvedValue({
 			verdict: "continue",
@@ -136,6 +176,7 @@ describe("Ferment V2 extension", () => {
 	afterEach(async () => {
 		resetProjectScopeTrustForTests()
 		await harness.fire("session_shutdown", { type: "session_shutdown" })
+		resetFermentV2LoadedForTests()
 		clearPermissionModeEnv(TEST_SESSION_ID)
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 		__resetTodoStore()
@@ -144,7 +185,7 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("registers the commands, completions, tools, and empty-state behavior", async () => {
-		expect([...harness.commands.keys()]).toEqual(["ferment-v2"])
+		expect([...harness.commands.keys()]).toEqual(["ferment"])
 		expect([...harness.tools.keys()]).toEqual([...FERMENT_V2_TOOL_NAMES])
 		expect(harness.tools.get(UPDATE_FERMENT_V2_TOOL_NAME)?.promptGuidelines).toContain(
 			"Claim complete only after current evidence proves every requirement is met. Report blocked only when the objective cannot be completed without user or external action after trying viable alternatives; one unavailable preferred tool or check is not a blockage.",
@@ -155,23 +196,97 @@ describe("Ferment V2 extension", () => {
 		).not.toMatch(/\bevaluator\b|independent completion|separate check|after the final todo mutation|only tool call/i)
 		expect(
 			harness.commands
-				.get("ferment-v2")
+				.get("ferment")
 				?.getArgumentCompletions?.("re")
 				?.map((entry) => entry.value),
 		).toEqual(["resume"])
-		expect(harness.commands.get("ferment-v2")?.getArgumentCompletions?.("ed")?.[0]).toMatchObject({
+		expect(harness.commands.get("ferment")?.getArgumentCompletions?.("ed")?.[0]).toMatchObject({
 			value: "edit ",
 			label: "edit",
 		})
 
 		await harness.command("")
-		expect(harness.ui.notify).toHaveBeenLastCalledWith(
-			expect.stringContaining("No Ferment V2 is currently set"),
-			"info",
-		)
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("No Ferment is currently set"), "info")
 
 		const result = await harness.tool(GET_FERMENT_V2_TOOL_NAME, {})
 		expect(result.details.fermentV2).toBeNull()
+	})
+
+	// Regression: `/ferment list` used to create a run with the objective "list".
+	it("shows a hint and creates no run for a bare legacy word", async () => {
+		await harness.command("  LIST ")
+
+		expect(harness.currentFermentV2()).toBeUndefined()
+		expect(harness.appendEntry).not.toHaveBeenCalled()
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		expect(harness.ui.confirm).not.toHaveBeenCalled()
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(
+			expect.stringContaining("/ferment list is a legacy Ferment command. Use /ferment-legacy list."),
+			"warning",
+		)
+	})
+
+	it("sends command replies inside a reply scope for its own session only", async () => {
+		const sessionId = harness.ctx.sessionManager.getSessionId()
+		const scopes: Array<{ own: boolean; other: boolean }> = []
+		harness.ui.notify.mockImplementation(() => {
+			scopes.push({ own: isInCommandReplyScope(sessionId), other: isInCommandReplyScope("other-session") })
+		})
+
+		await harness.command("")
+		await harness.command("pause")
+		await harness.command("list")
+		await harness.command("do it --tokens")
+
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(
+			"Token budget must be a positive number, optionally suffixed with k or m.",
+			"warning",
+		)
+		expect(scopes).toEqual(Array.from({ length: 4 }, () => ({ own: true, other: false })))
+		expect(isInCommandReplyScope(sessionId)).toBe(false)
+	})
+
+	it("prints the legacy hint in print mode", async () => {
+		const headless = createHarness({ hasUI: false })
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			await headless.command("list")
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining("Use /ferment-legacy list."))
+			expect(headless.currentFermentV2()).toBeUndefined()
+			expect(headless.sendMessage).not.toHaveBeenCalled()
+		} finally {
+			warn.mockRestore()
+		}
+	})
+
+	it("shows the hint and starts no run for delete old-auth", async () => {
+		const modeBefore = getPermissionMode(TEST_SESSION_ID)
+		await harness.command("delete old-auth")
+
+		expect(harness.currentFermentV2()).toBeUndefined()
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual(modeBefore)
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(
+			expect.stringContaining("Use /ferment-legacy delete old-auth."),
+			"warning",
+		)
+	})
+
+	it("keeps the current run and asks nothing when a legacy word is typed during a run", async () => {
+		await harness.command("ship feature A")
+		const first = harness.currentFermentV2()
+		harness.ui.confirm.mockClear()
+
+		await harness.command("exit")
+
+		expect(harness.ui.confirm).not.toHaveBeenCalled()
+		expect(harness.currentFermentV2()).toMatchObject({ id: first?.id, objective: "ship feature A" })
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Use /ferment-legacy exit."), "warning")
+	})
+
+	it("starts a run when a legacy word is followed by more text", async () => {
+		await harness.command("list all todos in the repo")
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "list all todos in the repo", status: "active" })
 	})
 
 	it("creates a Ferment V2, persists it, and confirms unfinished replacement", async () => {
@@ -334,7 +449,7 @@ describe("Ferment V2 extension", () => {
 		expect(headlessHarness.sendMessage).not.toHaveBeenCalled()
 		expect(headlessHarness.currentFermentV2()).toBeUndefined()
 		expect(headlessHarness.ui.notify).toHaveBeenCalledWith(
-			"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
+			"Ferment requires the Ferment and Todo tools to be enabled before it can run.",
 			"warning",
 		)
 	})
@@ -347,7 +462,7 @@ describe("Ferment V2 extension", () => {
 		await harness.command("ship feature A")
 
 		expect(harness.ui.notify).not.toHaveBeenCalledWith(
-			"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
+			"Ferment requires the Ferment and Todo tools to be enabled before it can run.",
 			"warning",
 		)
 		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", initiatedBy: "user", source: "runtime" })
@@ -371,10 +486,90 @@ describe("Ferment V2 extension", () => {
 			expect.objectContaining({ status: "paused", reason: "user" }),
 		)
 		expect(harness.ui.notify).toHaveBeenLastCalledWith(
-			"Ferment V2 paused because Plan mode is read-only. Resume it to continue in Auto mode.",
+			"Ferment paused because Plan mode is read-only. Resume it to continue in Auto mode.",
 			"info",
 		)
 		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	describe("plan-only org policy", () => {
+		const PLAN_ONLY = { allowedPermissionModes: { plan: true, default: false, auto: false, yolo: false } }
+
+		afterEach(() => {
+			resetOrgPolicyForTests()
+		})
+
+		it("refuses to start a run and leaves the mode alone", async () => {
+			setPermissionMode(TEST_SESSION_ID, { mode: "plan", initiatedBy: "user", source: "runtime" })
+			await setOrgPolicyForTests(PLAN_ONLY)
+
+			await harness.command("build a cache")
+
+			expect(harness.currentFermentV2()).toBeUndefined()
+			expect(harness.sendMessage).not.toHaveBeenCalled()
+			expect(harness.ui.confirm).not.toHaveBeenCalled()
+			expect(harness.ui.notify).toHaveBeenLastCalledWith(FERMENT_V2_PLAN_ONLY_MESSAGE, "warning")
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "plan", initiatedBy: "user", source: "runtime" })
+		})
+
+		it("refuses to resume a paused run", async () => {
+			await harness.command("ship feature A")
+			await harness.command("pause")
+			expect(harness.currentFermentV2()?.status).toBe("paused")
+			harness.sendMessage.mockClear()
+			await setOrgPolicyForTests(PLAN_ONLY)
+
+			await harness.command("resume")
+
+			expect(harness.currentFermentV2()?.status).toBe("paused")
+			expect(harness.ui.notify).toHaveBeenLastCalledWith(FERMENT_V2_PLAN_ONLY_MESSAGE, "warning")
+			expect(harness.sendMessage).not.toHaveBeenCalled()
+		})
+
+		it("shows the policy message on resume for a run that was active when the policy changed", async () => {
+			await harness.command("ship feature A")
+			expect(harness.currentFermentV2()?.status).toBe("active")
+			harness.sendMessage.mockClear()
+			await setOrgPolicyForTests(PLAN_ONLY)
+			// The org switch clamps the session to plan mode, which pauses the run on bind.
+			setPermissionMode(TEST_SESSION_ID, { mode: "plan", initiatedBy: "user", source: "runtime" })
+
+			await harness.command("resume")
+
+			expect(harness.currentFermentV2()?.status).toBe("paused")
+			expect(harness.ui.notify).toHaveBeenLastCalledWith(FERMENT_V2_PLAN_ONLY_MESSAGE, "warning")
+			expect(harness.sendMessage).not.toHaveBeenCalled()
+			await harness.command("resume")
+			expect(harness.ui.notify).toHaveBeenLastCalledWith(FERMENT_V2_PLAN_ONLY_MESSAGE, "warning")
+		})
+
+		it("does not ask to replace a run", async () => {
+			await harness.command("ship feature A")
+			const first = harness.currentFermentV2()
+			await setOrgPolicyForTests(PLAN_ONLY)
+
+			await harness.command("other goal")
+
+			expect(harness.ui.confirm).not.toHaveBeenCalled()
+			expect(harness.currentFermentV2()?.id).toBe(first?.id)
+			expect(harness.ui.notify).toHaveBeenLastCalledWith(FERMENT_V2_PLAN_ONLY_MESSAGE, "warning")
+		})
+
+		it("does not notify for an approved plan", async () => {
+			await setOrgPolicyForTests(PLAN_ONLY)
+			const executor = getFermentV2PlanExecutor(harness.pi)
+			if (!executor) throw new Error("expected approved-plan executor")
+
+			// The executor wrapper turns "unavailable" into a rejection.
+			await expect(
+				executor(
+					{ objective: "Read the plan.", title: "Cache plan", planText: "# Cache plan", planPath: "/tmp/plan.md" },
+					harness.ctx,
+				),
+			).rejects.toThrow("The approved plan execution tools are unavailable.")
+			expect(harness.ui.notify).not.toHaveBeenCalled()
+			expect(harness.currentFermentV2()).toBeUndefined()
+		})
 	})
 
 	it("registers an approved-plan executor that starts through the Ferment V2 mutation path", async () => {
@@ -577,7 +772,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).not.toHaveProperty("presentation")
 		expect(harness.ui.setStatus).toHaveBeenLastCalledWith(
 			"ferment-v2",
-			"◈ Ferment V2: paused · Only verify the new requirement. · /ferment-v2 resume",
+			"◈ Ferment: paused · Only verify the new requirement. · /ferment resume",
 		)
 		const before = harness.sendMessage.mock.calls.length
 		await harness.fire("session_tree", { type: "session_tree" })
@@ -758,7 +953,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.ui.confirm).not.toHaveBeenCalled()
 		expect(harness.currentFermentV2()?.id).toBe(first?.id)
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
+			"Ferment requires the Ferment and Todo tools to be enabled before it can run.",
 			"warning",
 		)
 	})
@@ -1200,7 +1395,7 @@ describe("Ferment V2 extension", () => {
 		expect(events[0]?.[1]).not.toHaveProperty("sameModelAsImplementer")
 		expect(events[0]?.[1]).not.toHaveProperty("modelFallback")
 		expect(
-			harness.ui.notify.mock.calls.filter(([message]) => String(message).includes("Ferment V2 evaluator")),
+			harness.ui.notify.mock.calls.filter(([message]) => String(message).includes("Ferment evaluator")),
 		).toHaveLength(0)
 	})
 
@@ -1412,7 +1607,7 @@ describe("Ferment V2 extension", () => {
 			tokensUsed: 1_768,
 			timeUsedMs: 3_623,
 		})
-		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment V2 complete.", "info")
+		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment complete.", "info")
 		await finishFinalAnswerTurn(harness, "Delivered final answer.", "stop", { input: 40, output: 10 })
 		expect(harness.currentFermentV2()).toMatchObject({
 			status: "complete",
@@ -1420,7 +1615,7 @@ describe("Ferment V2 extension", () => {
 			tokensUsed: 1_768,
 			timeUsedMs: 3_623,
 		})
-		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 complete.", "info")
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment complete.", "info")
 	})
 
 	it.each([
@@ -1436,9 +1631,9 @@ describe("Ferment V2 extension", () => {
 		await finishFinalAnswerTurn(harness, "Partial final answer.", stopReason)
 
 		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", lastEvaluation: { verdict: "met" } })
-		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment V2 complete.", "info")
+		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment complete.", "info")
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"Ferment V2 paused because its final answer could not be delivered.",
+			"Ferment paused because its final answer could not be delivered.",
 			"warning",
 		)
 	})
@@ -1453,7 +1648,7 @@ describe("Ferment V2 extension", () => {
 		await finishFinalAnswerTurn(harness, "   ")
 
 		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", lastEvaluation: { verdict: "met" } })
-		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment V2 complete.", "info")
+		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment complete.", "info")
 	})
 
 	it("buffers accepted final output and removes only its outer whitespace", async () => {
@@ -2358,7 +2553,7 @@ describe("Ferment V2 extension", () => {
 
 		expect(harness.currentFermentV2()).toMatchObject({ objective: "concurrent", revision: 2 })
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"The Ferment V2 changed while the editor was open. Reopen /ferment-v2 edit to edit the current revision.",
+			"The Ferment changed while the editor was open. Reopen /ferment edit to edit the current revision.",
 			"warning",
 		)
 	})
@@ -2385,7 +2580,7 @@ describe("Ferment V2 extension", () => {
 
 		expect(harness.currentFermentV2()).toMatchObject({ objective: "revised", revision: 2, status: "active" })
 		expect(harness.ui.notify).not.toHaveBeenCalledWith(
-			"Ferment V2 paused because the agent turn was cancelled.",
+			"Ferment paused because the agent turn was cancelled.",
 			"warning",
 		)
 	})
@@ -2858,7 +3053,7 @@ describe("Ferment V2 extension", () => {
 		const stale = await harness.tool(UPDATE_FERMENT_V2_TOOL_NAME, {
 			status: "complete",
 		})
-		expect(stale.content[0].text).toContain("Ferment V2 changed or stopped during this turn")
+		expect(stale.content[0].text).toContain("Ferment changed or stopped during this turn")
 		expect(harness.currentFermentV2()?.status).toBe("active")
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
@@ -3522,7 +3717,7 @@ describe("Ferment V2 extension", () => {
 			FERMENT_V2_EVENTS.EVALUATED,
 			expect.objectContaining({ verdict: "unavailable", failureType: "no_model" }),
 		)
-		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused: No evaluator model is available.", "warning")
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment paused: No evaluator model is available.", "warning")
 		expect(harness.appendEntry).toHaveBeenCalledTimes(1)
 	})
 
@@ -3864,10 +4059,10 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()?.status).toBe("paused")
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
+			"Ferment requires the Ferment and Todo tools to be enabled before it can run.",
 			"warning",
 		)
-		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment V2 resumed.", "info")
+		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment resumed.", "info")
 	})
 
 	it("resumes when only the recovery getter is hidden", async () => {
@@ -3881,7 +4076,7 @@ describe("Ferment V2 extension", () => {
 
 		expect(harness.currentFermentV2()?.status).toBe("active")
 		expect(harness.sendMessage).toHaveBeenCalledOnce()
-		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 resumed.", "info")
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment resumed.", "info")
 	})
 
 	it("discards an evaluator result for a stale Ferment V2 revision", async () => {
@@ -4045,7 +4240,7 @@ describe("Ferment V2 extension", () => {
 			FERMENT_V2_EVENTS.STALLED,
 			expect.objectContaining({ reason: "no_progress", continuationCount: 3, status: "paused" }),
 		)
-		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 3 stalled continuation turns.", "warning")
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment paused after 3 stalled continuation turns.", "warning")
 	})
 
 	it("pauses after three repeated evaluation gaps despite substantive tool use", async () => {
@@ -4068,7 +4263,7 @@ describe("Ferment V2 extension", () => {
 			FERMENT_V2_EVENTS.STALLED,
 			expect.objectContaining({ reason: "no_progress", continuationCount: 3, status: "paused" }),
 		)
-		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 3 stalled continuation turns.", "warning")
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment paused after 3 stalled continuation turns.", "warning")
 	})
 
 	it("resets repeated-gap progress when substantive work changes the evaluator gap", async () => {
@@ -4337,7 +4532,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 		expect(harness.currentFermentV2()).toBeUndefined()
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
+			"Ferment requires the Ferment and Todo tools to be enabled before it can run.",
 			"warning",
 		)
 	})
@@ -4388,7 +4583,7 @@ describe("Ferment V2 extension", () => {
 			FERMENT_V2_EVENTS.PAUSED,
 			expect.objectContaining({ reason: "agent_errors", status: "paused" }),
 		)
-		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 3 consecutive agent errors.", "warning")
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment paused after 3 consecutive agent errors.", "warning")
 	})
 
 	it("counts retry attempts once at the settled run boundary", async () => {
@@ -4466,10 +4661,10 @@ describe("Ferment V2 extension", () => {
 			FERMENT_V2_EVENTS.PAUSED,
 			expect.objectContaining({ reason: "agent_errors", status: "paused" }),
 		)
-		expect(resumed.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 3 consecutive agent errors.", "warning")
+		expect(resumed.ui.notify).toHaveBeenCalledWith("Ferment paused after 3 consecutive agent errors.", "warning")
 	})
 
-	it("still resets the stall-guard counters on an explicit /ferment-v2 resume", async () => {
+	it("still resets the stall-guard counters on an explicit /ferment resume", async () => {
 		await harness.command("keep going")
 
 		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
@@ -4550,7 +4745,7 @@ describe("Ferment V2 extension", () => {
 		await harness.fire("agent_settled", { type: "agent_settled" })
 
 		expect(harness.currentFermentV2()).toMatchObject({ status: "budget_limited", tokenBudget: 100, tokensUsed: 100 })
-		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 stopped after reaching its 100 token budget.", "warning")
+		expect(harness.ui.notify).toHaveBeenCalledWith("Ferment stopped after reaching its 100 token budget.", "warning")
 		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
 		expect(harness.appendEntry).not.toHaveBeenCalled()
 		expect(harness.sendMessage).not.toHaveBeenCalled()
@@ -4597,10 +4792,10 @@ describe("Ferment V2 extension", () => {
 		expect(budgetLimited).toHaveLength(1)
 		expect(budgetLimited[0]?.[1]).toMatchObject({ reason: "token_budget", status: "budget_limited" })
 		expect(harness.ui.notify).toHaveBeenCalledWith(
-			"Ferment V2 token budget is exhausted. Start a replacement Ferment V2 with a new budget.",
+			"Ferment token budget is exhausted. Start a replacement Ferment with a new budget.",
 			"warning",
 		)
-		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment V2 resumed.", "info")
+		expect(harness.ui.notify).not.toHaveBeenCalledWith("Ferment resumed.", "info")
 		expect(harness.sendMessage).not.toHaveBeenCalled()
 	})
 
@@ -4917,7 +5112,7 @@ describe("Ferment V2 extension", () => {
 			await harness.command("pause")
 
 			expect(harness.currentFermentV2()?.status).toBe("paused")
-			expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused.", "info")
+			expect(harness.ui.notify).toHaveBeenCalledWith("Ferment paused.", "info")
 			expect(harness.sendMessage).not.toHaveBeenCalled()
 		})
 
@@ -4960,7 +5155,7 @@ describe("Ferment V2 extension", () => {
 			await harness.command("pause")
 
 			expect(harness.currentFermentV2()?.status).toBe("paused")
-			expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused.", "info")
+			expect(harness.ui.notify).toHaveBeenCalledWith("Ferment paused.", "info")
 		})
 	})
 
@@ -4982,7 +5177,7 @@ describe("Ferment V2 extension", () => {
 				FERMENT_V2_EVENTS.STALLED,
 				expect.objectContaining({ reason: "no_progress", continuationCount: 2, status: "paused" }),
 			)
-			expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 2 stalled continuation turns.", "warning")
+			expect(harness.ui.notify).toHaveBeenCalledWith("Ferment paused after 2 stalled continuation turns.", "warning")
 		})
 
 		it("pauses at the configured maxConsecutiveErrors count, not the default", async () => {
@@ -5006,7 +5201,7 @@ describe("Ferment V2 extension", () => {
 				FERMENT_V2_EVENTS.PAUSED,
 				expect.objectContaining({ reason: "agent_errors", status: "paused" }),
 			)
-			expect(harness.ui.notify).toHaveBeenCalledWith("Ferment V2 paused after 2 consecutive agent errors.", "warning")
+			expect(harness.ui.notify).toHaveBeenCalledWith("Ferment paused after 2 consecutive agent errors.", "warning")
 		})
 
 		it("does not schedule a resume continuation on session_start when autoResume is disabled", async () => {
@@ -5169,7 +5364,7 @@ function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
 			return result
 		},
 		async command(args: string): Promise<void> {
-			await this.runCommand("ferment-v2", args)
+			await this.runCommand("ferment", args)
 		},
 		async runCommand(name: string, args: string): Promise<void> {
 			const command = commands.get(name)

@@ -257,7 +257,7 @@ describe("buildFermentPromptBlock", () => {
 		it("tells planners that ferment creation is host-owned", () => {
 			const out = buildFermentPromptBlock(makeMockCtx(), PI_NORMAL, makeRuntime({ status: "running" }))
 			expect(out).toContain(CREATE_GUARD)
-			expect(out).toContain('/ferment new "..."')
+			expect(out).toContain('/ferment-legacy new "..."')
 			expect(out).toContain("Do not search for, retry with, or invent variants")
 			expect(out).toContain("new_ferment")
 		})

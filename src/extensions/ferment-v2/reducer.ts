@@ -26,7 +26,7 @@ export type FermentV2State = SessionFermentV2 | undefined
 
 function normalizeObjective(value: unknown): string {
 	const objective = typeof value === "string" ? value.trim() : ""
-	if (!objective) throw new Error("Ferment V2 objective cannot be empty.")
+	if (!objective) throw new Error("Ferment objective cannot be empty.")
 	return objective
 }
 
@@ -39,7 +39,7 @@ export function createFermentV2(
 	presentation?: FermentV2Presentation,
 	baseline?: FermentV2Baseline,
 ): SessionFermentV2 {
-	if (state) throw new Error("A Ferment V2 already exists.")
+	if (state) throw new Error("A Ferment already exists.")
 	return newFermentV2(objective, id, now, tokenBudget, presentation, baseline)
 }
 
@@ -178,7 +178,7 @@ export function setFermentV2Status(
 	blockedReason?: unknown,
 ): SessionFermentV2 {
 	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
-	if (!FERMENT_V2_STATUSES.includes(status)) throw new Error(`Invalid Ferment V2 status '${String(status)}'.`)
+	if (!FERMENT_V2_STATUSES.includes(status)) throw new Error(`Invalid Ferment status '${String(status)}'.`)
 	const next = {
 		...current,
 		status: status === "active" && isOverBudget(current.tokenBudget, current.tokensUsed) ? "budget_limited" : status,
@@ -198,10 +198,10 @@ export function addFermentV2Accounting(
 	timeUsedMs: number,
 	now: string,
 ): SessionFermentV2 {
-	if (!state) throw new Error("Ferment V2 accounting rejected: no current Ferment V2 exists.")
+	if (!state) throw new Error("Ferment accounting rejected: no current Ferment exists.")
 	if (state.id !== expectedId) {
 		throw new Error(
-			`Ferment V2 accounting rejected: expected Ferment V2 ${expectedId}, but the current Ferment V2 is ${state.id}.`,
+			`Ferment accounting rejected: expected Ferment ${expectedId}, but the current Ferment is ${state.id}.`,
 		)
 	}
 	const nextTokensUsed = state.tokensUsed + nonNegativeInteger(tokensUsed, "token usage")
@@ -222,10 +222,10 @@ export function recordFermentV2VerifierUsage(
 	usage: FermentV2EvaluatorUsage,
 	now: string,
 ): SessionFermentV2 {
-	if (!state) throw new Error("Ferment V2 verifier accounting rejected: no current Ferment V2 exists.")
+	if (!state) throw new Error("Ferment verifier accounting rejected: no current Ferment exists.")
 	if (state.id !== expectedId) {
 		throw new Error(
-			`Ferment V2 verifier accounting rejected: expected Ferment V2 ${expectedId}, but the current Ferment V2 is ${state.id}.`,
+			`Ferment verifier accounting rejected: expected Ferment ${expectedId}, but the current Ferment is ${state.id}.`,
 		)
 	}
 	const previous = state.verifierUsage
@@ -355,10 +355,10 @@ function requireCurrentFermentV2(
 	expectedId: string,
 	expectedRevision: number,
 ): SessionFermentV2 {
-	if (!state) throw new Error("Ferment V2 update rejected: no current Ferment V2 exists.")
+	if (!state) throw new Error("Ferment update rejected: no current Ferment exists.")
 	if (state.id !== expectedId || state.revision !== expectedRevision) {
 		throw new Error(
-			`Ferment V2 update rejected: expected Ferment V2 ${expectedId} revision ${expectedRevision}, but the current Ferment V2 is ${state.id} revision ${state.revision}. Read the current Ferment V2 and continue against the latest objective.`,
+			`Ferment update rejected: expected Ferment ${expectedId} revision ${expectedRevision}, but the current Ferment is ${state.id} revision ${state.revision}. Read the current Ferment and continue against the latest objective.`,
 		)
 	}
 	return state
@@ -372,9 +372,9 @@ function newFermentV2(
 	presentation?: FermentV2Presentation,
 	baseline?: FermentV2Baseline,
 ): SessionFermentV2 {
-	if (!id.trim()) throw new Error("Ferment V2 ID cannot be empty.")
+	if (!id.trim()) throw new Error("Ferment ID cannot be empty.")
 	if (tokenBudget !== undefined && !isPositiveInteger(tokenBudget)) {
-		throw new Error("Ferment V2 token budget must be a positive integer.")
+		throw new Error("Ferment token budget must be a positive integer.")
 	}
 	const normalizedObjective = normalizeObjective(objective)
 	return {
@@ -530,7 +530,7 @@ function parseFermentV2Presentation(value: unknown): FermentV2Presentation | und
 
 function normalizeBlockedReason(value: unknown): string {
 	const reason = typeof value === "string" ? value.trim() : ""
-	return (reason || "Ferment V2 marked blocked.").slice(0, MAX_BLOCKED_REASON_LENGTH)
+	return (reason || "Ferment marked blocked.").slice(0, MAX_BLOCKED_REASON_LENGTH)
 }
 
 function parseFermentV2Evaluation(value: unknown): FermentV2Evaluation | undefined {
@@ -565,6 +565,6 @@ function isNonNegativeInteger(value: unknown): value is number {
 }
 
 function nonNegativeInteger(value: number, label: string): number {
-	if (!isNonNegativeInteger(value)) throw new Error(`Ferment V2 ${label} must be a non-negative integer.`)
+	if (!isNonNegativeInteger(value)) throw new Error(`Ferment ${label} must be a non-negative integer.`)
 	return value
 }

@@ -19,7 +19,7 @@ export function checkWorktree(f: Ferment, cwd: string): WorktreeCheck {
 	if (!isInside) {
 		return {
 			severity: "block",
-			message: `You are in ${cwd}, but this ferment was created in ${wtPath}. Use /ferment switch to activate a different ferment, or /ferment switch --force to override.`,
+			message: `You are in ${cwd}, but this ferment was created in ${wtPath}. Use /ferment-legacy switch to activate a different ferment, or /ferment-legacy switch --force to override.`,
 		}
 	}
 	if (f.worktree.branch) {
@@ -32,7 +32,7 @@ export function checkWorktree(f: Ferment, cwd: string): WorktreeCheck {
 			if (currentBranch !== f.worktree.branch) {
 				return {
 					severity: "warn",
-					message: `⚠️  You're on branch '${currentBranch}', but this ferment was started on '${f.worktree.branch}'. Use /ferment switch --force to override.`,
+					message: `⚠️  You're on branch '${currentBranch}', but this ferment was started on '${f.worktree.branch}'. Use /ferment-legacy switch --force to override.`,
 				}
 			}
 		} catch {

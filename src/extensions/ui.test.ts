@@ -1,9 +1,12 @@
-import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { ExtensionCommandContext, ExtensionContext, SlashCommandInfo } from "@earendil-works/pi-coding-agent"
 import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { createCommandContext, createReplacedSessionContext } from "./__mocks__/context.js"
+import { resetResourceOverride, setResourceOverride } from "../resources/store.js"
+import { createCommandContext, createContext, createReplacedSessionContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { testTheme } from "./__mocks__/theme.js"
 import { isBareExitAlias } from "./exit-utils.js"
+import { FERMENT_V2_RESOURCE_ID } from "./ferment-v2/constants.js"
 import uiExtension, {
 	__setWorkingAnimatorForTest,
 	ctrlCCascadeDecision,
@@ -446,5 +449,66 @@ describe("withWorkingHidden — cooking animator pause/resume", () => {
 			"setWorkingVisible:true",
 			"resume",
 		])
+	})
+})
+
+describe("startup header Ferment tips", () => {
+	type HeaderFactory = (tui: unknown, theme: unknown) => { render(width: number): string[]; dispose?(): void }
+
+	afterEach(() => {
+		resetResourceOverride(FERMENT_V2_RESOURCE_ID)
+	})
+
+	function renderHeader(commands: SlashCommandInfo[]): string {
+		const harness = createExtensionApi()
+		harness.getCommands.mockReturnValue(commands)
+		uiExtension(harness.api)
+		let factory: HeaderFactory | undefined
+		const ctx = createContext({
+			ui: {
+				setHeader: vi.fn((f: HeaderFactory) => {
+					factory = f
+				}),
+				setFooter: vi.fn(),
+				setEditorComponent: vi.fn(),
+			} as never,
+		})
+		harness.getHandler("session_start")({ type: "session_start" } as never, ctx)
+		if (!factory) throw new Error("session_start did not set a header")
+		const header = factory({ requestRender: vi.fn() }, testTheme)
+		try {
+			return header.render(120).join("\n")
+		} finally {
+			header.dispose?.()
+		}
+	}
+
+	const fermentCommand: SlashCommandInfo = {
+		name: "ferment",
+		source: "extension",
+		sourceInfo: { path: "<test>", source: "test", scope: "temporary", origin: "top-level" },
+	}
+
+	it("advertises /ferment when V2 registered it and it is enabled", () => {
+		const text = renderHeader([fermentCommand])
+		expect(text).toContain("Kimchi's special:")
+		expect(text).toContain("/ferment pause")
+	})
+
+	it("does not advertise /ferment when V2 did not load", () => {
+		const text = renderHeader([])
+		// The folder and branch lines can contain "ferment", so check the tips only.
+		expect(text).not.toContain("Kimchi's special:")
+		expect(text).not.toContain("/ferment pause")
+		expect(text).toContain("/help")
+	})
+
+	it("does not advertise /ferment when extensions.ferment is turned off", () => {
+		setResourceOverride(FERMENT_V2_RESOURCE_ID, false)
+		const text = renderHeader([fermentCommand])
+		// The folder and branch lines can contain "ferment", so check the tips only.
+		expect(text).not.toContain("Kimchi's special:")
+		expect(text).not.toContain("/ferment pause")
+		expect(text).toContain("/help")
 	})
 })

@@ -16,7 +16,7 @@
 import { expect, test } from "@microsoft/tui-test"
 import type { Terminal } from "@microsoft/tui-test/lib/terminal/term.js"
 import { INPUT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, viewText, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
@@ -80,13 +80,13 @@ async function startFerment(
 	trace: import("./support/kimchi-fixture.js").TuiScenarioTrace,
 	nextStream: string,
 ) {
-	// Stage 1: enter ferment. Type then Enter separately — one-shot "/ferment\r" can
+	// Stage 1: enter ferment. Type then Enter separately — one-shot "/ferment-legacy\r" can
 	// race startup and skip the intent prompt.
-	terminal.write("/ferment")
-	await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS })
-	trace.step("typed /ferment")
+	terminal.write("/ferment-legacy")
+	await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS })
+	trace.step("typed /ferment-legacy")
 	terminal.submit("")
-	trace.step("ran /ferment")
+	trace.step("ran /ferment-legacy")
 
 	await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS })
 	trace.step("intent prompt visible")
@@ -121,6 +121,7 @@ test("ask_user renders a single-choice question and accepts selection", async ({
 		terminal,
 		{
 			artifactName: "ask-user-single-choice",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			responses: [
@@ -201,6 +202,7 @@ test("confirm_ferment_completion_criteria shows 'Type your own answer' label", a
 		terminal,
 		{
 			artifactName: "ask-user-confirm-criteria",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			responses: [
@@ -261,6 +263,7 @@ test("plan review keeps decision options visible and usable while scrolling and 
 		terminal,
 		{
 			artifactName: "plan-review-scroll-resize",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			responses: [
@@ -284,8 +287,8 @@ test("plan review keeps decision options visible and usable while scrolling and 
 			// Resize the live session before opening the dialog: test.use owns the
 			// initial 120x40 geometry, so changing it before runKimchiSession is overwritten.
 			terminal.resize(100, 14)
-			terminal.write("/ferment")
-			await waitForText(terminal, "/ferment", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
+			terminal.write("/ferment-legacy")
+			await waitForText(terminal, "/ferment-legacy", { timeoutMs: INPUT_TIMEOUT_MS, full: false })
 			terminal.submit("")
 
 			await waitForText(terminal, "would you like to ferment", { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
@@ -336,6 +339,7 @@ test("ask_user with a confirm question renders Yes/No options", async ({ termina
 		terminal,
 		{
 			artifactName: "ask-user-confirm-question",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			models: [NO_COMPACTION_MODEL],
 			responses: [

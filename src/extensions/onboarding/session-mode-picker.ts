@@ -25,7 +25,7 @@ export const SESSION_MODE_PICKER_OPTIONS: SessionModePickerOption[] = [
 		value: "ferment",
 		label: "Try a /ferment workflow",
 		description:
-			"The agent breaks the task into milestones, self-evaluates its output and delivers with minimal interruptions.",
+			"Give the agent one objective. It plans its own steps, works until a verifier confirms the result, and asks you only when it is blocked.",
 	},
 	{
 		value: "default",

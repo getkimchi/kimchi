@@ -11,6 +11,7 @@ import { resolveAuxiliaryFilesDir } from "./auxiliary-files/resolver.js"
 import {
 	applyDebugPromptsOptOut,
 	dropRetiredMultiModelArg,
+	fermentLegacyFlagError,
 	getCliModeArg,
 	getParsedCliArgs,
 	hasFermentOneshotArg,
@@ -106,9 +107,8 @@ import documentIntakeExtension from "./extensions/documents/intake.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import feedbackExtension from "./extensions/feedback/index.js"
-import fermentExtension from "./extensions/ferment/index.js"
-import { FERMENT_V2_RESOURCE_ID } from "./extensions/ferment-v2/constants.js"
-import fermentV2Extension from "./extensions/ferment-v2/index.js"
+import { selectFermentLegacyExtension } from "./extensions/ferment/legacy-stub.js"
+import { selectFermentExtension } from "./extensions/ferment-v2/stub.js"
 import helpExtension from "./extensions/help.js"
 import hiddenToolGuidanceExtension from "./extensions/hidden-tool-guidance.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
@@ -528,6 +528,17 @@ async function cliMain(): Promise<void> {
 			// steering text) can gate on it — the CLI arg is stripped from the
 			// args that reach main(), so pi.getFlag can't discover it.
 			setExperimentalFeaturesEnabled(experimentalFeatures)
+			// Gate V1-only entry points (--ferment-oneshot, --init-git) when the
+			// legacy Ferment resource is off. Org policy is already loaded above
+			// (initOrgPolicy), so a FORCE_ON lock lifts the gate. Use exitCode and
+			// return, not process.exit(), like the doc-cli route. A hard exit can
+			// cut off output before stdio has flushed, and this path prints an error.
+			const legacyFlagError = fermentLegacyFlagError(originalArgs)
+			if (legacyFlagError !== undefined) {
+				console.error(legacyFlagError)
+				process.exitCode = 2
+				return
+			}
 			installAutoModelAdapters()
 			// Publish the print-mode gate the
 			// same way so interactive-only (questionnaire) and ferment-mode-only
@@ -1030,9 +1041,10 @@ async function cliMain(): Promise<void> {
 				...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
 				ideAdapterExtension,
 				// Ferment must see raw input before prompt enrichment rewrites print-mode text.
-				...enabledExtensionFactories([
-					{ id: "extensions.ferment", factory: fermentExtension },
-				] satisfies ManagedExtensionFactory[]),
+				// Same gate as the flags. Later entry points (plan option, tips) also
+				// check that this factory ran, through isFermentLegacyLoadedAndEnabled().
+				// When V1 is not loaded, a stub keeps /ferment-legacy away from the model.
+				selectFermentLegacyExtension(),
 				questionnaireExtension,
 				// Backend-routed virtual models (`auto`, `auto-beta`, …) learn + display
 				// the concrete pick, re-sync capabilities, and (main session) install the
@@ -1075,9 +1087,8 @@ async function cliMain(): Promise<void> {
 					{ id: "extensions.agents", factory: agentsExtension },
 					{ id: "extensions.workflows", factory: piWorkflowsExtension },
 				] satisfies ManagedExtensionFactory[]),
-				...enabledExtensionFactories([
-					{ id: FERMENT_V2_RESOURCE_ID, factory: fermentV2Extension },
-				] satisfies ManagedExtensionFactory[]),
+				// When Ferment is off, a stub keeps /ferment away from the model.
+				selectFermentExtension(),
 				helpExtension,
 				themeSelectorExtension,
 				customizeStatusLineExtension,

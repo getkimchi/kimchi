@@ -84,17 +84,6 @@ for (const referenceState of ["changed", "missing"] as const) {
 		}
 		const fixture = await createKimchiFixture({
 			gitInit: true,
-			seedHome: (homeDir) => {
-				const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
-				const settings = JSON.parse(readFileSync(settingsPath, "utf8"))
-				writeFileSync(
-					settingsPath,
-					JSON.stringify({
-						...settings,
-						resources: { ...settings.resources, "extensions.ferment-v2": true },
-					}),
-				)
-			},
 			responses: [
 				{
 					stream: [plan],
@@ -136,7 +125,7 @@ for (const referenceState of ["changed", "missing"] as const) {
 			expect(approved?.objective).not.toContain("CHANGED_TOKEN")
 			expect(approved?.presentation).toMatchObject({ kind: "approved-plan", planPath })
 
-			terminal.submit("/ferment-v2 pause")
+			terminal.submit("/ferment pause")
 			await waitForText(terminal, "Plan execution paused.", { full: false })
 			if (referenceState === "changed") renameSync(planPath, `${planPath}.changed`)
 			else writeFileSync(planPath, "# Unapproved\nReturn REPLACED_TOKEN.\n")
@@ -159,7 +148,7 @@ for (const referenceState of ["changed", "missing"] as const) {
 			})
 
 			const beforeSummary = lastRun(sessionFile)
-			terminal.submit("/ferment-v2")
+			terminal.submit("/ferment")
 			await waitForText(terminal, "Plan:", { full: false })
 			const summary = viewText(terminal).split("Plan execution: Approved Snapshot").at(-1) ?? ""
 			expect(summary.replace(/\s+/g, "")).toContain(`Plan:${planPath}`)
@@ -173,7 +162,7 @@ for (const referenceState of ["changed", "missing"] as const) {
 				view: viewText(terminal),
 			})
 
-			terminal.submit("/ferment-v2 resume")
+			terminal.submit("/ferment resume")
 			await waitForText(terminal, "RESUMED_APPROVED_SNAPSHOT", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			await waitForText(terminal, "Plan execution blocked.", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 			const request = fixture.fake.requests
@@ -224,17 +213,6 @@ test("approved plan edits save separate files and reopen full requirements after
 	const readCurrentPlan = { id: "read-current-plan", function: { name: "read", arguments: "" } }
 	const fixture = await createKimchiFixture({
 		gitInit: true,
-		seedHome: (homeDir) => {
-			const settingsPath = join(homeDir, ".config", "kimchi", "harness", "settings.json")
-			const settings = JSON.parse(readFileSync(settingsPath, "utf8"))
-			writeFileSync(
-				settingsPath,
-				JSON.stringify({
-					...settings,
-					resources: { ...settings.resources, "extensions.ferment-v2": true },
-				}),
-			)
-		},
 		responses: [
 			{
 				stream: [plan],
@@ -280,7 +258,7 @@ test("approved plan edits save separate files and reopen full requirements after
 		await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
 		terminal.keyPress(Key.Enter)
 		await waitForText(terminal, "Plan execution blocked.", { timeoutMs: STREAM_TIMEOUT_MS })
-		terminal.submit("/ferment-v2 pause")
+		terminal.submit("/ferment pause")
 		await waitForText(terminal, "Plan execution paused.", { full: false })
 		const original = lastRun(sessionFile)
 		if (!original) throw new Error("Approved plan snapshot was not persisted")
@@ -288,7 +266,7 @@ test("approved plan edits save separate files and reopen full requirements after
 		expect(readFileSync(originalPath, "utf8").replace(/^<!-- kimchi-work-id: [0-9a-f-]{36} -->\n/, "")).toBe(plan)
 		const originalEntries = readEntries(sessionFile)
 
-		terminal.submit("/ferment-v2 edit")
+		terminal.submit("/ferment edit")
 		await waitForText(terminal, "Edit Plan execution", { full: false })
 		await waitForText(terminal, "<approved_plan>", { full: false })
 		expect(viewText(terminal).split("Edit Plan execution").at(-1)).toContain("APPROVED_TOKEN")
@@ -297,7 +275,7 @@ test("approved plan edits save separate files and reopen full requirements after
 		terminal.write(secondRequirement)
 		await waitForText(terminal, secondRequirement, { full: false })
 		terminal.keyPress(Key.Enter)
-		await waitForText(terminal, "Ferment V2 updated to revision 2.", { full: false })
+		await waitForText(terminal, "Ferment updated to revision 2.", { full: false })
 		const revision2 = lastRun(sessionFile)
 		if (!revision2) throw new Error("Edited revision 2 was not persisted")
 		const revision2Path = managedObjectivePath(revision2.objective)
@@ -309,7 +287,7 @@ test("approved plan edits save separate files and reopen full requirements after
 		expect(readFileSync(revision2Path, "utf8")).toBe(revision2Text)
 		expect(readFileSync(originalPath, "utf8").replace(/^<!-- kimchi-work-id: [0-9a-f-]{36} -->\n/, "")).toBe(plan)
 		expect(readEntries(sessionFile).slice(0, originalEntries.length)).toEqual(originalEntries)
-		terminal.submit("/ferment-v2")
+		terminal.submit("/ferment")
 		await waitForText(terminal, "Objective: Read the Kimchi objective file", { full: false })
 		const summary = viewText(terminal).split("Status: paused").at(-1) ?? ""
 		expect(summary.replace(/\s+/g, "")).toContain(revision2.objective.replace(/\s+/g, ""))
@@ -321,12 +299,12 @@ test("approved plan edits save separate files and reopen full requirements after
 		})
 
 		await session.restart()
-		await waitForText(terminal, "Ferment V2: paused", { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
+		await waitForText(terminal, "Ferment: paused", { timeoutMs: STARTUP_TIMEOUT_MS, full: false })
 		expect(lastRun(sessionFile)).toEqual(revision2)
-		terminal.submit("/ferment-v2 edit")
-		await waitForText(terminal, "Edit Ferment V2", { full: false })
+		terminal.submit("/ferment edit")
+		await waitForText(terminal, "Edit Ferment", { full: false })
 		await waitForText(terminal, secondRequirement, { full: false })
-		const editor = viewText(terminal).split("Edit Ferment V2").at(-1) ?? ""
+		const editor = viewText(terminal).split("Edit Ferment").at(-1) ?? ""
 		expect(editor).toContain("APPROVED_TOKEN")
 		expect(editor).not.toContain("Read the Kimchi objective file")
 		steps.push({
@@ -339,7 +317,7 @@ test("approved plan edits save separate files and reopen full requirements after
 		terminal.write(thirdRequirement)
 		await waitForText(terminal, thirdRequirement, { full: false })
 		terminal.keyPress(Key.Enter)
-		await waitForText(terminal, "Ferment V2 updated to revision 3.", { full: false })
+		await waitForText(terminal, "Ferment updated to revision 3.", { full: false })
 		const revision3 = lastRun(sessionFile)
 		if (!revision3) throw new Error("Edited revision 3 was not persisted")
 		const revision3Path = managedObjectivePath(revision3.objective)
@@ -351,11 +329,11 @@ test("approved plan edits save separate files and reopen full requirements after
 		expect(readFileSync(originalPath, "utf8").replace(/^<!-- kimchi-work-id: [0-9a-f-]{36} -->\n/, "")).toBe(plan)
 
 		readCurrentPlan.function.arguments = JSON.stringify({ path: revision3Path })
-		terminal.submit("/ferment-v2 resume")
+		terminal.submit("/ferment resume")
 		// The scripted "CURRENT_PLAN_READ" marker is interim commentary, which folds
 		// into the run summary once the resumed loop advances. Wait for the terminal
 		// blocked state instead — it implies the read result reached the model.
-		await waitForText(terminal, "Ferment V2 blocked.", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
+		await waitForText(terminal, "Ferment blocked.", { timeoutMs: STREAM_TIMEOUT_MS, full: false })
 		const workerRequests = fixture.fake.requests.filter((entry) => entry.url === "/openai/v1/chat/completions")
 		expect(
 			strings(workerRequests.at(-2)?.body).find((value) => value.includes("<kimchi_session_ferment_v2>")),

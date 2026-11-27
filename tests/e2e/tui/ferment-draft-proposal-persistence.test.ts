@@ -3,14 +3,14 @@ import { mkdirSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "@microsoft/tui-test"
 import { STARTUP_TIMEOUT_MS, STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
-import { runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
+import { FERMENT_LEGACY_ENV, runKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 
 test.use(TUI_TEST_CONFIG)
 
 /**
  * Workflow: a draft ferment with a persisted pending-proposal sidecar is
  * pre-seeded on disk before launch. After the session is ready, the user
- * opens /ferment list, selects the draft, and chooses Continue — which
+ * opens /ferment-legacy list, selects the draft, and chooses Continue — which
  * calls resumeFerment. Because the sidecar is present, resumeFerment
  * re-arms the plan review dialog ("Yes, this looks right") instead of
  * nudging the LLM to re-scope. The fake server's response script carries
@@ -39,6 +39,7 @@ test("draft with persisted proposal reopens plan review across session restart",
 		terminal,
 		{
 			artifactName: "ferment-draft-proposal-persistence",
+			env: FERMENT_LEGACY_ENV,
 			gitInit: true,
 			// No propose_ferment_scoping in the response script: the review is
 			// re-armed from disk, not from a model tool call. A benign text
@@ -91,8 +92,8 @@ test("draft with persisted proposal reopens plan review across session restart",
 		},
 		async (fixture, trace) => {
 			// Stage 1: open the ferment list picker.
-			terminal.submit("/ferment list")
-			trace.step("ran /ferment list")
+			terminal.submit("/ferment-legacy list")
+			trace.step("ran /ferment-legacy list")
 
 			// Stage 2: the seeded draft appears in the list; select it.
 			await waitForText(terminal, "Persistent Proposal", { timeoutMs: STARTUP_TIMEOUT_MS })
