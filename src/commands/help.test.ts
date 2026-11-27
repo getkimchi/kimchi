@@ -27,6 +27,15 @@ describe("printMergedHelp", () => {
 		expect(output).toContain("--provider <name>")
 	})
 
+	it("hides internal review flags from help", async () => {
+		await printMergedHelp()
+		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n")
+		expect(output).not.toContain("--review")
+		expect(output).not.toContain("review-writer")
+		expect(output).not.toContain("review-context-dir")
+		expect(output).not.toContain("review-output-dir")
+	})
+
 	it("includes boolean flags with short aliases", async () => {
 		await printMergedHelp()
 		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n")
@@ -46,6 +55,15 @@ describe("printMergedHelp", () => {
 		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n")
 		expect(output).toContain("kimchi codex")
 		expect(output).toContain("setup-tools first")
+	})
+
+	it("omits hidden catalog flags and keeps visible extension booleans", async () => {
+		await printMergedHelp()
+		const output = logSpy.mock.calls.map((call) => String(call[0])).join("\n")
+		expect(output).toContain("--ferment-oneshot")
+		expect(output).toContain("--init-git")
+		expect(output).not.toContain("--debug-prompts")
+		expect(output).not.toMatch(/--memory\b/)
 	})
 
 	it("shows no package-commands section when none are installed", async () => {

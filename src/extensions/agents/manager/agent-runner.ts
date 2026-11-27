@@ -44,6 +44,7 @@ import type { ModelRole } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
 import { pinnedLanguageSection } from "../../prompt-construction/system-prompt.js"
 import requestTimingExtension from "../../request-timing.js"
+import type { ReviewPermissionPolicy } from "../../review-runner/execution.js"
 import type { SkillTriggerHit } from "../../skills-manager/skill-triggers.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { COST_PER_PR_RESOURCE_ID } from "../../work-attribution/resource.js"
@@ -334,6 +335,12 @@ export interface RunOptions {
 	onSystemPrompt?: (prompt: string) => void
 	/** Inline extensions appended to the child session's loader. They load even when extensions are disabled. */
 	extensionFactories?: readonly InlineExtension[]
+	/** Review execution controls bound to this child's private checkout and parent approvals. */
+	reviewExecution?: ReviewPermissionPolicy
+	/** Extra inline tool names the host activates for an isolated child. */
+	additionalToolNames?: readonly string[]
+	/** Keep all project configuration sources in the invoking session, not the overridden cwd. */
+	isolateProjectConfiguration?: boolean
 	/** How inactivity is accounted. "model_only" keeps a running tool from counting as inactivity. */
 	inactivityMode?: InactivityMode
 }
@@ -492,6 +499,14 @@ async function withParentSessionEnv<T>(ctx: ExtensionContext, fn: () => Promise<
 	}
 }
 
+/** Build settings before the loader and bind both to the invoking configuration
+ * root. The SubagentResourceLoader gets a separate explicit package-resolution
+ * opt-out for isolated children, so merged getSettings() overrides cannot be
+ * bypassed through the package manager's raw global/project reads. */
+export function createSubagentSettingsManager(configurationCwd: string, agentDir: string): SettingsManager {
+	return SettingsManager.create(configurationCwd, agentDir)
+}
+
 export async function runAgent(
 	ctx: ExtensionContext,
 	type: SubagentType,
@@ -535,7 +550,8 @@ async function runAgentInner(
 	// A parent run with --no-skills hands its subagents no skills either.
 	const skills = options.isolated || getParsedCliArgs().options["no-skills"] ? false : config.skills
 
-	const pinnedLanguage = loadConfig({ cwd: effectiveCwd }).language
+	const configurationCwd = options.isolateProjectConfiguration ? ctx.cwd : effectiveCwd
+	const pinnedLanguage = loadConfig({ cwd: configurationCwd }).language
 	const extras: PromptExtras = {
 		contextFiles:
 			agentConfig?.includeContextFiles && !options.isolated ? loadProjectContextFiles(effectiveCwd) : undefined,
@@ -544,7 +560,9 @@ async function runAgentInner(
 		languageBlock: pinnedLanguage === undefined ? undefined : pinnedLanguageSection(pinnedLanguage),
 	}
 
-	let toolNames = getToolNamesForType(type)
+	let toolNames = [...getToolNamesForType(type), ...(options.additionalToolNames ?? [])].filter(
+		(name, index, all) => all.indexOf(name) === index,
+	)
 
 	// Skills preloaded because the task brief matched their declared
 	// triggers; surfaced in the run result for the tool-result note.
@@ -667,6 +685,7 @@ ${skillLines}`
 		persona: agentConfig?.name ?? type,
 		agentId: options.agentId,
 		description: options.description ?? prompt.slice(0, 200),
+		...(options.reviewExecution ? { reviewExecution: options.reviewExecution } : {}),
 	})
 	const extensionFactories = buildInlineExtensionFactories({
 		effectiveMaxDuration,
@@ -707,9 +726,12 @@ ${skillLines}`
 	// it re-ran every inline extension factory against the loader's shared
 	// event bus, leaving orphaned duplicate copies whose bus subscriptions
 	// duplicated channel events (e.g. 2× subagent.bash_clamped telemetry).
+	const settingsManager = createSubagentSettingsManager(configurationCwd, agentDir)
 	const loader = new SubagentResourceLoader({
 		cwd: effectiveCwd,
 		agentDir,
+		settingsManager,
+		skipPackageResolution: options.isolateProjectConfiguration === true,
 		noExtensions: effectiveExtensions === false,
 		noSkills,
 		noPromptTemplates: true,
@@ -729,7 +751,6 @@ ${skillLines}`
 
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
-	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
 	const modelRuntime = requireModelRuntime(ctx.modelRegistry)
 
 	const sessionOpts: CreateAgentSessionOptions = {

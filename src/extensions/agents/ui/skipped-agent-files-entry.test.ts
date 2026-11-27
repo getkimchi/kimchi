@@ -1,5 +1,5 @@
 import type { CustomEntry } from "@earendil-works/pi-coding-agent"
-import { type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui"
+import { Container, Spacer, type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import {
 	createSkippedAgentFilesRenderer,
@@ -204,6 +204,28 @@ describe("skipped agent files entry", () => {
 			renderer(entry(data), { expanded: false }, theme)?.handleMouse?.(mouse())
 
 			expect(isExpanded(renderer(entry(data), { expanded: false }, theme)?.render(120))).toBe(true)
+		})
+
+		it("targets the live child when clicking after an invalidated render", () => {
+			const renderer = createSkippedAgentFilesRenderer(() => "start-1")
+			const container = new Container()
+			const first = renderer(entry(data), { expanded: false }, theme)
+			if (!first) throw new Error("Expected the initial notice renderer to produce a child")
+			container.addChild(new Spacer(1))
+			container.addChild(first)
+			container.render(120)
+			const click = mouse({ x: 3, y: 1, screenX: 3, screenY: 1, width: 120, height: 40 })
+
+			expect(container.handleMouse(click)?.handled).toBe(true)
+			expect(isExpanded(first.render(120))).toBe(true)
+			container.clear()
+			container.addChild(new Spacer(1))
+			const rebuilt = renderer(entry(data), { expanded: false }, theme)
+			if (!rebuilt) throw new Error("Expected the invalidated notice renderer to produce a child")
+			container.addChild(rebuilt)
+
+			expect(container.handleMouse(click)?.handled).toBe(true)
+			expect(isExpanded(rebuilt.render(120))).toBe(false)
 		})
 
 		it("toggles only the clicked notice", () => {

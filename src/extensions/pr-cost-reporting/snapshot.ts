@@ -9,7 +9,7 @@ import {
 	time,
 } from "../work-attribution/costs.js"
 import { requestWorkLinks } from "../work-attribution/links.js"
-import { isWorkScope, sameWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
+import { isWorkAccount, isWorkScope, sameWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import { object, type WorkRecord } from "../work-attribution/summary.js"
 
 export interface ReportingRepository {
@@ -146,6 +146,18 @@ export function accountKey(account: WorkAccount): string {
 	// the endpoint checks in worker.ts), so legacy-keyed entries stay valid and
 	// deliver; fresh captures simply queue under the current base.
 	return JSON.stringify([account.apiUrl, account.organizationId, account.userId])
+}
+
+/** Decode the persisted identity without changing its raw API URL or matching semantics. */
+export function parseStoredWorkAccount(storedKey: string): WorkAccount | null {
+	try {
+		const value: unknown = JSON.parse(storedKey)
+		if (!Array.isArray(value) || value.length !== 3) return null
+		const account = { apiUrl: value[0], organizationId: value[1], userId: value[2] }
+		return isWorkAccount(account) ? account : null
+	} catch {
+		return null
+	}
 }
 
 /** Protobuf timestamps start at year 1. */

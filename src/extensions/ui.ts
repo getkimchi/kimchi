@@ -25,6 +25,7 @@ import { getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/
 import { isBareExitAlias } from "./exit-utils.js"
 import { formatDuration } from "./format.js"
 import { sessionHasImages } from "./model-guard.js"
+import { isReviewTerminalInputActive } from "./review-command/active-runs.js"
 import { isRawInputCaptureActive } from "./shared-input.js"
 import {
 	isSessionModeOnboardingStatusLineSuppressed,
@@ -538,6 +539,7 @@ export default function uiExtension(pi: ExtensionAPI) {
 				// stage consumes the event, leaving upstream's lastSigintTime stale.
 				if (matchesKey(data, Key.ctrl("c")) && !isKeyRelease(data)) {
 					if (isRawInputCaptureActive()) return undefined
+					if (isReviewTerminalInputActive((currentCtx ?? ctx).sessionManager.getSessionId())) return undefined
 					const now = Date.now()
 					const hasText = (currentEditor?.getText().trim().length ?? 0) > 0
 					const streaming = currentCtx ? !currentCtx.isIdle() : false

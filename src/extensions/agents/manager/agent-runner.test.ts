@@ -33,6 +33,9 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
 		DefaultResourceLoader: vi.fn().mockImplementation(function () {
 			return {
+				packageManager: {
+					resolve: vi.fn().mockResolvedValue({ extensions: [], skills: [], prompts: [], themes: [] }),
+				},
 				reload: vi.fn().mockResolvedValue(undefined),
 				getExtensions: vi.fn(() => ({ extensions: [], errors: [] })),
 			}
@@ -182,9 +185,10 @@ import {
 	type ExtensionFactory,
 	type ExtensionUIContext,
 	type InlineExtension,
+	SettingsManager,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
-import { readTelemetryConfig } from "../../../config.js"
+import { loadConfig, readTelemetryConfig } from "../../../config.js"
 import { resetOrgPolicyForTests } from "../../../org-policy.js"
 import { setOrgPolicyForTests } from "../../../org-policy.test-utils.js"
 import { holdAgentWorkerInactivity, registerWorkerParentSession, runAsAgentWorker } from "../../agent-worker-context.js"
@@ -231,6 +235,8 @@ const mockCreateAutoModelRoutingExtension = vi.mocked(createAutoModelRoutingExte
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
+const mockLoadConfig = vi.mocked(loadConfig)
+const mockSettingsManagerCreate = vi.mocked(SettingsManager.create)
 const mockCreateWorkAttributionExtension = vi.mocked(createWorkAttributionExtension)
 const mockCreateWorkerReportExtension = vi.mocked(createWorkerReportExtension)
 const mockCreateWorkerPermissionsExtension = vi.mocked(createWorkerPermissionsExtension)
@@ -482,6 +488,35 @@ describe("runAgent — telemetry extension", () => {
 		)
 	})
 
+	it("keeps a review checkout's configuration out of the child loader", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+		const reviewCwd = "/fake/reviewer-worktree-with-project-config"
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "review", {
+			pi: pi as unknown as RunOptions["pi"],
+			cwd: reviewCwd,
+			isolated: true,
+			isolateProjectConfiguration: true,
+			additionalToolNames: ["submit_summary"],
+		})
+
+		expect(mockLoadConfig).toHaveBeenCalledWith({ cwd: ctx.cwd })
+		expect(mockLoadConfig).not.toHaveBeenCalledWith({ cwd: reviewCwd })
+		expect(mockSettingsManagerCreate).toHaveBeenCalledWith(ctx.cwd, attributionDir)
+		expect(mockLoadProjectContextFiles).not.toHaveBeenCalled()
+		const loaderOptions = mockDefaultResourceLoader.mock.calls[0]?.[0]
+		expect(loaderOptions).toMatchObject({ cwd: reviewCwd, noExtensions: true, noSkills: true, noContextFiles: true })
+		expect(mockCreateAgentSession).toHaveBeenCalledWith(
+			expect.objectContaining({ cwd: reviewCwd, tools: ["submit_summary"] }),
+		)
+	})
+
 	it("fails before loader initialization when the worker gate cannot be constructed", async () => {
 		mockCreateWorkerPermissionsExtension.mockImplementationOnce(() => {
 			throw new Error("gate initialization failed")
@@ -500,6 +535,9 @@ describe("runAgent — telemetry extension", () => {
 		// biome-ignore lint/complexity/useArrowFunction: vitest 4 invokes this mock with new — arrows are not constructable
 		mockDefaultResourceLoader.mockImplementationOnce(function () {
 			return {
+				packageManager: {
+					resolve: vi.fn().mockResolvedValue({ extensions: [], skills: [], prompts: [], themes: [] }),
+				},
 				reload: vi.fn().mockResolvedValue(undefined),
 				getExtensions: vi.fn(() => ({
 					extensions: [],
@@ -3001,6 +3039,9 @@ describe("runAgent — parent session ID env ordering", () => {
 				value: process.env[PARENT_SESSION_ID_ENV_KEY],
 			})
 			return {
+				packageManager: {
+					resolve: vi.fn().mockResolvedValue({ extensions: [], skills: [], prompts: [], themes: [] }),
+				},
 				reload: vi.fn().mockResolvedValue(undefined),
 				getExtensions: vi.fn(() => ({ extensions: [], errors: [] })),
 			} as unknown as DefaultResourceLoader

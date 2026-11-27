@@ -71,6 +71,9 @@ export function _resetSharedAccumulators(): void {
 // SessionContext — process-level telemetry state
 // ---------------------------------------------------------------------------
 
+/** Interactive TUI renderer a session started in; stamped as `tui_startup_mode`. */
+export type TuiStartupMode = "fullscreen" | "regular"
+
 export class TelemetryContext {
 	config: TelemetryConfig
 	telemetryId: string
@@ -156,6 +159,12 @@ export class TelemetryContext {
 	/** Count of steer.fired events emitted in this session, stamped on each
 	 *  fire as `steer_ordinal` (1-based) for per-kind sequencing analysis. */
 	steerFiredCount = 0
+	/** TUI mode captured at session_start from the live interactive renderer
+	 *  (`fullscreen` / `regular`), undefined outside the interactive TUI or when
+	 *  the renderer cannot be resolved. Snapshot semantics: later fullscreen /
+	 *  regular switches must not change it; stamped as `tui_startup_mode` on the
+	 *  session.start record. See handlers/session.ts. */
+	tuiStartupMode: TuiStartupMode | undefined
 	/** Most recent steer.fired in this session, recorded by the steer handler.
 	 *  `agent.interrupted` reads this to carry which steer (if any) preceded a
 	 *  user abort and how many turns ago (Chunk 4 of the P0 plan). */
@@ -207,6 +216,7 @@ export class TelemetryContext {
 		this.lastRoutedModel = undefined
 		this.steerFiredCount = 0
 		this.lastSteer = undefined
+		this.tuiStartupMode = undefined
 		this.toolOutcomeCallIds.clear()
 		// Session-scoped tracking state and enrichment context: a session_start
 		// on this instance means a fresh session — ferment maps, guard counters,

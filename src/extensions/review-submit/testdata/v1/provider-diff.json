@@ -1,0 +1,52 @@
+{
+  "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+  "merge_base_sha": "fedcba9876543210fedcba9876543210fedcba98",
+  "files_cap_reached": true,
+  "files": [
+    {
+      "filename": "main.go",
+      "status": "modified",
+      "new_side_hunks": [
+        {"start_line": 10, "end_line": 12},
+        {"start_line": 20, "end_line": 22},
+        {"start_line": 30, "end_line": 32},
+        {"start_line": 40, "end_line": 42},
+        {"start_line": 50, "end_line": 52},
+        {"start_line": 60, "end_line": 62},
+        {"start_line": 70, "end_line": 72},
+        {"start_line": 80, "end_line": 82},
+        {"start_line": 90, "end_line": 92},
+        {"start_line": 100, "end_line": 102},
+        {"start_line": 110, "end_line": 112},
+        {"start_line": 120, "end_line": 122}
+      ]
+    },
+    {
+      "filename": "binary.png",
+      "status": "modified",
+      "no_patch_reason": "no_patch"
+    },
+    {
+      "filename": "large.go",
+      "status": "modified",
+      "no_patch_reason": "no_patch"
+    },
+    {
+      "filename": "omitted.go",
+      "status": "modified",
+      "no_patch_reason": "outside_provider_diff"
+    },
+    {
+      "filename": "deleted.go",
+      "status": "removed",
+      "new_side_hunks": []
+    },
+    {
+      "filename": "vendor/generated.go",
+      "status": "modified",
+      "new_side_hunks": [
+        {"start_line": 1, "end_line": 3}
+      ]
+    }
+  ]
+}

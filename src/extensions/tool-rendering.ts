@@ -1410,7 +1410,8 @@ export function explainRedactedEditFailure<T>(result: T, originalParams: unknown
 	const guidance =
 		"NOTE: the searched text contains a redacted span ([REDACTED-<TYPE>] marker or [<TYPE>_N] token). " +
 		"These are placeholders; the file holds the original value, which is never exposed to the model. " +
-		"To edit this file, exclude the entity type via redaction.excludedEntities in settings.json or disable PII redaction for the session."
+		'To edit this file, turn the entity type off via redaction.entities (e.g. {"EMAIL_ADDRESS": "off"}) in settings.json or disable PII redaction for the session. ' +
+		"If settings.json still has the deprecated redaction.excludedEntities list, add the entity type to that list instead: the two cannot be combined."
 	r.content = [...(r.content ?? []), { type: "text", text: guidance }]
 	return result
 }

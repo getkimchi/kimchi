@@ -43,6 +43,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/auto-update.md](docs/auto-update.md) — background auto-update: ticks, gates, updater lock, update result, manual path
 - [docs/bash-commands.md](docs/bash-commands.md) — inspecting running background bash commands
 - [docs/bash-tool-guard.md](docs/bash-tool-guard.md) — bash command safety guard and its taxonomy
+- [docs/ci.md](docs/ci.md) — CI pipeline: what blocks a merge, adding a test suite, TUI shard timings
 - [docs/event-bus.md](docs/event-bus.md) — global UI event bus channels
 - [docs/pii-redaction-policy.md](docs/pii-redaction-policy.md) — redaction categories/entities, local and org-managed policy, custom regex entities
 - [docs/extensions/dap.md](docs/extensions/dap.md) — DAP debugger integration
@@ -56,6 +57,7 @@ Behavior and contracts documented per topic — read the linked doc when working
 - [docs/pr-cost-reporting.md](docs/pr-cost-reporting.md) — PR cost reporting and its accuracy checks ([docs/work-attribution-accuracy.md](docs/work-attribution-accuracy.md))
 - [docs/project-trust.md](docs/project-trust.md) — project-trust permission master switch and the `.kimchi/` folder contract
 - [docs/response-language.md](docs/response-language.md) — reply-language rule and the `language` pin (`kimchi config set language`, `/language`)
+- [docs/review-targets.md](docs/review-targets.md) — local target parsing/resolution, working-tree snapshots, and commentable-line anchors
 - [docs/session-build-entry.md](docs/session-build-entry.md) — `kimchi_build` session entry: which harness build (version/commit/dirty) produced a session
 - [docs/skills-autoload.md](docs/skills-autoload.md) — deterministic auto-load of advertised skills on declared `triggers.prompt` (extensions/keywords)
 - [docs/research/](docs/research/) — research notes (e.g. bash visibility)

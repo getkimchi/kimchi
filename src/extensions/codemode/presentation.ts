@@ -54,22 +54,29 @@ function nestedCalls(details: unknown): CodemodeNestedCall[] {
 	return Array.isArray(calls) ? calls.filter((call) => typeof call?.name === "string") : []
 }
 
+/** Pi stores nested args as a JSON preview (`previewArgs` in its codemode
+ *  `execute`) and ends it with this when it cuts it at 200 characters.
+ *  Whole JSON ends with a bracket, never with dots. */
+const CUT_ARGS_SUFFIX = "..."
+
 /** What makes two successful calls the same action: the file for reads,
  *  the arguments for searches and listings. Edits, commands and model calls
  *  each count, even when repeated. */
 function distinctKey(category: ActionCategory, call: CodemodeNestedCall): string | undefined {
 	switch (category) {
 		case "file":
-			return readPath(call.args) ?? call.args
 		case "pattern":
 		case "directory":
-			return call.args
+			// A missing or cut preview cannot say whether two calls are the same, so
+			// such a call counts on its own, like an edit or a command. Two equal
+			// calls with long arguments therefore count twice.
+			if (typeof call.args !== "string" || call.args.endsWith(CUT_ARGS_SUFFIX)) return call.id
+			return category === "file" ? (readPath(call.args) ?? call.args) : call.args
 		default:
 			return undefined
 	}
 }
 
-/** Pi stores nested args as a JSON preview that may be cut at 200 characters. */
 function readPath(args: string): string | undefined {
 	try {
 		const parsed: unknown = JSON.parse(args)
@@ -119,7 +126,11 @@ export function truncateForDisplay(text: string, max: number): string {
 	return `${codePoints.slice(0, max - 1).join("")}…`
 }
 
-const SCRIPT_ERROR_MARKER = "Script error:"
+/** Pi starts its error block with a line that holds only this marker (the
+ *  `Script error:` item in its codemode `execute`). When Pi truncates long
+ *  output, it glues the kept tail to its `…N tokens truncated…` notice with no
+ *  newline, so the marker can also follow that notice directly. */
+const SCRIPT_ERROR_LINE = /(?:^|…\d+ tokens truncated…)Script error:$/gm
 /** Pi's result header lines, which say nothing about why the script failed. */
 const RESULT_HEADER = /^(Script failed|Script completed|Wall time .*|Output:)$/
 
@@ -128,14 +139,16 @@ const RESULT_HEADER = /^(Script failed|Script completed|Wall time .*|Output:)$/
  *  (invalid `@options`, a syntax error). */
 export function codemodeFailureReason(result: AgentToolResult<unknown>): string | undefined {
 	const text = result.content.map((block) => (block.type === "text" ? block.text : "")).join("\n")
-	const errorAt = text.indexOf(SCRIPT_ERROR_MARKER)
-	const lines = (errorAt >= 0 ? text.slice(errorAt + SCRIPT_ERROR_MARKER.length) : text)
+	// Pi's block comes after the script's own output, so the last marker line
+	// is Pi's, whatever the script printed.
+	const marker = [...text.matchAll(SCRIPT_ERROR_LINE)].at(-1)
+	const lines = (marker ? text.slice(marker.index + marker[0].length) : text)
 		.split("\n")
 		.map((line) => line.trim())
 		.filter(Boolean)
 	const reason = lines[0]
 	// Pi's header with no error block: the reason is not in the result.
-	if (!reason || (errorAt < 0 && RESULT_HEADER.test(reason))) return undefined
+	if (!reason || (!marker && RESULT_HEADER.test(reason))) return undefined
 	return truncateForDisplay(reason, DISPLAY_LINE_MAX_CHARS)
 }
 

@@ -43,17 +43,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       - uses: ./.github/actions/setup
         with:
           bun: "true"
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tools/proxy-helper/go.mod
-          cache-dependency-path: tools/proxy-helper/go.sum
+          go: "true"
 
       - name: Build proxy-helper
         run: make copy-for-dev # Builds the binary and copies it to bin/ where copy-resources expects it
@@ -72,8 +66,11 @@ jobs:
           sudo sysctl -w kernel.perf_event_paranoid=0
           cat /proc/sys/kernel/perf_event_paranoid
 
+      # CI's lint job already typechecks this tree.
       - name: Build binary
         run: pnpm run build:binary
+        env:
+          KIMCHI_SKIP_TYPECHECK: "1"
 
       - name: Calibration context
         run: |

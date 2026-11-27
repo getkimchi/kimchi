@@ -30,10 +30,10 @@ in unlocked deployments and as the settings-error degrade fallback
   strictly more dangerous than one holding identities, and coherence gains
   for secrets are nil.
 - **Detection unchanged.** Token mode changes only rendering. What is
-  found, what is excluded (`redaction.excludedEntities`), and what the
-  precision defaults drop are byte-identical to marker mode. Telemetry
-  tallies both shapes under the same entity key, so marker and token
-  modes report indistinguishable counts.
+  found, what is excluded (the `redaction` block in settings.json), and
+  what the precision defaults drop are byte-identical to marker mode.
+  Telemetry tallies both shapes under the same entity key, so marker and
+  token modes report indistinguishable counts.
 
 ## Agent editing and redacted spans
 
@@ -44,10 +44,12 @@ model never sees the PII while moving it.
 
 Marker mode stays uneditable by design: exact-match editing needs bytes the
 model never receives, and there is no vault to dereference. A "Could not
-find" failure there gains a note naming the cause and the escape hatch,
-`redaction.excludedEntities` in settings.json (or disabling redaction for
-the session). The same note fires in token mode when the span is a literal
-unknown token or the vault is gone.
+find" failure there gains a note naming the cause and the escape hatch:
+turning the entity type off via `redaction.entities` in settings.json, or
+disabling redaction for the session. A settings file that still has the
+legacy `redaction.excludedEntities` list takes the type in that list
+instead, since the two cannot be combined. The same note fires in token
+mode when the span is a literal unknown token or the vault is gone.
 
 ## The vault
 
@@ -138,6 +140,46 @@ stream holds a desanitizer reference until the block ends. That is
 presentation-only, to the same client that already saw the session's
 originals, and it extends past vault deletion by at most one turn's
 remainder.
+
+## Resume trust (attestation)
+
+Resuming a session used to re-scan the entire restored history through the
+detection engine on the first request — the redaction cache is keyed by
+message object reference and starts cold. Since the write path already
+scrubs every persisted message, that rescan re-proved a property the
+pipeline guarantees. Attestation removes that cost, deliberately minimal:
+
+- A `message_end` scan that completes with **zero engine failures** marks
+  the message clean. At each turn end one `pii-redaction/attest` custom
+  entry persists the ids of the turn's clean-scrubbed messages (custom
+  entries never enter LLM context).
+- On startup, resume, or fork, attested ids seed the request-walk cache.
+  Seeded history is never rescanned — content-independent, so token-heavy
+  sessions benefit as much as clean ones.
+- Everything else falls back to the full rescan: legacy files with no
+  attest entries, fail-open scans (engine error or settle timeout returns
+  the original text), messages written while redaction was off, broken
+  object identity. There is **no healing**: the request hook records no
+  evidence, so anything the write path did not scrub at write time is
+  rescanned on every resume — today's behavior.
+- **Accepted risk — attest and forget:** attestations carry no detection
+  fingerprint. A policy, pattern, or build change does NOT re-redact
+  attested lines. The live pipeline applied the then-current policy when
+  the line ran, so anything a future policy would newly redact was already
+  sent to the provider at that time; re-scanning on resume cannot undo
+  the first exposure.
+- Trust boundary: the local session file, the same boundary as the vault
+  seed above. A forged attest entry in a hand-edited or foreign file can
+  only skip scrubbing of that file's own content.
+
+### Perf-gate fixtures
+
+The resume instruction-count gate needs its fixture to carry attestation
+written by the same kind of build that the gate runs. Produce it through
+the real write path: run a session with redaction enabled to the target
+size, quit, and snapshot the file — the turn-end attest entries are part
+of it. Until that happens, an unattested fixture measures the fallback
+path, by design.
 
 ## Failure modes (all degrade toward the token, never toward PII)
 

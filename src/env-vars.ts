@@ -143,6 +143,14 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_HOOK_EVENT",
 	"KIMCHI_TOOL_NAME",
 	"KIMCHI_TOOL_INPUT_COMMAND",
+	// private paths for commands in isolated reviewer worktrees
+	"KIMCHI_REVIEW_WORKTREE",
+	"KIMCHI_REVIEW_SCRATCH_DIR",
+	"KIMCHI_REVIEW_PROCESS_TREE",
+	// opt-in timing windows for real-process review smoke tests
+	"KIMCHI_REVIEW_TEST_TIMING",
+	"KIMCHI_REVIEW_TEST_SUBMIT_GRACE_MS",
+	"KIMCHI_REVIEW_TEST_CANCELLATION_GRACE_MS",
 	// diagnostics: submit-path timing marks (src/extensions/submit-timing.ts)
 	"KIMCHI_SUBMIT_TIMING",
 	// dev/staging endpoint overrides (same category as the OAuth overrides below)

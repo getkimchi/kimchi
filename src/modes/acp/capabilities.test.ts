@@ -2,6 +2,7 @@ import { expect, it } from "vitest"
 import {
 	getClientOptedIntoArtifacts,
 	getClientOptedIntoMcpOAuthTurn,
+	getClientOptedIntoModelEffort,
 	getClientOptedIntoPRMonitoring,
 } from "./capabilities.js"
 
@@ -35,4 +36,15 @@ it.each([
 	{ flags: { backgroundRuns: true, prMonitoring: true }, allowed: true },
 ])("requires both PR monitoring and background-run support: $flags", ({ flags, allowed }) => {
 	expect(getClientOptedIntoPRMonitoring(flags ? { _meta: { "kimchi.dev": flags } } : undefined)).toBe(allowed)
+})
+
+it.each([
+	{ flags: undefined, allowed: false },
+	{ flags: {}, allowed: false },
+	{ flags: { modelEffort: true }, allowed: false },
+	{ flags: { modelEffort: 0 }, allowed: false },
+	{ flags: { modelEffort: 2 }, allowed: false },
+	{ flags: { modelEffort: 1 }, allowed: true },
+])("requires modelEffort capability version 1: $flags", ({ flags, allowed }) => {
+	expect(getClientOptedIntoModelEffort(flags ? { _meta: { "kimchi.dev": flags } } : undefined)).toBe(allowed)
 })

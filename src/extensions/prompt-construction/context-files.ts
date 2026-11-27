@@ -80,6 +80,9 @@ function loadContextFileFromDir(dir: string, alreadyLoaded: readonly ContextFile
  */
 export function loadProjectContextFiles(cwd: string, alreadyLoaded: readonly ContextFile[] = []): ContextFile[] {
 	if (getParsedCliArgs().options["no-context-files"]) return []
+	// Review instructions arrive only through review-context/. Never inherit
+	// project instructions from the neutral run directory or any ancestor when --review is enabled.
+	if (getParsedCliArgs().options.review === true) return []
 	const files: ContextFile[] = []
 
 	let dir = resolve(cwd)
@@ -166,6 +169,7 @@ function readGlobalContextFiles(options: GlobalContextFileOptions): { files: Con
 /** Global files, then project files that do not repeat them. */
 export function loadContextFiles(cwd: string, options: GlobalContextFileOptions): ContextFile[] {
 	if (getParsedCliArgs().options["no-context-files"]) return []
+	if (getParsedCliArgs().options.review === true) return []
 	const { files, sources } = readGlobalContextFiles(options)
 	return [...files, ...loadProjectContextFiles(cwd, sources)]
 }

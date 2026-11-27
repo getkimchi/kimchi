@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
 import { truncateLinesToWidth } from "../truncate-lines.js"
+import { isExperimentalFeaturesEnabled } from "./experimental.js"
 import { getRatingHelpEntries } from "./feedback/rating-keys.js"
 import { SLASH_COMMANDS } from "./slash-commands.js"
 
@@ -22,11 +23,13 @@ function buildHelpRows(): HelpRow[] {
 
 		{ kind: "spacer" },
 		{ kind: "heading", text: "Slash Commands" },
-		...Object.entries(SLASH_COMMANDS).map(([key, { hint }]) => ({
-			kind: "entry" as const,
-			key: `/${key}`,
-			desc: hint,
-		})),
+		...Object.entries(SLASH_COMMANDS)
+			.filter(([key]) => key !== "review" || isExperimentalFeaturesEnabled())
+			.map(([key, { hint }]) => ({
+				kind: "entry" as const,
+				key: `/${key}`,
+				desc: hint,
+			})),
 	]
 }
 
