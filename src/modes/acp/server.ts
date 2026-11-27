@@ -428,6 +428,8 @@ export interface RunAcpOptions {
 	 * tests can stub it; production uses the upstream-adapter-backed probe.
 	 */
 	mcpProbe?: McpProbe
+	/** Process-scoped extra roots supplied by --additional-skill-paths. */
+	additionalSkillPaths?: string[]
 }
 
 /**
@@ -618,7 +620,11 @@ export class KimchiAcpAgent {
 		this.sso = ssoManager ?? new SsoFlowManager(SSO_FLOW_MANAGER_DEPS)
 		this.skillWatcher = createSkillWatcher({
 			agentDir: options.agentDir,
-			getExtraSkillPaths: () => [...new Set(loadKimchiConfig().skillPaths ?? [])],
+			getSkillPathSources: () => ({
+				// Kimchi-config skillPaths, re-read per change event so mid-process config edits are picked up.
+				configSkillPaths: loadKimchiConfig().skillPaths ?? [],
+				cliAdditionalSkillPaths: options.additionalSkillPaths ?? [],
+			}),
 			requestRefresh: () => this.commandsRefresher.request(),
 		})
 	}
@@ -4624,6 +4630,7 @@ async function createSessionSettings(
 	// snapshots that skill refreshes recompute without extension reloads, and
 	// computes the append prompt per call so a committed skills snapshot is
 	// reflected on the next prompt rebuild (see session-resource-loader.ts).
+	const additionalSkillPaths: string[] = [...(options.additionalSkillPaths ?? [])]
 	const mainLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir: options.agentDir,
@@ -4635,12 +4642,14 @@ async function createSessionSettings(
 				? [subagentSessionCreatedExtension(onSubagentSessionCreated, onSubagentSessionFailed)]
 				: []),
 		],
+		additionalSkillPaths,
 	})
 	const resourceLoader = new AcpSessionResourceLoader({
 		mainLoader,
 		cwd,
 		agentDir: options.agentDir,
 		settingsManager,
+		additionalSkillPaths,
 		baseAppend: () => resolveAcpAppendSystemPrompt(params, options) ?? [],
 	})
 	await resourceLoader.reload()

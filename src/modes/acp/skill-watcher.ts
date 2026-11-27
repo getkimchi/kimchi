@@ -1,3 +1,4 @@
+import { resolve } from "node:path"
 import { type FSWatcher, watch } from "chokidar"
 
 import { isRunningUnderBun } from "../../env.js"
@@ -35,6 +36,15 @@ function sessionSkillRoots(cwd: string, opts: { agentDir: string; extraPaths: re
 }
 
 /**
+ * Process-scoped --additional-skill-paths roots for one session: explicit
+ * user paths, so they resolve against the session cwd and skip the config
+ * trust/existence filters the central resolver applies to config paths.
+ */
+function additionalSkillRoots(cwd: string, paths: readonly string[]): string[] {
+	return paths.filter((p) => p !== "").map((p) => resolve(cwd, p))
+}
+
+/**
  * Watches skill roots on disk and requests a palette re-advertisement when
  * they change (skill upload/edit/delete). chokidar tolerates roots that do
  * not exist yet and reports cross-platform. Events are coalesced per burst
@@ -48,17 +58,26 @@ function sessionSkillRoots(cwd: string, opts: { agentDir: string; extraPaths: re
  * a connection's lifetime tend to share roots, and unwatching+rewatching a
  * dir costs more than leaving it watched briefly.
  */
+/** Skill roots the watcher should watch that come from outside the standard resolver scopes. */
+export interface SkillWatchPathSources {
+	/** Kimchi-config `skillPaths`, read per change event so config edits are picked up. */
+	configSkillPaths: readonly string[]
+	/** Process-scoped `--additional-skill-paths` roots, resolved per session cwd. */
+	cliAdditionalSkillPaths: readonly string[]
+}
+
 export function createSkillWatcher(opts: {
 	agentDir: string
-	/** Kimchi-config skillPaths, read per change event so config edits are picked up. */
-	getExtraSkillPaths?: () => string[]
+	/** Non-resolver skill roots, read per change event. */
+	getSkillPathSources?: () => SkillWatchPathSources
 	requestRefresh: () => void
 }): SkillWatcher {
 	let watcher: FSWatcher | undefined
 	let closed = false
 	const watched = new Set<string>()
 	const sessions = new Map<string, number>()
-	const extraPaths = (): readonly string[] => opts.getExtraSkillPaths?.() ?? []
+	const pathSources = (): SkillWatchPathSources =>
+		opts.getSkillPathSources?.() ?? { configSkillPaths: [], cliAdditionalSkillPaths: [] }
 
 	// Whole burst → one pass: sync root resolution (existsSync chains,
 	// ancestor walks, config read) once per quiet window instead of per event.
@@ -75,8 +94,11 @@ export function createSkillWatcher(opts: {
 	}
 
 	const refreshRoots = (): void => {
-		const extras = extraPaths()
-		for (const cwd of sessions.keys()) add(sessionSkillRoots(cwd, { agentDir: opts.agentDir, extraPaths: extras }))
+		const { configSkillPaths, cliAdditionalSkillPaths } = pathSources()
+		for (const cwd of sessions.keys()) {
+			add(sessionSkillRoots(cwd, { agentDir: opts.agentDir, extraPaths: configSkillPaths }))
+			add(additionalSkillRoots(cwd, cliAdditionalSkillPaths))
+		}
 	}
 
 	const ensure = (): FSWatcher => {
@@ -110,7 +132,9 @@ export function createSkillWatcher(opts: {
 			const refs = sessions.get(session.cwd) ?? 0
 			sessions.set(session.cwd, refs + 1)
 			if (refs === 0) {
-				add(sessionSkillRoots(session.cwd, { agentDir: opts.agentDir, extraPaths: extraPaths() }))
+				const { configSkillPaths, cliAdditionalSkillPaths } = pathSources()
+				add(sessionSkillRoots(session.cwd, { agentDir: opts.agentDir, extraPaths: configSkillPaths }))
+				add(additionalSkillRoots(session.cwd, cliAdditionalSkillPaths))
 			}
 		},
 		/**
