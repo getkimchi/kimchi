@@ -11,6 +11,10 @@ type SessionMessage = Extract<
 >["message"]
 type CustomMessage = Extract<SessionMessage, { role: "custom" }>
 
+export function shouldDeferCustomMessage(message: Pick<CustomMessage, "customType" | "display">): boolean {
+	return message.display === false || message.customType === "prompt-summary"
+}
+
 interface BufferedMessage {
 	originLeafId: string | null
 	message: CustomMessage
@@ -26,7 +30,7 @@ interface PatchableSession {
 	_startRun?: (...args: unknown[]) => Promise<void>
 	_appendCustomMessage?: (message: CustomMessage) => void
 	dispose?: () => void
-	_kimchiOneShotHiddenMessageGuard?: boolean
+	_kimchiOneShotCustomMessageGuard?: boolean
 }
 
 export interface OneShotSessionClass {
@@ -88,27 +92,28 @@ function installAgentReplay(session: PatchableSession, originalAppend: (message:
 }
 
 /**
- * Keep hidden context/state messages from displacing a one-shot run's final
- * assistant message without losing context needed by a retry or continuation.
+ * Keep deferred custom messages from displacing a one-shot run's final assistant
+ * message without losing context needed by a retry or continuation.
  *
- * Only sessions explicitly bound in print or JSON mode hold hidden appends after
- * a non-tool assistant message_end. Replay runs before a new run, an agent
- * retry, or preparation for a subsequent turn inside the agent loop. Final runtime
- * disposal persists remaining messages from the active branch after the answer
- * is selected and the JSON subscriber detaches. Direct session disposal during
- * replacement discards the buffer.
- * Interactive/RPC and visible messages are untouched.
+ * Only sessions explicitly bound in print or JSON mode hold hidden custom
+ * messages and visible prompt summaries after a non-tool assistant message_end.
+ * Deferred messages persist to the session but not to text or JSON stdout.
+ * Replay runs before a new run, an agent retry, or preparation for a subsequent
+ * turn inside the agent loop. Final runtime disposal persists remaining messages
+ * from the active branch after the answer is selected and the JSON subscriber
+ * detaches. Direct session disposal during replacement discards the buffer.
+ * Other visible custom messages and Interactive/RPC messages are untouched.
  *
  * REMOVE when AgentSession natively supports this buffering for one-shot runs.
  * This is an adapter, not a change to bundled pi sources.
  */
-export function installOneShotHiddenMessageGuard(
+export function installOneShotCustomMessageGuard(
 	sessionClass: OneShotSessionClass = AgentSession as unknown as OneShotSessionClass,
 	runtimeClass: OneShotSessionRuntimeClass = AgentSessionRuntime as unknown as OneShotSessionRuntimeClass,
 ): void {
 	const proto = sessionClass.prototype
 	const runtimeProto = runtimeClass.prototype
-	if (proto._kimchiOneShotHiddenMessageGuard) return
+	if (proto._kimchiOneShotCustomMessageGuard) return
 	const originalBindExtensions = proto.bindExtensions
 	const originalEmit = proto._emit
 	const originalStartRun = proto._startRun
@@ -123,7 +128,7 @@ export function installOneShotHiddenMessageGuard(
 		!originalDispose ||
 		!originalRuntimeDispose
 	) {
-		console.warn("one-shot hidden-message guard: required AgentSession internals not found; guard inactive")
+		console.warn("one-shot custom-message guard: required AgentSession internals not found; guard inactive")
 		return
 	}
 
@@ -153,7 +158,7 @@ export function installOneShotHiddenMessageGuard(
 	}
 
 	proto._appendCustomMessage = function (this: PatchableSession, message: CustomMessage): void {
-		if (oneShotSessions.has(this) && terminalAssistantTail.get(this) && message.display === false) {
+		if (oneShotSessions.has(this) && terminalAssistantTail.get(this) && shouldDeferCustomMessage(message)) {
 			const pending = bufferedMessages.get(this) ?? []
 			pending.push({ originLeafId: this.sessionManager.getLeafId(), message })
 			bufferedMessages.set(this, pending)
@@ -188,5 +193,5 @@ export function installOneShotHiddenMessageGuard(
 		}
 	}
 
-	proto._kimchiOneShotHiddenMessageGuard = true
+	proto._kimchiOneShotCustomMessageGuard = true
 }

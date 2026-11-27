@@ -1,4 +1,5 @@
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent"
+import { shouldDeferCustomMessage } from "../one-shot-custom-message-guard.js"
 import type { MessageLikeSessionEntry, RunOutcomeSnapshot } from "../run-outcome.js"
 import { isAgentWorker } from "./agent-worker-context.js"
 import { FERMENT_V2_CUSTOM_ENTRY_TYPE } from "./ferment-v2/constants.js"
@@ -102,7 +103,9 @@ export function createRunOutcomeTracker(): RunOutcomeTracker {
 				const branch = ctx.sessionManager.getBranch()
 				for (let i = branch.length - 1; i >= 0; i--) {
 					const entry = branch[i]
-					if (entry.type === "message" || entry.type === "custom_message") {
+					// Deferred annotations never replace the answer. Other visible custom
+					// messages stay eligible and retain their no-result behavior.
+					if (entry.type === "message" || (entry.type === "custom_message" && !shouldDeferCustomMessage(entry))) {
 						finalEntry = entry
 						break
 					}
