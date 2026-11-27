@@ -40,7 +40,7 @@ export function cancelPendingPrompts(entry: SessionRecord): void {
 
 export type SessionRecord = {
 	session: AgentSession
-	effortByModel: Map<string, AgentSession["thinkingLevel"]>
+	thinkingByModel: Map<string, AgentSession["thinkingLevel"]>
 	unsubscribe: () => void
 	/**
 	 * The prompter THIS record registered — threaded so every teardown of
@@ -214,7 +214,7 @@ export function createProjectionSessionRecord(
 			: SubagentToolIdHistory.fromEntries(session.sessionManager.getBranch())
 	const record: SessionRecord = {
 		session,
-		effortByModel: new Map(),
+		thinkingByModel: new Map(),
 		unsubscribe: () => {},
 		cwd,
 		childToolIdHistory,

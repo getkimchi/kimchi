@@ -1,12 +1,11 @@
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
-import type { readModelEffortDefaults } from "../../config.js"
 import { isAutoRoutedModel } from "../../extensions/auto-model/constants.js"
-import { parseModelThinkingLevel } from "../../model-effort.js"
 import { getModelVirtualIdentity } from "../../models.js"
 import { refFromModel } from "../../shared/model-ref.js"
 import { clampToSelection, thinkingSelection } from "../../thinking-selection.js"
 import { type KimchiDevMeta, kimchiDevMetaOf } from "./capabilities.js"
+import { type ModelThinkingDefaults, parseModelThinkingLevel } from "./model-thinking-persistence.js"
 
 export type ModelThinkingAvailability = "multiple" | "fixed" | "provider-controlled" | "unsupported" | "routed"
 
@@ -39,14 +38,14 @@ export function configuredModelDescription(model: Model<Api>): string | undefine
 }
 
 export interface ModelThinkingMetadataContext {
-	thinkingDefaults: ReturnType<typeof readModelEffortDefaults>
+	thinkingDefaults: ModelThinkingDefaults
 	thinkingByModel: ReadonlyMap<string, ModelThinkingLevel>
 	currentModel: AgentSession["model"]
 	currentThinkingLevel: AgentSession["thinkingLevel"]
 	settingsManager: AgentSession["settingsManager"]
 }
 
-/** Build one model row's Thinking metadata for the versioned modelEffort wire
+/** Build one model row's Model Thinking metadata for the versioned modelEffort wire
  * slot, using the same authorities as when that model becomes active. */
 export function buildModelThinkingMeta(
 	model: Model<Api>,

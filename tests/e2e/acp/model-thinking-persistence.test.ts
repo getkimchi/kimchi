@@ -6,8 +6,8 @@ import { type AcpFixture, type StartAcpFixtureOptions, startAcpFixture } from ".
 
 const ALPHA_REF = "fake/alpha"
 const BETA_REF = "fake/beta"
-const MODEL_EFFORT_META = { "kimchi.dev": { modelEffort: 1 } }
-const SET_MODEL_EFFORT = "_kimchi.dev/set_model_effort"
+const MODEL_THINKING_META = { "kimchi.dev": { modelEffort: 1 } }
+const SET_MODEL_THINKING = "_kimchi.dev/set_model_effort"
 
 const CATALOG = [
 	{
@@ -91,9 +91,9 @@ function readConfig(homeDir: string): Record<string, unknown> {
 	return JSON.parse(readFileSync(configPath(homeDir), "utf-8"))
 }
 
-function seedDefaults(homeDir: string, modelEffortDefaults: unknown): void {
+function seedDefaults(homeDir: string, modelThinkingDefaults: unknown): void {
 	const config = readConfig(homeDir)
-	config.modelEffortDefaults = modelEffortDefaults
+	config.modelEffortDefaults = modelThinkingDefaults
 	writeFileSync(configPath(homeDir), JSON.stringify(config, null, "\t"))
 }
 
@@ -106,7 +106,7 @@ function readDefaultModel(homeDir: string): unknown {
 	return JSON.parse(readFileSync(path, "utf-8")).defaultModel
 }
 
-function readSessionEffortEntries(homeDir: string, sessionId: string): unknown[] {
+function readSessionThinkingEntries(homeDir: string, sessionId: string): unknown[] {
 	const root = join(homeDir, ".config", "kimchi", "harness", "sessions")
 	const log = readdirSync(root)
 		.flatMap((dir) => readdirSync(join(root, dir)).map((file) => join(root, dir, file)))
@@ -120,7 +120,7 @@ function readSessionEffortEntries(homeDir: string, sessionId: string): unknown[]
 		.map((entry) => entry.data)
 }
 
-function currentEffort(response: unknown): string | undefined {
+function currentThinkingLevel(response: unknown): string | undefined {
 	const options = (response as { configOptions?: acp.SessionConfigOption[] }).configOptions
 	return options?.find((option) => option.id === "reasoning_effort")?.currentValue
 }
@@ -139,14 +139,14 @@ function modelRow(response: unknown, modelId: string): acp.SessionConfigSelectOp
 	return row
 }
 
-function rowEffort(response: unknown, modelId: string): Record<string, unknown> | undefined {
+function rowThinkingMetadata(response: unknown, modelId: string): Record<string, unknown> | undefined {
 	const meta = modelRow(response, modelId)._meta?.["kimchi.dev"] as
 		| { modelEffort?: Record<string, unknown> }
 		| undefined
 	return meta?.modelEffort
 }
 
-async function newEffortSession(fixture: AcpFixture, legacyMode?: "chat" | "design" | "code") {
+async function newThinkingSession(fixture: AcpFixture, legacyMode?: "chat" | "design" | "code") {
 	return fixture.conn.request("session/new", {
 		cwd: fixture.workDir,
 		mcpServers: [],
@@ -162,7 +162,7 @@ async function selectModel(fixture: AcpFixture, sessionId: string, modelId: stri
 	})
 }
 
-async function setStandardEffort(fixture: AcpFixture, sessionId: string, value: string) {
+async function setStandardThinking(fixture: AcpFixture, sessionId: string, value: string) {
 	return fixture.conn.request("session/set_config_option", {
 		sessionId,
 		configId: "reasoning_effort",
@@ -170,42 +170,42 @@ async function setStandardEffort(fixture: AcpFixture, sessionId: string, value: 
 	})
 }
 
-async function setFreshEffort(fixture: AcpFixture, sessionId: string, modelId: string, value: string) {
-	return fixture.conn.request(SET_MODEL_EFFORT, { sessionId, modelId, value })
+async function setFreshThinking(fixture: AcpFixture, sessionId: string, modelId: string, value: string) {
+	return fixture.conn.request(SET_MODEL_THINKING, { sessionId, modelId, value })
 }
 
-describe("ACP integration — model Effort persistence", () => {
+describe("ACP integration — model Thinking persistence", () => {
 	it("persists concrete-model defaults and per-model Session selections across a CLI restart", async () => {
 		const first = await start({
-			artifactName: "model-effort-persistence-first",
+			artifactName: "model-thinking-persistence-first",
 			models: CATALOG,
 			defaultModel: "alpha",
 			responses: [{ stream: ["Persisted turn."] }],
-			clientMeta: MODEL_EFFORT_META,
+			clientMeta: MODEL_THINKING_META,
 			keepDirsOnStop: true,
 		})
-		const session = await newEffortSession(first)
+		const session = await newThinkingSession(first)
 
-		const low = await setFreshEffort(first, session.sessionId, ALPHA_REF, "low")
-		expect(currentEffort(low)).toBe("low")
-		expect(rowEffort(low, ALPHA_REF)).toEqual({
+		const low = await setFreshThinking(first, session.sessionId, ALPHA_REF, "low")
+		expect(currentThinkingLevel(low)).toBe("low")
+		expect(rowThinkingMetadata(low, ALPHA_REF)).toEqual({
 			availability: "multiple",
 			levels: ["low", "high", "max"],
 			currentValue: "low",
 		})
-		expect(currentEffort(await newEffortSession(first))).toBe("low")
+		expect(currentThinkingLevel(await newThinkingSession(first))).toBe("low")
 
 		await selectModel(first, session.sessionId, BETA_REF)
-		expect(currentEffort(await setStandardEffort(first, session.sessionId, "high"))).toBe("high")
-		expect(currentEffort(await selectModel(first, session.sessionId, ALPHA_REF))).toBe("low")
-		expect(currentEffort(await selectModel(first, session.sessionId, BETA_REF))).toBe("high")
+		expect(currentThinkingLevel(await setStandardThinking(first, session.sessionId, "high"))).toBe("high")
+		expect(currentThinkingLevel(await selectModel(first, session.sessionId, ALPHA_REF))).toBe("low")
+		expect(currentThinkingLevel(await selectModel(first, session.sessionId, BETA_REF))).toBe("high")
 		const turn = await first.conn.request("session/prompt", {
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "Persist this session" }],
 		})
 		expect(turn.stopReason).toBe("end_turn")
 		expect(readDefaults(first.homeDir)).toEqual({ [ALPHA_REF]: "low" })
-		expect(readSessionEffortEntries(first.homeDir, session.sessionId)).toEqual([
+		expect(readSessionThinkingEntries(first.homeDir, session.sessionId)).toEqual([
 			{ modelId: ALPHA_REF, value: "high" },
 			{ modelId: ALPHA_REF, value: "low" },
 			{ modelId: BETA_REF, value: "low" },
@@ -216,11 +216,11 @@ describe("ACP integration — model Effort persistence", () => {
 		await stop(first)
 
 		const second = await start({
-			artifactName: "model-effort-persistence-second",
+			artifactName: "model-thinking-persistence-second",
 			models: CATALOG,
 			defaultModel: "alpha",
 			responses: [],
-			clientMeta: MODEL_EFFORT_META,
+			clientMeta: MODEL_THINKING_META,
 			homeDirOverride: homeDir,
 			workDirOverride: workDir,
 			seedHome: (home) => seedDefaults(home, persistedDefaults),
@@ -232,28 +232,28 @@ describe("ACP integration — model Effort persistence", () => {
 			_meta: { "kimchi.dev": { appMode: "chat" } },
 		})
 		expect(currentModel(loaded)).toBe(BETA_REF)
-		expect(currentEffort(loaded)).toBe("high")
+		expect(currentThinkingLevel(loaded)).toBe("high")
 		const reselectedAlpha = await selectModel(second, session.sessionId, ALPHA_REF)
-		expect(currentEffort(reselectedAlpha)).toBe("low")
-		expect(rowEffort(reselectedAlpha, ALPHA_REF)).toEqual({
+		expect(currentThinkingLevel(reselectedAlpha)).toBe("low")
+		expect(rowThinkingMetadata(reselectedAlpha, ALPHA_REF)).toEqual({
 			availability: "multiple",
 			levels: ["low", "high", "max"],
 			currentValue: "low",
 		})
-		expect(currentEffort(await newEffortSession(second))).toBe("low")
+		expect(currentThinkingLevel(await newThinkingSession(second))).toBe("low")
 	})
 
-	it("keeps Effort-only model switches from overwriting the saved default model", async () => {
+	it("keeps Thinking-only model switches from overwriting the saved default model", async () => {
 		const fixture = await start({
-			artifactName: "model-effort-session-only-switch",
+			artifactName: "model-thinking-session-only-switch",
 			models: CATALOG,
 			defaultModel: "alpha",
 			responses: [],
-			clientMeta: MODEL_EFFORT_META,
+			clientMeta: MODEL_THINKING_META,
 		})
-		const session = await newEffortSession(fixture)
+		const session = await newThinkingSession(fixture)
 
-		const result = await setFreshEffort(fixture, session.sessionId, BETA_REF, "low")
+		const result = await setFreshThinking(fixture, session.sessionId, BETA_REF, "low")
 
 		expect(currentModel(result)).toBe(BETA_REF)
 		expect(readDefaultModel(fixture.homeDir)).toBe("alpha")
@@ -267,36 +267,36 @@ describe("ACP integration — model Effort persistence", () => {
 	])("resolves a persisted value to the nearest $direction supported level", async ({ stored, expected }) => {
 		const models = [{ ...CATALOG[0], metadata: { thinking_levels: ["low", "high"] } }]
 		const fixture = await start({
-			artifactName: `model-effort-persistence-fallback-${stored}`,
+			artifactName: `model-thinking-persistence-fallback-${stored}`,
 			models,
 			defaultModel: "alpha",
 			responses: [],
-			clientMeta: MODEL_EFFORT_META,
+			clientMeta: MODEL_THINKING_META,
 			seedHome: (home) => seedDefaults(home, { [ALPHA_REF]: stored }),
 		})
 
-		const session = await newEffortSession(fixture)
-		expect(currentEffort(session)).toBe(expected)
-		expect(rowEffort(session, ALPHA_REF)).toEqual({
+		const session = await newThinkingSession(fixture)
+		expect(currentThinkingLevel(session)).toBe(expected)
+		expect(rowThinkingMetadata(session, ALPHA_REF)).toEqual({
 			availability: "multiple",
 			levels: ["low", "high"],
 			currentValue: expected,
 		})
 		const options = session.configOptions?.find((option) => option.id === "reasoning_effort")
 		expect(options?.category).toBe("model_config")
-		expect(currentEffort(session)).toBeOneOf(
+		expect(currentThinkingLevel(session)).toBeOneOf(
 			options?.type === "select" ? options.options.map((option) => option.value) : [],
 		)
 	})
 
 	it("clears legacy defaults without changing unrelated config or durable Session selections", async () => {
 		const first = await start({
-			artifactName: "model-effort-persistence-migration-first",
+			artifactName: "model-thinking-persistence-migration-first",
 			models: CATALOG,
 			defaultModel: "alpha",
 			settings: { defaultThinkingLevel: "low" },
 			responses: [{ stream: ["Persist migrated Session selections."] }],
-			clientMeta: MODEL_EFFORT_META,
+			clientMeta: MODEL_THINKING_META,
 			keepDirsOnStop: true,
 			seedHome: (home) => {
 				const config = readConfig(home)
@@ -310,14 +310,14 @@ describe("ACP integration — model Effort persistence", () => {
 				writeFileSync(configPath(home), JSON.stringify(config, null, "\t"))
 			},
 		})
-		const created = await newEffortSession(first, "code")
+		const created = await newThinkingSession(first, "code")
 		const sessionEntries = [
 			{ modelId: ALPHA_REF, value: "low" },
 			{ modelId: ALPHA_REF, value: "max" },
 		]
 
-		expect(currentEffort(created)).toBe("low")
-		expect(currentEffort(await setStandardEffort(first, created.sessionId, "max"))).toBe("max")
+		expect(currentThinkingLevel(created)).toBe("low")
+		expect(currentThinkingLevel(await setStandardThinking(first, created.sessionId, "max"))).toBe("max")
 		const turn = await first.conn.request("session/prompt", {
 			sessionId: created.sessionId,
 			prompt: [{ type: "text", text: "Persist migrated Session selections" }],
@@ -325,17 +325,17 @@ describe("ACP integration — model Effort persistence", () => {
 		expect(turn.stopReason).toBe("end_turn")
 		expect(readDefaults(first.homeDir)).toEqual({ [BETA_REF]: "high" })
 		expect(readConfig(first.homeDir)).toMatchObject({ unrelatedPreference: { keep: true } })
-		expect(readSessionEffortEntries(first.homeDir, created.sessionId)).toEqual(sessionEntries)
+		expect(readSessionThinkingEntries(first.homeDir, created.sessionId)).toEqual(sessionEntries)
 
 		const persistedConfig = readConfig(first.homeDir)
 		const { homeDir, workDir } = first
 		await stop(first)
 		const second = await start({
-			artifactName: "model-effort-persistence-migration-second",
+			artifactName: "model-thinking-persistence-migration-second",
 			models: CATALOG,
 			defaultModel: "alpha",
 			responses: [],
-			clientMeta: MODEL_EFFORT_META,
+			clientMeta: MODEL_THINKING_META,
 			homeDirOverride: homeDir,
 			workDirOverride: workDir,
 			seedHome: (home) => writeFileSync(configPath(home), JSON.stringify(persistedConfig, null, "\t")),
@@ -347,20 +347,20 @@ describe("ACP integration — model Effort persistence", () => {
 			_meta: { "kimchi.dev": { appMode: "chat" } },
 		})
 
-		expect(currentEffort(loaded)).toBe("max")
+		expect(currentThinkingLevel(loaded)).toBe("max")
 		expect(readDefaults(second.homeDir)).toEqual({ [BETA_REF]: "high" })
 		expect(readConfig(second.homeDir)).toMatchObject({ unrelatedPreference: { keep: true } })
-		expect(readSessionEffortEntries(second.homeDir, created.sessionId)).toEqual(sessionEntries)
+		expect(readSessionThinkingEntries(second.homeDir, created.sessionId)).toEqual(sessionEntries)
 	})
 
 	it("passes other-virtual identity through the real model registry without alias or default metadata", async () => {
 		const family = { ...CATALOG[0], slug: "family", displayName: "Family alias" }
 		const fixture = await start({
-			artifactName: "model-effort-configured-virtual",
+			artifactName: "model-thinking-configured-virtual",
 			models: [CATALOG[0], family],
 			defaultModel: "alpha",
 			responses: [],
-			clientMeta: MODEL_EFFORT_META,
+			clientMeta: MODEL_THINKING_META,
 			seedHome: (home) => {
 				const path = join(home, ".config", "kimchi", "harness", "models.json")
 				const catalog = JSON.parse(readFileSync(path, "utf-8"))
@@ -372,9 +372,9 @@ describe("ACP integration — model Effort persistence", () => {
 			},
 		})
 
-		const session = await newEffortSession(fixture)
+		const session = await newThinkingSession(fixture)
 
-		expect(rowEffort(session, "fake/family")).toEqual({
+		expect(rowThinkingMetadata(session, "fake/family")).toEqual({
 			availability: "routed",
 			currentValue: null,
 			virtual: "other",
@@ -383,31 +383,31 @@ describe("ACP integration — model Effort persistence", () => {
 
 	it("keeps legacy behavior for non-opt-in clients without new persistence", async () => {
 		const fixture = await start({
-			artifactName: "model-effort-persistence-no-opt-in",
+			artifactName: "model-thinking-persistence-no-opt-in",
 			models: CATALOG,
 			defaultModel: "alpha",
 			settings: { defaultThinkingLevel: "high" },
 			responses: [{ stream: ["Legacy turn."] }],
 			seedHome: (home) => seedDefaults(home, { chat: { [ALPHA_REF]: "max" } }),
 		})
-		const session = await newEffortSession(fixture)
+		const session = await newThinkingSession(fixture)
 
-		expect(currentEffort(session)).toBe("high")
+		expect(currentThinkingLevel(session)).toBe("high")
 		expect(modelRow(session, ALPHA_REF)._meta).toBeUndefined()
 		expect(session.configOptions?.find((option) => option.id === "reasoning_effort")?.category).toBe("thought_level")
-		const legacyLow = await setStandardEffort(fixture, session.sessionId, "low")
-		expect(currentEffort(legacyLow)).toBe("low")
+		const legacyLow = await setStandardThinking(fixture, session.sessionId, "low")
+		expect(currentThinkingLevel(legacyLow)).toBe("low")
 		expect(modelRow(legacyLow, ALPHA_REF)._meta).toBeUndefined()
-		expect(currentEffort(await selectModel(fixture, session.sessionId, BETA_REF))).toBe("high")
-		expect(currentEffort(await selectModel(fixture, session.sessionId, ALPHA_REF))).toBe("high")
+		expect(currentThinkingLevel(await selectModel(fixture, session.sessionId, BETA_REF))).toBe("high")
+		expect(currentThinkingLevel(await selectModel(fixture, session.sessionId, ALPHA_REF))).toBe("high")
 		const turn = await fixture.conn.request("session/prompt", {
 			sessionId: session.sessionId,
 			prompt: [{ type: "text", text: "Keep the legacy session behavior" }],
 		})
 		expect(turn.stopReason).toBe("end_turn")
-		expect(readSessionEffortEntries(fixture.homeDir, session.sessionId)).toEqual([])
+		expect(readSessionThinkingEntries(fixture.homeDir, session.sessionId)).toEqual([])
 		expect(readDefaults(fixture.homeDir)).toEqual({ chat: { [ALPHA_REF]: "max" } })
-		await expect(setFreshEffort(fixture, session.sessionId, ALPHA_REF, "max")).rejects.toMatchObject({
+		await expect(setFreshThinking(fixture, session.sessionId, ALPHA_REF, "max")).rejects.toMatchObject({
 			code: -32601,
 		})
 		expect(readDefaults(fixture.homeDir)).toEqual({ chat: { [ALPHA_REF]: "max" } })
