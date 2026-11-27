@@ -1450,12 +1450,15 @@ export class KimchiAcpAgent {
 				parentId: null,
 				timestamp,
 			}
-			// Select the full branch first: removing routing records any earlier
-			// can sever parentId links and lose the prompt, tool history, or
-			// selected leaf. Their metadata alone is omitted at serialization.
+			// Retain structural entry IDs and parentId links, but prevent recovery
+			// from identifying or adopting children through copied associations.
 			const independentEntries = stagedSource
 				.getEntries()
-				.filter((entry) => entry.type !== "custom" || entry.customType !== "subagents:record")
+				.map((entry) =>
+					entry.type === "custom" && entry.customType === "subagents:record"
+						? { ...entry, customType: ACP_FORK_EXTERNAL_SUBAGENT_ENTRY, data: {} }
+						: entry,
+				)
 			const contents = `${[forkHeader, provenance, ...independentEntries].map((entry) => JSON.stringify(entry)).join("\n")}\n`
 			writeFileSync(forkedPath, contents, { flag: "wx" })
 		} catch (err) {
@@ -4497,6 +4500,7 @@ function readSessionHeader(sessionPath: string): Pick<SessionHeader, "id" | "cwd
 }
 
 const ACP_FORK_ENTRY_TYPE = "kimchi:acp-fork"
+const ACP_FORK_EXTERNAL_SUBAGENT_ENTRY = "kimchi:acp-fork-subagent-metadata"
 
 /** The positive lineage proof accepted from an ACP-created fork. Unknown or
  * unreadable parented files retain the default read-only boundary. */

@@ -36,6 +36,7 @@ it("does not adopt delegated sessions when forking and reopening", async () => {
 			},
 			{ forSubagent: true, stream: [CHILD_RESULT] },
 			{ stream: ["Parent accepted the child result."] },
+			{ stream: ["Fork continued."] },
 		],
 	})
 	try {
@@ -68,6 +69,19 @@ it("does not adopt delegated sessions when forking and reopening", async () => {
 		expect(childUpdates()).toHaveLength(0)
 		expect(logFor(fixture.homeDir, fork.sessionId)).toContain(PARENT_REQUEST)
 		expect(logFor(fixture.homeDir, sourceId)).toBe(sourceBeforeResume)
+
+		const continued = await prompt(fixture, fork.sessionId, "Continue from the delegated result in fork.")
+		expect(continued.stopReason).toBe("end_turn")
+		const request = fixture.fake.requests.findLast(
+			(candidate) =>
+				candidate.body !== null &&
+				typeof candidate.body === "object" &&
+				"tools" in candidate.body &&
+				Array.isArray(candidate.body.tools),
+		)
+		expect(request).toBeDefined()
+		expect(JSON.stringify(request?.body)).toContain(PARENT_REQUEST)
+		expect(JSON.stringify(request?.body)).toContain(CHILD_RESULT)
 	} finally {
 		await fixture.stop()
 	}
