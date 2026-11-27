@@ -592,6 +592,17 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	let planModeApplied = false
 	let planModeHiddenTools: string[] = []
 	let restoreMcpAfterPlan = false
+	let applyingDeferredPlanTransition = false
+	// Prepared request contexts are immutable. Keep Plan transitions queued so
+	// mode text, provider declarations, and permission decisions cannot diverge.
+	let pendingPlanModeTransition:
+		| {
+				from: PermissionModeState
+				next: PermissionModeState
+				reason: ModeChangeReason
+				skipNotify?: boolean
+		  }
+		| undefined
 	const planToolVisibility: ToolVisibilityAPI | undefined = isWorker ? undefined : createToolVisibility(pi)
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
@@ -821,6 +832,36 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 			return
 		}
 		const from = appliedPermissionMode ?? getRuntimePermissionMode()
+		let idle = false
+		try {
+			idle = ctx.isIdle()
+		} catch (error) {
+			idle = next.mode === "plan"
+			console.error("permissions: failed to read session idle state while changing Plan mode", error)
+		}
+		// A newer transition always supersedes one queued for this session's next boundary.
+		pendingPlanModeTransition = undefined
+		if (
+			!applyingDeferredPlanTransition &&
+			reason !== "plan_approval" &&
+			reason !== "ferment_restore" &&
+			reason !== "ferment_elevation" &&
+			appliedPermissionMode !== undefined &&
+			!isWorker &&
+			(current === "plan" || next.mode === "plan") &&
+			!idle
+		) {
+			pendingPlanModeTransition = { from, next, reason, skipNotify }
+			if (!skipNotify) notifyUser(ctx, `${next.mode} mode will take effect after the current run.`, "info")
+			applyingPermissionMode = true
+			try {
+				setRuntimePermissionMode(ctx, from, false)
+				maybePersistPermissionMode(ctx)
+			} finally {
+				applyingPermissionMode = false
+			}
+			return
+		}
 		applyingPermissionMode = true
 		try {
 			setRuntimePermissionMode(ctx, next, skipNotify)
@@ -886,8 +927,9 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 
 	function cycleMode(ctx: ExtensionContext): void {
 		const { mode: current } = getRuntimePermissionMode()
+		const selection = pendingPlanModeTransition?.next.mode ?? current
 		const allowedModes = MODES.filter((m) => isModeAllowed(m.mode))
-		const idx = allowedModes.findIndex((m) => m.mode === current)
+		const idx = allowedModes.findIndex((m) => m.mode === selection)
 		const next = allowedModes[(idx + 1) % allowedModes.length].mode
 		changeMode(ctx, current, { mode: next, initiatedBy: "user", source: "runtime" }, "user_shift_tab")
 	}
@@ -1077,6 +1119,8 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 			refreshWorkerPolicy(ctx)
 			return
 		}
+		pendingPlanModeTransition = undefined
+		applyingDeferredPlanTransition = false
 		classifierWarnings.clear()
 		currentCtx = ctx
 		appliedPermissionMode = undefined
@@ -1338,6 +1382,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 
 			const current = appliedPermissionMode
 			if (!current || current.mode === next.mode) {
+				pendingPlanModeTransition = undefined
 				appliedPermissionMode = next
 				if (next.initiatedBy === "user") maybePersistPermissionMode(ctx)
 				return
@@ -1350,6 +1395,7 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	})
 
 	pi.on("session_shutdown", () => {
+		pendingPlanModeTransition = undefined
 		if (isWorker) {
 			// The run is over. A call that was allowed but whose result never
 			// arrived (the run was stopped first) did not complete.
@@ -1371,9 +1417,22 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		currentCtx = undefined
 		appliedPermissionMode = undefined
 		applyingPermissionMode = false
+		applyingDeferredPlanTransition = false
 	})
 
 	if (!isWorker) {
+		pi.on("agent_settled", (_event, ctx) => {
+			const pending = pendingPlanModeTransition
+			if (!pending) return
+			pendingPlanModeTransition = undefined
+			applyingDeferredPlanTransition = true
+			try {
+				changeMode(ctx, pending.from.mode, pending.next, pending.reason, false)
+			} finally {
+				applyingDeferredPlanTransition = false
+			}
+		})
+
 		const blocks = createSystemPromptBlocks(pi, "permissions")
 		// Register the plan-mode prompt supplement via the shared registry so that
 		// future readers (`compose('adhoc')` from the renderer) can find it without
@@ -1413,6 +1472,16 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 	if (!isWorker)
 		pi.on("before_agent_start", (event, ctx) => {
 			maybePersistPermissionMode(ctx)
+			const pending = pendingPlanModeTransition
+			if (pending) {
+				pendingPlanModeTransition = undefined
+				applyingDeferredPlanTransition = true
+				try {
+					changeMode(ctx, pending.from.mode, pending.next, pending.reason, false)
+				} finally {
+					applyingDeferredPlanTransition = false
+				}
+			}
 			if (getRuntimePermissionMode().mode !== "plan") return undefined
 			// MCP direct tools can finish registering after session_start. Rebuild
 			// the snapshot immediately before every model request so late

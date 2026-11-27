@@ -79,7 +79,10 @@ import permissionsExtension, {
 } from "./index.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
 import { getPermissionMode, getPersistedPermissionMode, setPermissionMode } from "./mode-controller.js"
-import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
+import {
+	getSessionPermissionFlagController,
+	unregisterSessionPermissionFlagController,
+} from "./mode-controller-registry.js"
 import { getParentSurface, registerParentSurface, unregisterParentSurface } from "./parent-surface-registry.js"
 import { PERMISSION_EVENTS } from "./permissions-events.js"
 import { getPermissionPolicySource } from "./policy-source-registry.js"
@@ -231,6 +234,7 @@ function createMockContext(
 		hasUI: true,
 		mode: "tui",
 		cwd: "/test",
+		isIdle: vi.fn(() => true),
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getEntries: () => sessionEntries,
@@ -3036,6 +3040,251 @@ describe("permissions plan-mode tool visibility", () => {
 		await command?.handler("mode default", createMockContext([]))
 
 		expect(harness.activeTools().sort()).toEqual(["bash", "grep", "read", "write"])
+	})
+})
+
+describe("plan transition ordering", () => {
+	it("holds a prepared Plan session until agent_settled before restoring write tools", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write", "grep"], { plan: true })
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+		const initialTools = harness.activeTools()
+		expect(initialTools).not.toContain("write")
+
+		await harness.commands.get("permissions")?.handler("mode auto", ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+		expect(harness.activeTools()).toEqual(initialTools)
+
+		await harness.fire("agent_settled", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("auto")
+		expect(harness.activeTools()).toContain("write")
+	})
+
+	it("applies a queued entry into Plan mode only at the next boundary", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write", "grep"])
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+		expect(harness.activeTools()).toContain("write")
+
+		await harness.commands.get("permissions")?.handler("mode plan", ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("default")
+		expect(harness.activeTools()).toContain("write")
+
+		await harness.fire("agent_settled", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+		expect(harness.activeTools()).not.toContain("write")
+	})
+	it("cancels an older queued Plan exit when a non-Plan selection arrives before agent_settled", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write", "grep"], { plan: true })
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+		await harness.commands.get("permissions")?.handler("mode auto", ctx)
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+
+		await harness.commands.get("permissions")?.handler("mode default", ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+		await harness.fire("agent_settled", {}, ctx)
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("default")
+	})
+
+	it("cycles from a pending Plan boundary target before agent_settled", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"], { plan: true })
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+		const cycle = vi.mocked(ctx.ui.onTerminalInput).mock.calls.at(-1)?.[0]
+		expect(cycle).toBeDefined()
+
+		cycle?.("\x1b[Z")
+		cycle?.("\x1b[Z")
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+		expect(harness.activeTools()).not.toContain("write")
+		await harness.fire("agent_settled", {}, ctx)
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("yolo")
+		expect(harness.activeTools()).toContain("write")
+	})
+
+	it("notifies controller subscribers when the previous mode is retained", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"], { plan: true })
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+		const listener = vi.fn()
+		getSessionPermissionFlagController(TEST_SESSION_ID)?.subscribe(listener)
+
+		await harness.commands.get("permissions")?.handler("mode auto", ctx)
+
+		expect(listener).toHaveBeenCalled()
+	})
+
+	it("honors a controller's same-mode re-selection over an older queued replacement", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"], { plan: true })
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+
+		setPermissionMode(TEST_SESSION_ID, { mode: "auto", source: "runtime", initiatedBy: "user" })
+		setPermissionMode(TEST_SESSION_ID, { mode: "plan", source: "runtime", initiatedBy: "user" })
+		await harness.fire("agent_settled", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+		expect(harness.activeTools()).not.toContain("write")
+		expect(harness.pi.appendEntry).toHaveBeenCalledWith("permission_mode", {
+			mode: "plan",
+			source: "runtime",
+			initiatedBy: "user",
+		})
+	})
+
+	it("keeps non-Plan transitions immediate while busy", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.commands.get("permissions")?.handler("mode auto", ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("auto")
+		await harness.fire("agent_settled", {}, ctx)
+		expect(harness.activeTools()).toContain("write")
+	})
+
+	it("preserves the latest plan approval instead of replaying the older deferred target", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		const ctx = createMockContext([EXECUTE_LOCAL_DECISION_OPTION])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+		await harness.commands.get("permissions")?.handler("mode default", ctx)
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+
+		await submitPlan(harness, "# Goal\n\nCreate execution-proof.txt.", ctx)
+		emitPlanReviewDecision(harness.pi, { decision: "execute", source: "plannotator", planReviewSource: "adhoc" })
+
+		await vi.waitFor(() => {
+			expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute" }),
+				expect.anything(),
+			)
+		})
+		await harness.fire("agent_settled", {}, ctx)
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("auto")
+	})
+
+	it("does not flush a deferred transition after session shutdown", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"], { plan: true })
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+		await harness.commands.get("permissions")?.handler("mode auto", ctx)
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+
+		await harness.fire("session_shutdown", {}, ctx)
+		await harness.fire("agent_settled", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+	})
+
+	it("applies fermentation activation immediately during a busy Plan session", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "plan")
+		const harness = createPermissionsHarness(["read", "bash", "write", "grep"])
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+		vi.stubEnv("KIMCHI_ACTIVE_FERMENT", "test-ferment")
+		notifyFermentActive(true)
+
+		expect(getPermissionMode(TEST_SESSION_ID)).toMatchObject({ mode: "yolo", initiatedBy: "ferment" })
+		expect(harness.activeTools()).toContain("write")
+	})
+
+	it("flushes a pending transition at the next run preparation after an idle-probe error", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"], { plan: true })
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+		await harness.commands.get("permissions")?.handler("mode auto", ctx)
+		vi.mocked(ctx.isIdle).mockImplementation(() => {
+			throw new Error("stale session")
+		})
+
+		await harness.fire("before_agent_start", { prompt: "work" }, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("auto")
+		expect(harness.activeTools()).toContain("write")
+	})
+
+	it("clears a prior pending transition when a new session start occurs before settlement", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"], { plan: true })
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+		await harness.commands.get("permissions")?.handler("mode auto", ctx)
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+
+		await harness.fire("session_start", {}, ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+		await harness.fire("agent_settled", {}, ctx)
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+	})
+
+	it("applies plan restriction immediately when idle probing fails", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"])
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockImplementation(() => {
+			throw new Error("stale session")
+		})
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.commands.get("permissions")?.handler("mode plan", ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+		expect(harness.activeTools()).not.toContain("write")
+	})
+
+	it("defers the transition instead of throwing when the session idle probe fails", async () => {
+		const harness = createPermissionsHarness(["read", "bash", "write"], { plan: true })
+		const ctx = createMockContext([])
+		vi.mocked(ctx.isIdle).mockImplementation(() => {
+			throw new Error("stale session")
+		})
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		await harness.fire("session_start", {}, ctx)
+
+		await harness.commands.get("permissions")?.handler("mode auto", ctx)
+
+		expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+		expect(errorSpy).toHaveBeenCalledWith(
+			"permissions: failed to read session idle state while changing Plan mode",
+			expect.any(Error),
+		)
+		errorSpy.mockRestore()
+	})
+	it("releases plan approval immediately instead of deferring execution to the following turn", async () => {
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		const ctx = createMockContext([EXECUTE_LOCAL_DECISION_OPTION])
+		vi.mocked(ctx.isIdle).mockReturnValue(false)
+		await harness.fire("session_start", {}, ctx)
+		await submitPlan(harness, "# Goal\n\nCreate execution-proof.txt.", ctx)
+
+		emitPlanReviewDecision(harness.pi, { decision: "execute", source: "plannotator", planReviewSource: "adhoc" })
+
+		await vi.waitFor(() => {
+			expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute" }),
+				expect.anything(),
+			)
+		})
+		expect(getPermissionMode(TEST_SESSION_ID)).toMatchObject({ mode: "auto", initiatedBy: "user" })
 	})
 })
 
