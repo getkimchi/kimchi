@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { pullRequest } from "./provider-records.js"
 
 describe("provider branch issue keys", () => {
-	it("K25: caps distinct keys at 20 in first-appearance order through the public PR parser", () => {
+	it("caps distinct keys at 20 in first-appearance order through the public PR parser (K25)", () => {
 		const keys = Array.from({ length: 25 }, (_, index) => `ABC-${index + 1}`)
 		const parsed = pullRequest(
 			{

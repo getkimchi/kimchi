@@ -45,7 +45,7 @@ it("selects an issue for the work, binds the next prompt, shows it in /work and 
 	})
 	fixture = active
 	execFileSync("git", ["init", "-q", active.workDir])
-	execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/feature/ABC-123-add-jira"], { cwd: active.workDir })
+	execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/feature/abc-123-add-issue"], { cwd: active.workDir })
 	const sessionId = await newSession(active, active.workDir)
 
 	const [workLine] = (await notice(active, sessionId, "/work")).split("\n")
@@ -54,7 +54,7 @@ it("selects an issue for the work, binds the next prompt, shows it in /work and 
 	// The work's cost lines follow; they depend on whether a background cost pass has run yet.
 	expect((await notice(active, sessionId, "/work issue")).split("\n").slice(0, 3)).toEqual([
 		"Issue: none",
-		"Branch feature/ABC-123-add-jira names ABC-123. Select it with: /work issue ABC-123",
+		"Branch feature/abc-123-add-issue names ABC-123. Select it with: /work issue ABC-123",
 		`Work ID: ${workId}`,
 	])
 	expect((await notice(active, sessionId, "/work issue ABC-123")).split("\n").slice(0, 3)).toEqual([

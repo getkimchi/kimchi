@@ -208,10 +208,10 @@ if (process.argv[2] === "read") {
 
 describe("/work issue", () => {
 	it("suggests the uppercase form of a lowercase branch key without selecting it", async () => {
-		const cwd = repository("feature/abc-123-add-linear")
+		const cwd = repository("feature/abc-123-add-issue")
 
 		expect(await command(cwd, "")).toEqual({
-			lines: ["Issue: none", "Branch feature/abc-123-add-linear names ABC-123. Select it with: /work issue ABC-123"],
+			lines: ["Issue: none", "Branch feature/abc-123-add-issue names ABC-123. Select it with: /work issue ABC-123"],
 			changed: false,
 		})
 		expect(existsSync(workIssuePath(agentDir, workId))).toBe(false)
@@ -230,8 +230,18 @@ describe("/work issue", () => {
 		expect(existsSync(workIssuePath(agentDir, workId))).toBe(false)
 	})
 
+	it("drops the selected key before counting a branch's other issue-shaped words", async () => {
+		const cwd = repository("feature/ENG-5-phase-2")
+		await command(cwd, "ENG-5")
+
+		expect(await command(cwd, "")).toEqual({
+			lines: ["Branch feature/ENG-5-phase-2 names PHASE-2. Select it with: /work issue PHASE-2"],
+			changed: false,
+		})
+	})
+
 	it("suggests nothing for a branch without a key, a detached HEAD or a folder outside Git", async () => {
-		const detached = repository("ABC-123-add-jira")
+		const detached = repository("ABC-123-add-issue")
 		git(detached, "commit", "-q", "--allow-empty", "--no-verify", "-m", "Start")
 		git(detached, "checkout", "-q", "--detach")
 		const outside = mkdtempSync(join(tmpdir(), "kimchi-work-issue-plain-"))
@@ -245,7 +255,7 @@ describe("/work issue", () => {
 	})
 
 	it("selects, replaces and clears the work's issue", async () => {
-		const cwd = repository("feature/ABC-123-add-jira")
+		const cwd = repository("feature/ABC-123-add-issue")
 
 		expect(await command(cwd, "ABC-123")).toEqual({
 			lines: ["Issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged."],
@@ -264,7 +274,7 @@ describe("/work issue", () => {
 			changed: true,
 		})
 		expect(await command(cwd, "")).toEqual({
-			lines: ["Branch feature/ABC-123-add-jira names ABC-123. Select it with: /work issue ABC-123"],
+			lines: ["Branch feature/ABC-123-add-issue names ABC-123. Select it with: /work issue ABC-123"],
 			changed: false,
 		})
 		expect(await command(cwd, " clear ")).toEqual({

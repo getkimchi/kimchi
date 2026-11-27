@@ -2,66 +2,41 @@ import { describe, expect, it } from "vitest"
 import { branchIssueKeys, isIssueKey, MAX_PULL_REQUEST_ISSUE_KEYS, savedBranchIssueKeys } from "./issue-keys.js"
 
 describe("issue keys in a branch name", () => {
-	it.each([
-		["main", []],
-		["feature/add-jira", []],
-		// A key that runs into a letter, digit or underscore is part of a longer word.
-		["1ABC-123", []],
-		["ABC-123x", []],
-		["ABC-123_fix", []],
-		["_ABC-123", []],
-		["ABC-123-add-jira", ["ABC-123"]],
-		["feature/ABC-123", ["ABC-123"]],
-		["ABC-123/ABC-123-follow-up", ["ABC-123"]],
-		["ABC-1-ABC-2", ["ABC-1", "ABC-2"]],
-		["release/ABC-12/DEF-3", ["ABC-12", "DEF-3"]],
-		// A word that is not a key's number can still start the next key.
-		["AB-CD-1", ["CD-1"]],
-		// A non-ASCII character ends a word, as any separator does.
-		["éABC-12é", ["ABC-12"]],
-		["A_1-9", ["A_1-9"]],
-		["A-1", []],
-		["ABC-0", []],
-		["ABC-012", []],
-		[`ABC-${"9".repeat(16)}`, [`ABC-${"9".repeat(16)}`]],
-		[`ABC-${"9".repeat(17)}`, []],
-		[`A${"B".repeat(254)}-1`, [`A${"B".repeat(254)}-1`]],
-		[`A${"B".repeat(255)}-1`, []],
-	])("finds the keys in %s", (branch, keys) => {
-		expect(branchIssueKeys(branch)).toEqual(keys)
-	})
-})
-
-describe("branch-source conformance rows", () => {
 	const project = (length: number) => `A${"B".repeat(length - 1)}`
 	const number = (length: number) => "9".repeat(length)
-	const branchCases: [id: string, input: string, keys: string[]][] = [
-		["K01", "feat/eng-123-x", ["ENG-123"]],
-		["K04", "feat/a-123-x", []],
-		["K05", "ENG-123abc", []],
-		["K07", "feature/ENG-123-add-jira", ["ENG-123"]],
-		["K08", "release/ABC-12/DEF-3", ["ABC-12", "DEF-3"]],
-		["K11", "my_proj2-10", ["MY_PROJ2-10"]],
-		["K12", "xENG-123", []],
-		["K13", "_ENG-123", []],
-		["K14", "ENG-123_fix", []],
-		["K15", "AB-CD-1", ["CD-1"]],
-		["K16", "ABC-1-ABC-2", ["ABC-1", "ABC-2"]],
-		["K17", "ABC-0", []],
-		["K18", "ABC-012", []],
-		["K19", `ABC-${number(16)}`, [`ABC-${number(16)}`]],
-		["K20", `ABC-${number(17)}`, []],
-		["K21", `${project(255)}-1`, [`${project(255)}-1`]],
-		["K22", `${project(256)}-1`, []],
-		["K23", "éeng-12é", ["ENG-12"]],
-		["K24", "feature/abc-123/ABC-123/abc-123", ["ABC-123"]],
-		["K30", "main", []],
-		["K31", "Eng-123", []],
-		["K32", "ABc-123", []],
-		["K33", "eNG-123", []],
-	]
 
-	it.each(branchCases)("%s: %s", (_id, input, keys) => {
+	it.each([
+		["finds no key without an issue number (K30)", "main", []],
+		["ignores tracker wording without an issue number", "feature/add-issue", []],
+		["normalizes a fully lowercase key (K01)", "feat/eng-123-x", ["ENG-123"]],
+		["rejects a one-character lowercase project (K04)", "feat/a-123-x", []],
+		["rejects a key followed by a letter (K05)", "ENG-123abc", []],
+		["rejects a key starting after a letter (K12)", "xENG-123", []],
+		["rejects a key starting after a digit", "1ABC-123", []],
+		["rejects a key starting after an underscore (K13)", "_ENG-123", []],
+		["rejects a key followed by an underscore (K14)", "ENG-123_fix", []],
+		["finds an uppercase key followed by a slug (K07)", "feature/ENG-123-add-issue", ["ENG-123"]],
+		["finds an uppercase key in its own path segment", "feature/ABC-123", ["ABC-123"]],
+		["deduplicates repeated uppercase keys", "ABC-123/ABC-123-follow-up", ["ABC-123"]],
+		["deduplicates lowercase and uppercase forms (K24)", "feature/abc-123/ABC-123/abc-123", ["ABC-123"]],
+		["finds adjacent keys (K16)", "ABC-1-ABC-2", ["ABC-1", "ABC-2"]],
+		["finds keys across path segments (K08)", "release/ABC-12/DEF-3", ["ABC-12", "DEF-3"]],
+		["starts a key after a nonnumeric word (K15)", "AB-CD-1", ["CD-1"]],
+		["treats non-ASCII characters as separators", "éABC-12é", ["ABC-12"]],
+		["treats non-ASCII characters as separators around lowercase keys (K23)", "éeng-12é", ["ENG-12"]],
+		["normalizes lowercase projects with underscores and digits (K11)", "my_proj2-10", ["MY_PROJ2-10"]],
+		["accepts uppercase projects with underscores and digits", "A_1-9", ["A_1-9"]],
+		["rejects a one-character uppercase project", "A-1", []],
+		["rejects a zero issue number (K17)", "ABC-0", []],
+		["rejects an issue number with a leading zero (K18)", "ABC-012", []],
+		["accepts a 16-digit issue number (K19)", `ABC-${number(16)}`, [`ABC-${number(16)}`]],
+		["rejects a 17-digit issue number (K20)", `ABC-${number(17)}`, []],
+		["accepts a 255-character project (K21)", `${project(255)}-1`, [`${project(255)}-1`]],
+		["rejects a 256-character project (K22)", `${project(256)}-1`, []],
+		["rejects an initially capitalized mixed-case project (K31)", "Eng-123", []],
+		["rejects a trailing uppercase letter in a lowercase project (K32)", "ABc-123", []],
+		["rejects uppercase letters inside a lowercase project (K33)", "eNG-123", []],
+	])("%s: %s", (_name, input, keys) => {
 		expect(branchIssueKeys(input)).toEqual(keys)
 	})
 })

@@ -516,6 +516,111 @@ it("keeps fork origin separate from parent PR allocation and recorded Jira metad
 	})
 })
 
+it.each([
+	["underscore branch prefix (K11)", "LLM-42", "MY_PROJ2-10", ["LLM-42"], [{ key: "LLM-42", source: "work" }]],
+	[
+		"branch prefix longer than 32 characters (K21)",
+		"LLM-42",
+		`${"A".repeat(255)}-1`,
+		["LLM-42"],
+		[{ key: "LLM-42", source: "work" }],
+	],
+	["underscore work prefix (K11)", "MY_PROJ2-10", "ENG-5", [], [{ key: "ENG-5", source: "branch" }]],
+	[
+		"work prefix longer than 32 characters (K21)",
+		`${"A".repeat(255)}-1`,
+		"ENG-5",
+		[],
+		[{ key: "ENG-5", source: "branch" }],
+	],
+])("keeps work and PR facts when the events wire rejects %s", (_name, workKey, branchKey, workKeys, prKeys) => {
+	const input = {
+		...report,
+		requests: [{ ...report.requests[0], allocation: "pull-request", pullRequestIds: ["parent-pr"] }],
+		pullRequests: [
+			{
+				key: "parent-pr",
+				account,
+				workIds: [workId],
+				pullRequest: {
+					id: "PR1",
+					repositoryId: "42",
+					provider: "github",
+					host: "github.com",
+					repository: "parent/repo",
+					number: 1,
+					url: "https://github.com/parent/repo/pull/1",
+					state: "open",
+					title: "Provider title",
+					author: "provider-user",
+					branchIssueKeys: [branchKey],
+					mergeCommitSha: null,
+					mergedAt: null,
+					closedAt: null,
+					checkedAt: "2026-10-24T08:00:03Z",
+				},
+			},
+		],
+	}
+	const rows = records.map((row) => (row.type === "request" ? { ...row, issue: { key: workKey } } : row))
+	const facts = build(rows, input).accounts[0].facts
+	const work = facts.find((fact) => fact.work?.reason === "observed_request")
+	const pullRequest = facts.find((fact) => fact.pullRequest)
+
+	expect(work).toBeDefined()
+	expect(work?.work?.issueKeys?.map(({ key }) => key)).toEqual(workKeys)
+	expect(pullRequest).toBeDefined()
+	expect(pullRequest?.pullRequest?.issueKeys).toEqual(prKeys)
+})
+
+it("keeps the first 20 work and branch keys before sorting them", () => {
+	const branchIssueKeys = Array.from({ length: 20 }, (_, index) => `ABC-${20 - index}`)
+	const input = {
+		...report,
+		requests: [{ ...report.requests[0], allocation: "pull-request", pullRequestIds: ["parent-pr"] }],
+		pullRequests: [
+			{
+				key: "parent-pr",
+				account,
+				workIds: [workId],
+				pullRequest: {
+					id: "PR1",
+					repositoryId: "42",
+					provider: "github",
+					host: "github.com",
+					repository: "parent/repo",
+					number: 1,
+					url: "https://github.com/parent/repo/pull/1",
+					state: "open",
+					branchIssueKeys,
+					mergeCommitSha: null,
+					mergedAt: null,
+					closedAt: null,
+					checkedAt: "2026-10-24T08:00:03Z",
+				},
+			},
+		],
+	}
+	const otherId = "44444444-4444-4444-8444-444444444444"
+	const first = records.map((row) => (row.type === "request" ? { ...row, issue: undefined } : row))
+	const second = records.map((row) => ({
+		...row,
+		requestId: otherId,
+		issue: row.type === "request" ? { key: "LLM-42" } : undefined,
+	}))
+	const both = {
+		...input,
+		requests: [...input.requests, { ...input.requests[0], requestId: otherId }],
+	}
+	const facts = build([...first, ...second], both).accounts[0].facts
+	const keys = facts.find((fact) => fact.pullRequest)?.pullRequest?.issueKeys
+
+	expect(keys).toHaveLength(20)
+	expect(keys?.[0]).toEqual({ key: "LLM-42", source: "work" })
+	expect(keys?.map(({ key }) => key)).toContain("ABC-20")
+	expect(keys?.map(({ key }) => key)).not.toContain("ABC-1")
+})
+
 it("makes units and reads claims only for touched requests while shared facts aggregate every request", () => {
 	const otherId = "44444444-4444-4444-8444-444444444444"
 	const other = records.map((row) => ({

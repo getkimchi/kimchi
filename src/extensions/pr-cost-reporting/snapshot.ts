@@ -894,10 +894,12 @@ export function buildSnapshots(
 			if (omitted.length) group.content.windowedPullRequestIds = omitted.sort()
 			for (const pr of group.content.pullRequests) {
 				const keys = issueKeys.get(`${key}\n${pr.id}`)
+				const work = [...(keys?.work ?? [])].slice(0, MAX_PULL_REQUEST_ISSUE_KEYS)
+				const branch = [...(keys?.branch ?? [])].slice(0, MAX_PULL_REQUEST_ISSUE_KEYS - work.length)
 				const chosen: PullRequestIssueKey[] = [
-					...[...(keys?.work ?? [])].sort().map((issueKey) => ({ key: issueKey, source: "work" as const })),
-					...[...(keys?.branch ?? [])].sort().map((issueKey) => ({ key: issueKey, source: "branch" as const })),
-				].slice(0, MAX_PULL_REQUEST_ISSUE_KEYS)
+					...work.sort().map((issueKey) => ({ key: issueKey, source: "work" as const })),
+					...branch.sort().map((issueKey) => ({ key: issueKey, source: "branch" as const })),
+				]
 				if (chosen.length) pr.issueKeys = chosen
 			}
 			group.content.coverage.observedRequests = retained.length

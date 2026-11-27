@@ -45,6 +45,13 @@ function wordEnd(text: string, index: number): number {
 	return end
 }
 
+/** A branch prefix is canonical uppercase, or fully lowercase ASCII to normalize to uppercase. */
+function branchProjectKey(word: string): string | undefined {
+	if (isIssueProject(word)) return word
+	if (isLowercaseIssueProject(word)) return word.toUpperCase()
+	return undefined
+}
+
 /**
  * The distinct issue keys a branch name names, in uppercase and in order. Projects may be uppercase or fully lowercase.
  * A key is a whole word: a letter, digit or underscore on either side makes it part of a longer one.
@@ -60,13 +67,7 @@ export function branchIssueKeys(branch: string): string[] {
 		const start = index
 		index = wordEnd(branch, index)
 		if (branch[index] !== "-") continue
-		const branchProject = branch.slice(start, index)
-		// Only a wholly lowercase branch prefix is normalized; mixed-case words retain the old rejection.
-		const project = isIssueProject(branchProject)
-			? branchProject
-			: isLowercaseIssueProject(branchProject)
-				? branchProject.toUpperCase()
-				: undefined
+		const project = branchProjectKey(branch.slice(start, index))
 		if (project === undefined) continue
 		const end = wordEnd(branch, index + 1)
 		const number = branch.slice(index + 1, end)

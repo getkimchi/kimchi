@@ -33,7 +33,7 @@ function branchSuggestedAfterImplementation(text: string): boolean {
 		after
 			.slice(none + "Issue: none".length)
 			.trimStart()
-			.startsWith("Branch feature/ABC-123-add-jira names ABC-123")
+			.startsWith("Branch feature/abc-123-add-issue names ABC-123")
 	)
 }
 
@@ -47,7 +47,7 @@ test("the branch's issue is only suggested; once selected it binds the next prom
 			gitInit: true,
 			responses: [{ stream: ["Planned the issue integration."] }, { stream: ["Implemented the issue integration."] }],
 			seedHome(_homeDir, workDir) {
-				execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/feature/ABC-123-add-jira"], { cwd: workDir })
+				execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/feature/abc-123-add-issue"], { cwd: workDir })
 			},
 		},
 		async (fixture, trace) => {
@@ -63,7 +63,7 @@ test("the branch's issue is only suggested; once selected it binds the next prom
 			terminal.submit("Plan the issue integration for ABC-123")
 			await waitForText(terminal, "Planned the issue integration.")
 			terminal.submit("/work issue")
-			await waitForText(terminal, "Branch feature/ABC-123-add-jira names ABC-123. Select it with: /work issue ABC-123")
+			await waitForText(terminal, "Branch feature/abc-123-add-issue names ABC-123. Select it with: /work issue ABC-123")
 			trace.step("a key in the prompt or the branch name is only suggested")
 
 			terminal.submit("/work issue ABC-123")

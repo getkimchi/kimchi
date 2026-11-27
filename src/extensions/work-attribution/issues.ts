@@ -143,12 +143,11 @@ async function branchSuggestion(cwd: string, selected: string | undefined): Prom
 	} catch {
 		return []
 	}
-	// A detached HEAD or a folder outside Git has no branch.
-	const keys = branch ? branchIssueKeys(branch) : []
+	// A detached HEAD or a folder outside Git has no branch. The selected key is not another choice to offer.
+	const keys = (branch ? branchIssueKeys(branch) : []).filter((key) => key !== selected)
 	if (keys.length > 1)
 		return [`Branch ${branch} names several issues: ${keys.join(", ")}. Select one with: /work issue <KEY>`]
-	if (keys.length === 1 && keys[0] !== selected)
-		return [`Branch ${branch} names ${keys[0]}. Select it with: /work issue ${keys[0]}`]
+	if (keys.length === 1) return [`Branch ${branch} names ${keys[0]}. Select it with: /work issue ${keys[0]}`]
 	return []
 }
 
