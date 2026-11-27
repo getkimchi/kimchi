@@ -289,9 +289,15 @@ describe("ACP integration — model Thinking persistence", () => {
 		)
 	})
 
-	it("clears legacy defaults without changing unrelated config or durable Session selections", async () => {
+	it("ignores legacy defaults without rewriting config or durable Session selections", async () => {
+		const legacyDefaults = {
+			chat: { [ALPHA_REF]: "max" },
+			design: { [ALPHA_REF]: "high" },
+			code: { [ALPHA_REF]: "max" },
+			[BETA_REF]: "high",
+		}
 		const first = await start({
-			artifactName: "model-thinking-persistence-migration-first",
+			artifactName: "model-thinking-persistence-legacy-first",
 			models: CATALOG,
 			defaultModel: "alpha",
 			settings: { defaultThinkingLevel: "low" },
@@ -300,12 +306,7 @@ describe("ACP integration — model Thinking persistence", () => {
 			keepDirsOnStop: true,
 			seedHome: (home) => {
 				const config = readConfig(home)
-				config.modelEffortDefaults = {
-					chat: { [ALPHA_REF]: "max" },
-					design: { [ALPHA_REF]: "high" },
-					code: { [ALPHA_REF]: "max" },
-					[BETA_REF]: "high",
-				}
+				config.modelEffortDefaults = legacyDefaults
 				config.unrelatedPreference = { keep: true }
 				writeFileSync(configPath(home), JSON.stringify(config, null, "\t"))
 			},
@@ -323,7 +324,7 @@ describe("ACP integration — model Thinking persistence", () => {
 			prompt: [{ type: "text", text: "Persist migrated Session selections" }],
 		})
 		expect(turn.stopReason).toBe("end_turn")
-		expect(readDefaults(first.homeDir)).toEqual({ [BETA_REF]: "high" })
+		expect(readDefaults(first.homeDir)).toEqual(legacyDefaults)
 		expect(readConfig(first.homeDir)).toMatchObject({ unrelatedPreference: { keep: true } })
 		expect(readSessionThinkingEntries(first.homeDir, created.sessionId)).toEqual(sessionEntries)
 
@@ -331,7 +332,7 @@ describe("ACP integration — model Thinking persistence", () => {
 		const { homeDir, workDir } = first
 		await stop(first)
 		const second = await start({
-			artifactName: "model-thinking-persistence-migration-second",
+			artifactName: "model-thinking-persistence-legacy-second",
 			models: CATALOG,
 			defaultModel: "alpha",
 			responses: [],
@@ -348,7 +349,7 @@ describe("ACP integration — model Thinking persistence", () => {
 		})
 
 		expect(currentThinkingLevel(loaded)).toBe("max")
-		expect(readDefaults(second.homeDir)).toEqual({ [BETA_REF]: "high" })
+		expect(readDefaults(second.homeDir)).toEqual(legacyDefaults)
 		expect(readConfig(second.homeDir)).toMatchObject({ unrelatedPreference: { keep: true } })
 		expect(readSessionThinkingEntries(second.homeDir, created.sessionId)).toEqual(sessionEntries)
 	})

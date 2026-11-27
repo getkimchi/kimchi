@@ -40,7 +40,7 @@ describe("Model effort defaults", () => {
 		})
 	})
 
-	it("clears legacy mode buckets without a winner while preserving flat defaults and unrelated config", () => {
+	it("reads flat defaults without migrating or rewriting configuration", () => {
 		const configPath = makeConfig({
 			modelEffortDefaults: {
 				chat: { "test/reasoner": "max" },
@@ -50,13 +50,10 @@ describe("Model effort defaults", () => {
 			},
 			sessionSelections: { test: "keep-session-settings" },
 		})
+		const originalConfig = readFileSync(configPath, "utf-8")
 
 		expect(readModelEffortDefaults(configPath)).toEqual({ "test/flat": "medium" })
-		expect(JSON.parse(readFileSync(configPath, "utf-8"))).toEqual({
-			apiKey: "keep-me",
-			sessionSelections: { test: "keep-session-settings" },
-			modelEffortDefaults: { "test/flat": "medium" },
-		})
+		expect(readFileSync(configPath, "utf-8")).toBe(originalConfig)
 	})
 
 	it("ignores malformed models, unknown levels, and legacy buckets when reading", () => {
