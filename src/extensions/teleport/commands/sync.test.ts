@@ -80,7 +80,7 @@ function makeCtx(over: Partial<TeleportContext> = {}): {
 } {
 	const ui = makeUi()
 	const ctx: TeleportContext = {
-		apiKey: "test-key",
+		credentials: { token: "test-key" },
 		endpoint: "https://api.example.com",
 		cwd: "/work/proj",
 		ui,

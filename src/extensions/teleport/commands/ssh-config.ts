@@ -5,13 +5,13 @@ import type { TeleportContext } from "../types.js"
 import { info, refuse, status } from "./errors.js"
 
 export async function runSshConfig(_args: string, ctx: TeleportContext): Promise<void> {
-	if (!ctx.apiKey) {
+	if (!ctx.credentials.token) {
 		refuse(ctx, "No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 	}
 
 	status(ctx, "Refreshing ssh_config…")
 	try {
-		const workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
+		const workspaces = await listWorkspaces(ctx.credentials, { endpoint: ctx.endpoint, signal: ctx.signal })
 		await ensureIncludeDirective(ctx)
 		await syncSshConfig(workspaces, ctx)
 		const paths = resolveSshConfigPaths()

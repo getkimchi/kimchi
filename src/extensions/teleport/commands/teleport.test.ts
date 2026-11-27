@@ -228,7 +228,7 @@ function makeCtx(over: Partial<TeleportContext> = {}): {
 } {
 	const ui = makeUi()
 	const ctx: TeleportContext = {
-		apiKey: "test-key",
+		credentials: { token: "test-key" },
 		endpoint: "https://api.example.com",
 		cwd: "/work/proj",
 		ui,
@@ -699,7 +699,7 @@ describe("runTeleport", () => {
 	})
 
 	it("--help ignores other arguments and works without an apiKey", async () => {
-		const { ctx } = makeCtx({ apiKey: "" })
+		const { ctx } = makeCtx({ credentials: { token: "" } })
 
 		await runTeleport("name --workspace bogus --unknown --help extra", ctx)
 
@@ -708,7 +708,7 @@ describe("runTeleport", () => {
 	})
 
 	it("refuses when apiKey is missing", async () => {
-		const { ctx, ui } = makeCtx({ apiKey: "" })
+		const { ctx, ui } = makeCtx({ credentials: { token: "" } })
 
 		await expect(runTeleport("", ctx)).rejects.toBeInstanceOf(TeleportRefusal)
 		expect(authMock).not.toHaveBeenCalled()

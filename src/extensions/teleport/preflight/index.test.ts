@@ -11,7 +11,7 @@ function makeCtx(): TeleportContext & {
 		setStatus: vi.fn(),
 	}
 	return {
-		apiKey: "key",
+		credentials: { token: "key" },
 		endpoint: undefined,
 		cwd: "/work",
 		signal: undefined,

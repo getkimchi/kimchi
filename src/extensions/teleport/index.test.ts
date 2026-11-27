@@ -1,5 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { createCommandContext } from "../__mocks__/context.js"
+import { runRemoteSessions } from "./commands/remote-sessions.js"
 import teleportExtension from "./index.js"
 
 const { isInSandboxClusterMock, osTypeMock } = vi.hoisted(() => ({
@@ -17,6 +19,10 @@ vi.mock("../../utils/sandbox.js", () => ({
 
 vi.mock("../../config.js", () => ({
 	loadConfig: vi.fn(() => ({ apiKey: "" })),
+}))
+
+vi.mock("../../auth/gateway-credentials.js", () => ({
+	resolveGatewayCredentials: vi.fn(() => ({ token: "tok", organizationId: "org-a", source: "oauth" })),
 }))
 
 vi.mock("./commands/teleport.js", () => ({ runTeleport: vi.fn() }))
@@ -81,5 +87,23 @@ describe("teleportExtension", () => {
 		const pi = makePi()
 		teleportExtension(pi)
 		expect(pi.registerCommand).not.toHaveBeenCalled()
+	})
+
+	it("passes the SSO organization from auth.json to the commands", async () => {
+		const pi = makePi()
+		teleportExtension(pi)
+		const calls = (pi.registerCommand as ReturnType<typeof vi.fn>).mock.calls
+		const remoteSessions = calls.find(([name]) => name === "remote-sessions")?.[1] as {
+			handler: (args: string, ctx: ReturnType<typeof createCommandContext>) => Promise<void>
+		}
+
+		await remoteSessions.handler("", createCommandContext())
+
+		expect(runRemoteSessions).toHaveBeenCalledWith(
+			"",
+			expect.objectContaining({
+				credentials: expect.objectContaining({ token: "tok", organizationId: "org-a" }),
+			}),
+		)
 	})
 })

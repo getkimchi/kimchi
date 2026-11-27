@@ -30,7 +30,7 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
  * through the whitespace tokenizing parser.
  */
 export async function runSyncArgs(args: SyncArgs, ctx: TeleportContext): Promise<void> {
-	if (!ctx.apiKey) {
+	if (!ctx.credentials.token) {
 		refuse(ctx, "No API key configured. Run `kimchi login`.")
 	}
 
@@ -58,9 +58,14 @@ export async function runSyncArgs(args: SyncArgs, ctx: TeleportContext): Promise
 		progress.setPhase("Authenticating…")
 		let creds: WorkspaceCredentials
 		try {
-			creds = await authenticateWorkspace(workspace.id, ctx.apiKey, workspace.name ?? (basename(ctx.cwd) || "kimchi"), {
-				endpoint: ctx.endpoint,
-			})
+			creds = await authenticateWorkspace(
+				workspace.id,
+				ctx.credentials,
+				workspace.name ?? (basename(ctx.cwd) || "kimchi"),
+				{
+					endpoint: ctx.endpoint,
+				},
+			)
 		} catch (err) {
 			refuse(ctx, authFailureMessage(err))
 		}

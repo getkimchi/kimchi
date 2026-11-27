@@ -53,7 +53,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		refuse(ctx, err instanceof Error ? err.message : String(err))
 	}
 
-	if (!ctx.apiKey) {
+	if (!ctx.credentials.token) {
 		refuse(ctx, "No API key configured. Run `kimchi login`.")
 	}
 
@@ -184,7 +184,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			// Template (resolved.setup.templateName) and spec (manual
 			// configuration) are mutually exclusive on the wire; the dialog only
 			// ever produces one of the two.
-			creds = await authenticateWorkspace(workspaceId, ctx.apiKey, description, {
+			creds = await authenticateWorkspace(workspaceId, ctx.credentials, description, {
 				endpoint: ctx.endpoint,
 				...(workspaceSpec ? { spec: workspaceSpec } : {}),
 				...(resolved.setup?.templateName ? { templateName: resolved.setup.templateName } : {}),
@@ -508,7 +508,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			creds,
 			workspaceId,
 			workspaceName: description,
-			apiKey: ctx.apiKey,
+			credentials: ctx.credentials,
 			cwd: ctx.cwd,
 			endpoint: ctx.endpoint,
 			ui: ctx.ui,

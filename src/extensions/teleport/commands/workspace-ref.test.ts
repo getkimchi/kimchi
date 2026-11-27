@@ -80,7 +80,7 @@ function makeUi(): ExtensionUIContext & { notify: ReturnType<typeof vi.fn> } {
 function makeCtx(): { ctx: TeleportContext; ui: ReturnType<typeof makeUi> } {
 	const ui = makeUi()
 	const ctx: TeleportContext = {
-		apiKey: "test-key",
+		credentials: { token: "test-key" },
 		endpoint: "https://api.example.com",
 		cwd: "/work/proj",
 		ui,
@@ -322,7 +322,7 @@ describe("resolveWorkspaceRef", () => {
 		listWorkspaceTemplatesMock.mockResolvedValue(templates)
 		const { ctx } = makeCtx()
 		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
-		expect(listWorkspaceTemplatesMock).toHaveBeenCalledWith(ctx.apiKey, {
+		expect(listWorkspaceTemplatesMock).toHaveBeenCalledWith(ctx.credentials, {
 			endpoint: ctx.endpoint,
 			signal: ctx.signal,
 			orgId: "org-1",
@@ -458,10 +458,10 @@ describe("resolveWorkspaceRef", () => {
 		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
 		expect(verifyApiKeyMock).toHaveBeenCalledOnce()
 		expect(listWorkspacesMock).toHaveBeenCalledWith(
-			ctx.apiKey,
+			ctx.credentials,
 			expect.objectContaining({ orgId: "org-1", userId: "user-1" }),
 		)
-		expect(getQuotaUsageMock).toHaveBeenCalledWith(ctx.apiKey, expect.objectContaining({ orgId: "org-1" }))
+		expect(getQuotaUsageMock).toHaveBeenCalledWith(ctx.credentials, expect.objectContaining({ orgId: "org-1" }))
 	})
 
 	it("refuses when API key verification fails", async () => {

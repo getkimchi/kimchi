@@ -33,7 +33,7 @@ export async function runTerminal(
 	}
 	const rawRef = tokens[0]
 
-	if (!ctx.apiKey) {
+	if (!ctx.credentials.token) {
 		refuse(ctx, "No API key configured. Run `kimchi login`.")
 	}
 
@@ -47,7 +47,7 @@ export async function runTerminal(
 	status(ctx, "Authenticating SSH…")
 	let creds: WorkspaceCredentials
 	try {
-		creds = await authenticateWorkspace(workspaceId, ctx.apiKey, description, { endpoint: ctx.endpoint })
+		creds = await authenticateWorkspace(workspaceId, ctx.credentials, description, { endpoint: ctx.endpoint })
 	} catch (err) {
 		if (err instanceof RemoteAuthError) {
 			refuse(ctx, `Authentication failed for ${workspaceId}: ${err.message}`)
@@ -80,7 +80,11 @@ export async function runTerminal(
 		"LogLevel=ERROR",
 		`${SANDBOX_USER}@${creds.host}`,
 	]
-	const env: NodeJS.ProcessEnv = { ...process.env, KIMCHI_API_KEY: ctx.apiKey, AUTH_TOKEN: creds.connectToken }
+	const env: NodeJS.ProcessEnv = {
+		...process.env,
+		KIMCHI_API_KEY: ctx.credentials.token,
+		AUTH_TOKEN: creds.connectToken,
+	}
 
 	info(ctx, `Connecting to ${workspaceId.slice(0, 8)}…`)
 	let code = 0

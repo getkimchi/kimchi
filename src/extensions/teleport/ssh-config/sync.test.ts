@@ -16,7 +16,7 @@ const notifies: Array<{ msg: string; level: string }> = []
 
 function makeCtx(): TeleportContext {
 	return {
-		apiKey: "k",
+		credentials: { token: "k" },
 		cwd: "/work",
 		signal: undefined,
 		ui: {

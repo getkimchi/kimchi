@@ -1,6 +1,7 @@
 import { basename } from "node:path"
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { type Component, Key, type KeybindingsManager, matchesKey, type TUI } from "@earendil-works/pi-tui"
+import type { BearerCredentials } from "../../../auth/gateway-credentials.js"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
@@ -20,7 +21,7 @@ export interface TabsOverlayOpts {
 	/** Current workspace name (server-stored description). Echoed back on each
 	 *  token refresh so the auth PUT doesn't clobber a name the user set. */
 	workspaceName?: string
-	apiKey: string
+	credentials: BearerCredentials
 	cwd: string
 	endpoint?: string
 	ui: ExtensionUIContext
@@ -45,7 +46,7 @@ export function createTabsOverlay(opts: TabsOverlayOpts): OverlayFactory {
 			return creds.connectToken
 		}
 		const description = opts.workspaceName ?? basename(opts.cwd) ?? "kimchi"
-		creds = await authenticateWorkspace(opts.workspaceId, opts.apiKey, description, {
+		creds = await authenticateWorkspace(opts.workspaceId, opts.credentials, description, {
 			endpoint: opts.endpoint,
 		})
 		return creds.connectToken

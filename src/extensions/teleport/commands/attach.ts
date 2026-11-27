@@ -19,7 +19,7 @@ export interface AttachArgs {
 }
 
 export async function runAttachSession(args: AttachArgs, ctx: TeleportContext): Promise<void> {
-	if (!ctx.apiKey) {
+	if (!ctx.credentials.token) {
 		refuse(ctx, "No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 	}
 
@@ -32,7 +32,7 @@ export async function runAttachSession(args: AttachArgs, ctx: TeleportContext): 
 	try {
 		progress.step("Authenticating")
 		try {
-			creds = await authenticateWorkspace(workspaceId, ctx.apiKey, description, { endpoint: ctx.endpoint })
+			creds = await authenticateWorkspace(workspaceId, ctx.credentials, description, { endpoint: ctx.endpoint })
 		} catch (err) {
 			refuse(ctx, authFailureMessage(err))
 		}
@@ -80,7 +80,7 @@ export async function runAttachSession(args: AttachArgs, ctx: TeleportContext): 
 			creds,
 			workspaceId,
 			workspaceName: description,
-			apiKey: ctx.apiKey,
+			credentials: ctx.credentials,
 			cwd: ctx.cwd,
 			endpoint: ctx.endpoint,
 			ui: ctx.ui,

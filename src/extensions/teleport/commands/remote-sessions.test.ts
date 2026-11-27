@@ -126,7 +126,7 @@ function makeUi(): ExtensionUIContext & {
 function makeCtx(over: Partial<TeleportContext> = {}): { ctx: TeleportContext; ui: ReturnType<typeof makeUi> } {
 	const ui = makeUi()
 	const ctx: TeleportContext = {
-		apiKey: "test-key",
+		credentials: { token: "test-key" },
 		endpoint: "https://api.example.com",
 		cwd: "/work/proj",
 		ui,
@@ -302,7 +302,7 @@ describe("buildTree", () => {
 
 describe("runRemoteSessions", () => {
 	it("refuses without an API key", async () => {
-		const { ctx } = makeCtx({ apiKey: undefined })
+		const { ctx } = makeCtx({ credentials: { token: "" } })
 		await expect(runRemoteSessions("", ctx)).rejects.toBeInstanceOf(TeleportRefusal)
 	})
 
@@ -352,7 +352,7 @@ describe("runRemoteSessions", () => {
 		const { ctx, ui } = makeCtx()
 		ui.input.mockResolvedValue("renamed")
 		await runRemoteSessions("", ctx)
-		expect(createOrUpdateWorkspaceMock).toHaveBeenCalledWith("org-1", "w-1", "test-key", "renamed", {
+		expect(createOrUpdateWorkspaceMock).toHaveBeenCalledWith("org-1", "w-1", ctx.credentials, "renamed", {
 			endpoint: "https://api.example.com",
 		})
 		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
@@ -369,7 +369,7 @@ describe("runRemoteSessions", () => {
 		const { ctx, ui } = makeCtx()
 		ui.confirm.mockResolvedValue(true)
 		await runRemoteSessions("", ctx)
-		expect(deleteWorkspaceMock).toHaveBeenCalledWith("org-1", "w-1", "test-key", {
+		expect(deleteWorkspaceMock).toHaveBeenCalledWith("org-1", "w-1", ctx.credentials, {
 			endpoint: "https://api.example.com",
 		})
 		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(2)
@@ -625,13 +625,13 @@ describe("runRemoteSessions", () => {
 		const quotaArg = pickRemoteSessionsMock.mock.calls[0][2]
 		await expect(quotaArg).resolves.toBe(quota)
 		expect(getQuotaUsageMock).toHaveBeenCalledWith(
-			ctx.apiKey,
+			ctx.credentials,
 			expect.objectContaining({ endpoint: ctx.endpoint, orgId: "org-1" }),
 		)
 		// The cached ids are also shared with the refresh loop's list call so
 		// listWorkspaces skips its own duplicate verifyKey round-trip.
 		expect(listWorkspacesMock).toHaveBeenCalledWith(
-			ctx.apiKey,
+			ctx.credentials,
 			expect.objectContaining({ orgId: "org-1", userId: "user-1" }),
 		)
 	})

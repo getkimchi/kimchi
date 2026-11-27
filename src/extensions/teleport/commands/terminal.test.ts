@@ -87,7 +87,7 @@ function makeCtx(over: Partial<TeleportContext> = {}): {
 } {
 	const ui = makeUi()
 	const ctx: TeleportContext = {
-		apiKey: "test-key",
+		credentials: { token: "test-key" },
 		endpoint: "https://api.example.com",
 		cwd: "/work/proj",
 		ui,
@@ -112,7 +112,7 @@ describe("runTerminal", () => {
 
 	it("passes the session API key to SSH when startup has stripped the parent environment", async () => {
 		vi.stubEnv("KIMCHI_API_KEY", undefined)
-		const { ctx } = makeCtx({ apiKey: "captured-environment-key" })
+		const { ctx } = makeCtx({ credentials: { token: "captured-environment-key" } })
 		const runChild = vi.fn().mockResolvedValue(0)
 		await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
 		expect(runChild).toHaveBeenCalledWith(
@@ -235,7 +235,7 @@ describe("runTerminal", () => {
 	})
 
 	it("refuses when no API key is configured", async () => {
-		const { ctx, ui } = makeCtx({ apiKey: "" })
+		const { ctx, ui } = makeCtx({ credentials: { token: "" } })
 		const runChild = vi.fn().mockResolvedValue(0)
 
 		await expect(

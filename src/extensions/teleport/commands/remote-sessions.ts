@@ -20,7 +20,7 @@ import { runSyncArgs } from "./sync.js"
 import { runTerminal } from "./terminal.js"
 
 export async function runRemoteSessions(_args: string, ctx: TeleportContext): Promise<void> {
-	if (!ctx.apiKey) {
+	if (!ctx.credentials.token) {
 		refuse(ctx, "No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 	}
 
@@ -32,7 +32,7 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 	let orgId: string
 	let userId: string | undefined
 	try {
-		const verified = await verifyApiKey(ctx.apiKey, { endpoint: ctx.endpoint })
+		const verified = await verifyApiKey(ctx.credentials, { endpoint: ctx.endpoint })
 		orgId = verified.organizationId
 		userId = verified.userId
 	} catch (err) {
@@ -47,12 +47,12 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 		// "no summary" (pre-caught so the picker never sees a rejection), and a
 		// slow quota endpoint never delays the picker. Reuse the orgId verified
 		// above to skip a duplicate verifyKey round-trip.
-		const quotaPromise = getQuotaUsage(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId }).catch(
+		const quotaPromise = getQuotaUsage(ctx.credentials, { endpoint: ctx.endpoint, signal: ctx.signal, orgId }).catch(
 			() => undefined,
 		)
 		let workspaces: Workspace[]
 		try {
-			workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId, userId })
+			workspaces = await listWorkspaces(ctx.credentials, { endpoint: ctx.endpoint, signal: ctx.signal, orgId, userId })
 		} catch (err) {
 			status(ctx, undefined)
 			refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
@@ -109,7 +109,7 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 			const next = (await ctx.ui.input("Rename workspace", row.name))?.trim()
 			if (!next || next === row.name) continue
 			try {
-				await createOrUpdateWorkspace(orgId, row.id, ctx.apiKey, next, { endpoint: ctx.endpoint })
+				await createOrUpdateWorkspace(orgId, row.id, ctx.credentials, next, { endpoint: ctx.endpoint })
 				info(ctx, `Renamed to ${next}`)
 			} catch (err) {
 				warn(ctx, `Could not rename workspace: ${err instanceof Error ? err.message : String(err)}`)
@@ -129,7 +129,7 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 			const ok = await ctx.ui.confirm("Delete workspace", `Delete workspace ${label}${countSuffix}?`)
 			if (!ok) continue
 			try {
-				await deleteWorkspace(orgId, row.id, ctx.apiKey, { endpoint: ctx.endpoint })
+				await deleteWorkspace(orgId, row.id, ctx.credentials, { endpoint: ctx.endpoint })
 				info(ctx, `Deleted ${label}`)
 			} catch (err) {
 				warn(ctx, `Could not delete workspace: ${err instanceof Error ? err.message : String(err)}`)
@@ -147,7 +147,7 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 		try {
 			const creds = await authenticateWorkspace(
 				session.workspaceId,
-				ctx.apiKey,
+				ctx.credentials,
 				session.workspaceName || fallbackName,
 				{ endpoint: ctx.endpoint },
 			)
@@ -171,7 +171,7 @@ export async function buildTree(
 ): Promise<RemoteWorkspaceNode[]> {
 	const results = await Promise.allSettled(
 		workspaces.map(async (ws): Promise<SessionRow[]> => {
-			const creds = await authenticateWorkspace(ws.id, ctx.apiKey, ws.name || fallbackName, {
+			const creds = await authenticateWorkspace(ws.id, ctx.credentials, ws.name || fallbackName, {
 				endpoint: ctx.endpoint,
 			})
 			const client = new WorkerClient(creds)
