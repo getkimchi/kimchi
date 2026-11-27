@@ -50,19 +50,23 @@ In text mode, stdout shows the text of the last message, as pi decides it. These
 - a final message that is not from the assistant,
 - a prompt that an extension or hook handled, so the agent never ran. For example, a `UserPromptSubmit` hook that blocks the prompt.
 
-A final message that ended with a model error, an abort, or truncation is not a guard failure. In text mode, pi exits `1` for it. In JSON mode, the exit code stays `0` and the outcome is visible in the event stream.
+A final message that ended with a model error, an abort, or truncation exits `1` in both text and JSON mode. The diagnostic goes to stderr, and the JSON event stream also carries the assistant stop reason.
+
+Native text mode already printed raw provider diagnostics and exited `1` on a final abort. In JSON mode, when Pi leaves the exit code at zero for a final model failure, Kimchi now supplies exit `1` and writes the raw provider diagnostic to stderr as well.
+
+Hidden context and state messages emitted after the final answer are persisted to the active session branch during final one-shot shutdown, after text output has been queued and the JSON subscriber has detached. Pending messages from other branches are discarded at shutdown. If saving the messages fails, Kimchi reports the error on stderr, exits with a nonzero status, and lets stdout finish draining.
 
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | `0` | A real answer, or a normal command such as `--list-models` |
-| `1` | Model error, abort, or truncation (text mode only) |
+| `1` | Model error, abort, truncation, or session save failure |
 | `2` | No prompt reached the agent |
 | `3` | The run finished without a final answer |
 | `74` | Provider infrastructure failure |
 
-The guards only replace an unset or zero exit code. In text mode, code `1` is never changed. Code `74` is never changed in either mode. In JSON mode, a model error, abort, or truncation exits `0`, as before, and is not a guard failure.
+The guards only replace an unset or zero exit code. An existing model-error exit `1` and infrastructure exit `74` are never changed in either mode.
 
 ## Diagnostics
 
@@ -75,9 +79,9 @@ For exit `3`, the diagnostic also gives the session file path and tells you to r
 
 ## JSON mode
 
-`--mode json` keeps its newline-delimited event stream on stdout, with no added events or text. Only the guard outcomes change its exit code: it now uses exit codes `2` and `3`. Model error, abort, and truncation still exit `0` in JSON mode, and the event stream shows them.
+`--mode json` keeps its newline-delimited event stream on stdout, with no added events or text. Outcome handling uses exit codes `1`, `2`, and `3`; error, abort, and truncation are also visible in the event stream.
 
-This is a change for existing automation: a JSON run with no prompt or no final answer used to exit `0`. It now exits `2` or `3`. Scripts that treated `0` as success for these runs must handle the new codes.
+Scripts that treated every JSON run with a prompt as exit `0` must handle failure (`1`), missing prompt (`2`), and missing answer (`3`) outcomes.
 
 ## Troubleshooting
 

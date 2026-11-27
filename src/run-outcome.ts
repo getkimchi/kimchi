@@ -31,6 +31,7 @@ export type RunOutcomeLastEvent =
 
 export type RunOutcomeClassification =
 	| { kind: "ok" }
+	| { kind: "failed"; stopReason: "error" | "aborted" | "length"; diagnostic: string }
 	| { kind: "no-prompt" }
 	| { kind: "no-result"; lastEvent: RunOutcomeLastEvent; sessionPath?: string }
 
@@ -39,8 +40,6 @@ function finalEntryEvent(entry: MessageLikeSessionEntry | undefined): RunOutcome
 	if (entry.type === "custom_message") return { kind: "final-message", role: "custom" }
 	const msg = entry.message
 	if (msg.role !== "assistant") return { kind: "final-message", role: msg.role }
-	// pi already reports these outcomes itself, so they are not silent.
-	if (msg.stopReason === "error" || msg.stopReason === "aborted" || msg.stopReason === "length") return undefined
 	if (msg.content.some((block) => block.type === "text" && block.text.trim().length > 0)) return undefined
 	return { kind: "final-message", role: "assistant", stopReason: msg.stopReason }
 }
@@ -59,8 +58,20 @@ export function classifyRunOutcome(snapshot: RunOutcomeSnapshot): RunOutcomeClas
 		else if (!snapshot.promptSeen) return { kind: "no-prompt" }
 		else return { kind: "ok" }
 	} else {
-		if (snapshot.aborted || snapshot.fermentV2Owned) return { kind: "ok" }
-		lastEvent = finalEntryEvent(snapshot.finalEntry)
+		if (snapshot.fermentV2Owned) return { kind: "ok" }
+		const finalEntry = snapshot.finalEntry
+		if (finalEntry?.type === "message" && finalEntry.message.role === "assistant") {
+			const stopReason = finalEntry.message.stopReason
+			if (stopReason === "error" || stopReason === "aborted" || stopReason === "length") {
+				const diagnostic =
+					stopReason === "length"
+						? "Response was truncated: the model reached its output token limit."
+						: (finalEntry.message.errorMessage ?? `Request ${stopReason}`)
+				return { kind: "failed", stopReason, diagnostic }
+			}
+		}
+		if (snapshot.aborted) return { kind: "ok" }
+		lastEvent = finalEntryEvent(finalEntry)
 		if (!lastEvent) return { kind: "ok" }
 		// The block explains the empty answer better than the shape of the last entry.
 		if (snapshot.blockedTool) lastEvent = { kind: "blocked-tool", ...snapshot.blockedTool }
@@ -92,7 +103,9 @@ function describeLastEvent(lastEvent: RunOutcomeLastEvent): string {
 }
 
 /** Never includes model text. */
-export function formatRunOutcomeDiagnostic(outcome: Exclude<RunOutcomeClassification, { kind: "ok" }>): string {
+export function formatRunOutcomeDiagnostic(
+	outcome: Exclude<RunOutcomeClassification, { kind: "ok" | "failed" }>,
+): string {
 	if (outcome.kind === "no-prompt") {
 		return [
 			`KIMCHI_NO_PROMPT: no prompt reached the agent; exiting with code ${KIMCHI_NO_PROMPT_EXIT_CODE}.`,

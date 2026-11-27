@@ -134,6 +134,17 @@ Every update is serialized and written to a mode-0600 temp file followed by
 rename. Stage 3's `routine-checks.json` remains the shared command evidence.
 `reconciliation-request.json` is the immutable verifier input for one digest.
 
+## Saved reviewer sessions
+
+Reviewer and reconciler sessions are saved like other subagent sessions in the
+parent session's directory, with a `parentSession` link and a
+`kimchi:subagent-session` role (`review:<writer>` or `review:reconciliation`).
+They are not saved when the parent uses `--no-session` or has not yet written its
+session file; no separate review-output session directory is created. The role
+marker and parent link make the children visible in the session picker. They are
+not attached to the parent's HTML export or ACP subagent recovery because review
+children are not launched through the Agent tool manager.
+
 ## Candidate and final checkpoints
 
 Reviewer files remain `findings/<lens>.jsonl`. Every ingest revalidates writer,
