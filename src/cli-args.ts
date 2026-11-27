@@ -201,6 +201,11 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		description: "Replace the merged permissions config with this file",
 		placeholder: "<path>",
 	},
+	"max-session-duration": {
+		type: "string",
+		description: "Enable checkpointing and a finalization phase before this many seconds (main session only).",
+		placeholder: "<seconds>",
+	},
 	"bash-process-limit": {
 		type: "string",
 		description: "Absolute per-process safety limit for background bash commands, in seconds (default 3600)",
@@ -258,6 +263,7 @@ export interface SessionCliArgs {
 		approve?: boolean
 		"no-approve"?: boolean
 		"permissions-config"?: string
+		"max-session-duration"?: string
 		"bash-process-limit"?: string
 		"mcp-config"?: string
 		verbose?: boolean
@@ -340,6 +346,7 @@ export const CACHEABLE_OPTION_NAMES = [
 	"approve",
 	"no-approve",
 	"permissions-config",
+	"max-session-duration",
 	"bash-process-limit",
 	"mcp-config",
 	"verbose",

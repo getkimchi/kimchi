@@ -205,6 +205,7 @@ import {
 	prepareProviderRequest,
 	recordProviderResponse,
 } from "./extensions/work-attribution.js"
+import workspaceCheckpointsExtension from "./extensions/workspace-checkpoints/index.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
 import {
@@ -1022,6 +1023,7 @@ async function cliMain(): Promise<void> {
 				resourcesExtension,
 				resourceToolBlockerExtension,
 				behavioursExtension,
+				workspaceCheckpointsExtension,
 				promptSummaryExtension,
 				// Named so startup diagnostics read `<inline:feedback>` rather than a
 				// positional `<inline:N>` that shifts whenever the list above changes.
