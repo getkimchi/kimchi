@@ -49,6 +49,8 @@ export default defineConfig({
 			"./tests/setup/work-ledger.ts",
 			"./tests/setup/event-loop-jitter.ts",
 		],
+		// Once per run, before any file: the resources postinstall generates (tests/setup/generated-resources.ts).
+		globalSetup: ["./tests/setup/generated-resources.ts"],
 		env: {
 			// Pin locale so toLocaleString() produces consistent comma-separated
 			// numbers across developer machines and CI regardless of system locale.

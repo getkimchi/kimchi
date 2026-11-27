@@ -20,6 +20,7 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs"
@@ -161,6 +162,18 @@ function cleanup(dir) {
 	}
 }
 
+// Copy by rename, so a test run reading the file while another run regenerates it
+// (tests/setup/generated-resources.ts) sees the old file or the new one, never a partial one.
+function copyIntoPlace(src, dest) {
+	const tmp = `${dest}.${process.pid}.tmp`
+	try {
+		cpSync(src, tmp)
+		renameSync(tmp, dest)
+	} finally {
+		rmSync(tmp, { force: true })
+	}
+}
+
 function stageDocuments(staging, entryName) {
 	const stagedEntry = join(staging, entryName)
 	cpSync(join(projectRoot, "src", "extensions", "documents", entryName), stagedEntry)
@@ -231,7 +244,7 @@ function bundleSkillCli({ skill, entry, deps, rewriteJszip = false }) {
 		execFileSync("bun", ["build", stagedEntry, "--target=node", "--format=esm", "--outfile", stagedOut], {
 			stdio: "inherit",
 		})
-		cpSync(stagedOut, cliDest)
+		copyIntoPlace(stagedOut, cliDest)
 		return cliDest
 	} finally {
 		cleanup(staging)
@@ -260,7 +273,7 @@ const pdfCliDest = bundleSkillCli({
 	const wasmSrc = realpathSync(requireFrom.resolve("@hyzyla/pdfium/pdfium.wasm"))
 	const wasmDest = join(dirname(pdfCliDest), "pdfium.wasm")
 	if (resolve(wasmSrc) !== resolve(wasmDest)) {
-		cpSync(wasmSrc, wasmDest)
+		copyIntoPlace(wasmSrc, wasmDest)
 	}
 }
 
@@ -316,7 +329,7 @@ try {
 	execFileSync("bun", ["build", stagedEntry, "--target=node", "--format=esm", "--minify", "--outfile", stagedOut], {
 		stdio: "inherit",
 	})
-	cpSync(stagedOut, validatorDest)
+	copyIntoPlace(stagedOut, validatorDest)
 } finally {
 	// Best-effort: cleanup must never mask a build error or fail the build once
 	// the bundle is in place — a stale temp dir is the accepted worst case.
