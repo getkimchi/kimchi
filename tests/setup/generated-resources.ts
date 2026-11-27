@@ -19,5 +19,12 @@ function generate(): void {
  */
 export default function setup(project: TestProject): void {
 	generate()
-	project.onTestsRerun(generate)
+	project.onTestsRerun(() => {
+		// A source saved mid-edit can fail to bundle: report it and keep watching (the error ended the session).
+		try {
+			generate()
+		} catch (error) {
+			console.error(`${(error as Error).message}\nThis rerun uses the resources of the last successful generation.`)
+		}
+	})
 }
