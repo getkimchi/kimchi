@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
@@ -38,7 +38,26 @@ describe("session file discovery and provenance", () => {
 		expect(encodeCwdDir(directory)).toBe(`--${directory.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`)
 	})
 
-	it("honors ACP fork provenance only at the second entry", () => {
+	it("reads a session header larger than the initial peek", () => {
+		const directory = mkdtempSync(join(tmpdir(), "kimchi-file-large-header-"))
+		directories.push(directory)
+		const parentSession = `${join(directory, "source")}-${"x".repeat(9 * 1024)}.jsonl`
+		const header = {
+			type: "session",
+			version: 3,
+			id: "large-header",
+			cwd: directory,
+			timestamp: new Date().toISOString(),
+			parentSession,
+		}
+		const path = join(directory, "large-header.jsonl")
+		writeFileSync(path, `${JSON.stringify(header)}\n`)
+
+		expect(readFileSync(path, "utf-8").length).toBeGreaterThan(8 * 1024)
+		expect(readSessionHeader(path)).toEqual({ id: "large-header", cwd: directory, parentSession })
+	})
+
+	it("validates provenance position and preserves unreadable-source errors", () => {
 		const directory = mkdtempSync(join(tmpdir(), "kimchi-file-provenance-"))
 		directories.push(directory)
 		const header = { type: "session", version: 3, id: "source", cwd: directory, timestamp: new Date().toISOString() }
@@ -51,6 +70,9 @@ describe("session file discovery and provenance", () => {
 			`${JSON.stringify(header)}\n${JSON.stringify({ type: "custom", customType: "other" })}\n${JSON.stringify(marker)}\n`,
 		)
 		expect(hasAcpForkProvenance(path)).toBe(false)
+		writeFileSync(path, "not-json\n")
+		expect(hasAcpForkProvenance(path)).toBe(false)
+		expect(() => hasAcpForkProvenance(join(directory, "missing.jsonl"))).toThrow(/ENOENT/)
 	})
 })
 
@@ -75,7 +97,7 @@ describe("persistAcpFork", () => {
 		const before = readFileSync(path, "utf-8")
 
 		const result = persistAcpFork({
-			source: { sessionId: source.getSessionId(), cwd: directory, sessionFile: path, sessionManager: source },
+			source: { sessionId: source.getSessionId(), cwd: directory, sessionManager: source },
 			cwd: directory,
 			sessionDir: directory,
 			sourceId: "source",
@@ -108,6 +130,33 @@ describe("persistAcpFork", () => {
 			data: {},
 		})
 		expect(readFileSync(path, "utf-8")).toBe(before)
+	})
+
+	it("preserves the selected live branch when the source file is not yet persisted", () => {
+		const directory = mkdtempSync(join(tmpdir(), "kimchi-file-live-fallback-"))
+		directories.push(directory)
+		const source = SessionManager.create(directory, directory, { id: "source" })
+		source.appendMessage({ role: "user", content: [{ type: "text", text: "live prompt" }], timestamp: 1 })
+		const liveEntryId = source.appendCustomEntry("live-only", { content: "only in memory" })
+		source.branch(liveEntryId)
+		const sourcePath = source.getSessionFile()
+		if (!sourcePath) throw new Error("expected allocated source path")
+		rmSync(sourcePath)
+
+		const result = persistAcpFork({
+			source: { sessionId: source.getSessionId(), cwd: directory, sessionManager: source },
+			cwd: directory,
+			sessionDir: directory,
+			sourceId: "source",
+			sourcePath,
+		})
+
+		const contents = readFileSync(result.path, "utf-8")
+		expect(contents).toContain("live prompt")
+		expect(contents).toContain('"customType":"live-only"')
+		expect(contents).toContain("only in memory")
+		expect(readSessionHeader(result.path)?.parentSession).toBe(sourcePath)
+		expect(existsSync(sourcePath)).toBe(false)
 	})
 
 	it("uses the caller's validated source path instead of rediscovering it", () => {

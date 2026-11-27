@@ -1418,7 +1418,6 @@ export class KimchiAcpAgent {
 					? {
 							sessionId: source.session.sessionId,
 							cwd: source.cwd,
-							sessionFile: source.session.sessionFile,
 							sessionManager: source.session.sessionManager,
 						}
 					: undefined,
@@ -1430,7 +1429,6 @@ export class KimchiAcpAgent {
 			sessionId = fork.sessionId
 			forkedPath = fork.path
 		} catch (err) {
-			if (forkedPath) rmSync(forkedPath, { force: true })
 			const msg = err instanceof Error ? err.message : String(err)
 			throw RequestError.invalidParams(undefined, `failed to fork session ${params.sessionId}: ${msg}`)
 		}

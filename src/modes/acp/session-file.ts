@@ -74,8 +74,9 @@ export function readSessionHeader(sessionPath: string): Pick<SessionHeader, "id"
 const ACP_FORK_ENTRY_TYPE = "kimchi:acp-fork"
 const ACP_FORK_EXTERNAL_SUBAGENT_ENTRY = "kimchi:acp-fork-subagent-metadata"
 
-/** Positive lineage proof accepted from an ACP-created fork. Unknown or
- * unreadable parented files retain the default read-only boundary. */
+/** Positive lineage proof accepted from an ACP-created fork. Malformed or
+ * unrecognized provenance returns false. Filesystem read errors are deliberately
+ * propagated: callers must preserve the read-only boundary for both outcomes. */
 export function hasAcpForkProvenance(sessionPath: string): boolean {
 	const provenance = parseSessionEntries(readSessionHeaderPeek(sessionPath).raw)[1]
 	return provenance?.type === "custom" && provenance.customType === ACP_FORK_ENTRY_TYPE
@@ -84,7 +85,6 @@ export function hasAcpForkProvenance(sessionPath: string): boolean {
 export type AcpForkSource = {
 	sessionId: string
 	cwd: string
-	sessionFile?: string
 	sessionManager: SessionManager
 }
 
@@ -99,30 +99,22 @@ type PersistAcpForkInput = {
 
 function durableEntries(source: AcpForkSource, sourcePath: string): FileEntry[] {
 	const liveEntries = source.sessionManager.getBranch()
+	const fallbackHeader: SessionHeader = {
+		type: "session",
+		version: CURRENT_SESSION_VERSION,
+		id: source.sessionId,
+		timestamp: new Date().toISOString(),
+		cwd: source.cwd,
+	}
 	try {
 		const persisted = parseSessionEntries(readFileSync(sourcePath, "utf-8"))
-		const persistedHeader = persisted.find((entry) => entry.type === "session") ?? {
-			type: "session",
-			version: CURRENT_SESSION_VERSION,
-			id: source.sessionId,
-			timestamp: new Date().toISOString(),
-			cwd: source.cwd,
-		}
+		const persistedHeader = persisted.find((entry) => entry.type === "session") ?? fallbackHeader
 		const durableById = new Map(persisted.filter((entry) => entry.type !== "session").map((entry) => [entry.id, entry]))
 		return [persistedHeader, ...liveEntries.map((entry) => durableById.get(entry.id) ?? entry)]
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err
 	}
-	return [
-		{
-			type: "session",
-			version: CURRENT_SESSION_VERSION,
-			id: source.sessionId,
-			timestamp: new Date().toISOString(),
-			cwd: source.cwd,
-		},
-		...liveEntries,
-	]
+	return [fallbackHeader, ...liveEntries]
 }
 
 /**
