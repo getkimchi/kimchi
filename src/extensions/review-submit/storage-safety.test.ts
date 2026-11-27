@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { resolveReviewDirectories } from "./paths.js"
-import { runSubmissionProcess, stripExpectedNodeSqliteWarning } from "./process-test-utils.js"
+import { runSubmissionProcess, stripExpectedNodeWarnings } from "./process-test-utils.js"
 import { submitFinding, submitReply, submitSummary } from "./store.js"
 
 const NOW = () => new Date("2026-11-17T12:00:00Z")
@@ -69,7 +69,7 @@ describe("review output process and path safety", () => {
 				homeDir,
 				input: { ...summary, body: "Recovered replacement." },
 			})
-			expect(stripExpectedNodeSqliteWarning(recovered.stderr)).toBe("")
+			expect(stripExpectedNodeWarnings(recovered.stderr)).toBe("")
 			expect(recovered.result, recovered.stdout).toMatchObject({ accepted: true })
 			expect(JSON.parse(readFileSync(join(homeDir, "review-output", "summary", "final.json"), "utf8")).body).toBe(
 				"Recovered replacement.",

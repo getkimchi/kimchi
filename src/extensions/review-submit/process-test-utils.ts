@@ -15,10 +15,15 @@ export function bunExecutablePath(): string {
 const NODE_SQLITE_EXPERIMENTAL_WARNING =
 	/^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature and might change at any time\r?\n\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\r?\n?/
 
-/** Remove exactly Node 22's experimental SQLite warning and its trace hint,
- * anchored so every unrelated warning, diagnostic, or thrown error remains. */
-export function stripExpectedNodeSqliteWarning(stderr: string): string {
-	return stderr.replace(NODE_SQLITE_EXPERIMENTAL_WARNING, "")
+// Node 26 deprecates module.register(), which the tsx loader of the child processes still calls.
+const TSX_MODULE_REGISTER_DEPRECATION =
+	/^\(node:\d+\) \[DEP0205\] DeprecationWarning: `module\.register\(\)` is deprecated\. Use `module\.registerHooks\(\)` instead\.\r?\n\(Use `node --trace-deprecation \.\.\.` to show where the warning was created\)\r?\n?/
+
+/** Remove exactly the known toolchain warnings and their trace hints: Node 26's
+ * tsx loader deprecation, then Node 22's experimental SQLite warning. Both are
+ * anchored, so every unrelated warning, diagnostic, or thrown error remains. */
+export function stripExpectedNodeWarnings(stderr: string): string {
+	return stderr.replace(TSX_MODULE_REGISTER_DEPRECATION, "").replace(NODE_SQLITE_EXPERIMENTAL_WARNING, "")
 }
 
 export interface SubmissionProcessResult {

@@ -7,7 +7,7 @@ import { Key, matchesKey } from "@earendil-works/pi-tui"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createCommandContext, sendTerminalInput } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import { stripExpectedNodeSqliteWarning } from "../review-submit/process-test-utils.js"
+import { stripExpectedNodeWarnings } from "../review-submit/process-test-utils.js"
 import {
 	acquireReviewOperation,
 	cancelActiveReview,
@@ -372,7 +372,8 @@ describe("active local review runs", () => {
 
 	it.skipIf(process.platform === "win32")(
 		"keeps a SIGSTOPped holder exclusive without a crash",
-		{ timeout: 30_000 },
+		// Room for three 10 s child waits and the 2.5 s exclusivity window.
+		{ timeout: 45_000 },
 		async () => {
 			const { root } = sandbox()
 			const outputRoot = join(root, "out")
@@ -391,8 +392,10 @@ describe("active local review runs", () => {
 			const children = [holder.child]
 			let waiter: ReturnType<typeof startActiveRunsProcess> | undefined
 			try {
-				await vi.waitFor(() =>
-					expect(holder.messages.some((message) => message.type === "before_stale_rename")).toBe(true),
+				// Each wait includes a cold tsx child start, which a busy runner makes slow.
+				await vi.waitFor(
+					() => expect(holder.messages.some((message) => message.type === "before_stale_rename")).toBe(true),
+					{ timeout: 10_000 },
 				)
 				process.kill(holder.child.pid as number, "SIGSTOP")
 				waiter = startActiveRunsProcess(outputRoot, "waiter", "normal")
@@ -404,11 +407,15 @@ describe("active local review runs", () => {
 
 				process.kill(holder.child.pid as number, "SIGCONT")
 				holder.child.send("continue")
-				await vi.waitFor(() => expect(holder.messages.some((message) => message.type === "acquired")).toBe(true))
-				await vi.waitFor(() =>
-					expect(
-						waiter?.messages.some((message) => message.type === "error" && message.code === "review_in_progress"),
-					).toBe(true),
+				await vi.waitFor(() => expect(holder.messages.some((message) => message.type === "acquired")).toBe(true), {
+					timeout: 10_000,
+				})
+				await vi.waitFor(
+					() =>
+						expect(
+							waiter?.messages.some((message) => message.type === "error" && message.code === "review_in_progress"),
+						).toBe(true),
+					{ timeout: 10_000 },
 				)
 				const holderToken = holder.messages.find((message) => message.type === "acquired")?.token
 				expect(JSON.parse(readFileSync(lockPath, "utf8")).token).toBe(holderToken)
@@ -417,8 +424,8 @@ describe("active local review runs", () => {
 				const [holderResult, waiterResult] = await Promise.all([holder.completed, waiter.completed])
 				expect(holderResult.code).toBe(0)
 				expect(waiterResult.code).toBe(0)
-				expect(stripExpectedNodeSqliteWarning(holderResult.stderr)).toBe("")
-				expect(stripExpectedNodeSqliteWarning(waiterResult.stderr)).toBe("")
+				expect(stripExpectedNodeWarnings(holderResult.stderr)).toBe("")
+				expect(stripExpectedNodeWarnings(waiterResult.stderr)).toBe("")
 			} finally {
 				stopChildren(children)
 			}
