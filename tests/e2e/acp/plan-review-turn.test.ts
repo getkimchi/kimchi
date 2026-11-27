@@ -21,6 +21,8 @@ const FULL_CAPABILITIES: ClientCapabilities = {
 }
 
 const PI_META = { "kimchi.dev": { ...ADVERTISED_CAPABILITIES } } as const
+// Ferment loads over ACP only for a client that opts in.
+const FERMENT_PI_META = { "kimchi.dev": { ...ADVERTISED_CAPABILITIES, ferment: true } } as const
 
 const PLAN_CONTENT =
 	"# Plan: Cache Layer\n\n## Goal\nAdd caching layer.\n\n## Chunks\n\n### Chunk 1: Add cache primitive\n- **Accept When**: round-trip works"
@@ -45,7 +47,7 @@ function stalePlanResponses() {
 	]
 }
 
-// Ferment is on by default, so approving a plan starts a plan execution run.
+// With the Ferment opt-in, approving a plan starts a plan execution run.
 // Blocking it ends the run after the execution turn instead of continuing.
 function blockPlanExecution(stream: string) {
 	return {
@@ -81,7 +83,7 @@ describe("ACP integration — plan review held prompt", () => {
 			fixture = await startAcpFixture({
 				artifactName: "plan-review-execute",
 				extraArgs: ["--plan"],
-				responses: [submitPlanResponse(), blockPlanExecution("Plan executed."), { stream: ["follow-up ok"] }],
+				responses: [submitPlanResponse(), { stream: ["Plan executed."] }, { stream: ["follow-up ok"] }],
 				clientCapabilities: FULL_CAPABILITIES,
 				clientMeta: PI_META,
 			})
@@ -118,7 +120,7 @@ describe("ACP integration — plan review held prompt", () => {
 					toolResponse("bash", { command: "printf 'blocked until reconciliation\\n'" }),
 					toolResponse("mark_todo", { id: 1, status: "completed" }),
 					toolResponse("bash", { command: "printf 'executed\\n'" }),
-					blockPlanExecution("Plan executed with reconciled todos."),
+					{ stream: ["Plan executed with reconciled todos."] },
 				],
 				clientCapabilities: FULL_CAPABILITIES,
 				clientMeta: PI_META,
@@ -136,8 +138,36 @@ describe("ACP integration — plan review held prompt", () => {
 			// carry both the approval and the deferred check-in instruction.
 			const checkinTurn = bodies.findIndex((body) => body.includes("The plan was submitted for review"))
 			expect(checkinTurn).toBe(4)
-			expect(bodies[checkinTurn]).toContain("Implement the approved plan below")
+			expect(bodies[checkinTurn]).toContain("The user approved the plan")
 			expect(bodies[checkinTurn + 1]).toContain("check-in pending (input revision 1)")
+		},
+		PROMPT_TIMEOUT_MS,
+	)
+
+	it(
+		"execute with the Ferment opt-in: the approved plan runs as a Ferment inside the held prompt",
+		async () => {
+			fixture = await startAcpFixture({
+				artifactName: "plan-review-execute-ferment",
+				extraArgs: ["--plan"],
+				responses: [submitPlanResponse(), blockPlanExecution("Plan executed."), { stream: ["follow-up ok"] }],
+				clientCapabilities: FULL_CAPABILITIES,
+				clientMeta: FERMENT_PI_META,
+			})
+			const sessionId = await newSession(fixture, fixture.workDir)
+			fixture.client.answerNextElicitationWith({ action: "accept", content: { value: EXECUTE_LOCAL_DECISION_OPTION } })
+
+			const t1 = await prompt(fixture, sessionId, "Make me a plan for the cache layer")
+			expect(t1.stopReason).toBe("end_turn")
+			expect(t1.chunks).toContain("Plan executed.")
+			// The Ferment plan executor sends its own objective, not the plain approval message.
+			const bodies = chatBodies(fixture)
+			expect(bodies[1]).toContain("Implement the approved plan below")
+			expect(bodies[1]).not.toContain("The user approved the plan")
+
+			const t2 = await prompt(fixture, sessionId, "How did the execution go?")
+			expect(t2.stopReason).toBe("end_turn")
+			expect(t2.chunks).toContain("follow-up ok")
 		},
 		PROMPT_TIMEOUT_MS,
 	)

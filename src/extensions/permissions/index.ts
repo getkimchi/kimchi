@@ -70,6 +70,7 @@ import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
 import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
+import { isFermentPermitted } from "../ferment-v2/session-policy.js"
 import { createBlockedDialogActivity, withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { decideAutoMcpCall } from "../mcp/auto-policy.js"
@@ -1040,8 +1041,9 @@ function registerPermissions(pi: ExtensionAPI, options: GateOptions): void {
 		pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
 		// The setting is read live, so a V2 enable after startup finds no
 		// executor. V2 loads only at startup, so fall through to the plain path
-		// instead of dropping the approved plan.
-		const fermentEnabled = isResourceEnabled(FERMENT_V2_RESOURCE_ID)
+		// instead of dropping the approved plan. An ACP client that did not opt
+		// into Ferment also takes the plain path, without the restart notice.
+		const fermentEnabled = isFermentPermitted() && isResourceEnabled(FERMENT_V2_RESOURCE_ID)
 		const executor = fermentEnabled ? getFermentV2PlanExecutor(pi) : undefined
 		if (fermentEnabled && !executor) {
 			// Without this the user expects a Ferment run and gets a plain one

@@ -153,6 +153,13 @@ vi.mock("../../resources/store.js", async (importOriginal) => {
 
 const isResourceEnabledMock = vi.mocked(isResourceEnabled)
 
+// Outside ACP Ferment is always permitted. Tests flip this to model an ACP
+// client that did not opt into Ferment.
+const fermentPermission = vi.hoisted(() => ({ permitted: true }))
+vi.mock("../ferment-v2/session-policy.js", () => ({
+	isFermentPermitted: () => fermentPermission.permitted,
+}))
+
 // Bundled skills root the permissions extension resolves at session start; the
 // write/edit deny over the doc-cli load path anchors on this dir. Tests set it
 // to a temp tree per case.
@@ -185,6 +192,9 @@ afterEach(async () => {
 })
 
 beforeEach(cleanPermissionEnv)
+beforeEach(() => {
+	fermentPermission.permitted = true
+})
 beforeEach(() => resetClassifierBreakerForTests())
 beforeEach(() => {
 	populateCliArgs([])
@@ -3740,6 +3750,27 @@ describe("plan mode assumption detection", () => {
 			)
 			expect(ctx.ui.notify).not.toHaveBeenCalledWith("Could not start the approved plan automatically.", "error")
 			expect(ctx.ui.notify).not.toHaveBeenCalledWith(FERMENT_ENABLED_AFTER_START_NOTICE, "info")
+		})
+
+		it("Execute takes the plain plan path with no notice when the ACP client did not opt into Ferment", async () => {
+			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID || id === COST_PER_PR_RESOURCE_ID)
+			fermentPermission.permitted = false
+			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+			const executor = vi.fn(async () => "started" as const)
+			registerFermentV2PlanExecutor(harness.pi, executor)
+			await harness.fire("session_start", {}, createMockContext([]))
+			const ctx = createMockContext(["Execute the plan locally"])
+
+			await submitPlan(harness, PLAN_V1, ctx)
+
+			expect(executor).not.toHaveBeenCalled()
+			expect(harness.pi.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ customType: "plan-execute", content: expect.stringContaining(PLAN_V1) }),
+				{ triggerTurn: true },
+			)
+			// The restart notice would be wrong here: a restart does not change the client's opt-in.
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith(FERMENT_ENABLED_AFTER_START_NOTICE, "info")
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith("Could not start the approved plan automatically.", "error")
 		})
 
 		it("Execute shows no Ferment notice when Ferment is off and no executor is registered", async () => {

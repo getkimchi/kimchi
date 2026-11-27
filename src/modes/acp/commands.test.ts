@@ -20,7 +20,6 @@ import {
 	createCommandsRefresher,
 	discoverSkillCommandsMap,
 	FERMENT_AVAILABLE_COMMAND,
-	FERMENT_LEGACY_AVAILABLE_COMMAND,
 	reloadSkillCommandsMap,
 	tryParseCompactCommand,
 } from "./commands.js"
@@ -189,10 +188,8 @@ describe("composeAvailableCommands — /ferment", () => {
 		expect(composeAvailableCommands(new Map(), true).map((c) => c.name)).not.toContain("ferment")
 	})
 
-	it("puts /ferment before /ferment-legacy and skills", () => {
+	it("puts /ferment before skills", () => {
 		markFermentV2Loaded()
-		setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
-		markFermentLegacyLoaded()
 		const skills = new Map([
 			["alpha", { name: "alpha", description: "Alpha skill", filePath: "/skills/alpha/SKILL.md" }],
 		])
@@ -203,77 +200,17 @@ describe("composeAvailableCommands — /ferment", () => {
 			"language",
 			"pr-watch",
 			"ferment",
-			"ferment-legacy",
 			"skill:alpha",
 		])
 	})
-})
 
-// Real resource store in a temp agent dir, so the live legacy setting and the
-// startup loaded marker are both exercised.
-describe("composeAvailableCommands — /ferment-legacy", () => {
-	let agentDir: string
-
-	beforeEach(() => {
-		agentDir = mkdtempSync(join(tmpdir(), "acp-ferment-legacy-palette-"))
-		process.env.KIMCHI_CODING_AGENT_DIR = agentDir
-		Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
-		resetOrgPolicyForTests()
-		resetFermentV2LoadedForTests()
-		resetFermentLegacyLoadedForTests()
-	})
-
-	afterEach(() => {
-		resetFermentV2LoadedForTests()
-		resetFermentLegacyLoadedForTests()
-		resetOrgPolicyForTests()
-		Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
-		rmSync(agentDir, { recursive: true, force: true })
-	})
-
-	const legacyNames = (prMonitoring?: boolean) =>
-		composeAvailableCommands(new Map(), prMonitoring).filter((c) => c.name === "ferment-legacy")
-
-	it("lists /ferment-legacy after the static commands when V1 loaded at startup", () => {
+	// Legacy Ferment is not supported over ACP. The palette has no entry for it,
+	// even if something marked V1 as loaded.
+	it("never lists /ferment-legacy, even when legacy is on and V1 is marked loaded", () => {
+		markFermentV2Loaded()
 		setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
 		markFermentLegacyLoaded()
-
-		expect(composeAvailableCommands(new Map(), true).map((c) => c.name)).toEqual([
-			"bug",
-			"compact",
-			"language",
-			"pr-watch",
-			"ferment-legacy",
-		])
-		const legacy = legacyNames()[0]
-		expect(legacy).toEqual(FERMENT_LEGACY_AVAILABLE_COMMAND)
-		expect(legacy?.description).toBe("Legacy Ferment (V1).")
-		expect(legacy?.input).toEqual({ hint: 'A legacy command, such as list, new "Name", or switch <id>.' })
-	})
-
-	it("does not list /ferment-legacy when legacy is off and V1 did not load", () => {
-		expect(legacyNames()).toHaveLength(0)
-		expect(legacyNames(true)).toHaveLength(0)
-	})
-
-	// Turning legacy on mid-session does not load V1. Only the stub runs.
-	it("does not list /ferment-legacy when legacy is turned on but V1 did not load", () => {
-		setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
-		expect(legacyNames()).toHaveLength(0)
-	})
-
-	it("hides /ferment-legacy again when legacy is turned off after V1 loaded", () => {
-		setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
-		markFermentLegacyLoaded()
-		setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, false)
-		expect(legacyNames()).toHaveLength(0)
-	})
-
-	it("advertises /ferment-legacy once, and not through /help (SLASH_COMMANDS)", () => {
-		setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
-		markFermentLegacyLoaded()
-		expect(SLASH_COMMANDS).not.toHaveProperty("ferment-legacy")
-		expect(legacyNames(true)).toHaveLength(1)
+		expect(composeAvailableCommands(new Map(), true).map((c) => c.name)).not.toContain("ferment-legacy")
 	})
 })
 

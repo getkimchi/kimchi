@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetOrgPolicyForTests } from "../../org-policy.js"
 import { setOrgPolicyForTests } from "../../org-policy.test-utils.js"
 import { setResourceOverride } from "../../resources/store.js"
@@ -21,6 +21,12 @@ import {
 	parseFermentV2Command,
 } from "./command.js"
 import { FERMENT_V2_STATUSES, type FermentV2Status, type SessionFermentV2 } from "./types.js"
+
+const acpHost = vi.hoisted(() => ({ value: false }))
+vi.mock("../../modes/acp/state.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../modes/acp/state.js")>()),
+	isAcpSessionHost: () => acpHost.value,
+}))
 
 describe("Ferment V2 command", () => {
 	it("parses management commands and inline objectives", () => {
@@ -317,6 +323,7 @@ describe("legacy Ferment words typed into /ferment", () => {
 		})
 
 		afterEach(() => {
+			acpHost.value = false
 			resetOrgPolicyForTests()
 			resetFermentLegacyLoadedForTests()
 			Reflect.deleteProperty(process.env, "KIMCHI_CODING_AGENT_DIR")
@@ -381,6 +388,45 @@ describe("legacy Ferment words typed into /ferment", () => {
 			setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
 			markFermentLegacyLoaded()
 			expect(formatFermentLegacyWordHint("list")).not.toContain("To stop the current Ferment")
+		})
+
+		// Legacy Ferment never loads over ACP, so the hint must not point to it.
+		describe("over ACP", () => {
+			beforeEach(() => {
+				acpHost.value = true
+			})
+
+			it("says legacy is not available instead of pointing to /ferment-legacy", () => {
+				expect(formatFermentLegacyWordHint("list")).toBe(
+					[
+						"/ferment list is a legacy Ferment command. Legacy Ferment is not available in this client.",
+						'To start a Ferment with "list" as the objective, write a longer objective.',
+					].join("\n"),
+				)
+			})
+
+			it("does not mention /ferment-legacy even when legacy is on and loaded", () => {
+				setResourceOverride(FERMENT_LEGACY_RESOURCE_ID, true)
+				markFermentLegacyLoaded()
+				const hint = formatFermentLegacyWordHint("switch")
+				expect(hint).not.toContain("/ferment-legacy")
+				expect(hint).not.toContain("kimchi resources enable")
+			})
+
+			it("shows the typed arguments", () => {
+				expect(formatFermentLegacyWordHint("delete", "old-auth")).toBe(
+					[
+						"/ferment delete old-auth is a legacy Ferment command. Legacy Ferment is not available in this client.",
+						"To start a Ferment with this as the objective, rephrase it as a sentence.",
+					].join("\n"),
+				)
+			})
+
+			it.each(["exit", "abandon"] as const)("still points to pause and clear for %s", (word) => {
+				expect(formatFermentLegacyWordHint(word)).toContain(
+					"To stop the current Ferment, use /ferment pause or /ferment clear.",
+				)
+			})
 		})
 
 		it("names the org policy when the organization turned legacy off", async () => {

@@ -11,6 +11,9 @@ import { chatRequests } from "../tui/support/wire-requests.js"
 import { type AcpFixture, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, waitFor } from "./support/scenarios.js"
 
+// Ferment loads over ACP only for a client that opts in.
+const FERMENT_META = { "kimchi.dev": { ferment: true } } as const
+
 function agentTextChunks(fixture: AcpFixture, sessionId: string): string[] {
 	return fixture.client.sessionUpdates.flatMap(({ sessionId: id, update }) =>
 		id === sessionId && update.sessionUpdate === "agent_message_chunk" && update.content.type === "text"
@@ -38,7 +41,11 @@ describe("ACP integration — /ferment command replies", () => {
 	})
 
 	it("answers /ferment pause with visible text when no run exists", async () => {
-		fixture = await startAcpFixture({ artifactName: "acp-ferment-reply-pause", responses: [] })
+		fixture = await startAcpFixture({
+			artifactName: "acp-ferment-reply-pause",
+			responses: [],
+			clientMeta: FERMENT_META,
+		})
 		const active = fixture
 		const sessionId = await newSession(active, active.workDir)
 
@@ -51,7 +58,11 @@ describe("ACP integration — /ferment command replies", () => {
 	})
 
 	it("answers bare /ferment with the summary", async () => {
-		fixture = await startAcpFixture({ artifactName: "acp-ferment-reply-summary", responses: [] })
+		fixture = await startAcpFixture({
+			artifactName: "acp-ferment-reply-summary",
+			responses: [],
+			clientMeta: FERMENT_META,
+		})
 		const active = fixture
 		const sessionId = await newSession(active, active.workDir)
 
@@ -66,15 +77,24 @@ describe("ACP integration — /ferment command replies", () => {
 	})
 
 	it("answers a legacy word with the hint", async () => {
-		fixture = await startAcpFixture({ artifactName: "acp-ferment-reply-legacy-word", responses: [] })
+		fixture = await startAcpFixture({
+			artifactName: "acp-ferment-reply-legacy-word",
+			responses: [],
+			clientMeta: FERMENT_META,
+		})
 		const active = fixture
 		const sessionId = await newSession(active, active.workDir)
 
 		const result = await prompt(active, sessionId, "/ferment list")
 
 		expect(result.stopReason).toBe("end_turn")
-		const replies = agentTextChunks(active, sessionId).filter((text) => text.includes("Use /ferment-legacy list."))
+		const replies = agentTextChunks(active, sessionId).filter((text) =>
+			text.includes("/ferment list is a legacy Ferment command."),
+		)
 		expect(replies).toHaveLength(1)
+		// ACP never loads legacy Ferment, so the hint must not point to it.
+		expect(replies[0]).toContain("Legacy Ferment is not available in this client.")
+		expect(replies[0]).not.toContain("/ferment-legacy")
 		expect(chatRequests(active)).toHaveLength(0)
 	})
 
@@ -82,6 +102,7 @@ describe("ACP integration — /ferment command replies", () => {
 		fixture = await startAcpFixture({
 			artifactName: "acp-ferment-reply-off",
 			responses: [],
+			clientMeta: FERMENT_META,
 			settings: { resources: { "extensions.ferment": false } },
 		})
 		const active = fixture
@@ -102,6 +123,7 @@ describe("ACP integration — /ferment command replies", () => {
 		fixture = await startAcpFixture({
 			artifactName: "acp-ferment-reply-run-scope",
 			responses: [{ stream: [modelText] }],
+			clientMeta: FERMENT_META,
 		})
 		const active = fixture
 		const sessionId = await newSession(active, active.workDir)

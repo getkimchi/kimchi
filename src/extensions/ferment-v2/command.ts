@@ -1,3 +1,4 @@
+import { isAcpSessionHost } from "../../modes/acp/state.js"
 import { fermentLegacyNotLoadedMessage, isFermentLegacyLoadedAndEnabled } from "../ferment/resource.js"
 import { FERMENT_LEGACY_COMMAND_NAME } from "../ferment/resource-id.js"
 import { formatCount, formatDuration } from "../format.js"
@@ -91,11 +92,19 @@ export function formatFermentLegacyWordHint(word: FermentLegacyWord, args?: stri
 		? `/${FERMENT_LEGACY_COMMAND_NAME} ${word} ${args}`
 		: `/${FERMENT_LEGACY_COMMAND_NAME} ${FERMENT_LEGACY_WORD_USAGE[word] ?? word}`
 	const typed = args ? `${word} ${args}` : word
+	// ACP never loads legacy Ferment, so pointing to /ferment-legacy there would lead nowhere.
+	const legacyAdvice = isAcpSessionHost()
+		? [
+				`/${FERMENT_V2_COMMAND_NAME} ${typed} is a legacy Ferment command. Legacy Ferment is not available in this client.`,
+			]
+		: [
+				`/${FERMENT_V2_COMMAND_NAME} ${typed} is a legacy Ferment command. Use ${legacyCommand}.`,
+				...(isFermentLegacyLoadedAndEnabled()
+					? []
+					: [fermentLegacyNotLoadedMessage(`/${FERMENT_LEGACY_COMMAND_NAME} ${word}`)]),
+			]
 	return [
-		`/${FERMENT_V2_COMMAND_NAME} ${typed} is a legacy Ferment command. Use ${legacyCommand}.`,
-		...(isFermentLegacyLoadedAndEnabled()
-			? []
-			: [fermentLegacyNotLoadedMessage(`/${FERMENT_LEGACY_COMMAND_NAME} ${word}`)]),
+		...legacyAdvice,
 		...(word === "exit" || word === "abandon"
 			? [`To stop the current Ferment, use /${FERMENT_V2_COMMAND_NAME} pause or /${FERMENT_V2_COMMAND_NAME} clear.`]
 			: []),

@@ -2,8 +2,6 @@ import type { AvailableCommand } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-agent"
 
 import { isExperimentalFeaturesEnabled } from "../../extensions/experimental.js"
-import { isFermentLegacyLoadedAndEnabled } from "../../extensions/ferment/resource.js"
-import { FERMENT_LEGACY_COMMAND_NAME } from "../../extensions/ferment/resource-id.js"
 import { isFermentV2LoadedAndEnabled } from "../../extensions/ferment-v2/availability.js"
 import { FERMENT_V2_COMMAND_NAME } from "../../extensions/ferment-v2/constants.js"
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
@@ -61,22 +59,6 @@ export const FERMENT_AVAILABLE_COMMAND: AvailableCommand = {
 }
 
 /**
- * `/ferment-legacy` is kept out of /help (SLASH_COMMANDS), so it is not in
- * AVAILABLE_COMMANDS. It is listed only when V1 loaded at startup. The stub
- * warns only through pi_notify, which plain ACP clients do not show, so
- * listing the stub would add an entry that seems to do nothing. The `/ferment`
- * stub (Ferment off) is hidden from the palette because Ferment is off, but
- * its reply is also sent as agent text, like the replies of the real
- * `/ferment` (see shared/command-reply-scope.ts). The legacy stub reply is
- * still not sent as agent text.
- */
-export const FERMENT_LEGACY_AVAILABLE_COMMAND: AvailableCommand = {
-	name: FERMENT_LEGACY_COMMAND_NAME,
-	description: "Legacy Ferment (V1).",
-	input: { hint: 'A legacy command, such as list, new "Name", or switch <id>.' },
-}
-
-/**
  * Custom session-log entry recording a /compact command invocation.
  *
  * The command prompt is intercepted locally (it never reaches the model and
@@ -130,9 +112,10 @@ export function composeAvailableCommands(
 ): AvailableCommand[] {
 	return [
 		...AVAILABLE_COMMANDS.filter(({ name }) => (name !== "pr-watch" || prMonitoring) && (name !== "review" || review)),
-		// The palette is not built from registered commands, so this uses the same startup and enablement gates as legacy.
+		// The palette is not built from registered commands. Ferment loads only
+		// when it was on at startup and the client opted in, so this covers both
+		// gates. The `/ferment` stub (Ferment off) is not listed.
 		...(isFermentV2LoadedAndEnabled() ? [FERMENT_AVAILABLE_COMMAND] : []),
-		...(isFermentLegacyLoadedAndEnabled() ? [FERMENT_LEGACY_AVAILABLE_COMMAND] : []),
 		...buildSkillAvailableCommands(Array.from(skillCommands.values())),
 	]
 }

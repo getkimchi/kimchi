@@ -109,6 +109,7 @@ import {
 	rebindTodoState,
 	todoCounts,
 } from "./runtime-policy.js"
+import { isFermentPermitted } from "./session-policy.js"
 import { getFermentV2Settings } from "./settings.js"
 import {
 	FERMENT_V2_COMPLETION_CONFIDENCES,
@@ -176,7 +177,7 @@ function errorMessage(error: unknown): string {
 }
 
 export default function fermentV2Extension(pi: ExtensionAPI): void {
-	if (isAgentWorker()) return
+	if (isAgentWorker() || !isFermentPermitted()) return
 	markFermentV2Loaded()
 
 	let currentFermentV2: FermentV2State

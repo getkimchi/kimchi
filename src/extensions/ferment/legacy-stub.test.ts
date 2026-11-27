@@ -4,10 +4,18 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 
 const isFermentLegacyEnabledMock = vi.hoisted(() => vi.fn<() => boolean>())
 const fermentLegacyNotLoadedMessageMock = vi.hoisted(() => vi.fn<(subject: string) => string>())
+const markFermentLegacyLoadedSpy = vi.hoisted(() => vi.fn<() => void>())
 vi.mock("./resource.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("./resource.js")>()),
 	isFermentLegacyEnabled: isFermentLegacyEnabledMock,
 	fermentLegacyNotLoadedMessage: fermentLegacyNotLoadedMessageMock,
+	markFermentLegacyLoaded: markFermentLegacyLoadedSpy,
+}))
+
+const acpHost = vi.hoisted(() => ({ value: false }))
+vi.mock("../../modes/acp/state.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../modes/acp/state.js")>()),
+	isAcpSessionHost: () => acpHost.value,
 }))
 
 import fermentExtension from "./index.js"
@@ -86,5 +94,31 @@ describe("fermentLegacyStubExtension", () => {
 		await command.handler("list", ctx)
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 		expect(consoleWarn).toHaveBeenCalledWith("/ferment-legacy is not loaded.")
+	})
+})
+
+// Legacy Ferment is not supported over ACP: neither V1 nor its stub loads there.
+describe("legacy Ferment over ACP", () => {
+	beforeEach(() => {
+		acpHost.value = true
+	})
+
+	afterEach(() => {
+		acpHost.value = false
+	})
+
+	it("the stub registers nothing, so ACP has no /ferment-legacy", () => {
+		const harness = createExtensionApi()
+		fermentLegacyStubExtension(harness.api)
+		expect(harness.registerCommand).not.toHaveBeenCalled()
+	})
+
+	it("V1 registers nothing and is not marked loaded, even when legacy is on", () => {
+		isFermentLegacyEnabledMock.mockReturnValue(true)
+		const harness = createExtensionApi()
+		fermentExtension(harness.api)
+		expect(harness.registerCommand).not.toHaveBeenCalled()
+		expect(harness.registerTool).not.toHaveBeenCalled()
+		expect(markFermentLegacyLoadedSpy).not.toHaveBeenCalled()
 	})
 })

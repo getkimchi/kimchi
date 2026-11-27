@@ -247,6 +247,30 @@ The extension emits the full V2 observability contract as structured domain even
 
 V2 runtime accounting describes the working assistant turns and excludes accepted final-answer delivery from its work budget. Verifier usage — tokens and cost, including submission resumes — is folded into the ferment's `tokensUsed` and `tokenBudget` after each run (an in-flight verifier run always finishes before a `budget_limited` outcome is applied) and tracked separately as a per-run breakdown shown by `/ferment`. Both delivery and verifier usage remain in their normal session records. The Terminal-Bench adapter recursively scans every discovered `sessions/**/*.jsonl`, sums valid assistant entries, and includes cache read/write in the input total, so working, verifier, and other child sessions are counted once through the same path.
 
+## ACP clients
+
+Ferment is not fully tested over ACP yet, so an ACP client must opt in at `initialize`:
+
+```json
+{
+  "clientCapabilities": {
+    "_meta": {
+      "kimchi.dev": {
+        "ferment": true
+      }
+    }
+  }
+}
+```
+
+The agent advertises `ferment: true` in `agentCapabilities._meta["kimchi.dev"]` so clients can detect the gate.
+
+With the opt-in, Ferment behaves as described above. The palette lists `/ferment` when Ferment loaded at startup and is still on. Replies to `/ferment` commands are also sent as agent text, so clients that do not render `pi_notify` still see them.
+
+Without the opt-in, Ferment does not load. There is no `/ferment` command, its stub, or its tools. A typed `/ferment ...` goes to the model as an ordinary prompt, like other opt-in commands such as `/pr-watch`. Approving a plan with **Execute** runs it as a plain turn, without a notice.
+
+Legacy Ferment (V1) never loads over ACP, with or without the opt-in and even when `extensions.ferment-legacy` is on. Over ACP, the hint for a legacy word such as `/ferment list` says that legacy Ferment is not available in this client.
+
 ## Ferment V1 boundary
 
 Ferment V1 is legacy under `extensions.ferment-legacy` and `/ferment-legacy`, off by default, and will be removed. It is the cross-session project mode. It persists JSON files under `.kimchi/ferments/`, tracks phases and steps, and owns workers, worktree metadata, and its own lifecycle runtime. See [docs/ferment.md](ferment.md) and [the V1 schema](ferment-storage-schema.md). Ferment V2 is a separate `extensions.ferment` resource and does not migrate or replace V1 state.
@@ -260,4 +284,4 @@ If you turned Ferment V2 on and the old Ferment off (`extensions.ferment-v2: tru
 - [V2 extension](../src/extensions/ferment-v2/index.ts), [reducer](../src/extensions/ferment-v2/reducer.ts), [prompt](../src/extensions/ferment-v2/prompt.ts), [evaluator (verifier core)](../src/extensions/ferment-v2/evaluator.ts), [verifier report tools](../src/extensions/ferment-v2/verifier-report.ts), [verifier guard](../src/extensions/ferment-v2/verifier-guard.ts), [verifier prompt](../src/extensions/ferment-v2/verifier-prompt.ts), [workspace (baseline, facts, worktree)](../src/extensions/ferment-v2/workspace.ts), and [types](../src/extensions/ferment-v2/types.ts)
 - [Verifier persona](../src/extensions/agents/personas/default-agents.ts) and [spawn helpers](../src/extensions/agents/index.ts)
 - [V2 unit tests](../src/extensions/ferment-v2/index.test.ts), [evaluator tests](../src/extensions/ferment-v2/evaluator.test.ts), [guard tests](../src/extensions/ferment-v2/verifier-guard.test.ts), [workspace tests](../src/extensions/ferment-v2/workspace.test.ts), and [verifier prompt tests](../src/extensions/ferment-v2/verifier-prompt.test.ts)
-- [V2 TUI flow](../tests/e2e/tui/ferment-v2-mode.test.ts), [ACP verifier coverage](../tests/e2e/acp/ferment-v2-verifier.test.ts), and [headless smoke coverage](../tests/smoke/ferment-v2-print-exit.test.ts)
+- [V2 TUI flow](../tests/e2e/tui/ferment-v2-mode.test.ts), [ACP opt-in coverage](../tests/e2e/acp/ferment-opt-in.test.ts), [ACP verifier coverage](../tests/e2e/acp/ferment-v2-verifier.test.ts), and [headless smoke coverage](../tests/smoke/ferment-v2-print-exit.test.ts)

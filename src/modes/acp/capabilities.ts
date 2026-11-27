@@ -185,6 +185,18 @@ export function getClientOptedIntoPRMonitoring(capabilities: ClientCapabilities 
 	return flags?.[PR_MONITORING_CAPABILITY] === true && getClientOptedIntoBackgroundRuns(capabilities)
 }
 
+/**
+ * Client opt-in for `/ferment` (Ferment V2). Without it, Ferment does not load:
+ * no command, no tools, and an approved plan runs as a plain turn. Legacy
+ * Ferment (V1) never loads over ACP. Kimchi-specific, no ACP RFD.
+ */
+export const FERMENT_CAPABILITY = "ferment"
+
+export function getClientOptedIntoFerment(capabilities: ClientCapabilities | undefined): boolean {
+	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, boolean> | undefined
+	return flags?.[FERMENT_CAPABILITY] === true
+}
+
 /** Versioned opt-in for App-mode-scoped model Effort persistence. ACP's
  * completed Model Config Option Category RFD covers placement, not a vendor
  * default write; there is no ACP v2 RFD for this preference operation. */

@@ -5,6 +5,7 @@ import { notifyUser } from "../../utils/notify-user.js"
 import { fermentNotLoadedMessage } from "./availability.js"
 import { FERMENT_V2_COMMAND_NAME, FERMENT_V2_RESOURCE_ID } from "./constants.js"
 import fermentV2Extension from "./index.js"
+import { isFermentPermitted } from "./session-policy.js"
 
 /**
  * Registered instead of Ferment when it did not load at startup. Without it,
@@ -12,6 +13,8 @@ import fermentV2Extension from "./index.js"
  * prompt.
  */
 export function fermentStubExtension(pi: ExtensionAPI): void {
+	// An ACP client that did not opt in gets no /ferment at all, like other opt-in commands.
+	if (!isFermentPermitted()) return
 	pi.registerCommand(FERMENT_V2_COMMAND_NAME, {
 		description: "Ferment is not loaded. Run it to see how to turn it on.",
 		// Arguments are ignored: the fix is the same whatever the user meant.

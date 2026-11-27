@@ -56,6 +56,7 @@ it("sends a failing claim back with a finding, re-checks the fix, and completes"
 	const active = await startAcpFixture({
 		artifactName: "ferment-v2-verifier-round-trip",
 		extraArgs: ["--yolo"],
+		clientMeta: { "kimchi.dev": { ferment: true } },
 		responses: [
 			// Review 1: the check shows the wrong content; the verifier records the
 			// finding and continues.

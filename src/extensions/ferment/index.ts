@@ -13,6 +13,7 @@
 import type { ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent"
 import { Container, Text } from "@earendil-works/pi-tui"
 import type { Step } from "../../ferment/types.js"
+import { isAcpSessionHost } from "../../modes/acp/state.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import {
 	consumePlanReviewContext,
@@ -155,6 +156,8 @@ const fermentRequestRenderer: MessageRenderer<FermentRequestMessageDetails> = (m
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function fermentExtension(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime) {
+	// Legacy Ferment is not supported over ACP. Only Ferment V2 is, behind a client opt-in.
+	if (isAcpSessionHost()) return
 	markFermentLegacyLoaded()
 	// Wire pi.events into the runtime so createApplyAndPersist can emit domain
 	// events for every state mutation without importing from telemetry.

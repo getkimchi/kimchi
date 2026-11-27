@@ -42,6 +42,8 @@ it.each(SCENARIOS)(
 			artifactName: `codemode-guidelines-${name}`,
 			responses: [{ stream: ["Acknowledged."] }],
 			settings,
+			// The opt-in loads Ferment, so expectFerment proves the resource settings were read.
+			clientMeta: { "kimchi.dev": { ferment: true } },
 		})
 		try {
 			const session = await fixture.conn.request("session/new", { cwd: fixture.workDir, mcpServers: [] })

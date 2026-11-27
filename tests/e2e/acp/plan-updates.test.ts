@@ -9,7 +9,6 @@
 
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { setTimeout as delay } from "node:timers/promises"
 import type { ClientCapabilities } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, describe, expect, it } from "vitest"
 import { ADVERTISED_CAPABILITIES } from "../../../src/modes/acp/capabilities.js"
@@ -26,7 +25,6 @@ const FERMENT_ID = "ferment-plan-e2e"
 const PHASE_ID = "phase-1"
 const STEP_ID = "step-1"
 const STEP_DESCRIPTION = "Write unit tests"
-const PLAN_WAIT_MS = 90_000
 
 function textResponse(text: string) {
 	return { stream: [text] }
@@ -49,63 +47,6 @@ function planSnapshots(fixture: AcpFixture, sessionId: string): Array<{ entries:
 	return fixture.client.sessionUpdates
 		.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "plan")
 		.map((u) => u.update as { entries: PlanEntryLike[]; _meta?: unknown })
-}
-
-async function waitForPlanSnapshot(
-	fixture: AcpFixture,
-	sessionId: string,
-	predicate: (entries: PlanEntryLike[]) => boolean,
-	context: string,
-	timeoutMs = PLAN_WAIT_MS,
-): Promise<PlanEntryLike[]> {
-	const startedAt = Date.now()
-	while (Date.now() - startedAt < timeoutMs) {
-		const match = planSnapshots(fixture, sessionId).find(({ entries }) => predicate(entries))
-		if (match) return match.entries
-		await delay(100)
-	}
-	throw new Error(`${context}: ${JSON.stringify(planSnapshots(fixture, sessionId))}`)
-}
-
-function fermentLifecycleResponses() {
-	const ids = { ferment_id: FERMENT_ID, phase_id: PHASE_ID }
-	const stepGates = [
-		{ id: "S1", verdict: "pass", rationale: "Summary matches work", evidence: "ACP E2E" },
-		{ id: "S2", verdict: "pass", rationale: "Verification is honest", evidence: "ACP E2E" },
-		{ id: "S3", verdict: "pass", rationale: "Edge cases considered", evidence: "ACP E2E" },
-	]
-	const phaseGates = [
-		{ id: "F1", verdict: "pass", rationale: "Verification ran", evidence: "ACP E2E" },
-		{ id: "F2", verdict: "pass", rationale: "Goal met", evidence: "ACP E2E" },
-		{ id: "F3", verdict: "pass", rationale: "Nothing deferred", evidence: "ACP E2E" },
-	]
-	return [
-		toolCallResponse("activate_ferment_phase", ids),
-		textResponse("Phase activated."),
-		toolCallResponse("start_ferment_step", { ...ids, step_id: STEP_ID }),
-		textResponse("Step started."),
-		// The check-in gate requires the model to reconcile the bridge-seeded
-		// step list (its unfinished title anchor) before further work tools
-		// are admitted — marking the anchor is the natural reconciliation when
-		// completing the step. Auto-scopes to the active step list.
-		toolCallResponse("mark_todo", { id: 1, status: "completed" }),
-		toolCallResponse("complete_ferment_step", {
-			...ids,
-			step_id: STEP_ID,
-			summary: "Tests written.",
-			gates: stepGates,
-		}),
-		textResponse("Step completed."),
-		toolCallResponse("complete_ferment_phase", {
-			...ids,
-			summary: "Phase completed.",
-			evidence: "ACP E2E",
-			gates: phaseGates,
-		}),
-		textResponse("Phase completed."),
-		textResponse("Understood."),
-		textResponse("Understood."),
-	]
 }
 
 function seedPlannedFerment(workDir: string): void {
@@ -301,119 +242,34 @@ describe("ACP integration — plan updates from todo writes", () => {
 		])
 	})
 
-	it("mirrors the Ferment phase and step lifecycle through the Todo store", { timeout: 180_000 }, async () => {
+	// Legacy Ferment (V1) is not supported over ACP. A seeded active legacy
+	// Ferment used to resume at session start and drive phase and step plan
+	// updates. Now V1 does not load, even with legacy on, so nothing resumes.
+	it("does not resume a seeded legacy Ferment, even with legacy on", { timeout: 180_000 }, async () => {
 		const previousActiveFerment = process.env.KIMCHI_ACTIVE_FERMENT
 		const previousEnableResources = process.env.KIMCHI_ENABLE_RESOURCES
 		process.env.KIMCHI_ACTIVE_FERMENT = FERMENT_ID
-		// The seeded ferment is a legacy Ferment (V1), which is off by default.
 		process.env.KIMCHI_ENABLE_RESOURCES = "extensions.ferment-legacy"
-		let releasePhaseResponse = () => {}
-		const phaseResponseReady = new Promise<void>((resolve) => {
-			releasePhaseResponse = resolve
-		})
 		try {
-			const responses = fermentLifecycleResponses()
-			await startWith([{ ...responses[0], holdUntil: phaseResponseReady }, ...responses.slice(1)])
+			await startWith([textResponse("Plain reply.")])
 			seedPlannedFerment(fixture.workDir)
-			fixture.client.answerNextElicitationWith({ action: "accept", content: { value: "Resume" } })
 
 			const sessionId = await newSession(fixture, fixture.workDir)
-			// Resume can run during extension binding, before ACP subscribes to Todo writes.
-			// Start the lifecycle only after newSession has attached the plan tracker.
-			releasePhaseResponse()
-			// A streaming model chunk means the auto-resume kick is in flight — it
-			// streams from the moment the prompt starts, long before the plan
-			// snapshot arrives at tool completion. Prompting while the kick runs
-			// would consume the next scripted model response and start the step
-			// early (this was the CI flake: an 8s deadline fired while the kick
-			// was merely slow on a loaded runner).
-			//
-			// The deadline here must be generous: if it fires and we fall through
-			// to the manual "Continue the Ferment" prompt, that prompt consumes a
-			// scripted response and skews the script — the session can race ahead
-			// to the step-start response before the pending phase snapshot is ever
-			// observed, which fails the assertion below. A slow CI runner needs
-			// enough headroom that the kick path wins instead. 20s = 2.5× the
-			// observed-fastest kick; the unbounded kick fallback still covers
-			// anything beyond it.
-			const kickIsStreaming = () =>
-				fixture.client.sessionUpdates.some(
-					(u) =>
-						u.sessionId === sessionId &&
-						(u.update.sessionUpdate === "agent_message_chunk" || u.update.sessionUpdate === "agent_thought_chunk"),
-				)
-			const stepIsPending = (entries: PlanEntryLike[]) =>
-				entries.some((entry) => entry.status === "pending" && entry.content.includes(STEP_DESCRIPTION))
+			const result = await prompt(fixture, sessionId, "Hello.")
 
-			const initial = await waitForPlanSnapshot(
-				fixture,
-				sessionId,
-				stepIsPending,
-				"Ferment phase Todo snapshot did not arrive",
-				20_000,
+			expect(result.stopReason).toBe("end_turn")
+			expect(result.chunks).toContain("Plain reply.")
+			// V1 asked whether to resume through an elicitation and then mirrored its phase steps as plan entries.
+			expect(fixture.client.elicitationRequests).toHaveLength(0)
+			const stepEntries = planSnapshots(fixture, sessionId).flatMap(({ entries }) =>
+				entries.filter((entry) => entry.content.includes(STEP_DESCRIPTION)),
 			)
-				.catch(async () => {
-					if (kickIsStreaming()) {
-						// Kick is running, just slow — wait for the condition, no deadline.
-						return waitForPlanSnapshot(
-							fixture,
-							sessionId,
-							stepIsPending,
-							"Ferment phase Todo snapshot did not arrive from the in-flight resume kick",
-						)
-					}
-					// The kick never ran — drive the phase manually.
-					await prompt(fixture, sessionId, "Continue the Ferment")
-					return waitForPlanSnapshot(
-						fixture,
-						sessionId,
-						stepIsPending,
-						"Prompt-driven Ferment phase Todo snapshot did not arrive",
-					)
-				})
-				.catch(async () => {
-					await prompt(fixture, sessionId, "Continue the Ferment")
-					return waitForPlanSnapshot(
-						fixture,
-						sessionId,
-						(entries) => entries.some((entry) => entry.content.includes(STEP_DESCRIPTION)),
-						"Prompt-driven Ferment phase Todo snapshot did not arrive",
-					)
-				})
-			// Presence, not status: the manual-fallback paths above can return a
-			// snapshot where the step has already moved past "pending" — on a slow
-			// runner the delayed auto-resume kick and the manual "Continue the Ferment"
-			// prompts can all advance the phase before the snapshot lands. The primary
-			// wait already enforces pending on the happy path, so nothing is lost.
-			expect(initial.some((entry) => entry.content.includes(STEP_DESCRIPTION))).toBe(true)
-
-			await prompt(fixture, sessionId, "Start the step")
-			await waitForPlanSnapshot(
-				fixture,
-				sessionId,
-				(entries) => entries.length === 1 && entries[0].status === "in_progress",
-				"Ferment step Todo snapshot did not arrive",
-			)
-
-			await prompt(fixture, sessionId, "Complete the step")
-			await waitForPlanSnapshot(
-				fixture,
-				sessionId,
-				(entries) =>
-					entries.length === 0 ||
-					entries.some((entry) => entry.status === "completed" && entry.content.includes(STEP_DESCRIPTION)),
-				"Completed Ferment step Todo snapshot did not arrive",
-			)
-
-			await prompt(fixture, sessionId, "Complete the phase")
-			await waitForPlanSnapshot(
-				fixture,
-				sessionId,
-				(entries) => entries.length === 0,
-				"Cleared Ferment phase Todo snapshot did not arrive",
+			expect(stepEntries).toEqual([])
+			// V1 tools are not offered to the model.
+			expect(JSON.stringify(fixture.fake.requests.map((request) => request.body))).not.toContain(
+				"activate_ferment_phase",
 			)
 		} finally {
-			releasePhaseResponse()
 			if (previousActiveFerment === undefined) Reflect.deleteProperty(process.env, "KIMCHI_ACTIVE_FERMENT")
 			else process.env.KIMCHI_ACTIVE_FERMENT = previousActiveFerment
 			if (previousEnableResources === undefined) Reflect.deleteProperty(process.env, "KIMCHI_ENABLE_RESOURCES")
