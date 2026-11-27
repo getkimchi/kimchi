@@ -1,7 +1,9 @@
+import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { type RunOptions, type RunResult, runAgent, type ToolActivity } from "../agents/manager/agent-runner.js"
+import { prepareAgentSessionFile } from "../agents/manager/session-file.js"
 import type { LifetimeUsage } from "../agents/manager/usage.js"
 import type { SubagentType, ThinkingLevel } from "../agents/personas/types.js"
 import {
@@ -213,6 +215,22 @@ export class ReviewRunner {
 		kind?: "verifier",
 	): Promise<ReviewAgentResult> {
 		const reconciliationBridge: { value?: SemanticReconciliation } = {}
+		let sessionFile: string | undefined
+		let sessionDir: string | undefined
+		try {
+			const parentSessionDir = this.options.ctx.sessionManager.getSessionDir()
+			const parentSessionFile = this.options.ctx.sessionManager.getSessionFile()
+			if (parentSessionDir && parentSessionFile && existsSync(parentSessionFile)) {
+				const role = kind === "verifier" ? "review:reconciliation" : `review:${options.id}`
+				const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, this.options.ctx.cwd, role)
+				sessionFile = prepared?.sessionFile
+				sessionDir = parentSessionDir
+			}
+		} catch (error) {
+			console.warn(
+				`[review-runner] Could not prepare a child session file: ${error instanceof Error ? error.message : String(error)}. Continuing without a persisted transcript.`,
+			)
+		}
 		const execution = createReviewExecutionController({
 			mode: reviewExecutionMode(this.options.executionPolicy?.mode),
 			worktree,
@@ -232,6 +250,7 @@ export class ReviewRunner {
 		}
 		const spawnOptions: RunOptions = {
 			...options.agent,
+			...(sessionFile ? { sessionFile, sessionDir } : {}),
 			pi: this.options.pi,
 			cwd: worktree.path,
 			signal,
