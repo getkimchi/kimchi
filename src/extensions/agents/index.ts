@@ -1413,6 +1413,15 @@ export default function (pi: ExtensionAPI) {
 				if (!isError && !completionState.completionPending) void retirePlainRemote(record)
 			}
 
+			// Yielded foreground records need their terminal accounting and
+			// persistence, but stay foreground: never raise a background nudge.
+			if (record.isBackground === false) {
+				agentActivity.delete(record.id)
+				widget.markFinished(record.id)
+				widget.update()
+				return
+			}
+
 			// A consumed result normally suppresses the completion surface — but
 			// never for remote runs: polling a remote background agent with
 			// get_subagent_result consumes its result, and bailing here would
@@ -2458,10 +2467,10 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				let spinnerFrame = 0
 				const startedAt = Date.now()
 				let fgId: string | undefined
-				let fgDetached = false
+				let fgResultReturned = false
 
 				const streamUpdate = () => {
-					if (fgDetached) return
+					if (fgResultReturned) return
 					const activity = describeActivity(fgState.activeTools, fgState.responseText)
 					const details: AgentDetails = {
 						...detailBase,
@@ -2598,7 +2607,9 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				])
 
 				if (raceResult === "user_input") {
+					fgResultReturned = true
 					record.detachResolver = undefined
+					record.foregroundCompletionPending = true
 					clearInterval(spinnerInterval)
 					const texts = backgroundText(backgroundNotificationsReachUser(ctx.mode))
 					return textResult(
@@ -2608,7 +2619,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				}
 
 				if (raceResult === "detached") {
-					fgDetached = true
+					fgResultReturned = true
 					clearInterval(spinnerInterval)
 
 					const outputFile = createOutputFilePath(agentCwd, spawnedId, parentSessionId, parentSessionDir)

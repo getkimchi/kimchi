@@ -1965,6 +1965,7 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 		ctx: unknown,
 		callId: string,
 		extraParams: Record<string, unknown> = {},
+		onUpdate?: (update: unknown) => void,
 	): Promise<{ content: { type: string; text: string }[] }> {
 		return tool.execute(
 			callId,
@@ -1976,7 +1977,7 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 				...extraParams,
 			},
 			undefined,
-			undefined,
+			onUpdate,
 			ctx,
 		)
 	}
@@ -2014,7 +2015,10 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 			backgroundedDelivered = true
 		})
 
-		const execPromise = startForegroundExecute(tool, live.ctx, "call-fg-user-input")
+		const updates: unknown[] = []
+		const execPromise = startForegroundExecute(tool, live.ctx, "call-fg-user-input", {}, (update) =>
+			updates.push(update),
+		)
 		const record = [...manager._records.values()][0]
 		vi.mocked(live.ctx.hasPendingMessages).mockReturnValue(true)
 		await vi.advanceTimersByTimeAsync(100)
@@ -2027,6 +2031,26 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 		expect(record.detachResolver).toBeUndefined()
 		expect(backgroundedDelivered).toBe(false)
 		expect(vi.getTimerCount()).toBe(0)
+		const updatesAtRelease = updates.length
+		;(record.onTextDelta as (delta: string, fullText: string) => void)("late", "late text")
+		;(record.onToolActivity as (activity: { toolName: string; status: string }) => void)({
+			toolName: "read",
+			status: "completed",
+		})
+		;(
+			record.onAssistantUsage as (usage: {
+				input: number
+				output: number
+				cacheRead: number
+				cacheWrite: number
+			}) => void
+		)({
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+		})
+		expect(updates).toHaveLength(updatesAtRelease)
 
 		// The deferred child is still the owner of its eventual result.
 		record.status = "completed"

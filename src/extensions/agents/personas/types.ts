@@ -192,6 +192,9 @@ export interface AgentRecord {
 	resultConsumed?: boolean
 	/** Steering messages queued before the session was ready. */
 	pendingSteers?: string[]
+	/** Foreground Agent returned for queued input; completion still needs
+	 * finalization without becoming a background lifecycle or notification. */
+	foregroundCompletionPending?: boolean
 	/** The tool_use_id from the original Agent tool call. */
 	toolCallId?: string
 	/** Original delegated prompt, before manager-added worker protocol text. */

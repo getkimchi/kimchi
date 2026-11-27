@@ -195,6 +195,33 @@ describe("AgentManager", () => {
 		expect(record.latestOutcome?.recovery_guidance).toContain("resume_subagent with purpose finalize_report")
 	})
 
+	it("invokes completion for a yielded foreground record without converting it to background", async () => {
+		const run = deferred<Awaited<ReturnType<typeof runAgent>>>()
+		mockRunAgent.mockReturnValueOnce(run.promise)
+		const onComplete = vi.fn()
+		manager = new AgentManager(onComplete)
+		const id = manager.spawn(fakePi(), fakeCtx(), "Explore", "inspect", {
+			description: "inspect",
+			isBackground: false,
+		})
+		const record = manager.getRecord(id)
+		if (!record) throw new Error("record missing")
+		;(record as AgentRecord & { foregroundCompletionPending?: boolean }).foregroundCompletionPending = true
+
+		run.resolve({
+			responseText: "partial",
+			session: { dispose: vi.fn() } as unknown as AgentSession,
+			aborted: true,
+			abortReason: "token_budget",
+			steered: false,
+		})
+		await record.promise
+
+		expect(onComplete).toHaveBeenCalledTimes(1)
+		expect(onComplete).toHaveBeenCalledWith(record)
+		expect(record.isBackground).toBe(false)
+	})
+
 	it("threads task_ref and max_turns into the structured outcome", async () => {
 		mockRunAgent.mockResolvedValueOnce({
 			responseText: "done",
