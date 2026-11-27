@@ -13,6 +13,7 @@ import {
 	type ToolArgs,
 } from "../helpers.js"
 import type { TelemetryAttributes, TelemetryContext } from "../session-context.js"
+import { emitDocumentCliCompleted } from "./document-cli.js"
 import {
 	CODEMODE_FAILED_HEADER,
 	classifyToolError,
@@ -459,6 +460,14 @@ export function handleToolExecutionEnd(
 			tm.emit("command_executed", { ...commandAttrs, command_outcome: "execution_error" }, ctx, modelOverrides)
 		}
 		// blocked / declined / model_mistake: pre-execution — no record.
+		emitDocumentCliCompleted(tm, ctx, {
+			command: String(args.command ?? ""),
+			resultText: fullMsg,
+			isError: event.isError,
+			classification,
+			durationMs: toolDurationMs,
+			toolCallId: event.toolCallId,
+		})
 	} else if (toolName === "codemode" && !isPreExecutionOutcome(classification) && !isCodemodePreExecutionAbort) {
 		emitCodemodeCompleted(tm, ctx, event, toolDurationMs, nestedAttrs, modelOverrides)
 	}
