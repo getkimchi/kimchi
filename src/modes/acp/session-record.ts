@@ -1,3 +1,4 @@
+import type { ToolCallContent } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import type { SessionPermissionFlagController } from "../../extensions/permissions/types.js"
 import type { StreamDesanitizer } from "../../extensions/pii-redaction/stream-desanitizer.js"
@@ -161,6 +162,12 @@ export type SessionRecord = {
 	 * ACP id, so collisions across compaction boundaries are disambiguated.
 	 */
 	toolCallIdMap: Map<string, string>
+	/**
+	 * Terminal Agent projections retained by upstream id until the invocation is
+	 * replaced. A child can register after its result, when the in-flight id map
+	 * no longer contains the ACP identity needed for a SessionReference patch.
+	 */
+	completedAgentToolCalls: Map<string, { toolCallId: string; content?: ToolCallContent[] }>
 	/** Child-local mappings required to replay ACP tool identity deterministically. */
 	childToolIdHistory?: SubagentToolIdHistory
 	/**
@@ -227,6 +234,7 @@ export function createProjectionSessionRecord(
 		emittedModelMeta: new Map(),
 		nextToolCallId: 0,
 		toolCallIdMap: new Map(),
+		completedAgentToolCalls: new Map(),
 		heldBackgroundToolCalls: new Map(),
 		skillCommands: new Map(),
 		steerEchoRewrites: [],

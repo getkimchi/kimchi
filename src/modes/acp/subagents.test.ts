@@ -389,6 +389,47 @@ describe("subagent registry and child projection", () => {
 		expect(subagentRegistry(agent).childForTool("parent", "provider-agent-call", "provider-agent-call")).toBeUndefined()
 	})
 
+	it("patches a completed background Agent invocation when its child registers late", async () => {
+		const { agent, root, updates } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("late-child")
+		root.emit({ type: "agent_start" } as AgentSessionEvent)
+		root.emit({
+			type: "tool_execution_start",
+			toolCallId: "provider-agent-call",
+			toolName: "Agent",
+			args: { description: "Delegate", prompt: "Investigate", run_in_background: true },
+		} as AgentSessionEvent)
+		root.emit({
+			type: "tool_execution_end",
+			toolCallId: "provider-agent-call",
+			toolName: "Agent",
+			result: { content: [{ type: "text", text: "Agent started in background." }], details: {} },
+			isError: false,
+		} as unknown as AgentSessionEvent)
+
+		const terminal = updates.findLast((item) => update(item).sessionUpdate === "tool_call_update")
+		if (!terminal) throw new Error("Expected the Agent result update")
+		expect(update(terminal).content).toEqual([
+			{ type: "content", content: { type: "text", text: "Agent started in background." } },
+		])
+
+		createChild(agent, childEvent("parent", child, { background: true }))
+
+		const patch = updates.at(-1)
+		if (!patch) throw new Error("Expected a late Agent link patch")
+		expect(update(patch)).toMatchObject({
+			sessionUpdate: "tool_call_update",
+			toolCallId: update(terminal).toolCallId,
+			name: "subagent",
+			kind: "other",
+			content: [
+				{ type: "content", content: { type: "text", text: "Agent started in background." } },
+				{ type: "session", sessionId: "late-child" },
+			],
+		})
+	})
+
 	it("lets a registered root replace a colliding child route", async () => {
 		const child = new ProjectionFakeSession("colliding-child", "/workspace/root")
 		const { agent, updates } = await createRoot("parent", { subagents: {} } as ClientCapabilities, child)
