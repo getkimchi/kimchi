@@ -195,7 +195,7 @@ describe("persistAcpFork", () => {
 		if (!sourcePath) throw new Error("expected source path")
 		const before = readdirSync(directory)
 		vi.mocked(writeFileSync).mockImplementationOnce((file) => {
-			if (typeof file === "number") actualFs.writeFileSync(file, "partial fork")
+			actualFs.writeFileSync(file, "partial fork")
 			throw new Error("simulated disk full")
 		})
 
