@@ -69,6 +69,7 @@ import {
 	resetProjectScopeTrustForTests,
 	setProjectScopeTrusted,
 } from "../../project-scope-trust.js"
+import { SUBAGENT_SESSION_ENTRY } from "../../session-visibility.js"
 import {
 	BASH_BACKGROUND_SETTLE_MESSAGE_TYPE,
 	type BashBackgroundSettleData,
@@ -13172,20 +13173,49 @@ describe("KimchiAcpAgent listSessions", () => {
 		expect(res.sessions[0].title).toBe(`${"z".repeat(80)}…`)
 	})
 
-	it("excludes subagent sessions that have a parentSessionPath", async () => {
-		const userSession = makePiSession({
-			id: "user-session",
-			name: "User session",
-			parentSessionPath: undefined,
-		})
-		const subagentSession = makePiSession({
-			id: "subagent-session",
-			name: "Subagent session",
-			parentSessionPath: "/tmp/sessions/parent.jsonl",
-		})
-		const agent = makeAgent(async () => [userSession, subagentSession])
-		const res = await agent.listSessions({ cwd: "/p" } as never)
-		expect(res.sessions.map((s) => s.sessionId)).toEqual(["user-session"])
+	it("preserves default hiding of parented sessions, including ordinary user forks", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "kimchi-acp-session-roles-"))
+		try {
+			const parentSessionPath = join(directory, "parent.jsonl")
+			writeFileSync(parentSessionPath, "")
+			const sessionFile = (id: string, marker?: Record<string, unknown>) => {
+				const path = join(directory, `${id}.jsonl`)
+				writeFileSync(
+					path,
+					[
+						{ type: "session", version: 3, id, cwd: directory, timestamp: "2026-01-01T00:00:00Z" },
+						...(marker ? [marker] : []),
+					]
+						.map((entry) => JSON.stringify(entry))
+						.join("\n"),
+				)
+				return path
+			}
+			const userSession = makePiSession({ id: "user-session", name: "User session" })
+			const userFork = makePiSession({
+				id: "user-fork",
+				name: "User fork",
+				path: sessionFile("user-fork"),
+				parentSessionPath,
+			})
+			const subagentSession = makePiSession({
+				id: "subagent-session",
+				name: "Subagent session",
+				path: sessionFile("subagent-session", {
+					type: "custom",
+					id: "marker",
+					timestamp: "2026-01-01T00:00:00Z",
+					customType: SUBAGENT_SESSION_ENTRY,
+					data: { type: "Reviewer" },
+				}),
+				parentSessionPath,
+			})
+			const agent = makeAgent(async () => [userSession, userFork, subagentSession])
+			const res = await agent.listSessions({ cwd: "/p" } as never)
+			expect(res.sessions.map((s) => s.sessionId)).toEqual(["user-session"])
+		} finally {
+			rmSync(directory, { recursive: true, force: true })
+		}
 	})
 })
 
