@@ -1,26 +1,17 @@
 import { execFileSync } from "node:child_process"
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	realpathSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import { CURRENT_SESSION_VERSION } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import type { RunResult } from "../agents/manager/agent-runner.js"
+import type { RunOptions, RunResult } from "../agents/manager/agent-runner.js"
 import { parseReviewTargetArgs } from "../review-targets/parser.js"
 import { resolveReviewTarget } from "../review-targets/resolve.js"
 import type { ExplicitReviewRequest } from "../review-targets/types.js"
 import type { ReviewNetworkBoundary } from "./network-boundary.js"
 import { ReviewRunner } from "./runner.js"
-import { ReviewSessionStore } from "./sessions.js"
 
 // This fixture isolates writer worktrees, not network enforcement. Inject its
 // boundary explicitly so it behaves identically on macOS and restricted CI.
@@ -41,6 +32,18 @@ function refExists(root: string, ref: string): boolean {
 	} catch {
 		return false
 	}
+}
+
+async function branchTarget(root: string, contextDir: string) {
+	const base = git(root, "rev-parse", "HEAD^")
+	return resolveReviewTarget(parseReviewTargetArgs(["branch", "main", "--base", base]) as ExplicitReviewRequest, {
+		root,
+		contextDir,
+	})
+}
+
+function completedRun(responseText: string): RunResult {
+	return { responseText, session: {} as RunResult["session"], aborted: false, steered: false }
 }
 
 describe("review runner writer and worktree isolation", () => {
@@ -161,6 +164,178 @@ describe("review runner writer and worktree isolation", () => {
 		}
 	})
 
+	it("writes durable session headers while every lens and verifier runs in its worktree", async () => {
+		const target = await branchTarget(repo, join(sandbox, "review-context"))
+		const parentSessionDir = join(sandbox, "parent-sessions")
+		const parentSessionFile = join(parentSessionDir, "parent.jsonl")
+		mkdirSync(parentSessionDir)
+		writeFileSync(
+			parentSessionFile,
+			`${JSON.stringify({
+				type: "session",
+				version: CURRENT_SESSION_VERSION,
+				id: "01928374-5565-7abc-8def-123456789abc",
+				timestamp: "2026-05-12T10:20:30.400Z",
+				cwd: repo,
+			})}\n`,
+		)
+		const ctx = createContext({
+			cwd: repo,
+			sessionManager: {
+				getSessionDir: () => parentSessionDir,
+				getSessionFile: () => parentSessionFile,
+			},
+		})
+		const spawns: Array<{ writer: string; cwd?: string; sessionFile?: string; sessionDir?: string }> = []
+		runner = await ReviewRunner.create({
+			ctx,
+			pi: createExtensionApi().api,
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees"),
+			concurrency: 2,
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
+			spawnAgent: async ({ ctx: parentContext, options }): Promise<RunResult> => {
+				expect(parentContext).toBe(ctx)
+				const writer = options.description?.replace("Review writer ", "") ?? ""
+				spawns.push({ writer, cwd: options.cwd, sessionFile: options.sessionFile, sessionDir: options.sessionDir })
+				return completedRun(writer)
+			},
+		})
+
+		const worktreePaths = [
+			(await runner.spawnReviewer({ id: "spec", prompt: "spec" })).worktree.path,
+			(await runner.spawnReviewer({ id: "standards", prompt: "standards" })).worktree.path,
+			(await runner.spawnVerifier({ id: "reconciliation", prompt: "reconciliation" })).worktree.path,
+		]
+
+		expect(spawns.map((spawn) => spawn.writer)).toEqual(["spec", "standards", "reconciliation"])
+		for (const [index, spawn] of spawns.entries()) {
+			expect(spawn.cwd).toBe(worktreePaths[index])
+			expect(spawn.sessionDir).toBe(parentSessionDir)
+			expect(dirname(spawn.sessionFile ?? "")).toBe(parentSessionDir)
+			const entries = readFileSync(spawn.sessionFile ?? "", "utf8")
+				.trimEnd()
+				.split("\n")
+				.map(
+					(line) =>
+						JSON.parse(line) as {
+							type?: string
+							parentSession?: string
+							cwd?: string
+							customType?: string
+							data?: { type?: string }
+						},
+				)
+			expect(entries).toHaveLength(2)
+			expect(entries[0]).toMatchObject({ type: "session", parentSession: parentSessionFile, cwd: repo })
+			expect(entries[1]).toMatchObject({
+				type: "custom",
+				customType: "kimchi:subagent-session",
+				data: { type: `review:${spawn.writer}` },
+			})
+		}
+	})
+
+	it("passes no session paths when the parent has no session file", async () => {
+		const target = await branchTarget(repo, join(sandbox, "review-context"))
+		const parentSessionDir = join(sandbox, "in-memory-parent")
+		mkdirSync(parentSessionDir)
+		const received: RunOptions[] = []
+		runner = await ReviewRunner.create({
+			ctx: createContext({
+				cwd: repo,
+				sessionManager: { getSessionDir: () => parentSessionDir, getSessionFile: () => undefined },
+			}),
+			pi: createExtensionApi().api,
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees"),
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
+			spawnAgent: async ({ options }): Promise<RunResult> => {
+				received.push(options)
+				return completedRun("done")
+			},
+		})
+
+		await runner.spawnReviewer({ id: "spec", prompt: "spec" })
+		await runner.spawnVerifier({ id: "reconciliation", prompt: "reconciliation" })
+
+		expect(received).toHaveLength(2)
+		for (const options of received) {
+			expect(options).not.toHaveProperty("sessionFile")
+			expect(options).not.toHaveProperty("sessionDir")
+		}
+		expect(readdirSync(parentSessionDir)).toEqual([])
+	})
+
+	it("passes no session paths when a fresh parent's allocated file is not flushed yet", async () => {
+		const target = await branchTarget(repo, join(sandbox, "review-context"))
+		const parentSessionDir = join(sandbox, "fresh-parent")
+		const parentSessionFile = join(parentSessionDir, "allocated.jsonl")
+		mkdirSync(parentSessionDir)
+		const received: RunOptions[] = []
+		runner = await ReviewRunner.create({
+			ctx: createContext({
+				cwd: repo,
+				sessionManager: { getSessionDir: () => parentSessionDir, getSessionFile: () => parentSessionFile },
+			}),
+			pi: createExtensionApi().api,
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees"),
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
+			spawnAgent: async ({ options }): Promise<RunResult> => {
+				received.push(options)
+				return completedRun("done")
+			},
+		})
+
+		await expect(runner.spawnReviewer({ id: "spec", prompt: "spec" })).resolves.toMatchObject({
+			responseText: "done",
+		})
+		expect(received).toHaveLength(1)
+		expect(received[0]).not.toHaveProperty("sessionFile")
+		expect(received[0]).not.toHaveProperty("sessionDir")
+		expect(existsSync(parentSessionFile)).toBe(false)
+		expect(readdirSync(parentSessionDir)).toEqual([])
+	})
+
+	it("continues in memory and logs when child session preparation fails", async () => {
+		const target = await branchTarget(repo, join(sandbox, "review-context"))
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		let received: RunOptions | undefined
+		const missingSessionDir = join(sandbox, "missing", "sessions")
+		const parentSessionFile = join(sandbox, "parent.jsonl")
+		writeFileSync(parentSessionFile, '{"type":"session"}\n')
+		runner = await ReviewRunner.create({
+			ctx: createContext({
+				cwd: repo,
+				sessionManager: {
+					getSessionDir: () => missingSessionDir,
+					getSessionFile: () => parentSessionFile,
+				},
+			}),
+			pi: createExtensionApi().api,
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees"),
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
+			spawnAgent: async ({ options }): Promise<RunResult> => {
+				received = options
+				return completedRun("continued")
+			},
+		})
+
+		await expect(runner.spawnReviewer({ id: "spec", prompt: "spec" })).resolves.toMatchObject({
+			responseText: "continued",
+		})
+		expect(received).not.toHaveProperty("sessionFile")
+		expect(received).not.toHaveProperty("sessionDir")
+		expect(warning).toHaveBeenCalledOnce()
+		expect(warning).toHaveBeenCalledWith(expect.stringContaining("Continuing without a persisted transcript"))
+	})
+
 	it("rejects duplicate writer runs and finishes cancellation before worktree cleanup", async () => {
 		const base = git(repo, "rev-parse", "HEAD^")
 		const target = await resolveReviewTarget(
@@ -207,45 +382,6 @@ describe("review runner writer and worktree isolation", () => {
 		await cleanup
 		expect(agentFinished).toBe(true)
 		expect(existsSync(worktreePath)).toBe(false)
-	})
-
-	it("makes failed reviewer sessions private without masking the child error", async () => {
-		const base = git(repo, "rev-parse", "HEAD^")
-		const target = await resolveReviewTarget(
-			parseReviewTargetArgs(["branch", "main", "--base", base]) as ExplicitReviewRequest,
-			{
-				root: repo,
-				contextDir: join(sandbox, "review-context"),
-			},
-		)
-		const childError = new Error("scripted child failure")
-		const makePrivate = ReviewSessionStore.prototype.makePrivate
-		vi.spyOn(ReviewSessionStore.prototype, "makePrivate").mockImplementation(async function (
-			this: ReviewSessionStore,
-			sessionFile,
-		) {
-			await makePrivate.call(this, sessionFile)
-			throw new Error("scripted privatization failure")
-		})
-		let sessionFile = ""
-		runner = await ReviewRunner.create({
-			ctx: createContext({ cwd: repo }),
-			pi: createExtensionApi().api,
-			target,
-			outputDir,
-			saveSessions: true,
-			rootDir: join(sandbox, "worktrees"),
-			executionPolicy: { mode: "local", networkBoundary: testBoundary },
-			spawnAgent: async ({ options }): Promise<RunResult> => {
-				sessionFile = options.sessionFile ?? ""
-				writeFileSync(sessionFile, '{"type":"session"}\n')
-				throw childError
-			},
-		})
-
-		await expect(runner.spawnReviewer({ id: "spec", prompt: "spec" })).rejects.toBe(childError)
-		expect(sessionFile).toBe(join(realpathSync(outputDir), "sessions", "spec.jsonl"))
-		if (process.platform !== "win32") expect(statSync(sessionFile).mode & 0o777).toBe(0o600)
 	})
 
 	it("releases the target when runner validation fails before pool creation", async () => {

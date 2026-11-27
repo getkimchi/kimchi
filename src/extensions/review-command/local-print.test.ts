@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { populateCliArgs } from "../../cli-args.js"
 import { createCommandContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { withPrintGate } from "../print-mode.js"
@@ -13,7 +12,6 @@ const previousExitCode = process.exitCode
 
 afterEach(() => {
 	vi.restoreAllMocks()
-	populateCliArgs([])
 	process.exitCode = previousExitCode
 	for (const path of temporaryDirectories.splice(0)) rmSync(path, { recursive: true, force: true })
 })
@@ -81,17 +79,14 @@ describe("local review print mode", () => {
 		const { api } = createExtensionApi()
 		const log = vi.spyOn(console, "log").mockImplementation(() => {})
 		const summaryPath = join(root, "report.json")
-		const deps = dependencies(root, summaryPath)
-		populateCliArgs(["--review-save-sessions"])
 
 		await withPrintGate({ print: true }, () =>
 			runReviewCommand("working-tree --lens spec", ctx, api, {
-				dependencies: deps,
+				dependencies: dependencies(root, summaryPath),
 			}),
 		)
 
 		expect(process.exitCode).not.toBe(1)
-		expect(deps.runPanel).toHaveBeenCalledWith(expect.objectContaining({ saveSessions: true }))
 		expect(log).toHaveBeenCalledWith(
 			`Review complete: 0 final findings.\nComplete review coverage.\nReport: ${summaryPath}`,
 		)

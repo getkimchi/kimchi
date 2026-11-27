@@ -58,10 +58,6 @@ export default function reviewSubmitExtension(pi: ExtensionAPI, binding?: Review
 			description: "Review output directory (default: .kimchi/review-output under the current project)",
 			type: "string",
 		})
-		pi.registerFlag("review-save-sessions", {
-			description: "Save reviewer and reconciler sessions under the review output directory",
-			type: "boolean",
-		})
 	}
 	// Upstream applies extension flag values after factories load. The shared
 	// CLI parse captures --review before flags are applied at that later stage.

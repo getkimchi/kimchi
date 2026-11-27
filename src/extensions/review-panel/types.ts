@@ -145,8 +145,6 @@ export interface RunReviewPanelOptions extends ReviewPanelSelectionInput {
 	pi: ExtensionAPI
 	target: ResolvedReviewTarget
 	outputDir: string
-	/** Save each reviewer and verifier transcript below outputDir/sessions. */
-	saveSessions?: boolean
 	checkDefinitions?: ReviewCheckDefinition[]
 	environmentGaps?: EnvironmentGap[]
 	executionPolicy?: ReviewExecutionPolicyOptions
@@ -187,8 +185,6 @@ export interface WrapUpReviewPanelOptions {
 	ctx: ExtensionContext
 	pi: ExtensionAPI
 	outputDir: string
-	/** Save newly launched verifier transcripts below outputDir/sessions. */
-	saveSessions?: boolean
 	/** Stage 5 passes the new manifest identity. Deadline intentionally is not part of identity. */
 	expected?: ReviewPanelIdentity
 	checkDefinitions?: ReviewCheckDefinition[]

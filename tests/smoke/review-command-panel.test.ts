@@ -1,5 +1,14 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { expect, it } from "vitest"
@@ -22,6 +31,14 @@ interface JsonEvent {
 	model?: string
 	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	message?: { role?: string; toolsAdded?: Array<{ name: string }> }
+}
+
+interface SessionJsonEntry {
+	type?: string
+	id?: string
+	parentSession?: string
+	customType?: string
+	data?: { type?: string }
 }
 
 interface PrintResult {
@@ -56,7 +73,7 @@ function runPrint(
 		timeoutMs?: number
 		submitGraceMs?: number
 		worktreeTempDir?: string
-		saveSessions?: boolean
+		sessionDir?: string
 		cwd?: string
 	} = {},
 ): RunningPrint {
@@ -76,6 +93,7 @@ function runPrint(
 			"--yolo",
 			"--no-approve",
 			...(options.sessionId ? ["--session", options.sessionId] : []),
+			...(options.sessionDir ? ["--session-dir", options.sessionDir] : []),
 			"--review",
 			"--review-writer",
 			"final",
@@ -83,7 +101,6 @@ function runPrint(
 			directories.contextDir,
 			"--review-output-dir",
 			directories.outputDir,
-			...(options.saveSessions ? ["--review-save-sessions"] : []),
 			prompt,
 		],
 		{
@@ -248,30 +265,47 @@ it("dispatches a zero-finding manifest panel with ordered events and ingestible 
 		const resumed = await runPrint(f.homeDir, "/review wrap-up", f.directories, { sessionId }).done
 		expectPanelStartup(resumed)
 		expect(readFileSync(join(f.directories.outputDir, "findings", "final.jsonl"), "utf8")).toBe(finalFindings)
-		expect(existsSync(join(f.directories.outputDir, "sessions"))).toBe(false)
 	} finally {
 		await cleanup(f.tempRoot, f.fake)
 	}
 })
 
-it("saves reviewer and reconciler sessions as private JSONL when enabled", { timeout: 45_000 }, async () => {
+it("saves reviewer and reconciler sessions next to the parent session", { timeout: 45_000 }, async () => {
 	const f = await fixture({ scripts: reviewResponseScripts({ finding: true }) })
 	try {
+		const sessionDir = join(realpathSync(f.homeDir), "sessions")
 		const result = await runPrint(f.homeDir, `/review --manifest ${f.manifestPath} --lens spec`, f.directories, {
-			saveSessions: true,
+			sessionDir,
 		}).done
-		expectPanelStartup(result)
-		const sessionsDir = join(f.directories.outputDir, "sessions")
-		if (process.platform !== "win32") expect(statSync(sessionsDir).mode & 0o777).toBe(0o700)
-		for (const writer of ["spec", "reconciliation"]) {
-			const path = join(sessionsDir, `${writer}.jsonl`)
-			const entries = readFileSync(path, "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => JSON.parse(line) as { type?: string })
-			expect(entries[0]?.type).toBe("session")
-			expect(entries.some((entry) => entry.type === "message")).toBe(true)
-			if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600)
+		const sessionId = expectPanelStartup(result)
+		const sessions = readdirSync(sessionDir)
+			.filter((name) => name.endsWith(".jsonl"))
+			.map((name) => {
+				const path = join(sessionDir, name)
+				return {
+					path,
+					entries: readFileSync(path, "utf8")
+						.trimEnd()
+						.split("\n")
+						.map((line) => JSON.parse(line) as SessionJsonEntry),
+				}
+			})
+		expect(sessions, result.stderr).toHaveLength(3)
+		const parent = sessions.find((session) => session.entries[0]?.id === sessionId)
+		if (!parent) throw new Error("The parent session JSONL was not written to the explicit session directory.")
+		const children = sessions.filter((session) => session.path !== parent.path)
+		expect(
+			children
+				.map(
+					(session) =>
+						session.entries.find((entry) => entry.type === "custom" && entry.customType === "kimchi:subagent-session")
+							?.data?.type,
+				)
+				.sort(),
+		).toEqual(["review:reconciliation", "review:spec"])
+		for (const child of children) {
+			expect(child.entries[0]).toMatchObject({ type: "session", parentSession: parent.path })
+			expect(child.entries.some((entry) => entry.type === "message")).toBe(true)
 		}
 	} finally {
 		await cleanup(f.tempRoot, f.fake)
