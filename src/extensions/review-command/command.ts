@@ -206,9 +206,7 @@ export function reporter(ctx: ExtensionCommandContext, visible: boolean, pi: Ext
 		result(result) {
 			if (!visible) return
 			const findings = result.findings.length
-				? result.findings.map(
-						(finding) => `${finding.severity.toUpperCase()} ${finding.path}:${finding.line} ${finding.description}`,
-					)
+				? result.findings.map((finding) => `${finding.priority} ${finding.path}:${finding.line} ${finding.title}`)
 				: ["No findings."]
 			const summary = reviewResultSummary(result)
 			// Keep complete findings in scrollback; the live widget shrinks to a summary.

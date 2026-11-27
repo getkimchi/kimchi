@@ -198,10 +198,12 @@ describe("review submit store", () => {
 		const finding = {
 			path: "local.ts",
 			line: 1,
-			severity: "warning",
-			type: "bug",
+			title: "A local finding",
 			description: "A local finding.",
+			explanation: "Static inspection supports this local fixture finding.",
 			suggestion: "Fix it.",
+			priority: "P2" as const,
+			type: "bug" as const,
 		}
 		const finalContext = { ...paths(homeDir), writer: "final", writerLimit: 1, now: NOW }
 		expect((await submitFinding(finding, finalContext)).accepted).toBe(true)
@@ -225,10 +227,12 @@ describe("review submit store", () => {
 			{
 				path: "main.go",
 				line: 1,
-				severity: "warning",
-				type: "bug",
+				title: "Unknown schema",
 				description: "Unknown schema.",
+				explanation: "Static inspection supports this schema fixture.",
 				suggestion: "Stop.",
+				priority: "P2",
+				type: "bug",
 			},
 			{ ...paths(homeDir), writer: "final", now: NOW },
 		)
@@ -248,10 +252,12 @@ describe("review submit store", () => {
 			{
 				path: "main.go",
 				line: 1,
-				severity: "warning",
-				type: "bug",
+				title: "NUL fixture",
 				description: "bad\0description",
+				explanation: "Static inspection supports this NUL fixture.",
 				suggestion: "Stop.",
+				priority: "P2",
+				type: "bug",
 			},
 			{ ...paths(homeDir), writer: "final", now: NOW },
 		)

@@ -1,10 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { REVIEW_FINDING_PRIORITIES, REVIEW_FINDING_TYPES } from "../review-submit/store.js"
 import { REVIEW_RECONCILIATION_VERSION, type SemanticReconciliation } from "./types.js"
 
 export const REVIEW_RECONCILIATION_TOOL = "submit_reconciliation"
 
-const severity = Type.Union([Type.Literal("critical"), Type.Literal("warning"), Type.Literal("info")])
+const priority = Type.Union(REVIEW_FINDING_PRIORITIES.map((value) => Type.Literal(value)))
+const findingType = Type.Union(REVIEW_FINDING_TYPES.map((value) => Type.Literal(value)))
 const verdict = Type.Union([
 	Type.Literal("fixed"),
 	Type.Literal("not_fixed"),
@@ -44,10 +46,12 @@ export function createReconciliationSubmissionExtension(
 								id: Type.String(),
 								path: Type.String(),
 								line: Type.Integer({ minimum: 1 }),
-								severity,
-								type: Type.String(),
+								title: Type.String(),
 								description: Type.String(),
+								explanation: Type.String(),
 								suggestion: Type.String(),
+								priority,
+								type: findingType,
 								candidate_ids: Type.Array(Type.String(), { minItems: 1 }),
 							},
 							{ additionalProperties: false },

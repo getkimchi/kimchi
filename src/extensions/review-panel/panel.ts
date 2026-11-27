@@ -17,6 +17,7 @@ import {
 	type FinalizeReviewPanelOptions,
 	finalizeReviewPanel,
 } from "./finalize.js"
+import { REVIEW_FINDING_CONTRACT_PROMPT } from "./finding-contract.js"
 import {
 	DEFAULT_REVIEW_CONCURRENCY,
 	type ReviewLensId,
@@ -145,7 +146,9 @@ function reviewerPrompt(target: ResolvedReviewTarget, lens: { id: ReviewLensId; 
 	return `REVIEW_LENS ${lens.id}
 Review only the pinned comparison ${scope.pinned.baseSha}..${scope.pinned.headSha}; your checkout is the pinned head. Focus: ${lens.focus}
 Read review context and its original commentable-lines map from ${scope.contextDir}. Your private worktree may contain temporary tests when the inherited effective session permissions allow them; never elevate permissions. Read-only session restrictions apply to every write and command. Use run_review_check for routine repository checks and run_review_command for focused tests or base/head comparisons.
-For every material claim, record the revision, exact command when applicable, and observed outcome in the submitted description. Compare the same test against base and head when that distinguishes a regression. Reviewer-created lines and temporary tests are never valid anchors.
+For every material claim, record the revision, exact command when applicable, and observed outcome in explanation. Compare the same test against base and head when that distinguishes a regression. Reviewer-created lines and temporary tests are never valid anchors.
+Write the whole finding yourself, including its title, impact, reasoning, fix, priority, and type. In explanation, state the commands, probes, or tests you ran and their results, or state that the finding comes from reading code.
+${REVIEW_FINDING_CONTRACT_PROMPT}
 Submit each valid material finding promptly with submit_finding. Finish with submit_summary, including missing tools or blocked dependencies in environment_gaps. Do not submit thread replies; the reconciler handles prior threads. Do not edit review output outside the submit tools.`
 }
 

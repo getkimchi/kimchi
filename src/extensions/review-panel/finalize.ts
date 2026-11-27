@@ -12,11 +12,13 @@ import {
 	SUMMARY_SCHEMA_VERSION,
 	submitSummary,
 } from "../review-submit/store.js"
+import { REVIEW_FINDING_CONTRACT_PROMPT } from "./finding-contract.js"
 import {
 	atomicWriteReviewFile,
 	buildFallbackCheckpoint,
-	buildFallbackFindings,
+	buildFinalFallback,
 	candidateInputDigest,
+	capFinalReviewFindings,
 	orderedCandidates,
 	readFinalFindings,
 	reviewPanelPaths,
@@ -80,7 +82,9 @@ export function buildVerifierPrompt(requestPath: string, hasThreadHistory: boole
 			: `Your previous result failed strict validation: ${repairErrors}\nReturn a corrected schema through ${REVIEW_RECONCILIATION_TOOL}; do not invent aliases such as action or decision.\n`
 	return `You are the semantic review reconciler. Inspect ${requestPath}, the pinned code and saved check evidence. Reviewer-authored lines and tests are not part of the pinned comparison and can never anchor a finding.
 ${repair}${hasThreadHistory ? "Review the supplied thread history against current code and the previous revision when the context supplies one. Link equivalent current candidates to the earlier thread and reject those candidates so they are not posted again. Resolve only demonstrably fixed concerns. Use verdict unverified when the available code and evidence do not support another verdict.\n" : ""}
-Call ${REVIEW_RECONCILIATION_TOOL} exactly once with schema_version "${REVIEW_RECONCILIATION_VERSION}", findings, decisions, and threads. Do not return prose or a JSON assistant message instead. Its JSON schema is authoritative: unknown fields are rejected and disposition must be retained, merged, or rejected. Every candidate must occur exactly once in decisions with a reason. Group only the same underlying defect and consequence; distinct defects on one line stay separate. A merged finding preserves all candidate_ids. Each finding needs a unique id, a valid original-snapshot path/line anchor, severity critical|warning|info, lowercase type, description, suggestion, and candidate_ids. Single-candidate decisions are retained; all decisions in a multi-candidate group are merged and name that finding's id. Rejected candidates have no finding id.
+Call ${REVIEW_RECONCILIATION_TOOL} exactly once with schema_version "${REVIEW_RECONCILIATION_VERSION}", findings, decisions, and threads. Do not return prose or a JSON assistant message instead. Its JSON schema is authoritative: unknown fields are rejected and disposition must be retained, merged, or rejected. Every candidate must occur exactly once in decisions with a reason. Group only the same underlying defect and consequence; distinct defects on one line stay separate. A merged finding preserves all candidate_ids. Each finding needs a unique id and candidate_ids.
+${REVIEW_FINDING_CONTRACT_PROMPT}
+When consolidating duplicates, choose the best title and re-rate priority against the table. You may rewrite only title and priority. Copy path, line, description, explanation, suggestion, and type exactly from one best-supported source finding; coordinator validation rejects mixed or newly written versions of those fields. Do not perform priority capping yourself; finalization applies the convention/docs/test-gap caps in code. Single-candidate decisions are retained; all decisions in a multi-candidate group are merged and name that finding's id. Rejected candidates have no finding id.
 threads contains only thread replies allowed by comments.json scope. Each has thread_id, body, action, optional verdict, evidence_kind and evidence, and equivalent_candidate_ids. A current candidate equivalent to an earlier finding must be rejected and listed there. Own-thread verdicts require evidence_kind and evidence, even for unverified. Return threads: [] when there is nothing to say. Do not call submit_finding, submit_summary, or submit_reply; the coordinator strictly validates and publishes your structured submission.`
 }
 
@@ -100,7 +104,7 @@ export async function checkpointReviewPanelFallback(
 			provenance: packed.provenance,
 			provenanceTruncatedCount: packed.provenanceTruncatedCount,
 		}
-		state.coverage = coverageFor(state, packed.records.length)
+		state.coverage = coverageFor(state, packed.records)
 	})
 	return packed.records
 }
@@ -222,13 +226,19 @@ async function collectEnvironmentGaps(
 		.slice(0, 50)
 }
 
-function summaryBody(store: ReviewPanelStateStore, findingCount: number): string {
-	const coverage = coverageFor(store.state, findingCount)
+function summaryBody(store: ReviewPanelStateStore, finalFindings: readonly ReviewFindingRecord[]): string {
+	const coverage = coverageFor(store.state, finalFindings)
+	const findingCount = finalFindings.length
 	const findings = `${findingCount} final finding${findingCount === 1 ? "" : "s"} from ${coverage.candidate_count} accepted candidate${coverage.candidate_count === 1 ? "" : "s"}.`
+	const priorities = Object.entries(coverage.findings_by_priority)
+		.filter(([, count]) => count > 0)
+		.map(([priority, count]) => `${priority}=${count}`)
+		.join(", ")
+	const prioritySummary = `Priority counts: ${priorities || "none"}.`
 	if (coverage.status === "complete") {
-		return `Coverage: complete. All ${coverage.selected_lenses} selected lenses submitted; ${findings}`
+		return `Coverage: complete. All ${coverage.selected_lenses} selected lenses submitted; ${findings} ${prioritySummary}`
 	}
-	return `Coverage: partial. Unfinished lenses: ${coverage.unfinished_lenses.join(", ")}. ${coverage.submitted_lenses}/${coverage.selected_lenses} selected lenses submitted; ${findings}`
+	return `Coverage: partial. Unfinished lenses: ${coverage.unfinished_lenses.join(", ")}. ${coverage.submitted_lenses}/${coverage.selected_lenses} selected lenses submitted; ${findings} ${prioritySummary}`
 }
 
 export interface FinalizeReviewPanelOptions {
@@ -251,8 +261,13 @@ async function publishValidatedReconciliation(
 	validated: ValidatedReconciliation,
 	replies: PreparedReplyBatch,
 	threadHistoryDigest: string | undefined,
-): Promise<void> {
-	await writeFinalFindings(reviewPanelPaths(outputDir).findingsPath, validated.findings)
+): Promise<ReviewFindingRecord[]> {
+	const published = capFinalReviewFindings({
+		records: validated.findings,
+		provenance: validated.provenance,
+		provenanceTruncatedCount: validated.provenanceTruncatedCount,
+	})
+	await writeFinalFindings(reviewPanelPaths(outputDir).findingsPath, published.records)
 	if (replies.changed) {
 		await atomicWriteReviewFile(reviewPanelPaths(outputDir).repliesPath, replies.contents)
 	}
@@ -262,12 +277,13 @@ async function publishValidatedReconciliation(
 			reason: "Semantic reconciliation validated and published.",
 			inputDigest: digest,
 			threadHistoryDigest,
-			provenance: validated.provenance,
-			provenanceTruncatedCount: validated.provenanceTruncatedCount,
+			provenance: published.provenance,
+			provenanceTruncatedCount: published.provenanceTruncatedCount,
 			semantic: validated.semantic,
 		}
-		state.coverage = coverageFor(state, validated.findings.length)
+		state.coverage = coverageFor(state, published.records)
 	})
+	return published.records
 }
 
 /** Idempotent finalization from saved candidates. Findings are always replaced
@@ -317,9 +333,9 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 		} catch (error) {
 			validated = undefined
 			replyBatch = undefined
-			findings = buildFallbackFindings(candidates)
-			await writeFinalFindings(paths.findingsPath, findings)
 			const packed = buildFallbackCheckpoint(candidates)
+			findings = packed.records
+			await writeFinalFindings(paths.findingsPath, findings)
 			await store.update((state) => {
 				state.reconciliation = {
 					status: "fallback",
@@ -329,10 +345,10 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 					provenance: packed.provenance,
 					provenanceTruncatedCount: packed.provenanceTruncatedCount,
 				}
-				state.coverage = coverageFor(state, findings.length)
+				state.coverage = coverageFor(state, findings)
 			})
 		}
-	} else if (sameInput && !awaiting && sameThreadHistory) {
+	} else if (store.state.reconciliation.status === "fallback" && sameInput && !awaiting && sameThreadHistory) {
 		// A failed or unavailable reconciliation for this exact input is final;
 		// repeated wrap-up calls reuse the fallback instead of changing IDs.
 	} else if (candidates.length === 0 && !hasThreads) {
@@ -347,14 +363,16 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 			}
 		})
 	} else if (!options.hasVerifier || !options.reconcile) {
+		const packed = buildFallbackCheckpoint(candidates)
+		findings = packed.records
 		await store.update((state) => {
 			state.reconciliation = {
 				status: "fallback",
 				reason: "Semantic reconciliation was unavailable; the deterministic fallback is final.",
 				inputDigest: digest,
 				threadHistoryDigest,
-				provenance: state.reconciliation.provenance ?? {},
-				provenanceTruncatedCount: state.reconciliation.provenanceTruncatedCount ?? 0,
+				provenance: packed.provenance,
+				provenanceTruncatedCount: packed.provenanceTruncatedCount,
 			}
 		})
 	} else {
@@ -369,17 +387,18 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 			)
 		}
 		const fallback = async (reason: string) => {
-			findings = await readFinalFindings(paths.findingsPath)
+			const packed = buildFallbackCheckpoint(candidates)
+			findings = packed.records
 			await store.update((state) => {
 				state.reconciliation = {
 					status: "fallback",
 					reason,
 					inputDigest: digest,
 					threadHistoryDigest,
-					provenance: state.reconciliation.provenance ?? {},
-					provenanceTruncatedCount: state.reconciliation.provenanceTruncatedCount ?? 0,
+					provenance: packed.provenance,
+					provenanceTruncatedCount: packed.provenanceTruncatedCount,
 				}
-				state.coverage = coverageFor(state, findings.length)
+				state.coverage = coverageFor(state, findings)
 			})
 		}
 		try {
@@ -410,16 +429,32 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 
 	await options.beforePublish?.()
 	if (validated && replyBatch) {
-		await publishValidatedReconciliation(store, outputDir, digest, validated, replyBatch, threadHistoryDigest)
-		findings = validated.findings
+		findings = await publishValidatedReconciliation(
+			store,
+			outputDir,
+			digest,
+			validated,
+			replyBatch,
+			threadHistoryDigest,
+		)
+	} else {
+		// Fallback records and complete provenance are one deterministic derivation.
+		// Always publish both so a rerun converges after a crash between either write.
+		const published = buildFinalFallback(candidates)
+		await writeFinalFindings(paths.findingsPath, published.records)
+		await store.update((state) => {
+			state.reconciliation.provenance = published.provenance
+			state.reconciliation.provenanceTruncatedCount = published.provenanceTruncatedCount
+		})
+		findings = published.records
 	}
 	const hasReplies = replyBatch ? replyBatch.records.length > 0 : await fileExists(paths.repliesPath)
-	const coverage = coverageFor(store.state, findings.length)
+	const coverage = coverageFor(store.state, findings)
 	await store.update((state) => {
 		state.coverage = coverage
 	})
 	const input = {
-		body: summaryBody(store, findings.length),
+		body: summaryBody(store, findings),
 		environment_gaps: await collectEnvironmentGaps(store, outputDir, options.environmentGaps),
 		coverage,
 	}

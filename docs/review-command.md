@@ -20,7 +20,9 @@ are hidden from `--help` but continue to parse normally.
 
 The adapter shows the immutable base/head, selected lenses and policy reasons,
 effective slot count, per-lens progress, final findings, and complete or partial
-coverage. Report and contract artifacts use `.kimchi/review-context` and
+coverage. Each rendered finding shows its priority label and title beside the
+path and line. Structured result artifacts retain the complete fields and
+capped-priority counts. Report and contract artifacts use `.kimchi/review-context` and
 `.kimchi/review-output` by default, outside reviewer worktrees. Startup sweeps
 reclaim private snapshot refs and worktree runs older than 24 hours; normal
 cleanup uses the owning runner's finalization path.

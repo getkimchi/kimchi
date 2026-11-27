@@ -10,7 +10,7 @@
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "main.go", "line": 999, "severity": "warning", "type": "bug", "description": "Outside every hunk.", "suggestion": "Move the investigation to a changed line."},
+          "arguments": {"path": "main.go", "line": 999, "title": "Finding outside every hunk", "description": "The reported location is outside every changed hunk.", "explanation": "Static inspection selected a line outside the provider diff.", "suggestion": "Move the investigation to a changed line.", "priority": "P2", "type": "bug"},
           "expect": {
             "accepted": false,
             "reason": "line_outside_hunks",
@@ -33,25 +33,25 @@
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "binary.png", "line": 1, "severity": "info", "type": "bug", "description": "Binary finding.", "suggestion": "Describe this in the summary."},
+          "arguments": {"path": "binary.png", "line": 1, "title": "Binary finding", "description": "Binary files cannot receive an inline provider comment.", "explanation": "Static inspection found no textual patch for the binary file.", "suggestion": "Describe this in the summary.", "priority": "P4", "type": "bug"},
           "expect": {"accepted": false, "reason": "file_without_anchors", "file_reason": "no_patch", "summary_required": true, "message_contains": ["binary.png", "summary"]}
         },
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "omitted.go", "line": 1, "severity": "info", "type": "bug", "description": "Provider-cap finding.", "suggestion": "Describe this in the summary."},
+          "arguments": {"path": "omitted.go", "line": 1, "title": "Provider-cap finding", "description": "The provider omitted this path from its commentable map.", "explanation": "Static inspection found the path outside the supplied provider cap.", "suggestion": "Describe this in the summary.", "priority": "P4", "type": "bug"},
           "expect": {"accepted": false, "reason": "file_without_anchors", "file_reason": "outside_provider_diff", "summary_required": true, "message_contains": ["omitted.go", "outside_provider_diff", "summary"]}
         },
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "absent.go", "line": 1, "severity": "info", "type": "bug", "description": "Absent-file finding.", "suggestion": "Describe this in the summary."},
+          "arguments": {"path": "absent.go", "line": 1, "title": "Absent-file finding", "description": "The absent path cannot receive an inline provider comment.", "explanation": "Static inspection found the path outside the supplied provider diff.", "suggestion": "Describe this in the summary.", "priority": "P4", "type": "bug"},
           "expect": {"accepted": false, "reason": "file_without_anchors", "file_reason": "outside_provider_diff", "summary_required": true, "message_contains": ["absent.go", "summary"]}
         },
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "vendor/generated.go", "line": 2, "severity": "info", "type": "bug", "description": "Excluded finding.", "suggestion": "Leave this out of the review."},
+          "arguments": {"path": "vendor/generated.go", "line": 2, "title": "Excluded generated-code finding", "description": "The generated path is excluded from inline review comments.", "explanation": "Static inspection found the generated path in the excluded set.", "suggestion": "Leave this out of the review.", "priority": "P4", "type": "bug"},
           "expect": {"accepted": false, "reason": "file_without_anchors", "file_reason": "excluded", "summary_required": true, "message_contains": ["vendor/generated.go", "excluded", "summary"]}
         }
       ]
@@ -63,48 +63,79 @@
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "main.go", "line": 12, "severity": "error", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion."},
+          "arguments": {"path": "main.go", "line": 12, "title": "Valid fixture finding", "description": "Valid description.", "explanation": "Static inspection supports this fixture finding.", "suggestion": "Valid suggestion.", "priority": "P5", "type": "bug"},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "priority", "message_contains": ["priority", "P0", "P4"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "title": "Valid fixture finding", "description": "Valid description.", "explanation": "Static inspection supports this fixture finding.", "suggestion": "Valid suggestion.", "priority": "P2", "type": "maintainability"},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "type", "message_contains": ["type", "test-gap"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "title": "Valid fixture finding", "description": "Valid description.", "explanation": "Static inspection supports this fixture finding.", "suggestion": "Valid suggestion.", "priority": "P2", "type": "bug", "evidence": "tested"},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "evidence", "message_contains": ["evidence", "not an accepted field"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "title": "Valid fixture finding", "description": "Valid description.", "explanation": "Static inspection supports this fixture finding.", "suggestion": "Valid suggestion.", "priority": "P2", "type": "bug", "severity": "critical"},
           "expect": {"accepted": false, "reason": "invalid_field", "field": "severity", "message_contains": ["severity"]}
         },
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion."},
+          "arguments": {"path": "main.go", "line": 12, "title": "Valid fixture finding", "description": "Valid description.", "explanation": "Static inspection supports this fixture finding.", "suggestion": "Valid suggestion.", "priority": "P2", "type": "bug"},
           "generate_string_bytes": {"path": 4097},
           "expect": {"accepted": false, "reason": "invalid_field", "field": "path", "limit": 4096, "message_contains": ["path", "4096"]}
         },
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion."},
-          "generate_string_bytes": {"type": 65},
-          "expect": {"accepted": false, "reason": "invalid_field", "field": "type", "limit": 64, "message_contains": ["type", "64"]}
+          "arguments": {"path": "main.go", "line": 12, "title": "Valid fixture finding", "description": "Valid description.", "explanation": "Static inspection supports this fixture finding.", "suggestion": "Valid suggestion.", "priority": "P2", "type": "bug"},
+          "generate_string_bytes": {"title": 81},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "title", "limit": 80, "actual_length": 81, "message_contains": ["title", "80", "81"]}
         },
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion."},
-          "generate_string_bytes": {"description": 16385},
-          "expect": {"accepted": false, "reason": "invalid_field", "field": "description", "limit": 16384, "message_contains": ["description", "16384"]}
+          "arguments": {"path": "main.go", "line": 12, "title": "Invalid\ntitle", "description": "Valid description.", "explanation": "Static inspection supports this fixture finding.", "suggestion": "Valid suggestion.", "priority": "P2", "type": "bug"},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "title", "message_contains": ["title", "single line", "control"]}
         },
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion."},
-          "generate_string_bytes": {"suggestion": 16385},
-          "expect": {"accepted": false, "reason": "invalid_field", "field": "suggestion", "limit": 16384, "message_contains": ["suggestion", "16384"]}
+          "arguments": {"path": "main.go", "line": 12, "title": "Valid fixture finding", "description": "Valid description.", "explanation": "Static inspection supports this fixture finding.", "suggestion": "Valid suggestion.", "priority": "P2", "type": "bug"},
+          "generate_string_bytes": {"description": 251},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "description", "limit": 250, "actual_length": 251, "message_contains": ["description", "250", "251"]}
         },
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion.", "derived_from": ["derived-1"]},
+          "arguments": {"path": "main.go", "line": 12, "title": "Valid fixture finding", "description": "Valid description.", "explanation": "Static inspection supports this fixture finding.", "suggestion": "Valid suggestion.", "priority": "P2", "type": "bug"},
+          "generate_string_bytes": {"explanation": 2001},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "explanation", "limit": 2000, "actual_length": 2001, "message_contains": ["explanation", "2000", "2001"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "title": "Valid fixture finding", "description": "Valid description.", "explanation": "Static inspection supports this fixture finding.", "suggestion": "Valid suggestion.", "priority": "P2", "type": "bug"},
+          "generate_string_bytes": {"suggestion": 501},
+          "expect": {"accepted": false, "reason": "invalid_field", "field": "suggestion", "limit": 500, "actual_length": 501, "message_contains": ["suggestion", "500", "501"]}
+        },
+        {
+          "tool": "submit_finding",
+          "writer": "final",
+          "arguments": {"path": "main.go", "line": 12, "title": "Valid fixture finding", "description": "Valid description.", "explanation": "Static inspection supports this fixture finding.", "suggestion": "Valid suggestion.", "priority": "P2", "type": "bug", "derived_from": ["derived-1"]},
           "generate_array_lengths": {"derived_from": 51},
           "expect": {"accepted": false, "reason": "invalid_field", "field": "derived_from", "limit": 50, "message_contains": ["derived_from", "50"]}
         },
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "bug", "description": "Valid description.", "suggestion": "Valid suggestion.", "derived_from": ["derived-1"]},
+          "arguments": {"path": "main.go", "line": 12, "title": "Valid fixture finding", "description": "Valid description.", "explanation": "Static inspection supports this fixture finding.", "suggestion": "Valid suggestion.", "priority": "P2", "type": "bug", "derived_from": ["derived-1"]},
           "generate_string_bytes": {"derived_from[0]": 257},
           "expect": {"accepted": false, "reason": "invalid_field", "field": "derived_from[0]", "limit": 256, "message_contains": ["derived_from[0]", "256"]}
         }
@@ -117,7 +148,7 @@
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "main.go", "line": 12, "severity": "critical", "type": "bug", "description": "The reviewed path can return stale data.", "suggestion": "Reload the value before using it.", "derived_from": ["previous-run-7"]},
+          "arguments": {"path": "main.go", "line": 12, "title": "Reviewed path returns stale data", "description": "Callers using the reviewed path can receive stale data and make incorrect decisions.", "explanation": "Static inspection of the reviewed path found a stale value reused after its source changed.", "suggestion": "Reload the value before using it.", "priority": "P1", "type": "bug", "derived_from": ["previous-run-7"]},
           "expect": {"accepted": true, "id": "final-1"}
         }
       ]
@@ -142,7 +173,7 @@
           "repeat": 49,
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "main.go", "line": 12, "severity": "warning", "type": "maintainability", "description": "Repeated fixture finding.", "suggestion": "Prioritize the actionable instances."},
+          "arguments": {"path": "main.go", "line": 12, "title": "Repeated convention finding", "description": "Repeated convention findings have negligible user impact.", "explanation": "Static inspection identified the same repeated convention concern.", "suggestion": "Prioritize the actionable instances.", "priority": "P4", "type": "convention"},
           "expect": {"accepted": true, "id_from_sequence": true}
         }
       ]
@@ -154,7 +185,7 @@
         {
           "tool": "submit_finding",
           "writer": "final",
-          "arguments": {"path": "main.go", "line": 12, "severity": "critical", "type": "security", "description": "This must not consume a 51st slot.", "suggestion": "Prioritize existing findings first."},
+          "arguments": {"path": "main.go", "line": 12, "title": "Fifty-first finding must be rejected", "description": "This security finding must not consume a fifty-first storage slot.", "explanation": "Static inspection produced another candidate after the writer cap was reached.", "suggestion": "Prioritize existing findings first.", "priority": "P0", "type": "security"},
           "expect": {"accepted": false, "reason": "cap", "limit": 50, "count": 50, "prioritize": true, "message_contains": ["50", "prioritize"]}
         }
       ]
@@ -167,14 +198,14 @@
           "tool": "submit_finding",
           "writer": "correctness",
           "process": "correctness-main",
-          "arguments": {"path": "main.go", "line": 20, "severity": "warning", "type": "bug", "description": "Correctness writer finding.", "suggestion": "Cover the edge case."},
+          "arguments": {"path": "main.go", "line": 20, "title": "Correctness writer finding", "description": "An edge case in the correctness writer's path can return the wrong result.", "explanation": "Static inspection of main.go:20 found the uncovered correctness edge case.", "suggestion": "Cover the edge case.", "priority": "P2", "type": "bug"},
           "expect": {"accepted": true, "id": "correctness-1"}
         },
         {
           "tool": "submit_finding",
           "writer": "security",
           "process": "security-main",
-          "arguments": {"path": "main.go", "line": 21, "severity": "critical", "type": "security", "description": "Security writer finding.", "suggestion": "Validate the untrusted input."},
+          "arguments": {"path": "main.go", "line": 21, "title": "Untrusted input bypasses validation", "description": "Remote users can bypass validation and access protected records in production.", "explanation": "Static inspection of main.go:21 found untrusted input reaching the protected operation without validation.", "suggestion": "Validate the untrusted input.", "priority": "P0", "type": "security"},
           "expect": {"accepted": true, "id": "security-1"}
         }
       ]
@@ -187,14 +218,14 @@
           "tool": "submit_finding",
           "writer": "correctness",
           "process": "correctness-A",
-          "arguments": {"path": "main.go", "line": 30, "severity": "info", "type": "testing", "description": "Identical same-writer race finding.", "suggestion": "Keep exactly one JSON record per accepted call."},
+          "arguments": {"path": "main.go", "line": 30, "title": "Same-writer race test gap", "description": "Concurrent same-writer calls can expose a missing regression test for record integrity.", "explanation": "Two concurrent fixture calls exercise the same test-gap finding and writer lock; both accepted whole records.", "suggestion": "Keep exactly one JSON record per accepted call.", "priority": "P3", "type": "test-gap"},
           "expect": {"accepted": true, "id_from_sequence": true}
         },
         {
           "tool": "submit_finding",
           "writer": "correctness",
           "process": "correctness-B",
-          "arguments": {"path": "main.go", "line": 30, "severity": "info", "type": "testing", "description": "Identical same-writer race finding.", "suggestion": "Keep exactly one JSON record per accepted call."},
+          "arguments": {"path": "main.go", "line": 30, "title": "Same-writer race test gap", "description": "Concurrent same-writer calls can expose a missing regression test for record integrity.", "explanation": "Two concurrent fixture calls exercise the same test-gap finding and writer lock; both accepted whole records.", "suggestion": "Keep exactly one JSON record per accepted call.", "priority": "P3", "type": "test-gap"},
           "expect": {"accepted": true, "id_from_sequence": true}
         }
       ]
@@ -207,7 +238,7 @@
           "tool": "submit_summary",
           "writer": "final",
           "arguments": {
-            "body": "One critical finding was kept; lower-priority duplicate fixture findings fill the remaining storage slots.",
+            "body": "One P1 finding was kept; P4 duplicate fixture findings fill the remaining storage slots.",
             "score": 82,
             "estimated_effort_to_review": 3,
             "environment_gaps": [

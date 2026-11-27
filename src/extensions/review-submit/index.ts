@@ -4,6 +4,8 @@ import { getParsedCliArgs } from "../../cli-args.js"
 import { resolveReviewDirectories } from "./paths.js"
 import {
 	DEFAULT_WRITER_LIMIT,
+	REVIEW_FINDING_PRIORITIES,
+	REVIEW_FINDING_TYPES,
 	type ReviewSubmitContext,
 	type SubmitResult,
 	submitFinding,
@@ -94,10 +96,19 @@ export default function reviewSubmitExtension(pi: ExtensionAPI, binding?: Review
 			{
 				path: Type.String({ description: "Repository-relative file path (maximum 4 KiB in UTF-8)" }),
 				line: Type.Integer({ minimum: 1, description: "New-side line number" }),
-				severity: Type.Union([Type.Literal("critical"), Type.Literal("warning"), Type.Literal("info")]),
-				type: Type.String({ description: "Lowercase finding type, matching ^[a-z][a-z0-9_]*$ (maximum 64 bytes)" }),
-				description: Type.String({ description: "Concrete finding and its consequence (maximum 16 KiB in UTF-8)" }),
-				suggestion: Type.String({ description: "Actionable correction (maximum 16 KiB in UTF-8)" }),
+				title: Type.String({
+					description: "What is wrong; one plain single line, 1–80 Unicode code points after trimming",
+				}),
+				description: Type.String({
+					description: "Impact: who is affected and how, 1–250 Unicode code points after trimming",
+				}),
+				explanation: Type.String({
+					description:
+						"Reasoning and evidence, including what was run, or that this is from reading code; 1–2000 code points",
+				}),
+				suggestion: Type.String({ description: "The actionable fix, 1–500 Unicode code points after trimming" }),
+				priority: Type.Union(REVIEW_FINDING_PRIORITIES.map((value) => Type.Literal(value))),
+				type: Type.Union(REVIEW_FINDING_TYPES.map((value) => Type.Literal(value))),
 				derived_from: Type.Optional(
 					Type.Array(Type.String(), {
 						maxItems: 50,

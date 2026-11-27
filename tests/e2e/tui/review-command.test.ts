@@ -69,12 +69,8 @@ test("review command publishes final findings to the transcript", async ({ termi
 		async () => {
 			terminal.submit("/review working-tree --lens spec --concurrency 1")
 			await waitForText(terminal, "Review complete: 1 final finding.", { full: true })
-			await waitForText(terminal, "WARNING value.ts:2", { full: true })
-			await waitForText(
-				terminal,
-				"The new export changes behavior without a guard; revision head inspection confirmed it.",
-				{ full: true },
-			)
+			await waitForText(terminal, "P1 value.ts:2", { full: true })
+			await waitForText(terminal, "New export changes behavior without a guard", { full: true })
 			expect(viewText(terminal)).not.toContain("(widget truncated)")
 		},
 	)
