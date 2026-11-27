@@ -67,6 +67,12 @@ vi.mock("../auto-model/index.js", () => ({ createAutoModelRoutingExtension: vi.f
 // for spawning; natural exit is still asserted within 2s of the completion marker.
 const NATURAL_EXIT_STARTUP_BUDGET_MS = 30_000
 
+// A busy runner stalls the event loop for hundreds of milliseconds (KIMCHI_TEST_JITTER=1 reproduces
+// it). Deadline tests add this to their windows, so a stall delays the work without changing which
+// branch the panel takes. Where the panel by design returns within its 100 ms cleanup exit margin of
+// the deadline, the return check allows this much past it.
+const RUNNER_STALL_MS = 2_000
+
 const model: Model<Api> = {
 	id: "panel-scripted",
 	name: "Panel Scripted",
@@ -661,7 +667,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 	it("does not attempt reconciliation repair outside its window", async () => {
 		let verifierCalls = 0
 		const { ctx } = await scriptedContext(defaultScript)
-		const deadline = Date.now() + 1_000
+		const deadline = Date.now() + 1_000 + RUNNER_STALL_MS
 		const result = await runReviewPanel(
 			runOptions(ctx, await target(), {
 				lenses: ["spec"],
@@ -673,7 +679,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 				spawnAgent: async ({ options }) => {
 					if (options.description === "Review writer reconciliation") {
 						verifierCalls += 1
-						await waitForDelay(1_100, options.signal)
+						await waitForDelay(1_100 + RUNNER_STALL_MS, options.signal)
 						return {
 							...completedRunResult(),
 							responseText: JSON.stringify({
@@ -868,7 +874,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 
 	it.each([
 		{ name: "already past", offsetMs: -1000, headroomMs: 100 },
-		{ name: "inside final-write headroom", offsetMs: 250, headroomMs: 500 },
+		{ name: "inside final-write headroom", offsetMs: 250 + RUNNER_STALL_MS, headroomMs: 500 + RUNNER_STALL_MS },
 	])("finalizes without launching when the deadline is $name", async ({ offsetMs, headroomMs }) => {
 		const { ctx } = await scriptedContext(defaultScript)
 		let launches = 0
@@ -1015,12 +1021,12 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		const usageEvents: unknown[] = []
 		let abortObserved = false
 		let submitted = false
-		const deadline = Date.now() + 400
+		const deadline = Date.now() + 400 + 2 * RUNNER_STALL_MS
 		const result = await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
 				deadline,
-				finalWriteHeadroomMs: 50,
+				finalWriteHeadroomMs: 50 + RUNNER_STALL_MS,
 				reconciliationReserveMs: 0,
 				submitGraceMs: 50,
 				cancellationGraceMs: 50,
@@ -1053,10 +1059,15 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		)
 		expect(result.state.reconciliation.reason).toContain("did not settle within the reconciliation window")
 		expect(abortObserved).toBe(true)
-		expect(Date.now()).toBeLessThan(deadline)
+		// The fallback is published at the cutoff (D minus the headroom). The run then waits for the ignored
+		// verifier's cleanup until D minus the 100 ms cleanup exit margin, which a stalled runner can overrun.
+		const paths = reviewPanelPaths(outputDir)
+		for (const path of [paths.findingsPath, paths.summaryPath]) {
+			expect(statSync(path).mtimeMs, path).toBeLessThan(deadline)
+		}
+		expect(Date.now()).toBeLessThan(deadline + RUNNER_STALL_MS)
 		expect(result.state.reconciliation.status).toBe("fallback")
 		expect(result.findings[0]).toMatchObject({ priority: "P0", description: "Original fallback finding." })
-		const paths = reviewPanelPaths(outputDir)
 		const artifacts = [paths.findingsPath, paths.summaryPath, paths.statePath].map((path) => readFileSync(path, "utf8"))
 		const usageCount = usageEvents.length
 		expect(verifierUsage.listenerCount).toBe(0)
@@ -1187,7 +1198,8 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
-				deadline: Date.now() + 600,
+				// The extra time lets the reviewer launch before the cutoff, so its usage session exists.
+				deadline: Date.now() + 600 + RUNNER_STALL_MS,
 				finalWriteHeadroomMs: 100,
 				reconciliationReserveMs: 0,
 				submitGraceMs: 50,
@@ -1310,7 +1322,8 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		const childUsage = createUsageSession()
 		const dropped: ReviewPanelDroppedUsage[] = []
 		let attempted = 0
-		const deadline = Date.now() + 600
+		// The extra time lets the reviewer launch before the reserve, so its usage session exists.
+		const deadline = Date.now() + 600 + RUNNER_STALL_MS
 		await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
@@ -1323,9 +1336,10 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 				onUsageDropped: (usage) => {
 					dropped.push(usage)
 				},
-				onChildUsage: async () => {
+				onChildUsage: async (_usage, signal) => {
 					attempted += 1
-					await waitForDelay(100, undefined)
+					// Outlasts the deadline check below, so awaiting this callback still fails the test.
+					await waitForDelay(3 * RUNNER_STALL_MS, signal)
 				},
 				onProgress: (update) => {
 					if (update.phase === "complete") {
@@ -1338,7 +1352,9 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 				},
 			}),
 		)
-		expect(Date.now()).toBeLessThan(deadline)
+		// The callback is dropped at D minus the 100 ms cleanup exit margin (CLEANUP_EXIT_MARGIN_MS), which a
+		// stalled runner can overrun.
+		expect(Date.now()).toBeLessThan(deadline + RUNNER_STALL_MS)
 		expect(attempted).toBe(1)
 		expect(dropped).toHaveLength(1)
 		expect(dropped[0]).toMatchObject({
