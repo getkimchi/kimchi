@@ -2021,7 +2021,7 @@ export class KimchiAcpAgent {
 							const rejectedApiKey = ambiguous ? undefined : configuredApiKey || storedApiKey
 							if (rejectedApiKey) markCredentialStale(rejectedApiKey, providerId)
 						} catch {
-							// Attribution is best-thinkingLevel. The provider mark must remain
+							// Attribution is best-effort. The provider mark must remain
 							// non-throwing so failTurn always delivers the original error.
 						}
 					}
@@ -2400,7 +2400,7 @@ export class KimchiAcpAgent {
 				await cancelActiveReview(sessionId, "Review session closing")
 				await entry.session.abort()
 			} catch {
-				// Closing is best-thinkingLevel cleanup; still resolve the pending prompt
+				// Closing is best-effort cleanup; still resolve the pending prompt
 				// as cancelled and release the session resources below.
 			}
 		}

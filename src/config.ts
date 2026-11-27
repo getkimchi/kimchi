@@ -732,7 +732,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	// Self-hosted telemetry URLs follow the same resolution as every other
 	// endpoint: the env base (derived) when set, else the stored endpoints.
 	// Without either, the placeholder entry's empty URLs make telemetry sends
-	// fail (best-thinkingLevel, like an unreachable host); endpoint resolution fails
+	// fail (best-effort, like an unreachable host); endpoint resolution fails
 	// fast elsewhere with the actionable error.
 	const selfHostedEndpoints = selfHostedEndpointsFromFile
 	const region = regionOrPlaceholder(regionId, selfHostedEndpoints)

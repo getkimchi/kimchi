@@ -514,7 +514,7 @@ class FakeAgentSession {
 		this.model = model
 	}
 
-	// Reasoning-thinkingLevel seam: the current level plus a tape of every
+	// Reasoning-effort seam: the current level plus a tape of every
 	// setThinkingLevel call, mirroring the real AgentSession getter/setter.
 	thinkingLevel = "off"
 	setThinkingLevelCalls: string[] = []
@@ -17258,7 +17258,7 @@ describe("KimchiAcpAgent background bash handoff", () => {
 			"end_turn",
 		)
 
-		// The superseded hold was settled best-thinkingLevel — no dangling spinner.
+		// The superseded hold was settled best-effort — no dangling spinner.
 		const superseded = updatesFor(firstAcpId).find(isTerminal)
 		expect(superseded?.status).toBe("failed")
 		expect(superseded?.rawOutput?.details?.reason).toBe("tracking superseded by a new handoff")
