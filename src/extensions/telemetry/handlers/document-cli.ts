@@ -1,5 +1,10 @@
-
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { DOC_CLI_COMMANDS, DOC_CLI_SKILLS, type DocCliSkill } from "../../documents/doc-cli-skills.js"
+import { DOCUMENT_ERROR_CODES, type DocumentErrorCode } from "../../documents/model.js"
+import { isDocCliCommand } from "../../permissions/bundled-skill-cli.js"
+import { parseCommandSegments, stripTrailingOutputFilters } from "../../permissions/taxonomy.js"
+import type { TelemetryContext } from "../session-context.js"
+import type { ToolErrorClassification } from "./tool-error-classification.js"
 
 function resolveOutcome(
 	isError: boolean | undefined,
@@ -19,12 +24,6 @@ function resolveOutcome(
 			return undefined
 	}
 }
-import { DOC_CLI_COMMANDS, DOC_CLI_SKILLS, type DocCliSkill } from "../../documents/doc-cli-skills.js"
-import { DOCUMENT_ERROR_CODES, type DocumentErrorCode } from "../../documents/model.js"
-import { isDocCliCommand } from "../../permissions/bundled-skill-cli.js"
-import { parseCommandSegments, stripTrailingOutputFilters } from "../../permissions/taxonomy.js"
-import type { TelemetryContext } from "../session-context.js"
-import type { ToolErrorClassification } from "./tool-error-classification.js"
 
 export interface DocumentCliAttribution {
 	documentType: DocCliSkill
@@ -82,8 +81,6 @@ export function extractDocumentErrorCode(resultText: string): DocumentErrorCode 
 	}
 	return undefined
 }
-
-
 
 export function emitDocumentCliCompleted(
 	tm: TelemetryContext,

@@ -59,7 +59,11 @@ describe("upstream tool execution end integration", () => {
 	it("preserves an in-flight Command aborted outcome for document commands", () => {
 		const tm = telemetryMock()
 		const ctx = createContext()
-		handleToolExecutionStart(tm, { toolCallId: "upstream-in-flight", toolName: "bash", args: { command: "kimchi doc-cli pdf info input.pdf" } })
+		handleToolExecutionStart(tm, {
+			toolCallId: "upstream-in-flight",
+			toolName: "bash",
+			args: { command: "kimchi doc-cli pdf info input.pdf" },
+		})
 		handleToolExecutionEnd(tm, ctx, {
 			toolCallId: "upstream-in-flight",
 			isError: true,
