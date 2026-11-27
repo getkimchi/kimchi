@@ -1114,7 +1114,27 @@ function getWriteWasNewFile(
 	return wasNew
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null
+}
+
+function isAbortedBashWait(details: unknown): boolean {
+	return isRecord(details) && details.aborted === true
+}
+
+function isCancelledSubagentWait(details: unknown): boolean {
+	return isRecord(details) && details.waitCancelled === true
+}
+
+/** A wait that the user cancelled: the work it waited on keeps running, so it is not a success. */
+function isCancelledWait(name: string, details: unknown): boolean {
+	if (name === "bash_control") return isAbortedBashWait(details)
+	if (name === "get_subagent_result") return isCancelledSubagentWait(details)
+	return false
+}
+
 function toolStatusDot(ctx: ToolRenderContext, theme: Theme): string {
+	if (!ctx.isPartial && ctx.state._cancelledWait === true) return `${theme.fg("warning", "●")} `
 	if (!ctx.isPartial && !ctx.isError) return `${theme.fg("success", "●")} `
 	if (!ctx.isPartial && ctx.isError) return `${theme.fg("error", "●")} `
 	return `${blinkDot(ctx, theme)} `
@@ -3192,6 +3212,12 @@ function renderGenericToolResult(
 	if (isMcpToolName(name)) {
 		return renderMcpToolResult(result, !!options?.expanded, !!options?.isPartial, theme, ctx)
 	}
+	const cancelledWait = !options?.isPartial && isCancelledWait(name, result.details)
+	if (cancelledWait && ctx.state._cancelledWait !== true) {
+		// The header was drawn before this result, so redraw it. Deferred, because we are mid-render.
+		ctx.state._cancelledWait = true
+		queueMicrotask(() => ctx.invalidate())
+	}
 	return renderOpenAiToolResult(
 		name,
 		{ content: result.content, details: result.details },
@@ -3199,6 +3225,7 @@ function renderGenericToolResult(
 		!!options?.isPartial,
 		theme,
 		ctx,
+		cancelledWait ? theme.fg("warning", "Wait cancelled") : undefined,
 	)
 }
 
@@ -4196,6 +4223,7 @@ function renderOpenAiToolResult(
 	isPartial: boolean,
 	theme: Theme,
 	ctx: ToolRenderContext,
+	statusOverride?: string,
 ): Text {
 	if (isPartial) {
 		setupBlinkTimer(ctx)
@@ -4206,6 +4234,8 @@ function renderOpenAiToolResult(
 	const raw = getTextContent(result).trim()
 	const lines = raw ? raw.split("\n") : []
 	const patchFiles = Array.isArray(ctx.state?._openAiPatchFiles) ? ctx.state._openAiPatchFiles : []
+
+	if (statusOverride && lines.length === 0) return makeText(ctx.lastComponent, withBranch(statusOverride, theme))
 
 	if (lines.length === 0) {
 		if (patchFiles.length > 0) {
@@ -4228,14 +4258,16 @@ function renderOpenAiToolResult(
 		return renderTaskListResult(lines, expanded, theme, ctx)
 	}
 
-	const statusText = ctx.isError
-		? theme.fg("error", lines[0])
-		: theme.fg("muted", `${lines.length} line${lines.length === 1 ? "" : "s"} returned`)
-	if (!expanded && !ctx.isError) {
+	const statusText =
+		statusOverride ??
+		(ctx.isError
+			? theme.fg("error", lines[0])
+			: theme.fg("muted", `${lines.length} line${lines.length === 1 ? "" : "s"} returned`))
+	if (!expanded && (!ctx.isError || statusOverride)) {
 		return makeText(ctx.lastComponent, withBranch(`${statusText}${theme.fg("muted", " • ctrl+o to expand")}`, theme))
 	}
 
-	if (!ctx.isError && lines.length === 1) {
+	if (!ctx.isError && !statusOverride && lines.length === 1) {
 		return makeText(ctx.lastComponent, withBranch(formatOpenAiSuccessLine(name, lines[0], theme), theme))
 	}
 

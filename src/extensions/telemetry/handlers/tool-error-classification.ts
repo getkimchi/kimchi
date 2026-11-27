@@ -185,7 +185,11 @@ function classifyBashTerminalStatus(fullMsg: string): ToolErrorClassification | 
 			commandOutcome: "terminated",
 		}
 	}
-	if (last === "Command aborted") return { kind: "aborted", message: "Command aborted" }
+	// "Command stopped by user" is a "Stop all" in the background-work dialog:
+	// a deliberate stop, not a failure, so it shares the abort family.
+	if (last === "Command aborted" || last === "Command stopped by user") {
+		return { kind: "aborted", message: "Command aborted" }
+	}
 	return undefined
 }
 
