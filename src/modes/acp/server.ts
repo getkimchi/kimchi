@@ -274,6 +274,7 @@ import {
 	clientSupportsSubagents,
 	presentAgentToolCall,
 	type SubagentSessionCreatedEvent,
+	type SubagentSessionFailedEvent,
 	subagentPromptMessages,
 	subagentSessionCreatedExtension,
 	withSubagentSessionLink,
@@ -569,11 +570,21 @@ export class KimchiAcpAgent {
 	) {
 		this.subagentSessionResolver = options.subagentSessionResolver ?? (() => undefined)
 		this.sessionFactory =
-			options.sessionFactory ?? defaultSessionFactory(options, (event) => this.onSubagentSessionCreated(event))
+			options.sessionFactory ??
+			defaultSessionFactory(
+				options,
+				(event) => this.onSubagentSessionCreated(event),
+				(event) => this.onSubagentSessionFailed(event),
+			)
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader =
-			options.sessionLoader ?? defaultSessionLoader(options, (event) => this.onSubagentSessionCreated(event))
+			options.sessionLoader ??
+			defaultSessionLoader(
+				options,
+				(event) => this.onSubagentSessionCreated(event),
+				(event) => this.onSubagentSessionFailed(event),
+			)
 		this.subagentReplayLoader = options.subagentReplayLoader ?? defaultSubagentReplayLoader(options)
 		this.subagentRegistry = new SubagentRegistry<SessionRecord>({
 			enabled: () => clientSupportsSubagents(this.clientCapabilities),
@@ -2638,6 +2649,10 @@ export class KimchiAcpAgent {
 		}
 	}
 
+	private onSubagentSessionFailed(event: SubagentSessionFailedEvent): void {
+		this.sessions.get(event.parentSessionId)?.pendingAgentSessionLinks.delete(event.agentId)
+	}
+
 	private flushPendingSubagentEvents(parentSessionId: string): void {
 		const pending = this.pendingSubagentEvents.get(parentSessionId)
 		this.pendingSubagentEvents.delete(parentSessionId)
@@ -4396,6 +4411,7 @@ async function createSessionSettings(
 	options: RunAcpOptions,
 	params: SessionMcpOAuthOptions & { _meta?: unknown; mcpServers?: ReadonlyArray<McpServer> },
 	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
+	onSubagentSessionFailed?: (event: SubagentSessionFailedEvent) => void,
 ) {
 	// Construct untrusted first: pi's SettingsManager.create defaults
 	// projectTrusted to TRUE, which would let an untrusted repo's
@@ -4439,7 +4455,9 @@ async function createSessionSettings(
 		extensionFactories: [
 			...options.extensionFactories,
 			...(mcpExtension ? [mcpExtension] : []),
-			...(onSubagentSessionCreated ? [subagentSessionCreatedExtension(onSubagentSessionCreated)] : []),
+			...(onSubagentSessionCreated
+				? [subagentSessionCreatedExtension(onSubagentSessionCreated, onSubagentSessionFailed)]
+				: []),
 		],
 	})
 	const resourceLoader = new AcpSessionResourceLoader({
@@ -4457,6 +4475,7 @@ async function createSessionSettings(
 export function defaultSessionLoader(
 	options: RunAcpOptions,
 	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
+	onSubagentSessionFailed?: (event: SubagentSessionFailedEvent) => void,
 ): AcpSessionLoader {
 	return async (params: SessionLoaderParams): Promise<AgentSession> => {
 		const cwd = params.cwd
@@ -4505,6 +4524,7 @@ export function defaultSessionLoader(
 				options,
 				params,
 				onSubagentSessionCreated,
+				onSubagentSessionFailed,
 			)
 			const { session } = await createAgentSession({
 				cwd,
@@ -4567,6 +4587,7 @@ export function defaultSessionLoader(
 			options,
 			params,
 			onSubagentSessionCreated,
+			onSubagentSessionFailed,
 		)
 		const { session } = await createAgentSession({
 			cwd,
@@ -4641,6 +4662,7 @@ export function defaultSubagentReplayLoader(options: RunAcpOptions): AcpSubagent
 export function defaultSessionFactory(
 	options: RunAcpOptions,
 	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
+	onSubagentSessionFailed?: (event: SubagentSessionFailedEvent) => void,
 ): AcpSessionFactory {
 	return async (params: SessionFactoryParams): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
@@ -4649,6 +4671,7 @@ export function defaultSessionFactory(
 			options,
 			params,
 			onSubagentSessionCreated,
+			onSubagentSessionFailed,
 		)
 		const modelRuntime = await createSsoAwareModelRuntime(options.agentDir)
 		const { session } = await createAgentSession({

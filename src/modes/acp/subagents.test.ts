@@ -196,6 +196,20 @@ describe("subagent event parsing and capability gate", () => {
 		listener?.(event)
 		expect(received).toEqual([event])
 	})
+
+	it("forwards valid terminal events without accepting malformed identity", () => {
+		let listener: ((payload: unknown) => void) | undefined
+		const on = vi.fn((name: string, callback: (payload: unknown) => void) => {
+			if (name === "subagents:failed") listener = callback
+		})
+		const failed = vi.fn()
+		const extension = subagentSessionCreatedExtension(vi.fn(), failed)
+		if (typeof extension !== "function") throw new Error("expected an inline extension function")
+		extension({ events: { on } } as never)
+		listener?.({ agentId: "missing-parent" })
+		listener?.({ agentId: "agent-1", parentSessionId: "parent" })
+		expect(failed).toHaveBeenCalledWith({ agentId: "agent-1", parentSessionId: "parent" })
+	})
 })
 
 describe("subagent registry and child projection", () => {
@@ -495,6 +509,22 @@ describe("subagent registry and child projection", () => {
 			],
 		})
 		const sessions = Reflect.get(agent, "sessions") as Map<string, { pendingAgentSessionLinks: Map<string, unknown> }>
+		expect(sessions.get("parent")?.pendingAgentSessionLinks.size).toBe(0)
+	})
+
+	it("drops an unregistered background link when the agent terminates", async () => {
+		const { agent, root } = await createRoot("parent")
+		agents.push(agent)
+		root.emit({ type: "agent_start" } as AgentSessionEvent)
+		emitBackgroundAgentResult(root, "provider-agent-call", "cancelled-agent", "Queued result")
+		const sessions = Reflect.get(agent, "sessions") as Map<string, { pendingAgentSessionLinks: Map<string, unknown> }>
+		expect(sessions.get("parent")?.pendingAgentSessionLinks.size).toBe(1)
+
+		const receiver = agent as unknown as {
+			onSubagentSessionFailed(event: { agentId: string; parentSessionId: string }): void
+		}
+		receiver.onSubagentSessionFailed({ agentId: "cancelled-agent", parentSessionId: "parent" })
+
 		expect(sessions.get("parent")?.pendingAgentSessionLinks.size).toBe(0)
 	})
 
