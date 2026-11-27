@@ -1,3 +1,4 @@
+import type { ToolCallContent } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import type { SessionPermissionFlagController } from "../../extensions/permissions/types.js"
 import type { StreamDesanitizer } from "../../extensions/pii-redaction/stream-desanitizer.js"
@@ -159,6 +160,12 @@ export type SessionRecord = {
 	 * ACP id, so collisions across compaction boundaries are disambiguated.
 	 */
 	toolCallIdMap: Map<string, string>
+	/**
+	 * Successful background handoffs awaiting child registration, keyed by their
+	 * stable manager id. Each projection is deleted when its SessionReference
+	 * patch is sent; foreground and failed results are never retained.
+	 */
+	pendingAgentSessionLinks: Map<string, { toolCallId: string; content?: ToolCallContent[] }>
 	/** Child-local mappings required to replay ACP tool identity deterministically. */
 	childToolIdHistory?: SubagentToolIdHistory
 	/**
@@ -226,6 +233,7 @@ export function createProjectionSessionRecord(
 		emittedModelMeta: new Map(),
 		nextToolCallId: 0,
 		toolCallIdMap: new Map(),
+		pendingAgentSessionLinks: new Map(),
 		heldBackgroundToolCalls: new Map(),
 		skillCommands: new Map(),
 		steerEchoRewrites: [],

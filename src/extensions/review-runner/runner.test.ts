@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { dirname, join } from "node:path"
+import { CURRENT_SESSION_VERSION } from "@earendil-works/pi-coding-agent"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
-import type { RunResult } from "../agents/manager/agent-runner.js"
+import type { RunOptions, RunResult } from "../agents/manager/agent-runner.js"
 import { parseReviewTargetArgs } from "../review-targets/parser.js"
 import { resolveReviewTarget } from "../review-targets/resolve.js"
 import type { ExplicitReviewRequest } from "../review-targets/types.js"
@@ -33,6 +34,18 @@ function refExists(root: string, ref: string): boolean {
 	}
 }
 
+async function branchTarget(root: string, contextDir: string) {
+	const base = git(root, "rev-parse", "HEAD^")
+	return resolveReviewTarget(parseReviewTargetArgs(["branch", "main", "--base", base]) as ExplicitReviewRequest, {
+		root,
+		contextDir,
+	})
+}
+
+function completedRun(responseText: string): RunResult {
+	return { responseText, session: {} as RunResult["session"], aborted: false, steered: false }
+}
+
 describe("review runner writer and worktree isolation", () => {
 	let sandbox: string
 	let repo: string
@@ -57,6 +70,7 @@ describe("review runner writer and worktree isolation", () => {
 
 	afterEach(async () => {
 		await runner?.cleanup()
+		vi.restoreAllMocks()
 		rmSync(sandbox, { recursive: true, force: true })
 	})
 
@@ -148,6 +162,178 @@ describe("review runner writer and worktree isolation", () => {
 			expect(spawn.signal).toBeDefined()
 			expect(spawn.cwd).toBe(one.worktree.path === spawn.cwd ? one.worktree.path : two.worktree.path)
 		}
+	})
+
+	it("writes durable session headers while every lens and verifier runs in its worktree", async () => {
+		const target = await branchTarget(repo, join(sandbox, "review-context"))
+		const parentSessionDir = join(sandbox, "parent-sessions")
+		const parentSessionFile = join(parentSessionDir, "parent.jsonl")
+		mkdirSync(parentSessionDir)
+		writeFileSync(
+			parentSessionFile,
+			`${JSON.stringify({
+				type: "session",
+				version: CURRENT_SESSION_VERSION,
+				id: "01928374-5565-7abc-8def-123456789abc",
+				timestamp: "2026-05-12T10:20:30.400Z",
+				cwd: repo,
+			})}\n`,
+		)
+		const ctx = createContext({
+			cwd: repo,
+			sessionManager: {
+				getSessionDir: () => parentSessionDir,
+				getSessionFile: () => parentSessionFile,
+			},
+		})
+		const spawns: Array<{ writer: string; cwd?: string; sessionFile?: string; sessionDir?: string }> = []
+		runner = await ReviewRunner.create({
+			ctx,
+			pi: createExtensionApi().api,
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees"),
+			concurrency: 2,
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
+			spawnAgent: async ({ ctx: parentContext, options }): Promise<RunResult> => {
+				expect(parentContext).toBe(ctx)
+				const writer = options.description?.replace("Review writer ", "") ?? ""
+				spawns.push({ writer, cwd: options.cwd, sessionFile: options.sessionFile, sessionDir: options.sessionDir })
+				return completedRun(writer)
+			},
+		})
+
+		const worktreePaths = [
+			(await runner.spawnReviewer({ id: "spec", prompt: "spec" })).worktree.path,
+			(await runner.spawnReviewer({ id: "standards", prompt: "standards" })).worktree.path,
+			(await runner.spawnVerifier({ id: "reconciliation", prompt: "reconciliation" })).worktree.path,
+		]
+
+		expect(spawns.map((spawn) => spawn.writer)).toEqual(["spec", "standards", "reconciliation"])
+		for (const [index, spawn] of spawns.entries()) {
+			expect(spawn.cwd).toBe(worktreePaths[index])
+			expect(spawn.sessionDir).toBe(parentSessionDir)
+			expect(dirname(spawn.sessionFile ?? "")).toBe(parentSessionDir)
+			const entries = readFileSync(spawn.sessionFile ?? "", "utf8")
+				.trimEnd()
+				.split("\n")
+				.map(
+					(line) =>
+						JSON.parse(line) as {
+							type?: string
+							parentSession?: string
+							cwd?: string
+							customType?: string
+							data?: { type?: string }
+						},
+				)
+			expect(entries).toHaveLength(2)
+			expect(entries[0]).toMatchObject({ type: "session", parentSession: parentSessionFile, cwd: repo })
+			expect(entries[1]).toMatchObject({
+				type: "custom",
+				customType: "kimchi:subagent-session",
+				data: { type: `review:${spawn.writer}` },
+			})
+		}
+	})
+
+	it("passes no session paths when the parent has no session file", async () => {
+		const target = await branchTarget(repo, join(sandbox, "review-context"))
+		const parentSessionDir = join(sandbox, "in-memory-parent")
+		mkdirSync(parentSessionDir)
+		const received: RunOptions[] = []
+		runner = await ReviewRunner.create({
+			ctx: createContext({
+				cwd: repo,
+				sessionManager: { getSessionDir: () => parentSessionDir, getSessionFile: () => undefined },
+			}),
+			pi: createExtensionApi().api,
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees"),
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
+			spawnAgent: async ({ options }): Promise<RunResult> => {
+				received.push(options)
+				return completedRun("done")
+			},
+		})
+
+		await runner.spawnReviewer({ id: "spec", prompt: "spec" })
+		await runner.spawnVerifier({ id: "reconciliation", prompt: "reconciliation" })
+
+		expect(received).toHaveLength(2)
+		for (const options of received) {
+			expect(options).not.toHaveProperty("sessionFile")
+			expect(options).not.toHaveProperty("sessionDir")
+		}
+		expect(readdirSync(parentSessionDir)).toEqual([])
+	})
+
+	it("passes no session paths when a fresh parent's allocated file is not flushed yet", async () => {
+		const target = await branchTarget(repo, join(sandbox, "review-context"))
+		const parentSessionDir = join(sandbox, "fresh-parent")
+		const parentSessionFile = join(parentSessionDir, "allocated.jsonl")
+		mkdirSync(parentSessionDir)
+		const received: RunOptions[] = []
+		runner = await ReviewRunner.create({
+			ctx: createContext({
+				cwd: repo,
+				sessionManager: { getSessionDir: () => parentSessionDir, getSessionFile: () => parentSessionFile },
+			}),
+			pi: createExtensionApi().api,
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees"),
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
+			spawnAgent: async ({ options }): Promise<RunResult> => {
+				received.push(options)
+				return completedRun("done")
+			},
+		})
+
+		await expect(runner.spawnReviewer({ id: "spec", prompt: "spec" })).resolves.toMatchObject({
+			responseText: "done",
+		})
+		expect(received).toHaveLength(1)
+		expect(received[0]).not.toHaveProperty("sessionFile")
+		expect(received[0]).not.toHaveProperty("sessionDir")
+		expect(existsSync(parentSessionFile)).toBe(false)
+		expect(readdirSync(parentSessionDir)).toEqual([])
+	})
+
+	it("continues in memory and logs when child session preparation fails", async () => {
+		const target = await branchTarget(repo, join(sandbox, "review-context"))
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		let received: RunOptions | undefined
+		const missingSessionDir = join(sandbox, "missing", "sessions")
+		const parentSessionFile = join(sandbox, "parent.jsonl")
+		writeFileSync(parentSessionFile, '{"type":"session"}\n')
+		runner = await ReviewRunner.create({
+			ctx: createContext({
+				cwd: repo,
+				sessionManager: {
+					getSessionDir: () => missingSessionDir,
+					getSessionFile: () => parentSessionFile,
+				},
+			}),
+			pi: createExtensionApi().api,
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees"),
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
+			spawnAgent: async ({ options }): Promise<RunResult> => {
+				received = options
+				return completedRun("continued")
+			},
+		})
+
+		await expect(runner.spawnReviewer({ id: "spec", prompt: "spec" })).resolves.toMatchObject({
+			responseText: "continued",
+		})
+		expect(received).not.toHaveProperty("sessionFile")
+		expect(received).not.toHaveProperty("sessionDir")
+		expect(warning).toHaveBeenCalledOnce()
+		expect(warning).toHaveBeenCalledWith(expect.stringContaining("Continuing without a persisted transcript"))
 	})
 
 	it("rejects duplicate writer runs and finishes cancellation before worktree cleanup", async () => {

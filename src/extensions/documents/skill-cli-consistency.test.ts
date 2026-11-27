@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
+import { DOC_CLI_COMMANDS, DOC_CLI_READ_ONLY_COMMANDS, type DocCliSkill } from "./doc-cli-skills.js"
 import { runDocxCli } from "./docx-cli.js"
 import { runPdfCli } from "./pdf-cli.js"
 import { runPptxCli } from "./pptx-cli.js"
@@ -18,7 +19,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const skillDir = (name: string) => join(here, "..", "..", "..", "resources", "skills", name, "SKILL.md")
 
 interface CommandSpec {
-	skill: string
+	skill: DocCliSkill
 	cli: string
 	run: (argv: string[], io: { stdout: (l: string) => void; stderr: (l: string) => void }) => Promise<number>
 }
@@ -111,6 +112,13 @@ describe("skill SKILL.md ↔ CLI contract", () => {
 		it(`${spec.skill}: SKILL.md names the exit-2 size cap env var the CLI honors`, () => {
 			const markdown = readFileSync(skillDir(spec.skill), "utf-8")
 			expect(markdown).toContain("KIMCHI_DOCUMENT_MAX_MB")
+		})
+
+		it(`${spec.skill}: telemetry covers advertised and read-only operations`, () => {
+			const markdown = readFileSync(skillDir(spec.skill), "utf-8")
+			const advertised = extractCommands(markdown, spec.cli)
+			expect(DOC_CLI_COMMANDS[spec.skill]).toEqual(expect.arrayContaining(advertised))
+			expect(DOC_CLI_COMMANDS[spec.skill]).toEqual(expect.arrayContaining([...DOC_CLI_READ_ONLY_COMMANDS[spec.skill]]))
 		})
 	}
 })

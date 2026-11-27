@@ -141,6 +141,25 @@ describe("default session factory/loader _meta wiring", () => {
 		expect(servedAppend()).toEqual(["Loaded sessions get the same prompt."])
 	})
 
+	it("threads additionalSkillPaths into the main resource loader options", async () => {
+		const factory = defaultSessionFactory(
+			makeOptions({ additionalSkillPaths: ["/tmp/private-skills-a", "/tmp/private-skills-b"] }),
+		)
+		await factory({ cwd, mcpServers: [] })
+		expect(capturedLoaderOptions).toHaveLength(1)
+		// The main loader receives the process-scoped roots exactly as passed.
+		expect(capturedLoaderOptions[0].additionalSkillPaths).toEqual(["/tmp/private-skills-a", "/tmp/private-skills-b"])
+	})
+
+	it("does not invent additional skill paths when the flag is absent", async () => {
+		const factory = defaultSessionFactory(makeOptions())
+		await factory({ cwd, mcpServers: [] })
+		expect(capturedLoaderOptions).toHaveLength(1)
+		// An absent --additional-skill-paths yields an effective empty array,
+		// never a fabricated root (e.g. the shared harness skills dir).
+		expect(capturedLoaderOptions[0].additionalSkillPaths).toEqual([])
+	})
+
 	for (const existingFile of [true, false]) {
 		it(`defaultSessionLoader adds the child observer when existingFile=${existingFile}`, async () => {
 			const sessionId = `wiring-child-${existingFile}`
@@ -152,12 +171,13 @@ describe("default session factory/loader _meta wiring", () => {
 					`${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2026-05-09T00:00:00Z", cwd })}\n`,
 				)
 			}
-			await defaultSessionLoader(makeOptions(), vi.fn())({ sessionId, cwd, mcpServers: [] })
+			await defaultSessionLoader(makeOptions(), vi.fn(), vi.fn())({ sessionId, cwd, mcpServers: [] })
 			const factories = capturedLoaderOptions.at(-1)?.extensionFactories as Array<(pi: unknown) => void> | undefined
 			expect(factories).toHaveLength(1)
 			const on = vi.fn()
 			factories?.[0]?.({ events: { on } })
 			expect(on).toHaveBeenCalledWith("subagents:session_created", expect.any(Function))
+			expect(on).toHaveBeenCalledWith("subagents:failed", expect.any(Function))
 		})
 	}
 })

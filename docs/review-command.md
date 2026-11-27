@@ -118,6 +118,10 @@ kimchi -p --mode json --review --review-writer final \
   '/review --manifest /home/sandbox/review-context/manifest.json'
 ```
 
+Reviewer and reconciler sessions are saved like other subagent sessions in the
+parent session's directory and link back to that parent. They are not saved when
+the parent uses `--no-session`.
+
 `--lens`, repeated `--lens`, `--all`, and `--concurrency` compose with
 `--manifest`; local target options do not. Manifest directories must exactly
 match the context/output flag directories and the writer must be `final`.

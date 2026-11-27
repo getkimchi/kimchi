@@ -225,6 +225,7 @@ export class AgentManager {
 	private onCompact?: OnAgentCompact
 	private onSessionCreated?: OnAgentSessionCreated
 	private onSessionResumed?: OnAgentSessionResumed
+	private onQueuedAbort?: OnAgentComplete
 	private sessionCreatedRecords = new WeakSet<AgentRecord>()
 	private maxConcurrent: number
 
@@ -238,12 +239,14 @@ export class AgentManager {
 		onCompact?: OnAgentCompact,
 		onSessionCreated?: OnAgentSessionCreated,
 		onSessionResumed?: OnAgentSessionResumed,
+		onQueuedAbort?: OnAgentComplete,
 	) {
 		this.onComplete = onComplete
 		this.onStart = onStart
 		this.onCompact = onCompact
 		this.onSessionCreated = onSessionCreated
 		this.onSessionResumed = onSessionResumed
+		this.onQueuedAbort = onQueuedAbort
 		this.maxConcurrent = maxConcurrent
 		this.cleanupInterval = setInterval(() => this.cleanup(), 60_000)
 	}
@@ -1128,6 +1131,7 @@ export class AgentManager {
 			this.queue = this.queue.filter((q) => q.id !== id)
 			record.status = "stopped"
 			record.completedAt = Date.now()
+			this.onQueuedAbort?.(record)
 			return true
 		}
 
@@ -1556,6 +1560,7 @@ export class AgentManager {
 			if (record) {
 				record.status = "stopped"
 				record.completedAt = Date.now()
+				this.onQueuedAbort?.(record)
 				count++
 			}
 		}
