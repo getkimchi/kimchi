@@ -58,20 +58,26 @@ function additionalSkillRoots(cwd: string, paths: readonly string[]): string[] {
  * a connection's lifetime tend to share roots, and unwatching+rewatching a
  * dir costs more than leaving it watched briefly.
  */
+/** Skill roots the watcher should watch that come from outside the standard resolver scopes. */
+export interface SkillWatchPathSources {
+	/** Kimchi-config `skillPaths`, read per change event so config edits are picked up. */
+	configSkillPaths: readonly string[]
+	/** Process-scoped `--additional-skill-paths` roots, resolved per session cwd. */
+	cliAdditionalSkillPaths: readonly string[]
+}
+
 export function createSkillWatcher(opts: {
 	agentDir: string
-	/** Kimchi-config skillPaths, read per change event so config edits are picked up. */
-	getExtraSkillPaths?: () => string[]
-	/** Process-scoped --additional-skill-paths roots, resolved per session cwd. */
-	getAdditionalSkillPaths?: () => string[]
+	/** Non-resolver skill roots, read per change event. */
+	getSkillPathSources?: () => SkillWatchPathSources
 	requestRefresh: () => void
 }): SkillWatcher {
 	let watcher: FSWatcher | undefined
 	let closed = false
 	const watched = new Set<string>()
 	const sessions = new Map<string, number>()
-	const extraPaths = (): readonly string[] => opts.getExtraSkillPaths?.() ?? []
-	const additionalPaths = (): readonly string[] => opts.getAdditionalSkillPaths?.() ?? []
+	const pathSources = (): SkillWatchPathSources =>
+		opts.getSkillPathSources?.() ?? { configSkillPaths: [], cliAdditionalSkillPaths: [] }
 
 	// Whole burst → one pass: sync root resolution (existsSync chains,
 	// ancestor walks, config read) once per quiet window instead of per event.
@@ -88,11 +94,10 @@ export function createSkillWatcher(opts: {
 	}
 
 	const refreshRoots = (): void => {
-		const extras = extraPaths()
-		const additional = additionalPaths()
+		const { configSkillPaths, cliAdditionalSkillPaths } = pathSources()
 		for (const cwd of sessions.keys()) {
-			add(sessionSkillRoots(cwd, { agentDir: opts.agentDir, extraPaths: extras }))
-			add(additionalSkillRoots(cwd, additional))
+			add(sessionSkillRoots(cwd, { agentDir: opts.agentDir, extraPaths: configSkillPaths }))
+			add(additionalSkillRoots(cwd, cliAdditionalSkillPaths))
 		}
 	}
 
@@ -127,8 +132,9 @@ export function createSkillWatcher(opts: {
 			const refs = sessions.get(session.cwd) ?? 0
 			sessions.set(session.cwd, refs + 1)
 			if (refs === 0) {
-				add(sessionSkillRoots(session.cwd, { agentDir: opts.agentDir, extraPaths: extraPaths() }))
-				add(additionalSkillRoots(session.cwd, additionalPaths()))
+				const { configSkillPaths, cliAdditionalSkillPaths } = pathSources()
+				add(sessionSkillRoots(session.cwd, { agentDir: opts.agentDir, extraPaths: configSkillPaths }))
+				add(additionalSkillRoots(session.cwd, cliAdditionalSkillPaths))
 			}
 		},
 		/**

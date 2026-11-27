@@ -602,9 +602,11 @@ export class KimchiAcpAgent {
 		this.sso = ssoManager ?? new SsoFlowManager(SSO_FLOW_MANAGER_DEPS)
 		this.skillWatcher = createSkillWatcher({
 			agentDir: options.agentDir,
-			// Kimchi-config skillPaths, re-read per change event so mid-process config edits are picked up.
-			getExtraSkillPaths: () => loadKimchiConfig().skillPaths ?? [],
-			getAdditionalSkillPaths: () => options.additionalSkillPaths ?? [],
+			getSkillPathSources: () => ({
+				// Kimchi-config skillPaths, re-read per change event so mid-process config edits are picked up.
+				configSkillPaths: loadKimchiConfig().skillPaths ?? [],
+				cliAdditionalSkillPaths: options.additionalSkillPaths ?? [],
+			}),
 			requestRefresh: () => this.commandsRefresher.request(),
 		})
 	}
