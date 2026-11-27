@@ -3,6 +3,9 @@ import { RemoteAuthError, RemoteNetworkError } from "./types.js"
 import { listWorkspaceTemplates } from "./workspace-templates.js"
 
 const BASE = "https://api.example.com"
+const KEY = { token: "key1" }
+const SSO = { token: "tok", organizationId: "org-a" }
+const ORG_HEADER = "X-CastAi-Organization-Id"
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
@@ -29,7 +32,7 @@ describe("listWorkspaceTemplates", () => {
 			}),
 		)
 
-		const result = await listWorkspaceTemplates("key1", { endpoint: BASE, fetch: mockFetch, orgId: "org-1" })
+		const result = await listWorkspaceTemplates(KEY, { endpoint: BASE, fetch: mockFetch, orgId: "org-1" })
 
 		expect(mockFetch).toHaveBeenCalledOnce()
 		const [url, init] = mockFetch.mock.calls[0]
@@ -67,7 +70,7 @@ describe("listWorkspaceTemplates", () => {
 			}),
 		)
 
-		const result = await listWorkspaceTemplates("key1", { endpoint: BASE, fetch: mockFetch, orgId: "org-1" })
+		const result = await listWorkspaceTemplates(KEY, { endpoint: BASE, fetch: mockFetch, orgId: "org-1" })
 
 		expect(result).toEqual([{ id: "tpl-1", name: "broken-spec", description: "", spec: undefined }])
 		consoleError.mockRestore()
@@ -79,11 +82,33 @@ describe("listWorkspaceTemplates", () => {
 			.mockResolvedValueOnce(jsonResponse({ items: [{ id: "a", name: "first" }], nextPageCursor: "c2" }))
 			.mockResolvedValueOnce(jsonResponse({ items: [{ id: "b", name: "second" }] }))
 
-		const result = await listWorkspaceTemplates("key1", { endpoint: BASE, fetch: mockFetch, orgId: "org-1" })
+		const result = await listWorkspaceTemplates(KEY, { endpoint: BASE, fetch: mockFetch, orgId: "org-1" })
 
 		expect(result.map((t) => t.name)).toEqual(["first", "second"])
 		expect(mockFetch).toHaveBeenCalledTimes(2)
 		expect(mockFetch.mock.calls[1][0]).toContain("page.cursor=c2")
+	})
+
+	it("sends the SSO org header when the orgId is pre-resolved", async () => {
+		const mockFetch = vi.fn().mockResolvedValue(jsonResponse({ items: [] }))
+
+		await listWorkspaceTemplates(SSO, { endpoint: BASE, fetch: mockFetch, orgId: "org-a" })
+
+		expect(mockFetch.mock.calls[0][1].headers).toMatchObject({ Authorization: "Bearer tok", [ORG_HEADER]: "org-a" })
+	})
+
+	it("sends the SSO org header on verify and on the list", async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(jsonResponse({ organizationId: "org-a", userId: "user-1" }))
+			.mockResolvedValueOnce(jsonResponse({ items: [] }))
+
+		await listWorkspaceTemplates(SSO, { endpoint: BASE, fetch: mockFetch })
+
+		expect(mockFetch).toHaveBeenCalledTimes(2)
+		for (const call of mockFetch.mock.calls) {
+			expect(call[1].headers).toMatchObject({ [ORG_HEADER]: "org-a" })
+		}
 	})
 
 	it("resolves the orgId via verifyApiKey when not passed through", async () => {
@@ -95,7 +120,7 @@ describe("listWorkspaceTemplates", () => {
 		const mod = await import("./keys.js")
 		vi.spyOn(mod, "verifyApiKey").mockImplementation(verify as never)
 
-		await listWorkspaceTemplates("key1", { endpoint: BASE, fetch: mockFetch })
+		await listWorkspaceTemplates(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(mockFetch.mock.calls[0][0]).toContain("/organizations/org-9/")
 		vi.restoreAllMocks()
@@ -109,7 +134,7 @@ describe("listWorkspaceTemplates", () => {
 			}),
 		)
 
-		const result = await listWorkspaceTemplates("key1", { endpoint: BASE, fetch: mockFetch, orgId: "org-1" })
+		const result = await listWorkspaceTemplates(KEY, { endpoint: BASE, fetch: mockFetch, orgId: "org-1" })
 
 		expect(result).toEqual([{ id: "ok", name: "good", description: "" }])
 		expect(consoleError).toHaveBeenCalledTimes(3)
@@ -119,19 +144,19 @@ describe("listWorkspaceTemplates", () => {
 	it("throws RemoteNetworkError on a missing items array", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(jsonResponse({ unexpected: true }))
 		await expect(
-			listWorkspaceTemplates("key1", { endpoint: BASE, fetch: mockFetch, orgId: "org-1" }),
+			listWorkspaceTemplates(KEY, { endpoint: BASE, fetch: mockFetch, orgId: "org-1" }),
 		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
 	it("preserves RemoteAuthError and wraps other failures", async () => {
 		const authFail = vi.fn().mockResolvedValue(jsonResponse({ message: "nope" }, 401))
 		await expect(
-			listWorkspaceTemplates("key1", { endpoint: BASE, fetch: authFail, orgId: "org-1" }),
+			listWorkspaceTemplates(KEY, { endpoint: BASE, fetch: authFail, orgId: "org-1" }),
 		).rejects.toBeInstanceOf(RemoteAuthError)
 
 		const networkFail = vi.fn().mockRejectedValue(new TypeError("fetch failed"))
 		await expect(
-			listWorkspaceTemplates("key1", { endpoint: BASE, fetch: networkFail, orgId: "org-1" }),
+			listWorkspaceTemplates(KEY, { endpoint: BASE, fetch: networkFail, orgId: "org-1" }),
 		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 })

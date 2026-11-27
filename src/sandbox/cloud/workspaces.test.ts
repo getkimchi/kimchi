@@ -4,6 +4,9 @@ import { RemoteAuthError, RemoteNetworkError } from "./types.js"
 import { deleteWorkspace, listWorkspaces } from "./workspaces.js"
 
 const BASE = "https://api.example.com"
+const KEY = { token: "key1" }
+const SSO = { token: "tok", organizationId: "org-a" }
+const ORG_HEADER = "X-CastAi-Organization-Id"
 const ORG_ID = "org-516442fe-054a-49e2-ac2d-9dc9b104c3d2"
 const USER_ID = "user-1"
 
@@ -51,7 +54,7 @@ describe("listWorkspaces", () => {
 				),
 			)
 
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(result).toHaveLength(1)
 		expect(result[0]).toMatchObject({
@@ -85,13 +88,71 @@ describe("listWorkspaces", () => {
 			}),
 		)
 
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID, userId: USER_ID })
+		const result = await listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID, userId: USER_ID })
 
 		// A single fetch: the list URL — no verifyKey round-trip first.
 		expect(mockFetch).toHaveBeenCalledTimes(1)
 		expect(mockFetch.mock.calls[0][0]).toBe(listUrl())
 		expect(result).toHaveLength(1)
 		expect(result[0]).toMatchObject({ id: "ws-1", name: "feature-x" })
+	})
+
+	it("sends the org header on verify and on every list page", async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(verifyResponse())
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ items: [workspaceFixture({ id: "ws-1" })], nextPageCursor: "c2" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ items: [workspaceFixture({ id: "ws-2" })] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+
+		const result = await listWorkspaces(SSO, { endpoint: BASE, fetch: mockFetch })
+
+		expect(result).toHaveLength(2)
+		expect(mockFetch).toHaveBeenCalledTimes(3)
+		for (const call of mockFetch.mock.calls) {
+			expect(call[1].headers).toMatchObject({ Authorization: "Bearer tok", [ORG_HEADER]: "org-a" })
+		}
+	})
+
+	it("sends the org header on the list when orgId and userId are pre-resolved", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(
+			new Response(JSON.stringify({ items: [] }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		)
+
+		await listWorkspaces(SSO, { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID, userId: USER_ID })
+
+		expect(mockFetch).toHaveBeenCalledTimes(1)
+		expect(mockFetch.mock.calls[0][1].headers).toMatchObject({ [ORG_HEADER]: "org-a" })
+	})
+
+	it("sends no org header for an API key", async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(verifyResponse())
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ items: [] }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			)
+
+		await listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })
+
+		for (const call of mockFetch.mock.calls) {
+			expect(call[1].headers).not.toHaveProperty(ORG_HEADER)
+		}
 	})
 
 	it("still verifies when only orgId is pre-resolved — userId is needed for the creator filter", async () => {
@@ -105,7 +166,7 @@ describe("listWorkspaces", () => {
 				}),
 			)
 
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID })
+		const result = await listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID })
 
 		// verifyKey first (resolves userId), then the creator-filtered list.
 		expect(mockFetch).toHaveBeenCalledTimes(2)
@@ -127,7 +188,7 @@ describe("listWorkspaces", () => {
 				}),
 			)
 
-		await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch, userId: "someone-else" })
+		await listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch, userId: "someone-else" })
 
 		expect(mockFetch).toHaveBeenCalledTimes(2)
 		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/workspace-tokens:verifyKey`)
@@ -142,9 +203,7 @@ describe("listWorkspaces", () => {
 				headers: { "Content-Type": "application/json" },
 			}),
 		)
-		await expect(listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteNetworkError,
-		)
+		await expect(listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
 	it("follows cursor across multiple pages", async () => {
@@ -176,7 +235,7 @@ describe("listWorkspaces", () => {
 				}),
 			)
 
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(result.map((r) => r.id)).toEqual(["ws-a", "ws-b", "ws-c"])
 		expect(mockFetch).toHaveBeenCalledTimes(4)
@@ -203,7 +262,7 @@ describe("listWorkspaces", () => {
 				}),
 			)
 
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })
 		expect(result[0].status).toBe(expected)
 	})
 
@@ -223,7 +282,7 @@ describe("listWorkspaces", () => {
 			)
 		})
 
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		// 10 pages, 1 item per page
 		expect(result).toHaveLength(10)
@@ -244,7 +303,7 @@ describe("listWorkspaces", () => {
 				),
 			)
 
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(result[0]).toMatchObject({
 			cpuMillicores: 200,
@@ -264,7 +323,7 @@ describe("listWorkspaces", () => {
 				}),
 			)
 
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(result[0].cpuMillicores).toBeUndefined()
 		expect(result[0].ramBytes).toBeUndefined()
@@ -291,7 +350,7 @@ describe("listWorkspaces", () => {
 				),
 			)
 
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(result[0].cpuMillicores).toBeUndefined()
 		expect(result[0].ramBytes).toBeUndefined()
@@ -311,7 +370,7 @@ describe("listWorkspaces", () => {
 				),
 			)
 
-		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(result[0].cpuMillicores).toBeUndefined()
 		expect(result[0].ramBytes).toBe(536870912)
@@ -329,9 +388,9 @@ describe("listWorkspaces", () => {
 			return verifyResponse()
 		})
 
-		await expect(
-			listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch, signal: ctrl.signal }),
-		).rejects.toBeInstanceOf(RemoteNetworkError)
+		await expect(listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch, signal: ctrl.signal })).rejects.toBeInstanceOf(
+			RemoteNetworkError,
+		)
 	})
 
 	it("throws RemoteAuthError on 401 from list", async () => {
@@ -339,7 +398,7 @@ describe("listWorkspaces", () => {
 			.fn()
 			.mockResolvedValueOnce(verifyResponse())
 			.mockResolvedValueOnce(new Response(null, { status: 401 }))
-		await expect(listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteAuthError)
+		await expect(listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteAuthError)
 	})
 
 	it("throws RemoteNetworkError on 500", async () => {
@@ -347,9 +406,7 @@ describe("listWorkspaces", () => {
 			.fn()
 			.mockResolvedValueOnce(verifyResponse())
 			.mockResolvedValueOnce(new Response(null, { status: 500 }))
-		await expect(listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteNetworkError,
-		)
+		await expect(listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
 	it("throws RemoteNetworkError when items array is missing", async () => {
@@ -363,9 +420,7 @@ describe("listWorkspaces", () => {
 				}),
 			)
 		const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-		await expect(listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteNetworkError,
-		)
+		await expect(listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
 		consoleSpy.mockRestore()
 	})
 
@@ -379,9 +434,7 @@ describe("listWorkspaces", () => {
 					headers: { "Content-Type": "application/json" },
 				}),
 			)
-		await expect(listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
-			RemoteNetworkError,
-		)
+		await expect(listWorkspaces(KEY, { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 })
 
@@ -389,7 +442,7 @@ describe("deleteWorkspace", () => {
 	it("sends a DELETE with the bearer token to the correct URL", async () => {
 		const mockFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 }))
 
-		await deleteWorkspace("org-1", "ws-1", "key1", { endpoint: BASE, fetch: mockFetch })
+		await deleteWorkspace("org-1", "ws-1", KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(mockFetch).toHaveBeenCalledTimes(1)
 		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/organizations/org-1/workspaces/ws-1`)
@@ -399,10 +452,18 @@ describe("deleteWorkspace", () => {
 		})
 	})
 
+	it("sends the SSO org header on delete", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+		await deleteWorkspace("org-a", "ws-1", SSO, { endpoint: BASE, fetch: mockFetch })
+
+		expect(mockFetch.mock.calls[0][1].headers).toMatchObject({ Authorization: "Bearer tok", [ORG_HEADER]: "org-a" })
+	})
+
 	it("surfaces 404 as RemoteAuthError", async () => {
 		const mockFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 404 }))
-		await expect(
-			deleteWorkspace("org-1", "missing", "key1", { endpoint: BASE, fetch: mockFetch }),
-		).rejects.toBeInstanceOf(RemoteAuthError)
+		await expect(deleteWorkspace("org-1", "missing", KEY, { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
+			RemoteAuthError,
+		)
 	})
 })

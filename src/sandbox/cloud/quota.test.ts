@@ -3,6 +3,9 @@ import { getQuotaUsage } from "./quota.js"
 import { RemoteAuthError, RemoteNetworkError } from "./types.js"
 
 const BASE = "https://api.example.com"
+const KEY = { token: "key1" }
+const SSO = { token: "tok", organizationId: "org-a" }
+const ORG_HEADER = "X-CastAi-Organization-Id"
 const ORG_ID = "org-516442fe-054a-49e2-ac2d-9dc9b104c3d2"
 const QUOTA_URL = `${BASE}/ai-optimizer/v1beta/organizations/${ORG_ID}/quotas:usage`
 
@@ -45,7 +48,7 @@ describe("getQuotaUsage", () => {
 				}),
 			)
 
-		const usage = await getQuotaUsage("key1", { endpoint: BASE, fetch: mockFetch })
+		const usage = await getQuotaUsage(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(usage.userUsage).toEqual({
 			currentSandboxes: 3,
@@ -76,7 +79,7 @@ describe("getQuotaUsage", () => {
 				}),
 			)
 
-		const usage = await getQuotaUsage("key1", { endpoint: BASE, fetch: mockFetch })
+		const usage = await getQuotaUsage(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(usage.orgUsage).toMatchObject({
 			currentCpuMillicores: 1000,
@@ -92,7 +95,7 @@ describe("getQuotaUsage", () => {
 			.mockResolvedValueOnce(verifyResponse())
 			.mockResolvedValueOnce(quotaResponse({ orgUsage: usageFixture(), userUsage: usageFixture() }))
 
-		await getQuotaUsage("key1", { endpoint: BASE, fetch: mockFetch })
+		await getQuotaUsage(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(mockFetch).toHaveBeenCalledTimes(2)
 		expect(mockFetch.mock.calls[1][0]).toBe(QUOTA_URL)
@@ -111,7 +114,7 @@ describe("getQuotaUsage", () => {
 			.mockResolvedValueOnce(verifyResponse())
 			.mockResolvedValueOnce(quotaResponse({ userUsage: usageFixture() }))
 
-		const usage = await getQuotaUsage("key1", { endpoint: BASE, fetch: mockFetch })
+		const usage = await getQuotaUsage(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(usage.orgUsage).toBeUndefined()
 		expect(usage.userUsage).toBeDefined()
@@ -127,7 +130,7 @@ describe("getQuotaUsage", () => {
 				}),
 			)
 
-		const usage = await getQuotaUsage("key1", { endpoint: BASE, fetch: mockFetch })
+		const usage = await getQuotaUsage(KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(usage.userUsage).toMatchObject({ currentSandboxes: 1, maxSandboxes: 5 })
 		expect(usage.userUsage?.currentCpuMillicores).toBeUndefined()
@@ -137,10 +140,32 @@ describe("getQuotaUsage", () => {
 
 	it("skips key verification when a pre-resolved orgId is provided", async () => {
 		const mockFetch = vi.fn().mockResolvedValueOnce(quotaResponse({ userUsage: usageFixture() }))
-		const usage = await getQuotaUsage("key1", { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID })
+		const usage = await getQuotaUsage(KEY, { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID })
 		expect(mockFetch).toHaveBeenCalledTimes(1)
 		expect(mockFetch.mock.calls[0][0]).toBe(QUOTA_URL)
 		expect(usage.userUsage).toBeDefined()
+	})
+
+	it("sends the SSO org header on verify and on the quota request", async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(verifyResponse())
+			.mockResolvedValueOnce(quotaResponse({ userUsage: usageFixture() }))
+
+		await getQuotaUsage(SSO, { endpoint: BASE, fetch: mockFetch })
+
+		expect(mockFetch).toHaveBeenCalledTimes(2)
+		for (const call of mockFetch.mock.calls) {
+			expect(call[1].headers).toMatchObject({ Authorization: "Bearer tok", [ORG_HEADER]: "org-a" })
+		}
+	})
+
+	it("sends the SSO org header when the orgId is pre-resolved", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(quotaResponse({ userUsage: usageFixture() }))
+
+		await getQuotaUsage(SSO, { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID })
+
+		expect(mockFetch.mock.calls[0][1].headers).toMatchObject({ [ORG_HEADER]: "org-a" })
 	})
 
 	it("throws RemoteAuthError on 401", async () => {
@@ -148,7 +173,7 @@ describe("getQuotaUsage", () => {
 			.fn()
 			.mockResolvedValueOnce(verifyResponse())
 			.mockResolvedValueOnce(new Response(null, { status: 401 }))
-		await expect(getQuotaUsage("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteAuthError)
+		await expect(getQuotaUsage(KEY, { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteAuthError)
 	})
 
 	it("throws RemoteNetworkError on 500", async () => {
@@ -156,7 +181,7 @@ describe("getQuotaUsage", () => {
 			.fn()
 			.mockResolvedValueOnce(verifyResponse())
 			.mockResolvedValueOnce(new Response(null, { status: 500 }))
-		await expect(getQuotaUsage("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
+		await expect(getQuotaUsage(KEY, { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
 	it("wraps low-level fetch failures as RemoteNetworkError", async () => {
@@ -166,7 +191,7 @@ describe("getQuotaUsage", () => {
 			}
 			return Promise.reject(new TypeError("fetch failed"))
 		})
-		await expect(getQuotaUsage("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
+		await expect(getQuotaUsage(KEY, { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
 	it("throws RemoteNetworkError on non-JSON response", async () => {
@@ -174,6 +199,6 @@ describe("getQuotaUsage", () => {
 			.fn()
 			.mockResolvedValueOnce(verifyResponse())
 			.mockResolvedValueOnce(new Response("not json", { status: 200 }))
-		await expect(getQuotaUsage("key1", { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
+		await expect(getQuotaUsage(KEY, { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 })

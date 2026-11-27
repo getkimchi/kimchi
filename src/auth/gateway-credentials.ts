@@ -43,6 +43,11 @@ export interface GatewayCredentials {
 	source: "api-key" | "oauth" | "none"
 }
 
+/** The bearer plus the SSO org it acts in. The org header is what picks the
+ * organization for an SSO bearer; the token alone resolves the user's default
+ * org. Callers pass this shape so the org cannot be dropped on the way. */
+export type BearerCredentials = Pick<GatewayCredentials, "token" | "organizationId">
+
 const NONE: GatewayCredentials = { token: "", source: "none" }
 
 /** The auth.json next to models.json — the store cli.ts and pi-auth.ts write. */
@@ -104,9 +109,7 @@ export function resolveGatewayCredentials(
  * headers for a gateway object (e.g. memory's endpoint configs) don't
  * need to fake a source.
  */
-export function gatewayAuthHeaders(
-	credentials: Pick<GatewayCredentials, "token" | "organizationId">,
-): Record<string, string> {
+export function gatewayAuthHeaders(credentials: BearerCredentials): Record<string, string> {
 	const headers: Record<string, string> = {}
 	if (credentials.token) headers.Authorization = `Bearer ${credentials.token}`
 	if (credentials.organizationId) headers[GATEWAY_ORGANIZATION_HEADER] = credentials.organizationId

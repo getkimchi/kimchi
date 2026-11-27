@@ -3,6 +3,9 @@ import { authenticateWorkspace, authenticateWorkspaceProbe } from "./auth.js"
 import { RemoteAuthError, RemoteNetworkError, RemoteQuotaError } from "./types.js"
 
 const BASE = "https://api.example.com"
+const KEY = { token: "key1" }
+const SSO = { token: "tok", organizationId: "org-a" }
+const ORG_HEADER = "X-CastAi-Organization-Id"
 
 function mockAuthFlow(uri: string) {
 	return (
@@ -71,7 +74,7 @@ describe("authenticateWorkspace", () => {
 				}),
 			)
 
-		const result = await authenticateWorkspace("ws-123", "key1", "test workspace", {
+		const result = await authenticateWorkspace("ws-123", KEY, "test workspace", {
 			endpoint: BASE,
 			fetch: mockFetch,
 		})
@@ -105,9 +108,30 @@ describe("authenticateWorkspace", () => {
 		})
 	})
 
+	it("authenticateWorkspace sends the org header on verify, create, resume and exchange", async () => {
+		const mockFetch = mockAuthFlow("wss://h.example.com")
+
+		await authenticateWorkspace("ws-1", SSO, "desc", { endpoint: BASE, fetch: mockFetch })
+
+		expect(mockFetch).toHaveBeenCalledTimes(4)
+		for (const call of mockFetch.mock.calls) {
+			expect(call[1].headers).toMatchObject({ Authorization: "Bearer tok", [ORG_HEADER]: "org-a" })
+		}
+	})
+
+	it("authenticateWorkspace sends no org header for an API key", async () => {
+		const mockFetch = mockAuthFlow("wss://h.example.com")
+
+		await authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch })
+
+		for (const call of mockFetch.mock.calls) {
+			expect(call[1].headers).not.toHaveProperty(ORG_HEADER)
+		}
+	})
+
 	it("forwards gitToken into the create/update body when provided", async () => {
 		const mockFetch = mockAuthFlow("wss://h.example.com")
-		await authenticateWorkspace("ws-1", "key1", "desc", {
+		await authenticateWorkspace("ws-1", KEY, "desc", {
 			endpoint: BASE,
 			fetch: mockFetch,
 			gitToken: "ghp_xyz",
@@ -121,7 +145,7 @@ describe("authenticateWorkspace", () => {
 
 	it("sends templateName on the create/update body when provided (no spec key)", async () => {
 		const mockFetch = mockAuthFlow("wss://h.example.com")
-		await authenticateWorkspace("ws-1", "key1", "desc", {
+		await authenticateWorkspace("ws-1", KEY, "desc", {
 			endpoint: BASE,
 			fetch: mockFetch,
 			templateName: "team-stack",
@@ -138,7 +162,7 @@ describe("authenticateWorkspace", () => {
 	it("refuses to send templateName together with spec", async () => {
 		const mockFetch = mockAuthFlow("wss://h.example.com")
 		await expect(
-			authenticateWorkspace("ws-1", "key1", "desc", {
+			authenticateWorkspace("ws-1", KEY, "desc", {
 				endpoint: BASE,
 				fetch: mockFetch,
 				templateName: "team-stack",
@@ -153,7 +177,7 @@ describe("authenticateWorkspace", () => {
 
 	it("nests the workspace spec under `spec` in the create/update body when provided", async () => {
 		const mockFetch = mockAuthFlow("wss://h.example.com")
-		await authenticateWorkspace("ws-1", "key1", "desc", {
+		await authenticateWorkspace("ws-1", KEY, "desc", {
 			endpoint: BASE,
 			fetch: mockFetch,
 			spec: {
@@ -177,7 +201,7 @@ describe("authenticateWorkspace", () => {
 
 	it("serializes an explicit denyByDefault: false (default-allow survives JSON)", async () => {
 		const mockFetch = mockAuthFlow("wss://h.example.com")
-		await authenticateWorkspace("ws-1", "key1", "desc", {
+		await authenticateWorkspace("ws-1", KEY, "desc", {
 			endpoint: BASE,
 			fetch: mockFetch,
 			spec: { egressPolicy: { denyByDefault: false, denied: ["10.0.0.0/8"] } },
@@ -189,7 +213,7 @@ describe("authenticateWorkspace", () => {
 
 	it("sends only the spec fields that are set", async () => {
 		const mockFetch = mockAuthFlow("wss://h.example.com")
-		await authenticateWorkspace("ws-1", "key1", "desc", {
+		await authenticateWorkspace("ws-1", KEY, "desc", {
 			endpoint: BASE,
 			fetch: mockFetch,
 			spec: { resources: { memory: "1Gi" } },
@@ -201,7 +225,7 @@ describe("authenticateWorkspace", () => {
 
 	it("omits the spec key entirely when not provided (re-auth stays byte-identical)", async () => {
 		const mockFetch = mockAuthFlow("wss://h.example.com")
-		await authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch })
+		await authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch })
 
 		const putBody = JSON.parse(mockFetch.mock.calls[1][1].body as string)
 		expect(Object.keys(putBody).sort()).toEqual(["description", "options"])
@@ -210,7 +234,7 @@ describe("authenticateWorkspace", () => {
 	it("normalizes a bare-hostname URI returned by the server", async () => {
 		const bare = "trusting-titan.remote.kimchi.dev"
 		const mockFetch = mockAuthFlow(bare)
-		const result = await authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch })
+		const result = await authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch })
 		expect(result.wsUrl).toBe(`wss://${bare}`)
 		expect(result.host).toBe(bare)
 	})
@@ -223,7 +247,7 @@ describe("authenticateWorkspace", () => {
 	])("surfaces %i on the verify step as RemoteAuthError (%s)", async (status) => {
 		const mockFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status }))
 		await expect(
-			authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch }),
+			authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch }),
 		).rejects.toBeInstanceOf(RemoteAuthError)
 	})
 
@@ -238,7 +262,7 @@ describe("authenticateWorkspace", () => {
 			)
 			.mockResolvedValueOnce(new Response(null, { status: 401 }))
 		await expect(
-			authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch }),
+			authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch }),
 		).rejects.toBeInstanceOf(RemoteAuthError)
 	})
 
@@ -259,28 +283,28 @@ describe("authenticateWorkspace", () => {
 			)
 			.mockResolvedValueOnce(new Response(null, { status: 401 }))
 		await expect(
-			authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch }),
+			authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch }),
 		).rejects.toBeInstanceOf(RemoteAuthError)
 	})
 
 	it("surfaces 500 as RemoteNetworkError", async () => {
 		const mockFetch = vi.fn().mockResolvedValue(new Response(null, { status: 500 }))
 		await expect(
-			authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch }),
+			authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch }),
 		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
 	it("wraps fetch failures as RemoteNetworkError", async () => {
 		const mockFetch = vi.fn().mockRejectedValue(new TypeError("fetch failed"))
 		await expect(
-			authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch }),
+			authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch }),
 		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
 	it("rejects a non-WS protocol from the server as RemoteNetworkError", async () => {
 		const mockFetch = mockAuthFlow("https://h.example.com")
 		await expect(
-			authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch }),
+			authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch }),
 		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
@@ -300,7 +324,7 @@ describe("authenticateWorkspace", () => {
 				}),
 			)
 		await expect(
-			authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch }),
+			authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch }),
 		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
@@ -326,7 +350,7 @@ describe("authenticateWorkspace", () => {
 				}),
 			)
 		await expect(
-			authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch }),
+			authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch }),
 		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 
@@ -361,7 +385,7 @@ describe("authenticateWorkspace", () => {
 				}),
 			)
 
-		const result = await authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch })
+		const result = await authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch })
 		expect(result.connectToken).toBe("jwt-tok")
 		expect(mockFetch).toHaveBeenCalledTimes(4)
 		expect(mockFetch.mock.calls[2][0]).toContain(":resume")
@@ -396,7 +420,7 @@ describe("authenticateWorkspace", () => {
 			)
 
 		await expect(
-			authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch }),
+			authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch }),
 		).rejects.toBeInstanceOf(RemoteNetworkError)
 		// The token exchange (4th call) must not run after a failed resume.
 		expect(mockFetch).toHaveBeenCalledTimes(3)
@@ -427,7 +451,7 @@ describe("authenticateWorkspace", () => {
 				}),
 			)
 
-		const err = await authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch }).then(
+		const err = await authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch }).then(
 			(result) => {
 				expect.unreachable(`expected quota failure, got credentials ${JSON.stringify(result)}`)
 			},
@@ -455,12 +479,29 @@ describe("authenticateWorkspace", () => {
 			.mockRejectedValueOnce(new TypeError("fetch failed"))
 
 		await expect(
-			authenticateWorkspace("ws-1", "key1", "desc", { endpoint: BASE, fetch: mockFetch }),
+			authenticateWorkspace("ws-1", KEY, "desc", { endpoint: BASE, fetch: mockFetch }),
 		).rejects.toBeInstanceOf(RemoteNetworkError)
 	})
 })
 
 describe("authenticateWorkspaceProbe", () => {
+	it("sends the org header on verify, get and exchange", async () => {
+		const json = (body: unknown) =>
+			new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } })
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValueOnce(json({ organizationId: "org-a", userId: "user-1" }))
+			.mockResolvedValueOnce(json({ uri: "wss://h.example.com" }))
+			.mockResolvedValueOnce(json({ token: "jwt-probe", expireTime: "2026-01-01T00:00:00Z" }))
+
+		await authenticateWorkspaceProbe("ws-1", SSO, { endpoint: BASE, fetch: mockFetch })
+
+		expect(mockFetch).toHaveBeenCalledTimes(3)
+		for (const call of mockFetch.mock.calls) {
+			expect(call[1].headers).toMatchObject({ Authorization: "Bearer tok", [ORG_HEADER]: "org-a" })
+		}
+	})
+
 	it("runs exactly 3 fetches: verifyKey (POST), GET workspace, token exchange (POST) — no PUT, no resume", async () => {
 		const mockFetch = vi
 			.fn()
@@ -483,7 +524,7 @@ describe("authenticateWorkspaceProbe", () => {
 				}),
 			)
 
-		const result = await authenticateWorkspaceProbe("ws-1", "key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await authenticateWorkspaceProbe("ws-1", KEY, { endpoint: BASE, fetch: mockFetch })
 
 		expect(mockFetch).toHaveBeenCalledTimes(3)
 		expect(mockFetch.mock.calls[0][0]).toBe(`${BASE}/ai-optimizer/v1beta/workspace-tokens:verifyKey`)
@@ -529,7 +570,7 @@ describe("authenticateWorkspaceProbe", () => {
 				}),
 			)
 
-		const result = await authenticateWorkspaceProbe("ws-1", "key1", { endpoint: BASE, fetch: mockFetch })
+		const result = await authenticateWorkspaceProbe("ws-1", KEY, { endpoint: BASE, fetch: mockFetch })
 		expect(result.wsUrl).toBe("wss://trusting-titan.remote.kimchi.dev")
 		expect(result.host).toBe("trusting-titan.remote.kimchi.dev")
 	})
@@ -545,9 +586,9 @@ describe("authenticateWorkspaceProbe", () => {
 			)
 			.mockResolvedValueOnce(new Response(null, { status: 404 }))
 
-		await expect(
-			authenticateWorkspaceProbe("ws-1", "key1", { endpoint: BASE, fetch: mockFetch }),
-		).rejects.toBeInstanceOf(RemoteAuthError)
+		await expect(authenticateWorkspaceProbe("ws-1", KEY, { endpoint: BASE, fetch: mockFetch })).rejects.toBeInstanceOf(
+			RemoteAuthError,
+		)
 		expect(mockFetch).toHaveBeenCalledTimes(2)
 	})
 })
