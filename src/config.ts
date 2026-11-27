@@ -198,6 +198,7 @@ export function ensureHideThinkingBlockDefault(settings: Record<string, unknown>
 
 /**
  * Seed quietStartup when absent so settings.json files predating this default
+
  * (or otherwise missing the key) don't fall back to pi's verbose startup
  * listing (the `[Extensions]`/`[Themes]` resource dump).
  */
@@ -398,6 +399,7 @@ export function readApiKeyFromConfigFile(configPath: string = KIMCHI_CONFIG_PATH
 	try {
 		const raw = readFileSync(configPath, "utf-8")
 		const parsed = JSON.parse(raw)
+
 		if (typeof parsed.apiKey === "string" && parsed.apiKey.length > 0) {
 			return parsed.apiKey
 		}
@@ -598,6 +600,7 @@ const configPermissionWarnedPaths = new Set<string>()
 
 export function checkConfigFilePermissions(configPath: string): string | undefined {
 	if (process.platform === "win32") return undefined
+
 	try {
 		const stat = statSync(configPath)
 		if ((stat.mode & 0o077) !== 0 && !configPermissionWarnedPaths.has(configPath)) {
@@ -729,7 +732,7 @@ export function readTelemetryConfig(configPath?: string): TelemetryConfig {
 	// Self-hosted telemetry URLs follow the same resolution as every other
 	// endpoint: the env base (derived) when set, else the stored endpoints.
 	// Without either, the placeholder entry's empty URLs make telemetry sends
-	// fail (best-effort, like an unreachable host); endpoint resolution fails
+	// fail (best-thinkingLevel, like an unreachable host); endpoint resolution fails
 	// fast elsewhere with the actionable error.
 	const selfHostedEndpoints = selfHostedEndpointsFromFile
 	const region = regionOrPlaceholder(regionId, selfHostedEndpoints)
@@ -998,6 +1001,7 @@ function missingSelfHostedBaseUrlError(): Error {
 }
 
 /**
+
  * Endpoints of a given region, with the same env overrides as resolveEndpoints().
  *
  * This and resolveEndpoints() are the only sanctioned entry points for region
@@ -1088,29 +1092,50 @@ function writeConfigField(key: string, value: unknown, configPath: string): void
 	})
 }
 
-type ModelEffortDefaults = Record<string, string>
+type ModelThinkingLevelDefaults = Record<string, string>
 
-function parseModelEffortDefaults(value: unknown): ModelEffortDefaults {
+// Legacy mode buckets have no deterministic merge order. Never promote one
+// into the concrete-provider/model map introduced after those buckets.
+const LEGACY_MODEL_THINKING_BUCKET_KEYS = new Set(["chat", "design", "code"])
+
+function parseModelThinkingLevelDefaults(value: unknown): ModelThinkingLevelDefaults {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {}
-	const defaults: ModelEffortDefaults = Object.create(null)
-	for (const [modelId, effort] of Object.entries(value)) {
-		if (modelId.length > 0 && typeof effort === "string") defaults[modelId] = effort
+	const defaults: ModelThinkingLevelDefaults = Object.create(null)
+	for (const [modelId, thinkingLevel] of Object.entries(value)) {
+		if (LEGACY_MODEL_THINKING_BUCKET_KEYS.has(modelId)) continue
+		if (modelId.length > 0 && typeof thinkingLevel === "string") defaults[modelId] = thinkingLevel
 	}
 	return defaults
 }
 
-export function readModelEffortDefaults(configPath: string = KIMCHI_CONFIG_PATH): ModelEffortDefaults {
-	return parseModelEffortDefaults(readConfigObject(configPath)?.modelEffortDefaults)
+function hasLegacyModelThinkingBuckets(value: unknown): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false
+	return Object.keys(value).some((key) => LEGACY_MODEL_THINKING_BUCKET_KEYS.has(key))
 }
 
-export function writeModelEffortDefault(
+/** Read flat concrete-model defaults and clear obsolete mode buckets on access.
+ * Re-read through the existing update helper so unrelated config survives. */
+export function readModelThinkingLevelDefaults(configPath: string = KIMCHI_CONFIG_PATH): ModelThinkingLevelDefaults {
+	const raw = readConfigObject(configPath)
+	if (hasLegacyModelThinkingBuckets(raw?.modelEffortDefaults)) {
+		let cleared: ModelThinkingLevelDefaults = {}
+		updateConfigFile(configPath, (next) => {
+			cleared = parseModelThinkingLevelDefaults(next.modelEffortDefaults)
+			next.modelEffortDefaults = cleared
+		})
+		return cleared
+	}
+	return parseModelThinkingLevelDefaults(raw?.modelEffortDefaults)
+}
+
+export function writeModelThinkingLevelDefault(
 	modelId: string,
-	effort: string,
+	thinkingLevel: string,
 	configPath: string = KIMCHI_CONFIG_PATH,
 ): void {
 	updateConfigFile(configPath, (raw) => {
-		const defaults = parseModelEffortDefaults(raw.modelEffortDefaults)
-		defaults[modelId] = effort
+		const defaults = parseModelThinkingLevelDefaults(raw.modelEffortDefaults)
+		defaults[modelId] = thinkingLevel
 		raw.modelEffortDefaults = defaults
 	})
 }
@@ -1177,6 +1202,7 @@ export function readStudioOnboardingSeenAt(configPath?: string): string | undefi
 
 export function writeStudioOnboardingSeenAt(seenAt: string, configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
+
 	updateOnboardingConfig(path, (onboarding) => {
 		onboarding.studioOnboardingSeenAt = seenAt
 	})
@@ -1377,6 +1403,7 @@ export function writeTuiTimezone(timezone: string, configPath?: string): void {
 }
 
 /**
+
  * Pin (or, with `undefined`, unpin) the reply language in the global config.
  * The value must already be normalized (see normalizeLanguageSetting); the
  * `kimchi config set language` and `/language` surfaces validate before

@@ -40,7 +40,7 @@ export function cancelPendingPrompts(entry: SessionRecord): void {
 
 export type SessionRecord = {
 	session: AgentSession
-	effortByModel: Map<string, AgentSession["thinkingLevel"]>
+	thinkingLevelByModel: Map<string, AgentSession["thinkingLevel"]>
 	unsubscribe: () => void
 	/**
 	 * The prompter THIS record registered — threaded so every teardown of
@@ -198,6 +198,7 @@ export type SessionRecord = {
 	skillCommands: Map<string, AcpSkillInfo>
 	/** Mirrors this session's Todo store writes to ACP `plan` updates. */
 	planTracker?: AcpPlanTracker
+
 	/** Present only for announced child routes; keeps root run boundaries out of child streams. */
 	subagentParentSessionId?: string
 }
@@ -214,7 +215,7 @@ export function createProjectionSessionRecord(
 			: SubagentToolIdHistory.fromEntries(session.sessionManager.getBranch())
 	const record: SessionRecord = {
 		session,
-		effortByModel: new Map(),
+		thinkingLevelByModel: new Map(),
 		unsubscribe: () => {},
 		cwd,
 		childToolIdHistory,

@@ -1,19 +1,19 @@
-import type { Api, Model, ModelThinkingLevel as ModelEffortLevel } from "@earendil-works/pi-ai"
+import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
-import type { readModelEffortDefaults } from "../../config.js"
+import type { readModelThinkingLevelDefaults } from "../../config.js"
 import { isAutoRoutedModel } from "../../extensions/auto-model/constants.js"
-import { parseModelEffortLevel } from "../../model-effort.js"
+import { parseModelThinkingLevel } from "../../model-thinking.js"
 import { getModelVirtualIdentity } from "../../models.js"
 import { refFromModel } from "../../shared/model-ref.js"
 import { clampToSelection, thinkingSelection } from "../../thinking-selection.js"
 import { type KimchiDevMeta, kimchiDevMetaOf } from "./capabilities.js"
 
-export type ModelEffortAvailability = "multiple" | "fixed" | "provider-controlled" | "unsupported" | "routed"
+export type ModelThinkingAvailability = "multiple" | "fixed" | "provider-controlled" | "unsupported" | "routed"
 
-export interface ModelEffortMetadata {
-	availability: ModelEffortAvailability
-	levels?: ModelEffortLevel[]
-	currentValue: ModelEffortLevel | null
+export interface ModelThinkingMetadata {
+	availability: ModelThinkingAvailability
+	levels?: ModelThinkingLevel[]
+	currentValue: ModelThinkingLevel | null
 	/** Distinguishes built-in Auto, with dynamic route resolution and
 	 * attribution, from another managed virtual row. Both are `routed`, but a
 	 * boolean would erase Auto's existing client-visible semantics. */
@@ -38,23 +38,23 @@ export function configuredModelDescription(model: Model<Api>): string | undefine
 	return typeof description === "string" && description.trim() ? description.trim() : undefined
 }
 
-export interface ModelEffortMetadataContext {
-	effortDefaults: ReturnType<typeof readModelEffortDefaults>
-	effortByModel: ReadonlyMap<string, ModelEffortLevel>
+export interface ModelThinkingMetadataContext {
+	thinkingLevelDefaults: ReturnType<typeof readModelThinkingLevelDefaults>
+	thinkingLevelByModel: ReadonlyMap<string, ModelThinkingLevel>
 	currentModel: AgentSession["model"]
 	currentThinkingLevel: AgentSession["thinkingLevel"]
 	settingsManager: AgentSession["settingsManager"]
 }
 
-/** Build one model row's Effort metadata for the versioned modelEffort wire
+/** Build one model row's Thinking level metadata for the versioned modelThinking wire
  * slot, using the same authorities as when that model becomes active. */
-export function buildModelEffortMeta(
+export function buildModelThinkingMeta(
 	model: Model<Api>,
-	context: ModelEffortMetadataContext,
-): KimchiDevMeta<{ modelEffort: ModelEffortMetadata }> {
+	context: ModelThinkingMetadataContext,
+): KimchiDevMeta<{ modelThinking: ModelThinkingMetadata }> {
 	const virtual = modelVirtualIdentity(model)
 	if (virtual) {
-		return kimchiDevMetaOf({ modelEffort: { availability: "routed", currentValue: null, virtual } })
+		return kimchiDevMetaOf({ modelThinking: { availability: "routed", currentValue: null, virtual } })
 	}
 
 	const modelId = refFromModel(model)
@@ -65,25 +65,25 @@ export function buildModelEffortMeta(
 		// selectable values, without hiding the provider-managed reasoning flag.
 		const providerControlled = (selection.mode === "none" && selection.reasoning) || model.reasoning
 		return kimchiDevMetaOf({
-			modelEffort: {
+			modelThinking: {
 				availability: providerControlled ? "provider-controlled" : "unsupported",
 				currentValue: null,
 			},
 		})
 	}
 
-	const remembered = context.effortByModel.get(modelId)
-	const storedDefault = parseModelEffortLevel(context.effortDefaults[modelId])
+	const remembered = context.thinkingLevelByModel.get(modelId)
+	const storedDefault = parseModelThinkingLevel(context.thinkingLevelDefaults[modelId])
 	const harnessFallback = isCurrent
 		? context.currentThinkingLevel
 		: (context.settingsManager.getModelThinkingLevel(model.provider, model.id) ??
 			context.settingsManager.getDefaultThinkingLevel() ??
 			context.currentThinkingLevel)
-	const currentValue = parseModelEffortLevel(
+	const currentValue = parseModelThinkingLevel(
 		clampToSelection(remembered ?? storedDefault ?? harnessFallback, selection),
 	)
 	return kimchiDevMetaOf({
-		modelEffort: {
+		modelThinking: {
 			availability: selection.selectable.length === 1 ? "fixed" : "multiple",
 			levels: selection.selectable,
 			currentValue: currentValue ?? null,

@@ -29,8 +29,8 @@ export const CAPABILITIES_KEY = "kimchi.dev"
 //   not advertised in _meta, sessionId carried in the payload.
 //
 // Capability advertising: ordinary entries are exposed in
-// `_meta["kimchi.dev"][<key>] === true`. set_model_effort uses only the
-// versioned modelEffort advertisement because dispatch requires that opt-in.
+// `_meta["kimchi.dev"][<key>] === true`. get_model_thinking and
+// set_model_thinking use only the versioned modelThinking advertisement because dispatch requires that opt-in.
 export const AVAILABLE_EXT_METHODS = {
 	// Agent→client (outbound). The agent calls conn.extMethod on the client.
 	pi_editor: `_${CAPABILITIES_KEY}/pi_editor`,
@@ -41,8 +41,9 @@ export const AVAILABLE_EXT_METHODS = {
 	feedback: `_${CAPABILITIES_KEY}/feedback`,
 	compact: `_${CAPABILITIES_KEY}/compact`,
 	compact_abort: `_${CAPABILITIES_KEY}/compact_abort`,
-	// Keep this literal visible to scripts/check-acp-wire.mjs's HEAD registry scan.
-	set_model_effort: "_kimchi.dev/set_model_effort",
+	// Keep these literals visible to scripts/check-acp-wire.mjs's HEAD registry scan.
+	get_model_thinking: "_kimchi.dev/get_model_thinking",
+	set_model_thinking: "_kimchi.dev/set_model_thinking",
 	memory_status: `_${CAPABILITIES_KEY}/memory_status`,
 	set_memory_enabled: `_${CAPABILITIES_KEY}/set_memory_enabled`,
 
@@ -107,12 +108,12 @@ export const AVAILABLE_EXT_NOTIFICATIONS = {
 } as const
 
 export type AcpExtMethod = keyof typeof AVAILABLE_EXT_METHODS
-type AdvertisedExtMethod = Exclude<AcpExtMethod, "set_model_effort">
+type AdvertisedExtMethod = Exclude<AcpExtMethod, "get_model_thinking" | "set_model_thinking">
 
 export const ADVERTISED_CAPABILITIES: Record<AdvertisedExtMethod, boolean> = (
 	Object.keys(AVAILABLE_EXT_METHODS) as AcpExtMethod[]
 )
-	.filter((method): method is AdvertisedExtMethod => method !== "set_model_effort")
+	.filter((method): method is AdvertisedExtMethod => method !== "get_model_thinking" && method !== "set_model_thinking")
 	.reduce(
 		(acc, method) => {
 			acc[method] = true
@@ -186,19 +187,19 @@ export function getClientOptedIntoPRMonitoring(capabilities: ClientCapabilities 
 }
 
 /**
- * Versioned opt-in for concrete-model Effort persistence and ACP v1
- * per-model-row metadata under `_meta["kimchi.dev"].modelEffort`.
+ * Versioned opt-in for concrete-model Thinking level persistence and ACP v1
+ * per-model-row metadata under `_meta["kimchi.dev"].modelThinking`.
  * ACP's completed Model Config Option Category RFD covers `model_config`
  * placement only. The vendor default-write operation and row schema
  * (availability, ordered levels, session values, and virtual identity)
  * are own design, no spec track; saved defaults stay inside the CLI.
  */
-export const MODEL_EFFORT_CAPABILITY = "modelEffort"
-export const MODEL_EFFORT_VERSION = 1
+export const MODEL_THINKING_CAPABILITY = "modelThinking"
+export const MODEL_THINKING_VERSION = 1
 
-export function getClientOptedIntoModelEffort(capabilities: ClientCapabilities | undefined): boolean {
+export function getClientOptedIntoModelThinking(capabilities: ClientCapabilities | undefined): boolean {
 	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, unknown> | undefined
-	return flags?.[MODEL_EFFORT_CAPABILITY] === MODEL_EFFORT_VERSION
+	return flags?.[MODEL_THINKING_CAPABILITY] === MODEL_THINKING_VERSION
 }
 
 /**

@@ -2,17 +2,17 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import { readModelEffortDefaults, writeModelEffortDefault } from "./config.js"
+import { readModelThinkingLevelDefaults, writeModelThinkingLevelDefault } from "./config.js"
 import {
-	getModelEffortDefault,
-	MODEL_EFFORT_SELECTION_ENTRY_TYPE,
-	readSessionEffortSelections,
-} from "./model-effort.js"
+	getModelThinkingLevelDefault,
+	MODEL_THINKING_SELECTION_ENTRY_TYPE,
+	readSessionThinkingSelections,
+} from "./model-thinking.js"
 
 const tempDirs: string[] = []
 
 function makeConfig(initial: Record<string, unknown> = {}): string {
-	const dir = mkdtempSync(join(tmpdir(), "kimchi-model-effort-"))
+	const dir = mkdtempSync(join(tmpdir(), "kimchi-model-thinking-"))
 	tempDirs.push(dir)
 	const configPath = join(dir, "config.json")
 	writeFileSync(configPath, JSON.stringify({ apiKey: "keep-me", ...initial }))
@@ -23,24 +23,24 @@ afterEach(() => {
 	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-describe("Model effort defaults", () => {
+describe("Model thinking defaults", () => {
 	it("persists one default per concrete model without replacing other config", () => {
 		const configPath = makeConfig()
 
-		writeModelEffortDefault("test/reasoner", "high", configPath)
-		writeModelEffortDefault("test/other", "low", configPath)
-		writeModelEffortDefault("test/reasoner", "max", configPath)
+		writeModelThinkingLevelDefault("test/reasoner", "high", configPath)
+		writeModelThinkingLevelDefault("test/other", "low", configPath)
+		writeModelThinkingLevelDefault("test/reasoner", "max", configPath)
 
-		expect(getModelEffortDefault("test/reasoner", configPath)).toBe("max")
-		expect(getModelEffortDefault("test/other", configPath)).toBe("low")
-		expect(getModelEffortDefault("test/missing", configPath)).toBeUndefined()
+		expect(getModelThinkingLevelDefault("test/reasoner", configPath)).toBe("max")
+		expect(getModelThinkingLevelDefault("test/other", configPath)).toBe("low")
+		expect(getModelThinkingLevelDefault("test/missing", configPath)).toBeUndefined()
 		expect(JSON.parse(readFileSync(configPath, "utf-8"))).toMatchObject({
 			apiKey: "keep-me",
 			modelEffortDefaults: { "test/reasoner": "max", "test/other": "low" },
 		})
 	})
 
-	it("reads flat defaults without migrating or rewriting configuration", () => {
+	it("clears legacy mode buckets while preserving flat defaults and unrelated configuration", () => {
 		const configPath = makeConfig({
 			modelEffortDefaults: {
 				chat: { "test/reasoner": "max" },
@@ -50,9 +50,23 @@ describe("Model effort defaults", () => {
 			},
 			sessionSelections: { test: "keep-session-settings" },
 		})
+
+		expect(readModelThinkingLevelDefaults(configPath)).toEqual({ "test/flat": "medium" })
+		expect(JSON.parse(readFileSync(configPath, "utf-8"))).toEqual({
+			apiKey: "keep-me",
+			modelEffortDefaults: { "test/flat": "medium" },
+			sessionSelections: { test: "keep-session-settings" },
+		})
+	})
+
+	it("reads flat defaults without rewriting configuration", () => {
+		const configPath = makeConfig({
+			modelEffortDefaults: { "test/flat": "medium" },
+			sessionSelections: { test: "keep-session-settings" },
+		})
 		const originalConfig = readFileSync(configPath, "utf-8")
 
-		expect(readModelEffortDefaults(configPath)).toEqual({ "test/flat": "medium" })
+		expect(readModelThinkingLevelDefaults(configPath)).toEqual({ "test/flat": "medium" })
 		expect(readFileSync(configPath, "utf-8")).toBe(originalConfig)
 	})
 
@@ -67,10 +81,10 @@ describe("Model effort defaults", () => {
 			},
 		})
 
-		expect(getModelEffortDefault("test/reasoner", configPath)).toBe("medium")
-		expect(getModelEffortDefault("test/invalid", configPath)).toBeUndefined()
-		expect(getModelEffortDefault("test/nonstring", configPath)).toBeUndefined()
-		expect(getModelEffortDefault("chat", configPath)).toBeUndefined()
+		expect(getModelThinkingLevelDefault("test/reasoner", configPath)).toBe("medium")
+		expect(getModelThinkingLevelDefault("test/invalid", configPath)).toBeUndefined()
+		expect(getModelThinkingLevelDefault("test/nonstring", configPath)).toBeUndefined()
+		expect(getModelThinkingLevelDefault("chat", configPath)).toBeUndefined()
 	})
 
 	it("does not resolve model defaults through a __proto__ config key", () => {
@@ -78,35 +92,35 @@ describe("Model effort defaults", () => {
 			modelEffortDefaults: JSON.parse('{"__proto__":{"chat":"max"}}'),
 		})
 
-		expect(Object.hasOwn(readModelEffortDefaults(configPath), "__proto__")).toBe(false)
+		expect(Object.hasOwn(readModelThinkingLevelDefaults(configPath), "__proto__")).toBe(false)
 
-		writeModelEffortDefault("test/reasoner", "high", configPath)
-		expect(getModelEffortDefault("test/reasoner", configPath)).toBe("high")
+		writeModelThinkingLevelDefault("test/reasoner", "high", configPath)
+		expect(getModelThinkingLevelDefault("test/reasoner", configPath)).toBe("high")
 	})
 })
 
-describe("Session effort selections", () => {
+describe("Session thinkingLevel selections", () => {
 	it("replays concrete-model selections with last write winning", () => {
 		const entries = [
 			{
 				type: "custom",
-				customType: MODEL_EFFORT_SELECTION_ENTRY_TYPE,
+				customType: MODEL_THINKING_SELECTION_ENTRY_TYPE,
 				data: { modelId: "test/reasoner", value: "high" },
 			},
 			{ type: "message", role: "user", content: "unrelated" },
 			{
 				type: "custom",
-				customType: MODEL_EFFORT_SELECTION_ENTRY_TYPE,
+				customType: MODEL_THINKING_SELECTION_ENTRY_TYPE,
 				data: { modelId: "test/other", value: "low" },
 			},
 			{
 				type: "custom",
-				customType: MODEL_EFFORT_SELECTION_ENTRY_TYPE,
+				customType: MODEL_THINKING_SELECTION_ENTRY_TYPE,
 				data: { modelId: "test/reasoner", value: "max" },
 			},
 		]
 
-		expect(Object.fromEntries(readSessionEffortSelections(entries))).toEqual({
+		expect(Object.fromEntries(readSessionThinkingSelections(entries))).toEqual({
 			"test/reasoner": "max",
 			"test/other": "low",
 		})
@@ -114,20 +128,20 @@ describe("Session effort selections", () => {
 
 	it("ignores malformed and unavailable persisted entries", () => {
 		const entries = [
-			{ type: "custom", customType: MODEL_EFFORT_SELECTION_ENTRY_TYPE, data: null },
+			{ type: "custom", customType: MODEL_THINKING_SELECTION_ENTRY_TYPE, data: null },
 			{
 				type: "custom",
-				customType: MODEL_EFFORT_SELECTION_ENTRY_TYPE,
+				customType: MODEL_THINKING_SELECTION_ENTRY_TYPE,
 				data: { modelId: "test/reasoner", value: "ultra" },
 			},
 			{
 				type: "custom",
-				customType: MODEL_EFFORT_SELECTION_ENTRY_TYPE,
+				customType: MODEL_THINKING_SELECTION_ENTRY_TYPE,
 				data: { modelId: 42, value: "high" },
 			},
 			{ type: "custom", customType: "another_entry", data: { modelId: "test/other", value: "low" } },
 		]
 
-		expect(readSessionEffortSelections(entries).size).toBe(0)
+		expect(readSessionThinkingSelections(entries).size).toBe(0)
 	})
 })
