@@ -275,9 +275,11 @@ import { hasConfirmedModelSelection, type RecoveredSubagent } from "./subagent-r
 import { SubagentRegistry, type SubagentRoute } from "./subagent-registry.js"
 import {
 	absoluteSubagentCwd,
+	backgroundAgentIdFromResult,
 	clientSupportsSubagents,
 	presentAgentToolCall,
 	type SubagentSessionCreatedEvent,
+	type SubagentSessionFailedEvent,
 	subagentPromptMessages,
 	subagentSessionCreatedExtension,
 	withSubagentSessionLink,
@@ -573,11 +575,21 @@ export class KimchiAcpAgent {
 	) {
 		this.subagentSessionResolver = options.subagentSessionResolver ?? (() => undefined)
 		this.sessionFactory =
-			options.sessionFactory ?? defaultSessionFactory(options, (event) => this.onSubagentSessionCreated(event))
+			options.sessionFactory ??
+			defaultSessionFactory(
+				options,
+				(event) => this.onSubagentSessionCreated(event),
+				(event) => this.onSubagentSessionFailed(event),
+			)
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader =
-			options.sessionLoader ?? defaultSessionLoader(options, (event) => this.onSubagentSessionCreated(event))
+			options.sessionLoader ??
+			defaultSessionLoader(
+				options,
+				(event) => this.onSubagentSessionCreated(event),
+				(event) => this.onSubagentSessionFailed(event),
+			)
 		this.subagentReplayLoader = options.subagentReplayLoader ?? defaultSubagentReplayLoader(options)
 		this.subagentRegistry = new SubagentRegistry<SessionRecord>({
 			enabled: () => clientSupportsSubagents(this.clientCapabilities),
@@ -983,6 +995,7 @@ export class KimchiAcpAgent {
 				emittedModelMeta: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
+				pendingAgentSessionLinks: new Map(),
 				heldBackgroundToolCalls: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
@@ -1594,6 +1607,7 @@ export class KimchiAcpAgent {
 				emittedModelMeta: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
+				pendingAgentSessionLinks: new Map(),
 				heldBackgroundToolCalls: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
@@ -2787,6 +2801,22 @@ export class KimchiAcpAgent {
 		})
 		record.unsubscribe = session.subscribe((childEvent) => this.onSessionEvent(event.sessionId, childEvent))
 		this.startPlanTracker(record, event.sessionId)
+		const invocation = parent.pendingAgentSessionLinks.get(event.agentId)
+		if (invocation) {
+			parent.pendingAgentSessionLinks.delete(event.agentId)
+			this.send({
+				sessionId: event.parentSessionId,
+				update: this.presentToolCall("Agent", {
+					sessionUpdate: "tool_call_update",
+					toolCallId: invocation.toolCallId,
+					content: withSubagentSessionLink(invocation.content, event.sessionId),
+				}),
+			})
+		}
+	}
+
+	private onSubagentSessionFailed(event: SubagentSessionFailedEvent): void {
+		this.sessions.get(event.parentSessionId)?.pendingAgentSessionLinks.delete(event.agentId)
 	}
 
 	private flushPendingSubagentEvents(parentSessionId: string): void {
@@ -3445,18 +3475,19 @@ export class KimchiAcpAgent {
 					)
 					return
 				}
+				const content = this.agentContent(
+					sessionId,
+					event.toolName,
+					event.toolCallId,
+					this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
+				)
 				const update: SessionUpdate = this.presentToolCall(
 					event.toolName,
 					buildToolCallUpdate({
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
 						status: event.isError ? "failed" : "completed",
-						content: this.agentContent(
-							sessionId,
-							event.toolName,
-							event.toolCallId,
-							this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
-						),
+						content,
 						rawOutput: this.displayOptionalRecord(
 							sessionId,
 							wireSafeToolResult(event.toolName, event.result, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities)),
@@ -3464,6 +3495,14 @@ export class KimchiAcpAgent {
 					}),
 				)
 				this.send({ sessionId, update })
+				const agentId = backgroundAgentIdFromResult(event.result)
+				if (
+					!event.isError &&
+					agentId !== undefined &&
+					this.subagentSessionForTool(sessionId, event.toolCallId) === undefined
+				) {
+					entry.pendingAgentSessionLinks.set(agentId, { toolCallId: acpToolCallId, content })
+				}
 				// Upstream ids can repeat after compaction or even within a turn. Retire
 				// all state keyed on this upstream id so a future call reusing it starts
 				// with a fresh ACP id and clean streaming/announcement state.
@@ -4548,6 +4587,7 @@ async function createSessionSettings(
 	options: RunAcpOptions,
 	params: SessionMcpOAuthOptions & { _meta?: unknown; mcpServers?: ReadonlyArray<McpServer> },
 	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
+	onSubagentSessionFailed?: (event: SubagentSessionFailedEvent) => void,
 ) {
 	// Construct untrusted first: pi's SettingsManager.create defaults
 	// projectTrusted to TRUE, which would let an untrusted repo's
@@ -4591,7 +4631,9 @@ async function createSessionSettings(
 		extensionFactories: [
 			...options.extensionFactories,
 			...(mcpExtension ? [mcpExtension] : []),
-			...(onSubagentSessionCreated ? [subagentSessionCreatedExtension(onSubagentSessionCreated)] : []),
+			...(onSubagentSessionCreated
+				? [subagentSessionCreatedExtension(onSubagentSessionCreated, onSubagentSessionFailed)]
+				: []),
 		],
 	})
 	const resourceLoader = new AcpSessionResourceLoader({
@@ -4629,6 +4671,7 @@ function emptySessionInitialOptions(
 export function defaultSessionLoader(
 	options: RunAcpOptions,
 	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
+	onSubagentSessionFailed?: (event: SubagentSessionFailedEvent) => void,
 ): AcpSessionLoader {
 	return async (params: SessionLoaderParams): Promise<AgentSession> => {
 		const cwd = params.cwd
@@ -4677,6 +4720,7 @@ export function defaultSessionLoader(
 				options,
 				params,
 				onSubagentSessionCreated,
+				onSubagentSessionFailed,
 			)
 			const initialOptions = emptySessionInitialOptions(sessionManager, new ModelRegistry(modelRuntime))
 			const { session } = await createAgentSession({
@@ -4741,6 +4785,7 @@ export function defaultSessionLoader(
 			options,
 			params,
 			onSubagentSessionCreated,
+			onSubagentSessionFailed,
 		)
 		const initialOptions = emptySessionInitialOptions(sessionManager, new ModelRegistry(modelRuntime))
 		const { session } = await createAgentSession({
@@ -4817,6 +4862,7 @@ export function defaultSubagentReplayLoader(options: RunAcpOptions): AcpSubagent
 export function defaultSessionFactory(
 	options: RunAcpOptions,
 	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
+	onSubagentSessionFailed?: (event: SubagentSessionFailedEvent) => void,
 ): AcpSessionFactory {
 	return async (params: SessionFactoryParams): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
@@ -4825,6 +4871,7 @@ export function defaultSessionFactory(
 			options,
 			params,
 			onSubagentSessionCreated,
+			onSubagentSessionFailed,
 		)
 		const modelRuntime = await createSsoAwareModelRuntime(options.agentDir)
 		const { session } = await createAgentSession({

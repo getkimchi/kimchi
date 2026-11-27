@@ -1538,6 +1538,9 @@ export default function (pi: ExtensionAPI) {
 				agentSession: session,
 			})
 		},
+		(record) => {
+			emitSubagentEvent("subagents:failed", buildEventData(record))
+		},
 	)
 	activeManager = manager
 

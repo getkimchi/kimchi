@@ -6,6 +6,7 @@ import { RecordingFakeAgentSession as ProjectionFakeSession } from "./__mocks__/
 import { KimchiAcpAgent } from "./server.js"
 import {
 	absoluteSubagentCwd,
+	backgroundAgentIdFromResult,
 	clientSupportsSubagents,
 	parseSubagentSessionCreated,
 	presentAgentToolCall,
@@ -131,7 +132,36 @@ function streamChild(session: ProjectionFakeSession, text: string): void {
 	session.emit({ type: "agent_settled" } as AgentSessionEvent)
 }
 
+function emitBackgroundAgentResult(
+	root: ProjectionFakeSession,
+	toolCallId: string,
+	agentId: string,
+	text: string,
+): void {
+	root.emit({
+		type: "tool_execution_start",
+		toolCallId,
+		toolName: "Agent",
+		args: { description: "Delegate", prompt: "Investigate", run_in_background: true },
+	} as AgentSessionEvent)
+	root.emit({
+		type: "tool_execution_end",
+		toolCallId,
+		toolName: "Agent",
+		result: { content: [{ type: "text", text }], details: { status: "background", agentId } },
+		isError: false,
+	} as unknown as AgentSessionEvent)
+}
+
 describe("subagent event parsing and capability gate", () => {
+	it("retains agent identity only from successful background handoff details", () => {
+		expect(backgroundAgentIdFromResult({ details: { status: "background", agentId: "agent-1" } })).toBe("agent-1")
+		expect(backgroundAgentIdFromResult({ details: { status: "completed", agentId: "agent-1" } })).toBeUndefined()
+		expect(backgroundAgentIdFromResult({ details: { status: "background" } })).toBeUndefined()
+		expect(backgroundAgentIdFromResult({ details: undefined })).toBeUndefined()
+		expect(backgroundAgentIdFromResult(undefined)).toBeUndefined()
+	})
+
 	it("treats only a subagents capability object as opt-in", () => {
 		expect(clientSupportsSubagents({ subagents: {} } as ClientCapabilities)).toBe(true)
 		expect(clientSupportsSubagents({ subagents: null } as unknown as ClientCapabilities)).toBe(false)
@@ -165,6 +195,20 @@ describe("subagent event parsing and capability gate", () => {
 		listener?.({ invalid: true })
 		listener?.(event)
 		expect(received).toEqual([event])
+	})
+
+	it("forwards valid terminal events without accepting malformed identity", () => {
+		let listener: ((payload: unknown) => void) | undefined
+		const on = vi.fn((name: string, callback: (payload: unknown) => void) => {
+			if (name === "subagents:failed") listener = callback
+		})
+		const failed = vi.fn()
+		const extension = subagentSessionCreatedExtension(vi.fn(), failed)
+		if (typeof extension !== "function") throw new Error("expected an inline extension function")
+		extension({ events: { on } } as never)
+		listener?.({ agentId: "missing-parent" })
+		listener?.({ agentId: "agent-1", parentSessionId: "parent" })
+		expect(failed).toHaveBeenCalledWith({ agentId: "agent-1", parentSessionId: "parent" })
 	})
 })
 
@@ -389,6 +433,101 @@ describe("subagent registry and child projection", () => {
 		expect(subagentRegistry(agent).childForTool("parent", "provider-agent-call", "provider-agent-call")).toBeUndefined()
 	})
 
+	it("does not retain a background result whose child is already linked", async () => {
+		const { agent, root, updates } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("early-child")
+		root.emit({ type: "agent_start" } as AgentSessionEvent)
+		createChild(agent, childEvent("parent", child, { background: true }))
+		emitBackgroundAgentResult(root, "provider-agent-call", "run-early-child", "Early result")
+
+		expect(update(updates.at(-1) as SessionNotification).content).toEqual([
+			{ type: "content", content: { type: "text", text: "Early result" } },
+			{ type: "session", sessionId: "early-child" },
+		])
+		const sessions = Reflect.get(agent, "sessions") as Map<string, { pendingAgentSessionLinks: Map<string, unknown> }>
+		expect(sessions.get("parent")?.pendingAgentSessionLinks.size).toBe(0)
+	})
+
+	it("patches a completed background Agent invocation when its child registers late", async () => {
+		const { agent, root, updates } = await createRoot("parent")
+		agents.push(agent)
+		const child = new ProjectionFakeSession("late-child")
+		root.emit({ type: "agent_start" } as AgentSessionEvent)
+		emitBackgroundAgentResult(root, "provider-agent-call", "run-late-child", "Agent started in background.")
+
+		const terminal = updates.findLast((item) => update(item).sessionUpdate === "tool_call_update")
+		if (!terminal) throw new Error("Expected the Agent result update")
+		expect(update(terminal).content).toEqual([
+			{ type: "content", content: { type: "text", text: "Agent started in background." } },
+		])
+
+		root.emit({ type: "agent_settled" } as AgentSessionEvent)
+		createChild(agent, childEvent("parent", child, { background: true }))
+
+		const patch = updates.at(-1)
+		if (!patch) throw new Error("Expected a late Agent link patch")
+		expect(update(patch)).toMatchObject({
+			sessionUpdate: "tool_call_update",
+			toolCallId: update(terminal).toolCallId,
+			name: "subagent",
+			kind: "other",
+			content: [
+				{ type: "content", content: { type: "text", text: "Agent started in background." } },
+				{ type: "session", sessionId: "late-child" },
+			],
+		})
+	})
+
+	it("keys late links by agent id when the provider reuses a tool-call id", async () => {
+		const { agent, root, updates } = await createRoot("parent")
+		agents.push(agent)
+		const first = new ProjectionFakeSession("first-late-child")
+		const second = new ProjectionFakeSession("second-late-child")
+		root.emit({ type: "agent_start" } as AgentSessionEvent)
+		emitBackgroundAgentResult(root, "reused-provider-id", "run-first-late-child", "First result")
+		emitBackgroundAgentResult(root, "reused-provider-id", "run-second-late-child", "Second result")
+
+		createChild(agent, childEvent("parent", first, { background: true, toolCallId: "reused-provider-id" }))
+		const firstPatch = updates.at(-1)
+		expect(update(firstPatch as SessionNotification)).toMatchObject({
+			sessionUpdate: "tool_call_update",
+			toolCallId: "kt.Agent.0",
+			content: [
+				{ type: "content", content: { type: "text", text: "First result" } },
+				{ type: "session", sessionId: "first-late-child" },
+			],
+		})
+
+		createChild(agent, childEvent("parent", second, { background: true, toolCallId: "reused-provider-id" }))
+		expect(update(updates.at(-1) as SessionNotification)).toMatchObject({
+			sessionUpdate: "tool_call_update",
+			toolCallId: "kt.Agent.1",
+			content: [
+				{ type: "content", content: { type: "text", text: "Second result" } },
+				{ type: "session", sessionId: "second-late-child" },
+			],
+		})
+		const sessions = Reflect.get(agent, "sessions") as Map<string, { pendingAgentSessionLinks: Map<string, unknown> }>
+		expect(sessions.get("parent")?.pendingAgentSessionLinks.size).toBe(0)
+	})
+
+	it("drops an unregistered background link when the agent terminates", async () => {
+		const { agent, root } = await createRoot("parent")
+		agents.push(agent)
+		root.emit({ type: "agent_start" } as AgentSessionEvent)
+		emitBackgroundAgentResult(root, "provider-agent-call", "cancelled-agent", "Queued result")
+		const sessions = Reflect.get(agent, "sessions") as Map<string, { pendingAgentSessionLinks: Map<string, unknown> }>
+		expect(sessions.get("parent")?.pendingAgentSessionLinks.size).toBe(1)
+
+		const receiver = agent as unknown as {
+			onSubagentSessionFailed(event: { agentId: string; parentSessionId: string }): void
+		}
+		receiver.onSubagentSessionFailed({ agentId: "cancelled-agent", parentSessionId: "parent" })
+
+		expect(sessions.get("parent")?.pendingAgentSessionLinks.size).toBe(0)
+	})
+
 	it("lets a registered root replace a colliding child route", async () => {
 		const child = new ProjectionFakeSession("colliding-child", "/workspace/root")
 		const { agent, updates } = await createRoot("parent", { subagents: {} } as ClientCapabilities, child)
@@ -437,6 +576,7 @@ describe("Agent invocation presentation and native links", () => {
 
 	it("adds no link before announcement and preserves one native link on every later replacement", () => {
 		expect(withSubagentSessionLink(undefined, undefined)).toBeUndefined()
+		expect(withSubagentSessionLink(undefined, "child")).toEqual([{ type: "session", sessionId: "child" }])
 		const before = [{ type: "content", content: { type: "text", text: "working" } }] as never
 		expect(withSubagentSessionLink(before, undefined)).toBe(before)
 		const linked = withSubagentSessionLink(before, "child")
