@@ -138,6 +138,16 @@ export function subagentReplayPromptMessages(
 	return directedSubagentPromptMessages(parentSessionId, event, parentMessageId, childMessageId)
 }
 
+/** Only successful asynchronous handoffs can acquire a late session link.
+ * The manager id is stable even if a provider reuses its tool-call id. */
+export function backgroundAgentIdFromResult(result: unknown): string | undefined {
+	if (!result || typeof result !== "object") return undefined
+	const details = (result as { details?: unknown }).details
+	if (!details || typeof details !== "object") return undefined
+	const { status, agentId } = details as { status?: unknown; agentId?: unknown }
+	return status === "background" && typeof agentId === "string" && agentId.length > 0 ? agentId : undefined
+}
+
 /** Session links are native ACP content, not an invented ACP variant. They
  * are added only after the child announcement and preserved on every later
  * Agent content replacement. */

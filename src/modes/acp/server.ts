@@ -270,6 +270,7 @@ import { hasConfirmedModelSelection, type RecoveredSubagent } from "./subagent-r
 import { SubagentRegistry, type SubagentRoute } from "./subagent-registry.js"
 import {
 	absoluteSubagentCwd,
+	backgroundAgentIdFromResult,
 	clientSupportsSubagents,
 	presentAgentToolCall,
 	type SubagentSessionCreatedEvent,
@@ -979,7 +980,7 @@ export class KimchiAcpAgent {
 				emittedModelMeta: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
-				completedAgentToolCalls: new Map(),
+				pendingAgentSessionLinks: new Map(),
 				heldBackgroundToolCalls: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
@@ -1429,7 +1430,7 @@ export class KimchiAcpAgent {
 				emittedModelMeta: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
-				completedAgentToolCalls: new Map(),
+				pendingAgentSessionLinks: new Map(),
 				heldBackgroundToolCalls: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
@@ -2621,8 +2622,11 @@ export class KimchiAcpAgent {
 			background: event.background,
 			abort: event.abort,
 		})
-		const invocation = parent.completedAgentToolCalls.get(event.toolCallId)
+		record.unsubscribe = session.subscribe((childEvent) => this.onSessionEvent(event.sessionId, childEvent))
+		this.startPlanTracker(record, event.sessionId)
+		const invocation = parent.pendingAgentSessionLinks.get(event.agentId)
 		if (invocation) {
+			parent.pendingAgentSessionLinks.delete(event.agentId)
 			this.send({
 				sessionId: event.parentSessionId,
 				update: this.presentToolCall("Agent", {
@@ -2632,8 +2636,6 @@ export class KimchiAcpAgent {
 				}),
 			})
 		}
-		record.unsubscribe = session.subscribe((childEvent) => this.onSessionEvent(event.sessionId, childEvent))
-		this.startPlanTracker(record, event.sessionId)
 	}
 
 	private flushPendingSubagentEvents(parentSessionId: string): void {
@@ -3043,7 +3045,6 @@ export class KimchiAcpAgent {
 				// tool_call notifications the client would have to reconcile against
 				// a turn it already considers over.
 				if (!turn) return
-				if (event.toolName === "Agent") entry.completedAgentToolCalls.delete(event.toolCallId)
 				const hidden = isHiddenToolCall(event.toolName, event.args)
 				const startedAt = Date.now()
 				const snapshotClaim = {
@@ -3313,8 +3314,13 @@ export class KimchiAcpAgent {
 					}),
 				)
 				this.send({ sessionId, update })
-				if (event.toolName === "Agent") {
-					entry.completedAgentToolCalls.set(event.toolCallId, { toolCallId: acpToolCallId, content })
+				const agentId = backgroundAgentIdFromResult(event.result)
+				if (
+					!event.isError &&
+					agentId !== undefined &&
+					this.subagentSessionForTool(sessionId, event.toolCallId) === undefined
+				) {
+					entry.pendingAgentSessionLinks.set(agentId, { toolCallId: acpToolCallId, content })
 				}
 				// Upstream ids can repeat after compaction or even within a turn. Retire
 				// all state keyed on this upstream id so a future call reusing it starts

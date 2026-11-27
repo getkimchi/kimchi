@@ -163,11 +163,11 @@ export type SessionRecord = {
 	 */
 	toolCallIdMap: Map<string, string>
 	/**
-	 * Terminal Agent projections retained by upstream id until the invocation is
-	 * replaced. A child can register after its result, when the in-flight id map
-	 * no longer contains the ACP identity needed for a SessionReference patch.
+	 * Successful background handoffs awaiting child registration, keyed by their
+	 * stable manager id. Each projection is deleted when its SessionReference
+	 * patch is sent; foreground and failed results are never retained.
 	 */
-	completedAgentToolCalls: Map<string, { toolCallId: string; content?: ToolCallContent[] }>
+	pendingAgentSessionLinks: Map<string, { toolCallId: string; content?: ToolCallContent[] }>
 	/** Child-local mappings required to replay ACP tool identity deterministically. */
 	childToolIdHistory?: SubagentToolIdHistory
 	/**
@@ -234,7 +234,7 @@ export function createProjectionSessionRecord(
 		emittedModelMeta: new Map(),
 		nextToolCallId: 0,
 		toolCallIdMap: new Map(),
-		completedAgentToolCalls: new Map(),
+		pendingAgentSessionLinks: new Map(),
 		heldBackgroundToolCalls: new Map(),
 		skillCommands: new Map(),
 		steerEchoRewrites: [],
