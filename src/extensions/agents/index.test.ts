@@ -1671,6 +1671,57 @@ describe("get_subagent_result wait contract", () => {
 		expect(record.resultConsumed).not.toBe(true)
 	})
 
+	it("releases an already-blocked wait immediately when user input is queued", async () => {
+		const { record, run, tool } = setupRunningAgent()
+		const ctx = createToolContext({ mode: "rpc", hasPendingMessages: () => true })
+
+		const result = await tool.execute(
+			"call-user-input-ready",
+			{ agent_id: record.id, wait: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+
+		expect(result.content[0]?.text).toContain("Wait released for queued user input")
+		expect(result.content[0]?.text).toContain("re-join with wait: true before ending your turn")
+		expect(record.status).toBe("running")
+		expect(record.resultConsumed).not.toBe(true)
+		// Releasing only resolves the join; it neither completes nor aborts the child.
+		expect(run.resolve).toBeTypeOf("function")
+		expect(vi.getTimerCount()).toBe(0)
+		run.resolve("still running in production")
+	})
+
+	it("releases an in-flight wait when user input arrives and cleans up its timers", async () => {
+		const { record, run, tool } = setupRunningAgent()
+		let queued = false
+		const ctx = createToolContext({ mode: "tui", hasPendingMessages: () => queued })
+
+		const execPromise = tool.execute(
+			"call-user-input-midwait",
+			{ agent_id: record.id, wait: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+		let settled = false
+		void execPromise.then(() => {
+			settled = true
+		})
+		await vi.advanceTimersByTimeAsync(50)
+		expect(settled).toBe(false)
+
+		queued = true
+		await vi.advanceTimersByTimeAsync(100)
+		const result = await execPromise
+		expect(result.content[0]?.text).toContain("Wait released for queued user input")
+		expect(record.status).toBe("running")
+		expect(record.resultConsumed).not.toBe(true)
+		expect(vi.getTimerCount()).toBe(0)
+		run.resolve("child still owns its lifecycle")
+	})
+
 	it("wait: true returns the result and consumes it when the agent completes during the wait", async () => {
 		const { record, run, tool } = setupRunningAgent()
 
@@ -1918,6 +1969,31 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 		// Persistence is a guarded drop: no subagents:record entry for the dead
 		// session's transcript.
 		expect(piMock.getAppendedEntries("subagents:record")).toEqual([])
+	})
+
+	it("yields a running foreground Agent call to queued user input without detaching or completing the child", async () => {
+		const { piMock, manager, run, live, tool } = setupDeferredForeground()
+		let backgroundedDelivered = false
+		piMock.api.events.on("subagents:backgrounded", () => {
+			backgroundedDelivered = true
+		})
+
+		const execPromise = startForegroundExecute(tool, live.ctx, "call-fg-user-input")
+		const record = [...manager._records.values()][0]
+		vi.mocked(live.ctx.hasPendingMessages).mockReturnValue(true)
+
+		const result = await execPromise
+		expect(result.content[0]?.text).toContain("Wait released for queued user input")
+		expect(result.content[0]?.text).toContain(record.id as string)
+		expect(record.status).toBe("running")
+		expect(record.isBackground).toBe(false)
+		expect(record.detachResolver).toBeUndefined()
+		expect(backgroundedDelivered).toBe(false)
+
+		// The deferred child is still the owner of its eventual result.
+		record.status = "completed"
+		record.result = "finished after the steer"
+		run.resolve("finished after the steer")
 	})
 
 	it("returns the Ctrl+B backgrounding text from captured values when the session is replaced mid-run", async () => {
