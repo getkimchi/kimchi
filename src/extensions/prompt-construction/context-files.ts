@@ -14,6 +14,8 @@
  * gitignored overrides.
  *
  * Files are returned in root → cwd order (ancestors first).
+ *
+ * Pi's `--no-context-files` turns all of it off, as it does Pi's own loader.
  */
 
 import { existsSync, readFileSync, realpathSync } from "node:fs"
@@ -77,6 +79,7 @@ function loadContextFileFromDir(dir: string, alreadyLoaded: readonly ContextFile
  * Primary files that repeat one of `alreadyLoaded` are skipped.
  */
 export function loadProjectContextFiles(cwd: string, alreadyLoaded: readonly ContextFile[] = []): ContextFile[] {
+	if (getParsedCliArgs().options["no-context-files"]) return []
 	// Review instructions arrive only through review-context/. Never inherit
 	// project instructions from the neutral run directory or any ancestor when --review is enabled.
 	if (getParsedCliArgs().options.review === true) return []
@@ -165,6 +168,7 @@ function readGlobalContextFiles(options: GlobalContextFileOptions): { files: Con
 
 /** Global files, then project files that do not repeat them. */
 export function loadContextFiles(cwd: string, options: GlobalContextFileOptions): ContextFile[] {
+	if (getParsedCliArgs().options["no-context-files"]) return []
 	if (getParsedCliArgs().options.review === true) return []
 	const { files, sources } = readGlobalContextFiles(options)
 	return [...files, ...loadProjectContextFiles(cwd, sources)]

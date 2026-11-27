@@ -25,6 +25,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { getParsedCliArgs } from "../../cli-args.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import { markHarnessSteer } from "../steer-marker.js"
@@ -90,7 +91,8 @@ export default function agentsRulesExtension(pi: ExtensionAPI): void {
 		const cwd = ctx.cwd
 		// Project-trust gate: rule files ship with the repo, so their bodies
 		// must not reach the system prompt or steers before it is trusted.
-		if (!isProjectScopeAllowed(cwd)) {
+		// Pi's --no-context-files turns rule files off with every other context file.
+		if (!isProjectScopeAllowed(cwd) || getParsedCliArgs().options["no-context-files"]) {
 			engine = undefined
 			pendingSteer.length = 0
 			return

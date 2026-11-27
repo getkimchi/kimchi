@@ -3,6 +3,8 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { resetOrgPolicyForTests } from "../org-policy.js"
+import { setOrgPolicyForTests } from "../org-policy.test-utils.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../project-scope-trust.js"
 import { discoverBashHookResources } from "./bash-hook-discovery.js"
 import { applyEnabledBashHooks, parseBashHookOutput } from "./bash-hooks.js"
@@ -127,5 +129,40 @@ describe("bash hook discovery", () => {
 
 		expect(applyEnabledBashHooks("git status", join(dir, "project"))).toEqual({ command: "git status" })
 		expect(mockExecFileSync).not.toHaveBeenCalled()
+	})
+
+	it("skips global bash hooks not listed as true under resourcesDefault false", () => {
+		const globalDir = join(dir, "agent", "hooks", "bash")
+		mkdirSync(globalDir, { recursive: true })
+		writeFileSync(join(globalDir, "rewrite.sh"), "unused\n")
+		const writeSettings = (resources: Record<string, boolean>) =>
+			writeFileSync(join(dir, "agent", "settings.json"), JSON.stringify({ resourcesDefault: false, resources }))
+		writeSettings({ "hooks.bash": true })
+
+		expect(applyEnabledBashHooks("git status", join(dir, "project"))).toEqual({ command: "git status" })
+		expect(mockExecFileSync).not.toHaveBeenCalled()
+
+		const [hook] = discoverBashHookResources(join(dir, "project"))
+		writeSettings({ "hooks.bash": true, [hook.id]: true })
+		mockExecFileSync.mockReturnValueOnce("git status --short\n")
+		expect(applyEnabledBashHooks("git status", join(dir, "project"))).toEqual({ command: "git status --short" })
+	})
+
+	it("runs a global bash hook the org forces on, as the resources listing shows", async () => {
+		const globalDir = join(dir, "agent", "hooks", "bash")
+		mkdirSync(globalDir, { recursive: true })
+		writeFileSync(join(globalDir, "rewrite.sh"), "unused\n")
+		writeFileSync(
+			join(dir, "agent", "settings.json"),
+			JSON.stringify({ resourcesDefault: false, resources: { "hooks.bash": true } }),
+		)
+		const [hook] = discoverBashHookResources(join(dir, "project"))
+		await setOrgPolicyForTests({ resources: { [hook.id]: "FORCE_ON" } })
+		try {
+			mockExecFileSync.mockReturnValueOnce("git status --short\n")
+			expect(applyEnabledBashHooks("git status", join(dir, "project"))).toEqual({ command: "git status --short" })
+		} finally {
+			resetOrgPolicyForTests()
+		}
 	})
 })

@@ -42,7 +42,8 @@ import "./uncaught-epipe-patch.js"
 import "./paste-to-editor-patch.js"
 import { applyPiTelemetryPatch } from "./pi-telemetry-patch.js"
 import "./session-selector-adapter.js"
-import { resolveGatewayCredentials } from "./auth/gateway-credentials.js"
+import { defaultAgentDir } from "./agent-dir.js"
+import { loginAuthPath, resolveGatewayCredentials } from "./auth/gateway-credentials.js"
 import {
 	captureApiKeyFromEnvironment,
 	DEFAULT_SKILL_PATHS,
@@ -502,7 +503,7 @@ async function cliMain(): Promise<void> {
 		const cliTrustOptions = getParsedCliArgs().options
 		const cliTrustOverride =
 			cliTrustOptions["no-approve"] === true ? false : cliTrustOptions.approve === true ? true : undefined
-		const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
+		const preMainAgentDir = process.env.KIMCHI_CODING_AGENT_DIR ?? defaultAgentDir()
 		setProjectScopeTrusted(
 			process.cwd(),
 			resolvePreMainProjectTrustWithOverrides(process.cwd(), preMainAgentDir, cliTrustOverride),
@@ -633,8 +634,17 @@ async function cliMain(): Promise<void> {
 			// SSO login keeps its credential in auth.json (type: "oauth"), not in
 			// config.json. Catalog discovery resolves that credential through the
 			// provider's OAuth config so an expiring token is persisted before use.
+			// The login is read from the home harness when agentDir's auth.json
+			// holds no Kimchi credential; the API-key fan-out below still writes agentDir's.
 			const authJsonPath = resolve(agentDir, "auth.json")
-			const gatewayCredentials = resolveGatewayCredentials({ apiKey: currentApiKey ?? "" }, { authPath: authJsonPath })
+			const loginAuthJsonPath = loginAuthPath(agentDir)
+			const gatewayCredentials = resolveGatewayCredentials(
+				{ apiKey: currentApiKey ?? "" },
+				{ authPath: loginAuthJsonPath },
+			)
+			// A key stored only in auth.json must drive discovery and reach the
+			// sync below, which otherwise deletes it as stale.
+			if (!currentApiKey && gatewayCredentials.source === "api-key") currentApiKey = gatewayCredentials.token
 			const oauthAccessToken = gatewayCredentials.source === "oauth" ? gatewayCredentials.token : undefined
 			const oauthOrganizationId = gatewayCredentials.source === "oauth" ? gatewayCredentials.organizationId : undefined
 			const rejectedEnvironmentKeyMessage =
@@ -657,8 +667,8 @@ async function cliMain(): Promise<void> {
 						...(oauthAccessToken
 							? {
 									refreshOAuth: {
-										authPath: authJsonPath,
-										installOAuth: (runtime) => installKimchiOAuth(runtime, authJsonPath),
+										authPath: loginAuthJsonPath,
+										installOAuth: (runtime) => installKimchiOAuth(runtime, loginAuthJsonPath),
 									},
 								}
 							: {}),
@@ -935,7 +945,9 @@ async function cliMain(): Promise<void> {
 				// Registers `codemode` with kimchi's selection rule. The settings
 				// bootstrap disables pi's replaceable built-in so TUI/print do not
 				// emit a conflict warning; ACP loads no pi built-ins at all.
-				createGuidedCodemodeExtension(),
+				...enabledExtensionFactories([
+					{ id: "extensions.codemode", factory: createGuidedCodemodeExtension() },
+				] satisfies ManagedExtensionFactory[]),
 				autoUpdateSettingsExtension,
 				startupUpdateExtension,
 				backgroundUpdateExtension,
@@ -943,12 +955,16 @@ async function cliMain(): Promise<void> {
 				sessionNameExtension(),
 				shutdownMarkerExtension,
 				buildInfoExtension,
-				// skill_view must always be present: the skills catalog in the system
-				// prompt directs the model to load skills through it. skill_manage
-				// (the write side) stays disabled — #235 turned it off because its
-				// autonomous skill-authoring guidance proved noisy in practice;
-				// re-enable only deliberately via registerSkillManageTool.
-				(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
+				// skill_manage (the write side) stays disabled: its autonomous
+				// skill-authoring guidance proved noisy (#235); re-enable only
+				// deliberately via registerSkillManageTool. Without skill_view (resource
+				// off or --no-skills) the skills catalog tells the model to read SKILL.md.
+				...enabledExtensionFactories([
+					{
+						id: "extensions.skills-manager",
+						factory: (pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
+					},
+				] satisfies ManagedExtensionFactory[]),
 				artifactRecorderExtension,
 				// APA activates these process-scoped review tools with --review.
 				// Loading them through the normal inline extension list puts all three
@@ -966,9 +982,9 @@ async function cliMain(): Promise<void> {
 				shellProfileMigrationExtension,
 				// session_start handlers are awaited in order; warn after the migration dialog closes.
 				createApiKeyWarningExtension(apiKeyWarning),
-				loopGuardExtension,
-				explorationGuardExtension,
 				...enabledExtensionFactories([
+					{ id: "extensions.loop-guard", factory: loopGuardExtension },
+					{ id: "extensions.exploration-guard", factory: explorationGuardExtension },
 					{ id: "extensions.agents-rules", factory: agentsRulesExtension },
 					{ id: "extensions.lsp", factory: lspExtension },
 					{ id: "extensions.dap", factory: dapExtension },
@@ -989,13 +1005,19 @@ async function cliMain(): Promise<void> {
 				// Deliberate last resort for services that must outlive the session —
 				// session_shutdown intentionally kills nothing here.
 				// EXPERIMENTAL: gated behind --enable-experimental-features.
-				...(experimentalFeatures ? [daemonExtension] : []),
+				...(experimentalFeatures
+					? enabledExtensionFactories([
+							{ id: "extensions.daemon", factory: daemonExtension },
+						] satisfies ManagedExtensionFactory[])
+					: []),
 				// Re-wires user bash hooks (`applyEnabledBashHooks`) for `tool_call`
 				// and `user_bash` events. Must run before bashToolGuardExtension so
 				// hooks see the original command and any rewrite/block propagates.
 				bashHooksAdapterExtension,
 				bashToolGuardExtension,
-				bashTimeoutGuidanceExtension,
+				...enabledExtensionFactories([
+					{ id: "extensions.bash-timeout-guidance", factory: bashTimeoutGuidanceExtension },
+				] satisfies ManagedExtensionFactory[]),
 				// steer:aborted — emits when the user Esc-aborts the turn immediately
 				// following a harness steer (the "user vetoed the nudge" signal).
 				steerAbortTrackerExtension,
@@ -1007,12 +1029,12 @@ async function cliMain(): Promise<void> {
 				powershellGateExtension,
 				hiddenToolGuidanceExtension,
 				...(IS_ACP_MODE ? [] : mcpAdapterExtensions),
-				ideAdapterExtension,
-				// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 				...enabledExtensionFactories([
+					{ id: "extensions.ide-adapter", factory: ideAdapterExtension },
+					// Ferment must see raw input before prompt enrichment rewrites print-mode text.
 					{ id: "extensions.ferment", factory: fermentExtension },
+					{ id: "extensions.questionnaire", factory: questionnaireExtension },
 				] satisfies ManagedExtensionFactory[]),
-				questionnaireExtension,
 				// Backend-routed virtual models (`auto`, `auto-beta`, …) learn + display
 				// the concrete pick, re-sync capabilities, and (main session) install the
 				// catalog-driven Auto default.
@@ -1033,7 +1055,9 @@ async function cliMain(): Promise<void> {
 				permissionsExtension,
 				resourcesExtension,
 				resourceToolBlockerExtension,
-				behavioursExtension,
+				...enabledExtensionFactories([
+					{ id: "extensions.behaviours", factory: behavioursExtension },
+				] satisfies ManagedExtensionFactory[]),
 				promptSummaryExtension,
 				// Named so startup diagnostics read `<inline:feedback>` rather than a
 				// positional `<inline:N>` that shifts whenever the list above changes.
@@ -1065,8 +1089,10 @@ async function cliMain(): Promise<void> {
 				bugReportDestinationExtension,
 				tagsExtension,
 				teleportExtension,
-				remoteRunExtension,
-				prWatchExtension,
+				...enabledExtensionFactories([
+					{ id: "extensions.remote-run", factory: remoteRunExtension },
+					{ id: "extensions.pr-watch", factory: prWatchExtension },
+				] satisfies ManagedExtensionFactory[]),
 				telemetryExtension(telemetryConfig),
 				sessionMetadataExtension(),
 				surveysExtension(),
@@ -1132,6 +1158,7 @@ async function cliMain(): Promise<void> {
 
 			if (IS_ACP_MODE) {
 				const { runAcpMode } = await import("./modes/acp/server.js")
+				const parsedPiArgs = parsePiArgs(piArgs)
 				await runAcpMode({
 					extensionFactories,
 					agentDir,
@@ -1141,7 +1168,11 @@ async function cliMain(): Promise<void> {
 								mcpProbe: new UpstreamMcpProbe(),
 							}
 						: {}),
-					appendSystemPrompt: parsePiArgs(piArgs).appendSystemPrompt,
+					appendSystemPrompt: parsedPiArgs.appendSystemPrompt,
+					systemPrompt: parsedPiArgs.systemPrompt,
+					noSkills: parsedPiArgs.noSkills,
+					// Relative to where the server was started, as Pi's own CLI resolves them.
+					additionalSkillPaths: parsedPiArgs.skills?.map((path) => resolve(path)),
 				})
 			} else {
 				// Delegate to pi-mono's CLI main function, injecting the kimchi extension

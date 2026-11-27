@@ -417,6 +417,8 @@ export function launchKimchi(
 		// linkage so the child's mode resolution can't inherit the harness's
 		// runtime permission mode via KIMCHI_PERMISSIONS_<parent-session>.
 		"KIMCHI_PARENT_SESSION_ID=",
+		// Drop the harness's agent dir so the child derives its own from HOME.
+		"KIMCHI_CODING_AGENT_DIR=",
 		"KIMCHI_PERMISSIONS=yolo",
 		// Disable startup network hooks (self-update probe) so the
 		// session boots without background HTTP or synchronous tar/exec

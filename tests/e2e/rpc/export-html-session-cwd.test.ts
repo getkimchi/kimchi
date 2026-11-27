@@ -214,6 +214,7 @@ describe("RPC export_html destination (process cwd ≠ session cwd)", () => {
 				HOME: homeDir,
 				PI_PACKAGE_DIR: PACKAGE_DIR,
 				KIMCHI_PARENT_SESSION_ID: "",
+				KIMCHI_CODING_AGENT_DIR: "",
 				KIMCHI_DISABLE_BUILTIN_PROVIDERS: "1",
 				PI_SKIP_VERSION_CHECK: "1",
 				KIMCHI_NO_UPDATE_CHECK: "1",

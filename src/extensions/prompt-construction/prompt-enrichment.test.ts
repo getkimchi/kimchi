@@ -5,6 +5,7 @@ import type { Api, AssistantMessage, Model, ToolResultMessage } from "@earendil-
 import { type ExtensionAPI, loadSkillsFromDir, type ToolInfo } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest"
+import { populateCliArgs } from "../../cli-args.js"
 import * as config from "../../config.js"
 import type { ModelMetadata } from "../../models.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
@@ -675,6 +676,26 @@ describe("prompt enrichment skills", () => {
 		expect(paths.some((p) => existsSync(join(p, "SKILL.md")))).toBe(true)
 	})
 
+	it("contributes no skill paths through resources_discover with --no-skills", async () => {
+		const cwd = join(dir, "project")
+		writeSkill(join(cwd, ".kimchi", "skills", "project-skill", "SKILL.md"), { description: "Project skill." })
+		setProjectScopeTrusted(cwd, true)
+		const { resourcesDiscover } = buildPromptExtensionWithHandlers([".config/kimchi/harness/skills"])
+		if (!resourcesDiscover) throw new Error("resources_discover handler was not registered")
+		const discover = () =>
+			resourcesDiscover({ type: "resources_discover", cwd, reason: "startup" }, undefined) as
+				| { skillPaths?: string[] }
+				| undefined
+
+		expect(discover()?.skillPaths?.length).toBeGreaterThan(0)
+		populateCliArgs(["--no-skills"])
+		try {
+			expect(discover()).toBeUndefined()
+		} finally {
+			populateCliArgs([])
+		}
+	})
+
 	it("does not contribute ancestor Claude Code skills through resources_discover", async () => {
 		const project = join(dir, "project")
 		const cwd = join(project, "src")
@@ -748,6 +769,38 @@ describe("append system prompt", () => {
 
 		// Whitespace-only should be skipped — prompt unchanged
 		expect(resultBaseline.systemPrompt).toBe(resultWhitespace.systemPrompt)
+	})
+})
+
+describe("custom system prompt", () => {
+	beforeEach(() => {
+		vi.restoreAllMocks()
+		vi.spyOn(config, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof config.loadConfig>)
+		vi.spyOn(startupContext, "getAvailableModels").mockReturnValue([])
+	})
+
+	it("replaces Kimchi's own text with systemPromptOptions.customPrompt and keeps tools and environment", async () => {
+		const { beforeAgentStart } = buildPromptExtensionWithHandlers()
+		if (!beforeAgentStart) throw new Error("before_agent_start handler was not registered")
+
+		const result = (await beforeAgentStart(
+			{ systemPromptOptions: { customPrompt: "You are the stage reviewer.", appendSystemPrompt: "Appended last." } },
+			createContext({ hasUI: false }),
+		)) as { systemPrompt: string }
+
+		expect(result.systemPrompt.startsWith("You are the stage reviewer.")).toBe(true)
+		expect(result.systemPrompt.endsWith("Appended last.")).toBe(true)
+		expect(result.systemPrompt).toContain("## Available Tools")
+		expect(result.systemPrompt).toContain("## Environment")
+		for (const kimchiText of [
+			"You are Kimchi",
+			"## Language",
+			"## Guidelines",
+			"## Factual Accuracy",
+			"## Tool Selection",
+		]) {
+			expect(result.systemPrompt).not.toContain(kimchiText)
+		}
 	})
 })
 

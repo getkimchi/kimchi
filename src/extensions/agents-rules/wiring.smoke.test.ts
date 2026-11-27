@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { populateCliArgs } from "../../cli-args.js"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { renderSystemPromptBlocks } from "../prompt-construction/system-prompt-blocks.js"
@@ -41,6 +42,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+	populateCliArgs([])
 	process.chdir(oldCwd)
 	rmSync(dir, { recursive: true, force: true })
 })
@@ -222,5 +224,18 @@ describe("agents-rules extension wiring", () => {
 				.map((b) => b.content)
 				.join("\n"),
 		).toContain("ALWAYS BODY")
+	})
+
+	it("loads no rules with --no-context-files", async () => {
+		writeRule("always.mdc", "alwaysApply: true", "ALWAYS BODY")
+		populateCliArgs(["--no-context-files"])
+
+		const mock = createExtensionApi()
+		agentsRulesExtension(mock.api)
+		await mock.emit("session_start", { type: "session_start" }, makeCtx())
+
+		expect(renderSystemPromptBlocks(SESSION_ID, { mode: "single" }).filter((b) => b.owner === "agents-rules")).toEqual(
+			[],
+		)
 	})
 })

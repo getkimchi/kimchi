@@ -106,6 +106,18 @@ describe("default session factory/loader _meta wiring", () => {
 		expect(servedAppend()).toEqual(["cli base prompt", "meta prompt"])
 	})
 
+	it("defaultSessionFactory hands --system-prompt, --no-skills and --skill to the main loader", async () => {
+		const factory = defaultSessionFactory(
+			makeOptions({ systemPrompt: "stage prompt", noSkills: true, additionalSkillPaths: ["/skills/stage"] }),
+		)
+		await factory({ cwd, mcpServers: [] })
+		expect(capturedLoaderOptions[0]).toMatchObject({
+			systemPrompt: "stage prompt",
+			noSkills: true,
+			additionalSkillPaths: ["/skills/stage"],
+		})
+	})
+
 	it("defaultSessionFactory serves no append content when no meta is present (backward compat)", async () => {
 		const factory = defaultSessionFactory(makeOptions())
 		await factory({ cwd, mcpServers: [] })

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
+import { defaultAgentDir } from "../agent-dir.js"
 import { isProjectScopeAllowed } from "../project-scope-trust.js"
 
 /**
@@ -71,7 +71,7 @@ const SETTINGS_KEY = "collapseWork"
 const SETTINGS_CACHE_TTL_MS = 5_000
 
 export function getAgentDir(): string {
-	return process.env.KIMCHI_CODING_AGENT_DIR ?? join(homedir(), ".config", "kimchi", "harness")
+	return process.env.KIMCHI_CODING_AGENT_DIR ?? defaultAgentDir()
 }
 
 export function parseCollapseWorkMode(value: unknown): CollapseWorkMode | undefined {

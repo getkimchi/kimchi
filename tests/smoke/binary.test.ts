@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { BINARY_PATH, getAgentDir, runBinary } from "./harness.js"
+import { BINARY_PATH, getAgentDir, getModelServerUrl, runBinary } from "./harness.js"
 
 describe("binary smoke tests", () => {
 	it("binary exists and is executable", () => {
@@ -187,6 +187,71 @@ describe("binary smoke tests", () => {
 			const result = runBinary({ args: ["config", "telemetry"], cwd: workDir })
 
 			expect(result.stdout.trim()).toBe("Telemetry: enabled (from config)")
+		})
+	})
+
+	describe("agent dir", () => {
+		let stageDir: string
+
+		beforeEach(() => {
+			stageDir = mkdtempSync(join(tmpdir(), "kimchi-smoke-agent-dir-"))
+		})
+
+		afterEach(() => {
+			rmSync(stageDir, { recursive: true, force: true })
+		})
+
+		const readResources = (dir: string) =>
+			existsSync(join(dir, "settings.json"))
+				? JSON.parse(readFileSync(join(dir, "settings.json"), "utf-8")).resources
+				: undefined
+
+		it("keeps an inherited KIMCHI_CODING_AGENT_DIR for Kimchi and Pi, expanding ~", { timeout: 35_000 }, () => {
+			// The stage dir sits under the temp HOME so `~/` can name it.
+			const home = resolve(getAgentDir(), "..", "..", "..")
+			const stageName = `stage-agent-${process.pid}`
+			const stage = join(home, stageName)
+			const homeSessionsBefore = new Set(listSessionFiles())
+			try {
+				runBinary({
+					args: ["-p", "hello"],
+					extraEnv: { KIMCHI_API_KEY: "smoke-test-dummy", KIMCHI_CODING_AGENT_DIR: `~/${stageName}` },
+					timeoutMs: 30_000,
+				})
+
+				// cli.ts writes keybindings.json and Pi writes the session where entry.ts pointed them.
+				expect(existsSync(join(stage, "keybindings.json"))).toBe(true)
+				expect(listSessionFiles(join(stage, "sessions")).length).toBeGreaterThan(0)
+				expect(listSessionFiles().filter((file) => !homeSessionsBefore.has(file))).toEqual([])
+			} finally {
+				rmSync(stage, { recursive: true, force: true })
+			}
+		})
+
+		it("keeps an API key stored only in the agent dir's auth.json", { timeout: 35_000 }, () => {
+			const stored = { "kimchi-dev": { type: "api_key", key: "smoke-stored-key" } }
+			writeFileSync(join(stageDir, "auth.json"), JSON.stringify(stored))
+
+			runBinary({
+				args: ["-p", "hello"],
+				extraEnv: { KIMCHI_CODING_AGENT_DIR: stageDir, KIMCHI_BASE_URL: getModelServerUrl() },
+				timeoutMs: 30_000,
+			})
+
+			expect(JSON.parse(readFileSync(join(stageDir, "auth.json"), "utf-8"))["kimchi-dev"]).toEqual(stored["kimchi-dev"])
+		})
+
+		it("recomputes a derived dir inherited from another HOME", () => {
+			runBinary({
+				args: ["resources", "disable", "tools.web_fetch"],
+				extraEnv: { KIMCHI_CODING_AGENT_DIR: stageDir, KIMCHI_CODING_AGENT_DIR_DERIVED: stageDir },
+			})
+			try {
+				expect(readResources(stageDir)).toBeUndefined()
+				expect(readResources(getAgentDir())?.["tools.web_fetch"]).toBe(false)
+			} finally {
+				runBinary({ args: ["resources", "reset", "tools.web_fetch"] })
+			}
 		})
 	})
 

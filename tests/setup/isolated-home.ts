@@ -26,6 +26,9 @@ process.env.XDG_CACHE_HOME = join(testHome, ".cache")
 // credential source (keyless code paths silently become authenticated).
 // Per-test vi.stubEnv still wins over this default.
 process.env.KIMCHI_CODING_AGENT_DIR = join(testHome, "agent")
+// Behave like an ordinary session whose agent dir came from HOME (the marker
+// holds the same path); tests of an explicit KIMCHI_CODING_AGENT_DIR clear it.
+process.env.KIMCHI_CODING_AGENT_DIR_DERIVED = process.env.KIMCHI_CODING_AGENT_DIR
 // Same hazard for the legacy PI_CODING_AGENT_DIR name some shells export;
 // otherwise hydrate() imports the developer's real work-history journals
 // into unit tests and background imports can stall past the hook timeout.

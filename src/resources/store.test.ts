@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -151,5 +151,59 @@ describe("org resource policy", () => {
 		expect(isResourceEnabled("tools.web_search", settingsPath)).toBe(true)
 		expect(isResourceEnabled("extensions.memory", settingsPath)).toBe(false)
 		expect(isResourceEnabled("extensions.ferment-v2", settingsPath)).toBe(false)
+	})
+})
+
+describe('settings "resourcesDefault": false', () => {
+	let tempDir: string
+	let settingsPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-resources-default-"))
+		settingsPath = join(tempDir, "settings.json")
+		delete process.env.KIMCHI_ENABLE_RESOURCES
+	})
+
+	afterEach(() => {
+		resetOrgPolicyForTests()
+		rmSync(tempDir, { recursive: true, force: true })
+		delete process.env.KIMCHI_ENABLE_RESOURCES
+	})
+
+	const writeSettings = (settings: Record<string, unknown>) => writeFileSync(settingsPath, JSON.stringify(settings))
+
+	it("turns off every resource not listed as true", () => {
+		writeSettings({ resourcesDefault: false, resources: { "extensions.memory": true, "extensions.lsp": false } })
+
+		expect(isResourceEnabled("tools.web_search", settingsPath)).toBe(false)
+		expect(isResourceEnabled("extensions.lsp", settingsPath)).toBe(false)
+		expect(isResourceEnabled("extensions.memory", settingsPath)).toBe(true)
+	})
+
+	it("still lets KIMCHI_ENABLE_RESOURCES turn a resource on", () => {
+		writeSettings({ resourcesDefault: false })
+		process.env.KIMCHI_ENABLE_RESOURCES = "extensions.workflows"
+
+		expect(isResourceEnabled("extensions.workflows", settingsPath)).toBe(true)
+	})
+
+	it("keeps org FORCE_ON and FORCE_OFF winning, and beats a soft org ON", async () => {
+		writeSettings({ resourcesDefault: false, resources: { "tools.web_fetch": true } })
+		await setOrgPolicyForTests({
+			resources: { "tools.web_search": "FORCE_ON", "tools.web_fetch": "FORCE_OFF", "extensions.lsp": "ON" },
+		})
+
+		expect(isResourceEnabled("tools.web_search", settingsPath)).toBe(true)
+		expect(isResourceEnabled("tools.web_fetch", settingsPath)).toBe(false)
+		expect(isResourceEnabled("extensions.lsp", settingsPath)).toBe(false)
+	})
+
+	it("changes nothing when absent or true", () => {
+		for (const settings of [{}, { resourcesDefault: true }]) {
+			writeSettings(settings)
+			expect(isResourceEnabled("tools.web_search", settingsPath)).toBe(true)
+			expect(isResourceEnabled("extensions.questionnaire", settingsPath)).toBe(true)
+			expect(isResourceEnabled("extensions.memory", settingsPath)).toBe(false)
+		}
 	})
 })

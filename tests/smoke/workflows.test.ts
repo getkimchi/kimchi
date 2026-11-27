@@ -149,6 +149,8 @@ async function createFixture(
 	})
 
 	vi.stubEnv("HOME", home)
+	// The binary keeps an inherited agent dir; point it at this fixture's.
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", agentDir)
 	vi.stubEnv("PI_PACKAGE_DIR", PACKAGE_DIR)
 	vi.stubEnv("KIMCHI_API_KEY", "smoke-test")
 	vi.stubEnv("KIMCHI_DISABLE_BUILTIN_PROVIDERS", "1")

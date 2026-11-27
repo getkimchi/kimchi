@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
@@ -13,35 +13,29 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+	vi.unstubAllEnvs()
 	rmSync(tmpCwd, { recursive: true, force: true })
 })
 
 describe("loadConfig merging", () => {
-	it("inherits user budget through project and local files that omit it", async () => {
-		const userDir = join(tmpCwd, ".config", "kimchi", "harness")
+	it("inherits user budget through project and local files that omit it", () => {
+		const userDir = join(tmpCwd, "agent")
 		mkdirSync(userDir, { recursive: true })
 		writeFileSync(join(userDir, "permissions.json"), JSON.stringify({ classifierMaxTotalMs: 17000 }))
 		mkdirSync(join(tmpCwd, ".kimchi"), { recursive: true })
 		writeFileSync(join(tmpCwd, ".kimchi", "permissions.json"), "{}")
 		writeFileSync(join(tmpCwd, ".kimchi", "permissions.local.json"), "{}")
-		vi.doMock("node:os", async (importOriginal) => ({
-			...(await importOriginal<typeof import("node:os")>()),
-			homedir: () => tmpCwd,
-		}))
-		vi.resetModules()
-		try {
-			const isolatedConfig = await import("./config.js")
-			// resetModules re-instantiates the trust gate too — trust the cwd
-			// through the same isolated registry the config reads.
-			const isolatedTrust = await import("../../project-scope-trust.js")
-			isolatedTrust.setProjectScopeTrusted(tmpCwd, true)
-			expect(isolatedConfig.loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(17000)
-			writeFileSync(join(tmpCwd, ".kimchi", "permissions.json"), JSON.stringify({ classifierMaxTotalMs: 12000 }))
-			expect(isolatedConfig.loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(12000)
-		} finally {
-			vi.doUnmock("node:os")
-			vi.resetModules()
-		}
+		// The home harness file is not read once the agent dir points elsewhere.
+		const homeHarness = join(homedir(), ".config", "kimchi", "harness")
+		mkdirSync(homeHarness, { recursive: true })
+		writeFileSync(join(homeHarness, "permissions.json"), JSON.stringify({ classifierMaxTotalMs: 5000 }))
+		// Pi's getAgentDir reads PI_CODING_AGENT_DIR, which entry.ts sets from
+		// KIMCHI_CODING_AGENT_DIR; tests/smoke/binary.test.ts covers that step.
+		vi.stubEnv("PI_CODING_AGENT_DIR", userDir)
+		setProjectScopeTrusted(tmpCwd, true)
+		expect(loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(17000)
+		writeFileSync(join(tmpCwd, ".kimchi", "permissions.json"), JSON.stringify({ classifierMaxTotalMs: 12000 }))
+		expect(loadConfig({ cwd: tmpCwd }).loaded.config.classifierMaxTotalMs).toBe(12000)
 	})
 
 	it.each([undefined, 12000])("fills or accepts the classifier total budget (%s)", (budget) => {

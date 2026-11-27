@@ -1,5 +1,5 @@
-import { homedir } from "node:os"
 import { join } from "node:path"
+import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { invalidateJsonCache, readJson, readJsonCached, writeJson } from "./json.js"
 
 export type StatusLineElementId =
@@ -131,7 +131,7 @@ export const STATUS_LINE_ELEMENTS: StatusLineElement[] = [
 ]
 
 function getSettingsPath(): string {
-	return join(homedir(), ".config", "kimchi", "harness", "settings.json")
+	return join(getAgentDir(), "settings.json")
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

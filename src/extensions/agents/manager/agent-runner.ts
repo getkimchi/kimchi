@@ -15,6 +15,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { getParsedCliArgs } from "../../../cli-args.js"
 import { loadConfig } from "../../../config.js"
 import { isResourceEnabled } from "../../../resources/store.js"
 import { requireModelRuntime } from "../../../shared/model-runtime.js"
@@ -546,7 +547,8 @@ async function runAgentInner(
 
 	const extensions = options.isolated ? false : config.extensions
 	const effectiveExtensions = options.workerReport && extensions === false ? [] : extensions
-	const skills = options.isolated ? false : config.skills
+	// A parent run with --no-skills hands its subagents no skills either.
+	const skills = options.isolated || getParsedCliArgs().options["no-skills"] ? false : config.skills
 
 	const configurationCwd = options.isolateProjectConfiguration ? ctx.cwd : effectiveCwd
 	const pinnedLanguage = loadConfig({ cwd: configurationCwd }).language

@@ -7,13 +7,14 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { __resetJsonCacheForTest } from "../config/json.js"
 import { readStatusLineCommand } from "./status-line.js"
 
-// status-line.ts resolves HARNESS_SETTINGS_PATH from homedir() at module
-// load, so the mock must be hoisted before the import — the same pattern as
-// src/extensions/tags.test.ts. The mocked path is computed at call time.
+// status-line.ts resolves HARNESS_SETTINGS_PATH from the agent dir at module
+// load; the homedir mock covers `~/` expansion in the command and must be
+// hoisted before the import — the same pattern as src/extensions/tags.test.ts.
 vi.mock("node:os", async (importOriginal) => {
 	const { join } = await import("node:path")
 	const mod = await importOriginal<typeof import("node:os")>()
@@ -24,18 +25,20 @@ vi.mock("node:os", async (importOriginal) => {
 })
 
 const MOCK_HOME = join(tmpdir(), `kimchi-statusline-cmd-mock-home-${process.pid}`)
-const HARNESS_DIR = join(MOCK_HOME, ".config", "kimchi", "harness")
+const HARNESS_DIR = getAgentDir()
 const SETTINGS_JSON = join(HARNESS_DIR, "settings.json")
 const SETTINGS_JSONC = join(HARNESS_DIR, "settings.jsonc")
 
 beforeEach(() => {
 	rmSync(MOCK_HOME, { recursive: true, force: true })
+	rmSync(HARNESS_DIR, { recursive: true, force: true })
 	mkdirSync(HARNESS_DIR, { recursive: true })
 	__resetJsonCacheForTest()
 })
 
 afterEach(() => {
 	rmSync(MOCK_HOME, { recursive: true, force: true })
+	rmSync(HARNESS_DIR, { recursive: true, force: true })
 	__resetJsonCacheForTest()
 })
 

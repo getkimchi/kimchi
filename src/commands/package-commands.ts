@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join, resolve, sep } from "node:path"
 import { pathToFileURL } from "node:url"
+import { defaultAgentDir } from "../agent-dir.js"
 import { COMMANDS } from "./registry.js"
 
 /**
@@ -51,7 +51,7 @@ function isReservedCommandName(name: string): boolean {
 }
 
 function agentDir(): string {
-	return process.env.KIMCHI_CODING_AGENT_DIR ?? resolve(homedir(), ".config", "kimchi", "harness")
+	return process.env.KIMCHI_CODING_AGENT_DIR ?? defaultAgentDir()
 }
 
 /** Cache per agent dir: re-keyed when the env var points elsewhere. */

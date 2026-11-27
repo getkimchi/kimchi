@@ -352,6 +352,18 @@ describe("loadContextFiles with a global AGENTS.local.md", () => {
 		expect(load()).toEqual([mergedGlobal])
 	})
 
+	it("loads nothing with --no-context-files", () => {
+		writeFileSync(join(nested, "AGENTS.md"), "project rules")
+		populateCliArgs(["--no-context-files"])
+		try {
+			expect(loadContextFiles(nested, { includeClaudeCodeInstructions: true })).toEqual([])
+			expect(loadProjectContextFiles(nested)).toEqual([])
+		} finally {
+			populateCliArgs([])
+		}
+		expect(load()).toHaveLength(2)
+	})
+
 	it("keeps the project AGENTS.local.md of a skipped copy", () => {
 		writeFileSync(join(nested, "AGENTS.md"), "shared rules")
 		writeFileSync(join(nested, "AGENTS.local.md"), "project local override")

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetProjectScopeTrustForTests, setProjectScopeTrusted } from "../../project-scope-trust.js"
 import {
 	discoverClaudeCodeSkillDirs,
@@ -31,6 +31,23 @@ describe("Claude Code skill discovery", () => {
 			process.env.HOME = oldHome
 		}
 		rmSync(dir, { recursive: true, force: true })
+	})
+
+	it("maps the configured harness skills path to an explicit agent dir", () => {
+		const cwd = join(dir, "project")
+		mkdirSync(cwd, { recursive: true })
+		expect(getConfiguredSkillResourcePaths(cwd, [join(".config", "kimchi", "harness", "skills")])).toContain(
+			join(dir, "home", ".config", "kimchi", "harness", "skills"),
+		)
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR", join(dir, "stage"))
+		vi.stubEnv("KIMCHI_CODING_AGENT_DIR_DERIVED", "")
+		try {
+			expect(getConfiguredSkillResourcePaths(cwd, [join(".config", "kimchi", "harness", "skills")])).toEqual([
+				join(dir, "stage", "skills"),
+			])
+		} finally {
+			vi.unstubAllEnvs()
+		}
 	})
 
 	it("discovers user and current-project Claude Code skill directories", () => {

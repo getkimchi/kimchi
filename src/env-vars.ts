@@ -133,6 +133,8 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_DEBUG_SESSION",
 	// set by kimchi for child processes, hooks, and pi-mono
 	"KIMCHI_ORIGINAL_PI_CODING_AGENT_DIR",
+	// the agent dir Kimchi derived from HOME, so children can tell it from an explicit one
+	"KIMCHI_CODING_AGENT_DIR_DERIVED",
 	"KIMCHI_DISABLE_BUILTIN_PROVIDERS",
 	"KIMCHI_OAUTH_TEMPLATE_DIR",
 	"KIMCHI_PARENT_SESSION_ID",

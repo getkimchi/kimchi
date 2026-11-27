@@ -264,7 +264,8 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
  * Parsed Kimchi-local CLI flags that affect the running session / model
  * selection. Only options listed in `CACHEABLE_OPTION_NAMES` are cached;
  * one-shot flags (help, version, export, resume, etc.) are handled before or
- * outside the session loop.
+ * outside the session loop. `no-context-files` and `no-skills` are Pi's own
+ * flags, read with Pi's parser after the cacheable options.
  */
 export interface SessionCliArgs {
 	options: {
@@ -296,6 +297,8 @@ export interface SessionCliArgs {
 		"mcp-config"?: string
 		verbose?: boolean
 		"no-auto-update"?: boolean
+		"no-context-files"?: boolean
+		"no-skills"?: boolean
 	}
 	positionals: string[]
 }
@@ -413,6 +416,10 @@ export function parseCliArgs(args: string[]): SessionCliArgs {
 		}
 		;(options as Record<string, unknown>)[key] = value
 	}
+	// Pi's parser also knows their short forms (-nc, -ns).
+	const piArgs = parsePiArgs(args)
+	if (piArgs.noContextFiles) options["no-context-files"] = true
+	if (piArgs.noSkills) options["no-skills"] = true
 	return { options, positionals }
 }
 

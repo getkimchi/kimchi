@@ -48,6 +48,23 @@ describe("value-flag parsing", () => {
 	})
 })
 
+describe("Pi resource switches", () => {
+	it.each([
+		["--no-context-files", "no-context-files"],
+		["-nc", "no-context-files"],
+		["--no-skills", "no-skills"],
+		["-ns", "no-skills"],
+	] as const)("reads %s with Pi's parser", (flag, option) => {
+		expect(parseCliArgs(["-p", "hi", flag]).options[option]).toBe(true)
+	})
+
+	it("leaves the switches unset by default", () => {
+		const { options } = parseCliArgs(["-p", "hi", "--skill", "./one"])
+		expect(options["no-context-files"]).toBeUndefined()
+		expect(options["no-skills"]).toBeUndefined()
+	})
+})
+
 describe("review writer limit parsing", () => {
 	it("preserves a negative equals-form value for structured validation", () => {
 		expect(parseCliArgs(["--review-writer-limit=-1"]).options["review-writer-limit"]).toBe("-1")

@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
+import { populateCliArgs } from "../../cli-args.js"
 import { createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import skillsManagerExtension from "./index.js"
@@ -35,6 +36,19 @@ describe("skillsManagerExtension", () => {
 		})
 		const names = getRegisteredTools().map((t) => t.name)
 		expect(names).toEqual(["skill_view"])
+	})
+
+	it("registers no tool and no auto-load handler with --no-skills", () => {
+		const { api, getRegisteredTools, getHandlers } = createExtensionApi()
+		populateCliArgs(["--no-skills"])
+		try {
+			skillsManagerExtension(api, { skillsDir: "/tmp/test-skills" })
+		} finally {
+			populateCliArgs([])
+		}
+		expect(getRegisteredTools()).toEqual([])
+		expect(getHandlers("input")).toEqual([])
+		expect(getHandlers("before_agent_start")).toEqual([])
 	})
 
 	it("subscribes to before_agent_start and session_shutdown for the discovered inventory", () => {

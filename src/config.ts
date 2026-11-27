@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import type { RetrySettings } from "@earendil-works/pi-coding-agent"
+import { defaultAgentDir, HARNESS_SKILLS_REL } from "./agent-dir.js"
 import { writeJson } from "./config/json.js"
 import { isProjectScopeAllowed } from "./project-scope-trust.js"
 import {
@@ -24,7 +25,6 @@ import {
 import { getVersion } from "./utils.js"
 
 const KIMCHI_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "config.json")
-const AGENT_CONFIG_DIR = resolve(homedir(), ".config", "kimchi", "harness")
 
 let startupApiKey: string | undefined
 
@@ -49,7 +49,7 @@ export function getApiKeySource(): ApiKeySource {
 	return getEnvironmentApiKey() ? "environment" : "config"
 }
 
-export const ALWAYS_SHOWN_SKILL_PATHS = [join(".config", "kimchi", "harness", "skills")]
+export const ALWAYS_SHOWN_SKILL_PATHS = [HARNESS_SKILLS_REL]
 
 export const OPTIONAL_SKILL_PATHS = [join(".pi", "agent", "skills"), join(".claude", "skills")]
 
@@ -830,7 +830,7 @@ export function loadConfig(options?: { configPath?: string; cwd?: string }): Kim
 
 	return {
 		apiKey: getEnvironmentApiKey() || extras.apiKey || "",
-		agentConfigDir: AGENT_CONFIG_DIR,
+		agentConfigDir: getAgentConfigDir(),
 		region,
 		selfHostedEndpoints,
 		llmEndpoint: envLlmBaseUrl ? openAiBaseUrl(gateway) : (extras.llmEndpoint ?? openAiBaseUrl(gateway)),
@@ -1067,7 +1067,7 @@ export function getApiKeyMismatchWarning(savedKey = getSavedApiKey()): string | 
 }
 
 export function getAgentConfigDir(): string {
-	return AGENT_CONFIG_DIR
+	return process.env.KIMCHI_CODING_AGENT_DIR || defaultAgentDir()
 }
 
 function updateConfigFile(

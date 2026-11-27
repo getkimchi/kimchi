@@ -1,5 +1,5 @@
-import { homedir } from "node:os"
 import { join, resolve } from "node:path"
+import { defaultAgentDir } from "../agent-dir.js"
 import type { ResourcePolicy } from "../api/org-settings.js"
 import { readJson, readJsonCached, writeJson } from "../config/json.js"
 import { getOrgPolicy } from "../org-policy.js"
@@ -11,7 +11,7 @@ const SETTINGS_KEY = "resources"
 export function getResourceSettingsPath(): string {
 	return process.env.KIMCHI_CODING_AGENT_DIR
 		? resolve(process.env.KIMCHI_CODING_AGENT_DIR, "settings.json")
-		: join(homedir(), ".config", "kimchi", "harness", "settings.json")
+		: join(defaultAgentDir(), "settings.json")
 }
 
 export const settingsPath = getResourceSettingsPath
@@ -26,7 +26,7 @@ export function readResourceSettings(path = getResourceSettingsPath()): Resource
 	for (const [id, value] of Object.entries(raw)) {
 		if (isResourceId(id) && typeof value === "boolean") resources[id] = value
 	}
-	return { resources }
+	return settings.resourcesDefault === false ? { resources, resourcesDefault: false } : { resources }
 }
 
 export function getResourceOverride(id: string, path = getResourceSettingsPath()): boolean | undefined {
@@ -80,23 +80,28 @@ export function orgLockMessage(id: string): string {
  * 1. org FORCE_ON / FORCE_OFF — locked; beats every local choice
  * 2. local settings.json override — the user's persistent choice
  * 3. KIMCHI_ENABLE_RESOURCES env — a transient local choice
- * 4. org ON / OFF — soft defaults a local choice (2 or 3) may override
- * 5. the definition's defaultEnabled
+ * 4. settings.json `"resourcesDefault": false` — off unless 2 or 3 turned it on
+ * 5. org ON / OFF — soft defaults a local choice (2 or 3) may override
+ * 6. `defaultEnabled`, else the definition's defaultEnabled
+ *
+ * `defaultEnabled` is for callers that know a resource's default better than
+ * the cached definitions do, e.g. bash hooks discovered for another cwd.
  */
-export function isResourceEnabled(id: string, path = getResourceSettingsPath()): boolean {
+export function isResourceEnabled(id: string, path = getResourceSettingsPath(), defaultEnabled?: boolean): boolean {
 	assertResourceId(id)
 	const orgPolicy = getResourcePolicy(id)
 	if (orgPolicy === "FORCE_ON") return true
 	if (orgPolicy === "FORCE_OFF") return false
 
-	const override = getResourceOverride(id, path)
+	const settings = readResourceSettings(path)
+	const override = settings.resources[id]
 	if (override !== undefined) return override
 	if (envEnabledResources().has(id)) return true
+	if (settings.resourcesDefault === false) return false
 
 	if (orgPolicy === "ON") return true
 	if (orgPolicy === "OFF") return false
-	const definition = getResourceDefinition(id)
-	return definition?.defaultEnabled ?? true
+	return defaultEnabled ?? getResourceDefinition(id)?.defaultEnabled ?? true
 }
 
 /**

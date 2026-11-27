@@ -1,9 +1,10 @@
 import { realpathSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join, resolve, sep } from "node:path"
+import { dirname, resolve, sep } from "node:path"
 import type { ExtensionAPI, Skill, SlashCommandInfo } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
-import { resolveBundledSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
+import { getParsedCliArgs } from "../../cli-args.js"
+import { resolveBundledSkillsDir, resolveHarnessSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import { createSkillAutoLoader, SKILL_AUTOLOAD_LOADED_TYPE, type SkillAutoLoadData } from "./auto-load.js"
 import { SkillManager } from "./skill-manager.js"
 import { createSkillManageTool, createSkillViewTool } from "./tool.js"
@@ -20,7 +21,11 @@ export interface SkillsManagerOptions {
 }
 
 export default function skillsManagerExtension(pi: ExtensionAPI, options?: SkillsManagerOptions): void {
-	const skillsDir = options?.skillsDir ?? join(homedir(), ".config", "kimchi", "harness", "skills")
+	// --no-skills: the harness and bundled skills it manages must not load or
+	// auto-trigger. Skills from an explicit --skill stay in Pi's catalog, read
+	// with the read tool.
+	if (getParsedCliArgs().options["no-skills"]) return
+	const skillsDir = options?.skillsDir ?? resolveHarnessSkillsDir(homedir())
 	// Bundled skills ship with the harness (resources/skills in dev, staged share
 	// dir in binaries) and are discoverable read-only — no home-dir deploy needed.
 	const bundled = resolveBundledSkillsDir()

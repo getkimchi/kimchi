@@ -1,10 +1,9 @@
 import { spawn } from "node:child_process"
 import { readFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
+import { getAgentDir, isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent"
 import type { Component, TUI } from "@earendil-works/pi-tui"
 import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg } from "../ansi.js"
@@ -99,7 +98,7 @@ export function findNextCompatibleModel(
 	return { model: undefined, skipped }
 }
 
-const HARNESS_SETTINGS_PATH = join(homedir(), ".config", "kimchi", "harness", "settings.json")
+const HARNESS_SETTINGS_PATH = join(getAgentDir(), "settings.json")
 
 function getEnabledModelIds(): Set<string> | null {
 	try {

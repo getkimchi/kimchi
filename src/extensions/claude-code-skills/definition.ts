@@ -5,7 +5,9 @@ import { homedir, tmpdir } from "node:os"
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml"
 import { z } from "zod"
+import { explicitAgentDir, HARNESS_SKILLS_REL } from "../../agent-dir.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
+import { resolveHarnessSkillsDir } from "../../shared/skill-discovery/resolve-skill-roots.js"
 
 export const CLAUDE_CODE_SKILLS_RESOURCE_ID = "extensions.claude-code-skills"
 
@@ -158,6 +160,9 @@ function expandConfiguredSkillPaths(paths: string[], cwd: string): string[] {
 	for (const path of paths) {
 		if (isAbsolute(path)) {
 			expanded.push(normalize(path))
+		} else if (path === HARNESS_SKILLS_REL && explicitAgentDir()) {
+			// An explicit agent dir owns the harness skills, not the home one.
+			expanded.push(resolveHarnessSkillsDir(home))
 		} else if (path.startsWith("~/")) {
 			expanded.push(resolve(home, path.slice(2)))
 		} else {

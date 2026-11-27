@@ -3,6 +3,7 @@ import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent"
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent"
 import type { Static } from "typebox"
 import { Type } from "typebox"
+import { getParsedCliArgs } from "../../cli-args.js"
 import { collectBundledDisabledSkillNames } from "../../shared/skill-discovery/resolve-skill-roots.js"
 import {
 	discoverClaudeCodeSkillDirs,
@@ -32,6 +33,7 @@ type SkillToolArgs = Static<typeof SkillToolSchema>
  * discovery sees the current config rather than a startup-time snapshot.
  */
 export default function claudeCodeSkillsExtension(pi: ExtensionAPI, getSkillPaths: () => string[] = () => []): void {
+	if (getParsedCliArgs().options["no-skills"]) return
 	pi.on("resources_discover", (event) => {
 		const skillPaths = getClaudeCodeSkillResourcePaths(event.cwd, {
 			excludeSkillNames: [
