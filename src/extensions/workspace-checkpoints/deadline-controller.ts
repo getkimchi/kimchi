@@ -2,7 +2,7 @@ const MAX_TIMER_MS = 2_147_483_647
 
 export function finalizationDelayMs(durationSeconds: number): number {
 	const reserveMs = Math.min(durationSeconds * 100, 300_000)
-	return Math.min(MAX_TIMER_MS, Math.max(0, durationSeconds * 1000 - reserveMs))
+	return Math.max(0, durationSeconds * 1000 - reserveMs)
 }
 
 export function parseMaxSessionDuration(value: string | undefined): number | undefined {
@@ -18,7 +18,7 @@ interface DeadlineActions {
 	abort: () => void
 }
 
-/** One-shot finalization and hard-deadline timers for a single session. */
+/** One-shot finalization and hard-deadline timers anchored to one session's start. */
 export class DeadlineController {
 	private finalizationTimer: ReturnType<typeof setTimeout> | undefined
 	private hardTimer: ReturnType<typeof setTimeout> | undefined
@@ -27,29 +27,41 @@ export class DeadlineController {
 	constructor(
 		private readonly durationSeconds: number,
 		private readonly actions: DeadlineActions,
+		private readonly startedAtMs = Date.now(),
 	) {}
 
-	start(): void {
-		if (this.disposed || this.finalizationTimer || this.hardTimer) return
-		this.finalizationTimer = setTimeout(() => {
+	private scheduleTimer(
+		field: "finalizationTimer" | "hardTimer",
+		targetMs: number,
+		action: () => void,
+		description: string,
+	): void {
+		const tick = () => {
 			if (this.disposed) return
-			try {
-				this.actions.finalize()
-			} catch (error) {
-				console.error("workspace-checkpoints: finalization request failed:", error)
+			const remaining = targetMs - Date.now()
+			if (remaining > 0) {
+				this[field] = setTimeout(tick, Math.min(remaining, MAX_TIMER_MS))
+				return
 			}
-		}, finalizationDelayMs(this.durationSeconds))
-		this.hardTimer = setTimeout(
-			() => {
-				if (this.disposed) return
-				try {
-					this.actions.abort()
-				} catch (error) {
-					console.error("workspace-checkpoints: hard deadline failed:", error)
-				}
-			},
-			Math.min(MAX_TIMER_MS, this.durationSeconds * 1000),
+			try {
+				action()
+			} catch (error) {
+				console.error(`workspace-checkpoints: ${description} failed:`, error)
+			}
+		}
+		this[field] = setTimeout(tick, Math.max(0, Math.min(MAX_TIMER_MS, targetMs - Date.now())))
+	}
+
+	start(): void {
+		if (this.finalizationTimer || this.hardTimer) return
+		this.disposed = false
+		this.scheduleTimer(
+			"finalizationTimer",
+			this.startedAtMs + finalizationDelayMs(this.durationSeconds),
+			this.actions.finalize,
+			"finalization request",
 		)
+		this.scheduleTimer("hardTimer", this.startedAtMs + this.durationSeconds * 1000, this.actions.abort, "hard deadline")
 	}
 
 	/** Dispose on settlement, shutdown, cancellation, or session replacement. */

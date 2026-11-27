@@ -1,6 +1,18 @@
 import { execFile } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises"
+import {
+	chmod,
+	lstat,
+	mkdir,
+	readdir,
+	readFile,
+	realpath,
+	rename,
+	rm,
+	stat,
+	symlink,
+	writeFile,
+} from "node:fs/promises"
 import { basename, dirname, join, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
@@ -111,6 +123,7 @@ function excluded(path: string, nestedDirectory: boolean): SkippedPath | undefin
 /** Git operations for a private object database outside the project. */
 export class WorkspaceGitStore {
 	private hasCommits = false
+	private lastFingerprint?: string
 
 	private constructor(
 		readonly root: string,
@@ -125,6 +138,10 @@ export class WorkspaceGitStore {
 		await chmod(dirname(gitDir), 0o700)
 		await store.run(["init", "--bare", gitDir], { cwd: canonicalRoot })
 		await chmod(gitDir, 0o700)
+		store.hasCommits = await store
+			.privateText(["rev-parse", "--verify", "HEAD^{commit}"])
+			.then(() => true)
+			.catch(() => false)
 		return store
 	}
 
@@ -221,17 +238,40 @@ export class WorkspaceGitStore {
 		return { paths, skipped: skippedPaths }
 	}
 
-	private async writeTree(initial: boolean): Promise<{
+	private async lastFingerprintFor(paths: string[]): Promise<string> {
+		const hash = createHash("sha256")
+		for (const path of [...paths].sort()) {
+			const info = await lstat(join(this.root, path)).catch(() => undefined)
+			hash.update(`${path}:${info?.size ?? 0}:${info?.mode ?? 0}:${info?.mtimeMs ?? 0}:${info?.ctimeMs ?? 0}\0`)
+		}
+		return hash.digest("hex")
+	}
+
+	private async writeTree(
+		initial: boolean,
+		staged?: { paths: string[]; skipped: SkippedPath[] },
+	): Promise<{
 		treeSha: string
 		includedPathCount: number
 		includedPathPreview: string[]
 		skippedPaths: SkippedPath[]
 	}> {
-		const { paths, skipped } = await this.pathsToStage(initial)
+		const { paths, skipped } = staged ?? (await this.pathsToStage(initial))
 		const previousTree = await this.privateText(["rev-parse", "--verify", "HEAD^{tree}"]).catch(() => undefined)
 		if (previousTree) await this.privateText(["read-tree", previousTree])
-		for (let i = 0; i < paths.length; i += 100) {
-			await this.privateText(["add", "--all", "--", ...paths.slice(i, i + 100)])
+		const indexedPaths = await this.privateText(["ls-files", "-z"])
+		for (const path of indexedPaths.split("\0").filter(Boolean)) {
+			const missing = (await lstat(join(this.root, path)).catch(() => undefined)) === undefined
+			if (excluded(path, false) || missing) {
+				await this.privateText(["rm", "--cached", "--", path])
+			}
+		}
+		const existingPaths = []
+		for (const path of paths) {
+			if (await lstat(join(this.root, path)).catch(() => undefined)) existingPaths.push(path)
+		}
+		for (let i = 0; i < existingPaths.length; i += 100) {
+			await this.privateText(["add", "--all", "--", ...existingPaths.slice(i, i + 100)])
 		}
 		const treeSha = await this.privateText(["write-tree"])
 		const storedPaths = await this.privateText(["ls-tree", "-r", "--name-only", "-z", treeSha])
@@ -241,8 +281,33 @@ export class WorkspaceGitStore {
 
 	async commit(options: CaptureOptions): Promise<CheckpointRecord & { unchanged: boolean }> {
 		const startedAt = Date.now()
-		const [{ branch, sourceHeadSha }, tree] = await Promise.all([this.branchState(), this.writeTree(!this.hasCommits)])
 		const previous = this.hasCommits ? await this.privateText(["rev-parse", "HEAD"]) : undefined
+		const [{ branch, sourceHeadSha }, staged] = await Promise.all([
+			this.branchState(),
+			this.pathsToStage(!this.hasCommits),
+		])
+		const fingerprint = options.deduplicate === false ? undefined : await this.lastFingerprintFor(staged.paths)
+		if (options.deduplicate !== false && previous && fingerprint === this.lastFingerprint) {
+			const headMessage = await this.privateText(["cat-file", "commit", "HEAD"])
+			const previousId = headMessage.match(/^workspace-checkpoint:([^\s]+)$/m)?.[1] ?? previous
+			const previousTreeSha = headMessage.match(/^tree (.+)$/m)?.[1]
+			if (!previousTreeSha) throw new Error("Missing tree in private checkpoint HEAD")
+			return {
+				id: previousId,
+				treeSha: previousTreeSha,
+				branch,
+				sourceHeadSha,
+				createdAt: new Date(startedAt).toISOString(),
+				trigger: options.trigger,
+				validated: options.validated === true,
+				includedPathCount: staged.paths.length,
+				includedPathPreview: staged.paths.slice(0, 200),
+				skippedPaths: staged.skipped,
+				deduplicatedFrom: previousId,
+				unchanged: true,
+			}
+		}
+		const tree = await this.writeTree(!this.hasCommits, staged)
 		if (
 			options.deduplicate !== false &&
 			previous &&
@@ -250,6 +315,7 @@ export class WorkspaceGitStore {
 		) {
 			const headMessage = await this.privateText(["cat-file", "commit", "HEAD"])
 			const previousId = headMessage.match(/^workspace-checkpoint:([^\s]+)$/m)?.[1] ?? previous
+			this.lastFingerprint = fingerprint
 			return {
 				id: previousId,
 				treeSha: tree.treeSha,
@@ -292,6 +358,7 @@ export class WorkspaceGitStore {
 		await this.privateText(["update-ref", `refs/kimchi-checkpoints/${id}`, commitSha])
 		await this.privateText(["symbolic-ref", "HEAD", `refs/kimchi-checkpoints/${id}`])
 		this.hasCommits = true
+		this.lastFingerprint = fingerprint
 		return {
 			id,
 			treeSha: tree.treeSha,
@@ -308,30 +375,53 @@ export class WorkspaceGitStore {
 		}
 	}
 
-	private async restoreFile(treeSha: string, path: string): Promise<void> {
+	private async modesForTree(treeSha: string): Promise<Map<string, string>> {
+		const modes = new Map<string, string>()
+		const rows = await this.privateText(["ls-tree", "-r", "-z", treeSha])
+		for (const row of rows.split("\0").filter(Boolean)) {
+			const mode = row.slice(0, row.indexOf(" "))
+			const path = row.slice(row.indexOf("\t") + 1)
+			modes.set(path, mode)
+		}
+		return modes
+	}
+
+	private async restoreFile(treeSha: string, path: string, mode?: string, signal?: AbortSignal): Promise<void> {
 		const parent = await this.ensureParent(path)
 		const target = join(parent, basename(path))
 		const existing = await lstat(target).catch(() => undefined)
 		if (existing?.isSymbolicLink()) throw new Error(`Refusing to replace symlink ${path}`)
 		const content = await this.privateGit(["show", `${treeSha}:${path}`])
-		const mode = await this.privateText(["ls-tree", treeSha, "--", path])
+		mode ??= await this.privateText(["ls-tree", treeSha, "--", path])
+		signal?.throwIfAborted()
+		if (mode.split(" ", 1)[0] === "120000") {
+			await rm(target, { force: true })
+			await symlink(content.toString("utf8"), target)
+			return
+		}
 		await writeFile(target, content)
-		if (mode.startsWith("100755 ")) await chmod(target, 0o755)
+		if (mode.split(" ", 1)[0] === "100755") await chmod(target, 0o755)
 	}
 
-	private async ensureParent(path: string): Promise<string> {
+	private async ensureParent(path: string, create = true): Promise<string> {
+		const relativeParent = dirname(path)
 		const gitDir = await this.main(["rev-parse", "--absolute-git-dir"]).catch(() => join(this.root, ".git"))
 		let current = this.root
-		for (const component of dirname(path).split("/")) {
+		for (const component of relativeParent.split("/")) {
 			current = join(current, component)
 			if (current === gitDir || current.startsWith(`${gitDir}${sep}`)) {
 				throw new Error(`Refusing to write into Git metadata through ${path}`)
 			}
 			const info = await lstat(current).catch(() => undefined)
-			if (info?.isSymbolicLink()) throw new Error(`Refusing to follow symlinked checkpoint parent ${current}`)
-			if (info && !info.isDirectory()) throw new Error(`Checkpoint parent is not a directory: ${current}`)
+			if (!info) {
+				if (!create) return join(this.root, relativeParent)
+				await mkdir(current, { mode: 0o700 })
+				continue
+			}
+			if (info.isSymbolicLink()) throw new Error(`Refusing to follow symlinked checkpoint parent ${current}`)
+			if (!info.isDirectory()) throw new Error(`Checkpoint parent is not a directory: ${current}`)
 		}
-		const canonical = await realpath(dirname(join(this.root, path)))
+		const canonical = await realpath(join(this.root, relativeParent))
 		if (canonical !== this.root && !canonical.startsWith(`${this.root}${sep}`)) {
 			throw new Error(`Checkpoint path ${path} resolves outside the workspace`)
 		}
@@ -339,56 +429,98 @@ export class WorkspaceGitStore {
 		return canonical
 	}
 
-	private async assertSafetyPathsCovered(beforeTree: string, entries: string[]): Promise<void> {
+	private async isProjectTracked(path: string): Promise<boolean> {
+		return this.main(["ls-files", "--error-unmatch", "--", path])
+			.then(() => true)
+			.catch(() => false)
+	}
+
+	private async assertRestorationTargetsSafe(entries: string[], signal?: AbortSignal): Promise<void> {
 		for (let i = 0; i < entries.length; i++) {
+			signal?.throwIfAborted()
+			const operation = entries[i]
+			const path = normalizeRelative(entries[++i])
+			const existing = await lstat(join(this.root, path)).catch(() => undefined)
+			if (operation === "D" && existing && !(await this.isProjectTracked(path))) continue
+			await this.ensureParent(path, false)
+			if (existing?.isSymbolicLink()) throw new Error(`Refusing to replace symlink ${path}`)
+		}
+	}
+
+	private async assertSafetyPathsCovered(beforeTree: string, entries: string[], signal?: AbortSignal): Promise<void> {
+		for (let i = 0; i < entries.length; i++) {
+			signal?.throwIfAborted()
 			const operation = entries[i]
 			const path = normalizeRelative(entries[++i])
 			if (operation === "D") continue
+			const target = join(this.root, path)
+			const existing = await lstat(target).catch(() => undefined)
+			if (!existing) continue
+			const current = await readFile(target)
 			const preserved = await this.privateText(["cat-file", "-e", `${beforeTree}:${path}`])
 				.then(() => true)
 				.catch(() => false)
+			const safe = await this.privateGit(["show", `${beforeTree}:${path}`]).catch(() => undefined)
 			if (!preserved) {
 				throw new Error(`Refusing to restore ${path}: its current contents are not covered by the safety checkpoint`)
+			}
+			if (safe && !safe.equals(current)) {
+				throw new Error(`Refusing to restore ${path}: current contents differ from the safety checkpoint`)
 			}
 		}
 	}
 
-	async restore(id: string): Promise<number> {
+	async restore(id: string, signal?: AbortSignal): Promise<{ restoredPaths: number; preservedPaths: string[] }> {
+		signal?.throwIfAborted()
 		if (!/^[\w-]+$/.test(id)) throw new Error("Invalid checkpoint id")
 		const checkpoint = await this.privateText(["rev-parse", "--verify", `refs/kimchi-checkpoints/${id}^{tree}`])
 		const beforeTree = await this.privateText(["rev-parse", "--verify", "HEAD^{tree}"]).catch(() => undefined)
 		if (!beforeTree) throw new Error("No current checkpoint is available for restoration")
-		const differences = await this.privateGit([
-			"diff-tree",
-			"--no-commit-id",
-			"--no-renames",
-			"--name-status",
-			"-z",
-			"-r",
-			beforeTree,
-			checkpoint,
+		const [differences, modesByPath] = await Promise.all([
+			this.privateGit([
+				"diff-tree",
+				"--no-commit-id",
+				"--no-renames",
+				"--name-status",
+				"-z",
+				"-r",
+				beforeTree,
+				checkpoint,
+			]),
+			this.modesForTree(checkpoint),
 		])
 		const entries = differences.toString("utf8").split("\0").filter(Boolean)
-		await this.assertSafetyPathsCovered(beforeTree, entries)
+		await this.assertRestorationTargetsSafe(entries, signal)
+		await this.assertSafetyPathsCovered(beforeTree, entries, signal)
 		let restoredPaths = 0
+		const preservedPaths: string[] = []
 		for (let i = 0; i < entries.length; i++) {
 			const change = entries[i]
 			const path = normalizeRelative(entries[++i])
+			signal?.throwIfAborted()
 			if (change[0] === "D") {
-				const tracked = await this.main(["ls-files", "--error-unmatch", "--", path])
-					.then(() => true)
-					.catch(() => false)
+				const existing = await lstat(join(this.root, path)).catch(() => undefined)
+				if (!existing) {
+					await this.restoreFile(checkpoint, path, modesByPath.get(path), signal)
+					restoredPaths++
+					continue
+				}
+				const tracked = await this.isProjectTracked(path)
 				// Untracked work may not belong to the candidate. Never delete it
 				// merely because it is absent from the selected checkpoint.
-				if (!tracked) continue
+				if (!tracked) {
+					preservedPaths.push(path)
+					continue
+				}
 				await this.ensureParent(path)
+				signal?.throwIfAborted()
 				await rm(join(this.root, path), { force: true, recursive: false })
 			} else {
-				await this.restoreFile(checkpoint, path)
+				await this.restoreFile(checkpoint, path, modesByPath.get(path), signal)
 			}
 			restoredPaths++
 		}
-		return restoredPaths
+		return { restoredPaths, preservedPaths }
 	}
 }
 

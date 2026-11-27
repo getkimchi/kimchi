@@ -12,13 +12,6 @@ const PARAMETERS = Type.Object({
 	),
 })
 
-interface Parameters {
-	action: "save" | "list" | "restore"
-	label?: string
-	id?: string
-	validated?: boolean
-}
-
 function text(value: string) {
 	return { content: [{ type: "text" as const, text: value }] }
 }
@@ -55,7 +48,13 @@ export function workspaceCheckpointTool(
 		description:
 			"Save, list, or deliberately restore workspace checkpoints in private Kimchi storage outside the project Git state. save returns a checkpoint ID. restore requires an explicit ID, captures current state first, and never rolls back automatically.",
 		parameters: PARAMETERS,
-		execute: async (_callId, params: Parameters, _signal, _onUpdate, ctx) => {
+		execute: async (
+			_callId,
+			params: { action: "save" | "list" | "restore"; label?: string; id?: string; validated?: boolean },
+			signal,
+			_update,
+			ctx,
+		) => {
 			const store = await resolveStore(ctx)
 			switch (params.action) {
 				case "save": {
@@ -74,19 +73,23 @@ export function workspaceCheckpointTool(
 					}
 				case "restore": {
 					if (!params.id) throw new Error("checkpoint id is required for restore")
-					const result = await store.restore(params.id)
+					const result = await store.restore(params.id, signal)
 					return {
 						...text(
 							[
 								`Restored checkpoint: ${result.checkpoint.id}`,
 								`Safety checkpoint before restore: ${result.safetyCheckpoint.id}`,
 								`Restored paths: ${result.restoredPaths}`,
+								`Preserved untracked paths: ${JSON.stringify(result.preservedPaths)}`,
+								`Skipped paths: ${JSON.stringify(result.skippedPaths)}`,
 							].join("\n"),
 						),
 						details: {
 							checkpoint: preview(result.checkpoint),
 							safetyCheckpoint: preview(result.safetyCheckpoint),
 							restoredPaths: result.restoredPaths,
+							preservedPaths: result.preservedPaths,
+							skippedPaths: result.skippedPaths,
 						},
 					}
 				}

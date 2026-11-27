@@ -46,6 +46,22 @@ describe("DeadlineController", () => {
 		expect(abort).toHaveBeenCalledTimes(1)
 	})
 
+	it("reschedules long durations instead of firing at Node's timer limit", () => {
+		const finalize = vi.fn()
+		const abort = vi.fn()
+		const controller = new DeadlineController(2_148_083.647, { finalize, abort })
+		controller.start()
+		vi.advanceTimersByTime(2_147_483_647)
+		expect(finalize).not.toHaveBeenCalled()
+		expect(abort).not.toHaveBeenCalled()
+		vi.advanceTimersByTime(300_000)
+		expect(finalize).toHaveBeenCalledTimes(1)
+		expect(abort).not.toHaveBeenCalled()
+		vi.advanceTimersByTime(300_000)
+		expect(abort).toHaveBeenCalledTimes(1)
+		controller.dispose()
+	})
+
 	it("does not arm twice for the same controller", () => {
 		const finalize = vi.fn()
 		const controller = new DeadlineController(60, { finalize, abort: vi.fn() })

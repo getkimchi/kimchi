@@ -180,7 +180,7 @@ describe("CheckpointStore", () => {
 		const checkpoint = await store.capture({ trigger: "session-start" })
 		rmSync(join(repo, "dir"), { recursive: true, force: true })
 		symlinkSync(".git", join(repo, "dir"))
-		await expect(store.restore(checkpoint.id)).rejects.toThrow("symbolic link")
+		await expect(store.restore(checkpoint.id)).rejects.toThrow("symlinked checkpoint parent")
 		expect(readFileSync(join(repo, "seed.txt"), "utf8")).toBe("original\n")
 		expect(() => statSync(join(repo, ".git", "hooks", "pre-commit"))).toThrow("ENOENT")
 	})

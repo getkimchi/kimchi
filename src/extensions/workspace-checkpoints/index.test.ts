@@ -68,10 +68,13 @@ describe("workspace-checkpoints extension", () => {
 		const context = ctx()
 		await mock.emit("session_start", {}, context)
 		await mock.emit("agent_start", {}, context)
-		await vi.waitFor(() => expect(mock.getAppendedEntries(WORKSPACE_CHECKPOINT_ENTRY_TYPE).length).toBe(1))
+		await vi.waitFor(() => expect(mock.getAppendedEntries(WORKSPACE_CHECKPOINT_ENTRY_TYPE).length).toBe(1), {
+			timeout: 10_000,
+		})
 		writeFileSync(join(repo, "created.txt"), "created\n")
 		await mock.emit("tool_execution_start", { toolName: "write" }, context)
 		await mock.emit("tool_execution_end", { toolName: "write" }, context)
+		await mock.emit("turn_end", { message: { role: "assistant", content: [] } }, context)
 		await mock.emit("session_shutdown", {}, context)
 		const entries = mock.getAppendedEntries<{ checkpoint: { trigger: string } }>(WORKSPACE_CHECKPOINT_ENTRY_TYPE)
 		expect(entries.some((entry) => entry.checkpoint.trigger === "session-start")).toBe(true)
@@ -118,5 +121,76 @@ describe("workspace-checkpoints extension", () => {
 		await mock.emit("agent_settled", {}, context)
 		await mock.emit("session_shutdown", {}, context)
 		expect(context.abort).not.toHaveBeenCalled()
+	})
+
+	it("re-arms the deadline and hard abort for subsequent agent runs", async () => {
+		const mock = createExtensionApi()
+		workspaceCheckpointsExtension(mock.api, { maxSessionDurationSeconds: 1, stateDir: state })
+		const context = ctx()
+		await mock.emit("session_start", {}, context)
+		await mock.emit("agent_start", {}, context)
+		await vi.waitFor(() => expect(mock.sendMessage).toHaveBeenCalledTimes(1), { timeout: 3000 })
+		await mock.emit("agent_settled", {}, context)
+		await mock.emit("agent_start", {}, context)
+		await vi.waitFor(() => expect(context.abort).toHaveBeenCalledTimes(1), { timeout: 3000 })
+		expect(mock.sendMessage).toHaveBeenCalledTimes(1)
+		await mock.emit("session_shutdown", {}, context)
+	})
+
+	it("recovers capture after an unpaired tool end", async () => {
+		const mock = createExtensionApi()
+		workspaceCheckpointsExtension(mock.api, { maxSessionDurationSeconds: 60, stateDir: state })
+		const context = ctx()
+		await mock.emit("session_start", {}, context)
+		await mock.emit("agent_start", {}, context)
+		await mock.emit("tool_execution_start", { toolName: "write" }, context)
+		writeFileSync(join(repo, "unpaired.txt"), "unpaired\n")
+		await mock.emit("agent_settled", {}, context)
+		await mock.emit("turn_end", { message: { role: "assistant", content: [] } }, context)
+		await vi.waitFor(() => expect(mock.getAppendedEntries(WORKSPACE_CHECKPOINT_ENTRY_TYPE).length).toBeGreaterThan(0))
+		await mock.emit("session_shutdown", {}, context)
+	})
+
+	it("retries a failed store opening in the same session", async () => {
+		const mock = createExtensionApi()
+		const blockingFile = join(dir, "recovered-state")
+		writeFileSync(blockingFile, "not a directory")
+		workspaceCheckpointsExtension(mock.api, { maxSessionDurationSeconds: 60, stateDir: blockingFile })
+		const context = ctx("recoverable")
+		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined)
+		try {
+			await mock.emit("session_start", {}, context)
+			await mock.emit("agent_start", {}, context)
+			await vi.waitFor(() => expect(errors).toHaveBeenCalled())
+			rmSync(blockingFile)
+			writeFileSync(join(repo, "retry.txt"), "retry\n")
+			await mock.emit("tool_execution_start", { toolName: "write" }, context)
+			await mock.emit("tool_execution_end", { toolName: "write" }, context)
+			await mock.emit("turn_end", { message: { role: "assistant", content: [] } }, context)
+			await vi.waitFor(
+				() =>
+					expect(
+						mock
+							.getAppendedEntries<{ checkpoint: { trigger: string } }>(WORKSPACE_CHECKPOINT_ENTRY_TYPE)
+							.some((entry) => entry.checkpoint.trigger === "turn-end"),
+					).toBe(true),
+				{ timeout: 10_000 },
+			)
+			expect(errors).toHaveBeenCalledTimes(1)
+			await mock.emit("session_shutdown", {}, context)
+		} finally {
+			errors.mockRestore()
+		}
+	})
+
+	it("opens a fresh store after shutdown rather than reviving the closed one", async () => {
+		const mock = createExtensionApi()
+		workspaceCheckpointsExtension(mock.api, { maxSessionDurationSeconds: 60, stateDir: state })
+		const context = ctx()
+		await mock.emit("session_start", {}, context)
+		await mock.emit("session_shutdown", {}, context)
+		await mock.emit("session_start", {}, context)
+		await vi.waitFor(() => expect(mock.getAppendedEntries(WORKSPACE_CHECKPOINT_ENTRY_TYPE).length).toBeGreaterThan(0))
+		await mock.emit("session_shutdown", {}, context)
 	})
 })

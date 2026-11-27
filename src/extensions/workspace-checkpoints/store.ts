@@ -2,7 +2,7 @@ import { execFile } from "node:child_process"
 import { realpath } from "node:fs/promises"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import type { CaptureOptions, CheckpointRecord } from "./git-store.js"
+import type { CaptureOptions, CheckpointRecord, SkippedPath } from "./git-store.js"
 import { readCheckpointMetadata, storageKey, WorkspaceGitStore, writeCheckpointMetadata } from "./git-store.js"
 
 const execFileAsync = promisify(execFile)
@@ -39,7 +39,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 export class CheckpointStore {
 	private readonly ids: string[] = []
 	private readonly records = new Map<string, CheckpointRecord>()
-	private sequence = 0
 	private tail: Promise<unknown> = Promise.resolve()
 	private stopped = false
 
@@ -83,20 +82,23 @@ export class CheckpointStore {
 
 	capture(options: CaptureOptions): Promise<CheckpointRecord> {
 		if (this.stopped) return Promise.reject(new Error("Session checkpoint store is closed"))
-		const sequence = ++this.sequence
 		const job = this.tail.then(async () => {
-			const latest = this.list().at(-1)
-			if (options.deduplicate !== false && sequence < this.sequence && latest) {
-				return { ...latest, deduplicatedFrom: latest.id }
-			}
 			const result = await this.git.commit(options)
 			if (result.unchanged) {
 				const current = this.records.get(result.id)
 				return current ? { ...current, deduplicatedFrom: result.id } : result
 			}
-			await writeCheckpointMetadata(this.metadataDir, result)
 			if (!this.ids.includes(result.id)) this.ids.push(result.id)
 			this.records.set(result.id, result)
+			try {
+				await writeCheckpointMetadata(this.metadataDir, result)
+			} catch (error) {
+				console.error(
+					`workspace-checkpoints: metadata write failed for ${result.id} (refs/kimchi-checkpoints/${result.id}):`,
+					error,
+				)
+				throw error
+			}
 			return result
 		})
 		this.tail = job.then(
@@ -110,19 +112,29 @@ export class CheckpointStore {
 
 	async restore(
 		id: string,
-	): Promise<{ checkpoint: CheckpointRecord; safetyCheckpoint: CheckpointRecord; restoredPaths: number }> {
+		signal?: AbortSignal,
+	): Promise<{
+		checkpoint: CheckpointRecord
+		safetyCheckpoint: CheckpointRecord
+		restoredPaths: number
+		skippedPaths: SkippedPath[]
+		preservedPaths: string[]
+	}> {
+		signal?.throwIfAborted()
 		const checkpoint = this.records.get(id)
 		if (!checkpoint) throw new Error(`Unknown checkpoint: ${id}`)
+		if (this.stopped) throw new Error("Session checkpoint store is closed")
+		const { branch } = await this.git.branchState()
+		if (branch !== checkpoint.branch)
+			throw new Error(`Cannot restore checkpoint from ${checkpoint.branch} while on ${branch}`)
 		const safetyCheckpoint = await this.capture({
 			trigger: "before-restore",
 			label: "Before restore",
 			deduplicate: false,
 		})
-		const { branch } = await this.git.branchState()
-		if (branch !== checkpoint.branch)
-			throw new Error(`Cannot restore checkpoint from ${checkpoint.branch} while on ${branch}`)
-		const restoredPaths = await this.git.restore(id)
-		return { checkpoint, safetyCheckpoint, restoredPaths }
+		signal?.throwIfAborted()
+		const restoredPaths = await this.git.restore(id, signal)
+		return { ...restoredPaths, checkpoint, safetyCheckpoint, skippedPaths: checkpoint.skippedPaths }
 	}
 
 	/** Stop accepting captures and wait only for this store's own queue. */
