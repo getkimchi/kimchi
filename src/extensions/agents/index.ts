@@ -155,19 +155,6 @@ interface AgentWaitOptions {
 	hasPendingUserInput?: () => boolean
 }
 
-/** Read accepted queue state without letting a replaced session turn the
- * wait's polling timer into an uncaught stale-context error. */
-function pendingUserInput(ctx: Pick<ExtensionContext, "hasPendingMessages">): () => boolean {
-	return () => {
-		try {
-			return ctx.hasPendingMessages()
-		} catch (error) {
-			if (isStaleCtxError(error)) return false
-			throw error
-		}
-	}
-}
-
 /**
  * Interruptible wait on an agent's run promise.
  * Resolves "completed" when the agent settles (success or failure), or early
@@ -201,12 +188,22 @@ function waitForAgentCompletion(
 			() => finish("completed"),
 		)
 		if (hasPendingUserInput) {
-			if (hasPendingUserInput()) {
+			// Queue inspection is advisory: stale sessions and other probe
+			// failures mean no observed input, never a rejected wait or an
+			// exception escaping this polling interval.
+			const inputQueued = () => {
+				try {
+					return hasPendingUserInput()
+				} catch {
+					return false
+				}
+			}
+			if (inputQueued()) {
 				finish("user_input")
 				return
 			}
 			inputTimer = setInterval(() => {
-				if (hasPendingUserInput()) finish("user_input")
+				if (inputQueued()) finish("user_input")
 			}, USER_INPUT_POLL_MS)
 			inputTimer.unref?.()
 		}
@@ -2583,7 +2580,10 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				// child keeps running and stays joinable while pi injects the steer.
 				const raceResult = await Promise.race([
 					// biome-ignore lint/style/noNonNullAssertion: promise is always set after spawn() calls startAgent()
-					waitForAgentCompletion(record.promise!, { timeoutMs: 0, hasPendingUserInput: pendingUserInput(ctx) }),
+					waitForAgentCompletion(record.promise!, {
+						timeoutMs: 0,
+						hasPendingUserInput: () => ctx.hasPendingMessages(),
+					}),
 					detachPromise,
 				])
 
@@ -2840,7 +2840,7 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					// nudge stays armed, so the notification still delivers the result.
 					waitOutcome = await waitForAgentCompletion(record.promise, {
 						signal,
-						hasPendingUserInput: pendingUserInput(ctx),
+						hasPendingUserInput: () => ctx.hasPendingMessages(),
 					})
 					if (waitOutcome === "completed") {
 						record.resultConsumed = true

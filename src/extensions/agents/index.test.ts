@@ -1722,6 +1722,31 @@ describe("get_subagent_result wait contract", () => {
 		run.resolve("child still owns its lifecycle")
 	})
 
+	it("keeps the bounded wait alive when the input probe throws", async () => {
+		const { record, run, tool } = setupRunningAgent()
+		const probe = vi.fn(() => {
+			throw new Error("queue inspection unavailable")
+		})
+		const ctx = createToolContext({ mode: "tui", hasPendingMessages: probe })
+
+		const execPromise = tool.execute(
+			"call-input-probe-error",
+			{ agent_id: record.id, wait: true },
+			undefined,
+			undefined,
+			ctx,
+		)
+		await vi.advanceTimersByTimeAsync(61_000)
+
+		const result = await execPromise
+		expect(result.content[0]?.text).toContain("60s (cap)")
+		expect(record.status).toBe("running")
+		expect(record.resultConsumed).not.toBe(true)
+		expect(probe).toHaveBeenCalled()
+		expect(vi.getTimerCount()).toBe(0)
+		run.resolve("child unaffected by probe failure")
+	})
+
 	it("wait: true returns the result and consumes it when the agent completes during the wait", async () => {
 		const { record, run, tool } = setupRunningAgent()
 
@@ -1895,6 +1920,9 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 		vi.clearAllMocks()
 		vi.mocked(sessionHasImages).mockReturnValue(false)
 	})
+	afterEach(() => {
+		vi.useRealTimers()
+	})
 
 	/**
 	 * Boot the extension with the invalidation-capable pi mock and a spawn
@@ -1972,6 +2000,7 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 	})
 
 	it("yields a running foreground Agent call to queued user input without detaching or completing the child", async () => {
+		vi.useFakeTimers()
 		const { piMock, manager, run, live, tool } = setupDeferredForeground()
 		let backgroundedDelivered = false
 		piMock.api.events.on("subagents:backgrounded", () => {
@@ -1981,6 +2010,7 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 		const execPromise = startForegroundExecute(tool, live.ctx, "call-fg-user-input")
 		const record = [...manager._records.values()][0]
 		vi.mocked(live.ctx.hasPendingMessages).mockReturnValue(true)
+		await vi.advanceTimersByTimeAsync(100)
 
 		const result = await execPromise
 		expect(result.content[0]?.text).toContain("Wait released for queued user input")
@@ -1989,6 +2019,7 @@ describe("Agent foreground path under mid-run session invalidation", () => {
 		expect(record.isBackground).toBe(false)
 		expect(record.detachResolver).toBeUndefined()
 		expect(backgroundedDelivered).toBe(false)
+		expect(vi.getTimerCount()).toBe(0)
 
 		// The deferred child is still the owner of its eventual result.
 		record.status = "completed"
