@@ -50,6 +50,17 @@ describe("post-main run outcome exit policy", () => {
 		expect(consoleErrorSpy).toHaveBeenCalledTimes(1)
 	})
 
+	it.each([
+		["error", "provider exploded"],
+		["aborted", "Request aborted"],
+		["length", "Response was truncated: the model reached its output token limit."],
+	] as const)("turns assistant %s into exit 1 with its diagnostic", (stopReason, diagnostic) => {
+		process.exitCode = 0
+		expect(applyPostMainRunOutcomeExitPolicy({ kind: "failed", stopReason, diagnostic })).toBe(true)
+		expect(process.exitCode).toBe(1)
+		expect(consoleErrorSpy).toHaveBeenCalledExactlyOnceWith(diagnostic)
+	})
+
 	it("preserves model error exit code 1 without another message", () => {
 		process.exitCode = 1
 		expect(applyPostMainRunOutcomeExitPolicy(NO_RESULT)).toBe(false)

@@ -184,43 +184,22 @@ describe("classifyRunOutcome", () => {
 		expect(result).toEqual({ kind: "ok" })
 	})
 
-	it("accepts stopReason error because pi already exits 1", () => {
+	it.each(["error", "aborted", "length"] as const)("classifies assistant %s as failed", (stopReason) => {
+		const content: AssistantMessage["content"] = stopReason === "length" ? [{ type: "text", text: "partial" }] : []
 		const snapshot: RunOutcomeSnapshot = {
 			active: true,
 			inputSeen: false,
 			runSeen: true,
 			promptSeen: true,
 			aborted: false,
-			finalEntry: createAssistantMessage([], "error"),
+			finalEntry: createAssistantMessage(content, stopReason),
 		}
-		const result = classifyRunOutcome(snapshot)
-		expect(result).toEqual({ kind: "ok" })
-	})
 
-	it("accepts stopReason aborted because pi already exits 1", () => {
-		const snapshot: RunOutcomeSnapshot = {
-			active: true,
-			inputSeen: false,
-			runSeen: true,
-			promptSeen: true,
-			aborted: false,
-			finalEntry: createAssistantMessage([], "aborted"),
-		}
-		const result = classifyRunOutcome(snapshot)
-		expect(result).toEqual({ kind: "ok" })
-	})
-
-	it("accepts stopReason length with text because pi already exits 1", () => {
-		const snapshot: RunOutcomeSnapshot = {
-			active: true,
-			inputSeen: false,
-			runSeen: true,
-			promptSeen: true,
-			aborted: false,
-			finalEntry: createAssistantMessage([{ type: "text", text: "partial" }], "length"),
-		}
-		const result = classifyRunOutcome(snapshot)
-		expect(result).toEqual({ kind: "ok" })
+		const diagnostic =
+			stopReason === "length"
+				? "Response was truncated: the model reached its output token limit."
+				: `Request ${stopReason}`
+		expect(classifyRunOutcome(snapshot)).toEqual({ kind: "failed", stopReason, diagnostic })
 	})
 
 	it("rejects a final tool result message", () => {
