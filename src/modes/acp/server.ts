@@ -4,7 +4,7 @@
 // Keep this adapter focused on orchestration; extract cohesive logic into tested modules.
 
 import { randomUUID } from "node:crypto"
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs"
+import { readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
@@ -54,19 +54,16 @@ import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
-	CURRENT_SESSION_VERSION,
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionFactory,
 	estimateTokens,
-	type FileEntry,
 	type InlineExtension,
 	initTheme,
 	ModelRegistry,
 	ModelRuntime,
 	type SessionInfo as PiSessionInfo,
 	ProjectTrustStore,
-	parseSessionEntries,
 	readStoredCredential,
 	type SessionHeader,
 	SessionManager,
@@ -257,6 +254,13 @@ import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompte
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
 import { emitRunEnd, emitRunStart, runStopReasonFromFlags } from "./run-boundary.js"
+import {
+	encodeCwdDir,
+	hasAcpForkProvenance,
+	persistAcpFork,
+	readSessionHeader,
+	resolveSessionPathById,
+} from "./session-file.js"
 import {
 	cancelPendingPrompts,
 	createPendingPrompt,
@@ -1403,77 +1407,21 @@ export class KimchiAcpAgent {
 		let forkedPath = ""
 		let sessionId = ""
 		try {
-			let sourceEntries: FileEntry[]
-			if (source) {
-				let liveEntries = source.session.sessionManager.getBranch()
-				let liveHeader: SessionHeader = {
-					type: "session",
-					version: CURRENT_SESSION_VERSION,
-					id: params.sessionId,
-					timestamp: new Date().toISOString(),
-					cwd: source.cwd,
-				}
-				try {
-					const persisted = parseSessionEntries(readFileSync(sourcePath, "utf8"))
-					liveHeader = persisted.find((entry) => entry.type === "session") ?? liveHeader
-					const durableById = new Map(
-						persisted.filter((entry) => entry.type !== "session").map((entry) => [entry.id, entry]),
-					)
-					// Live branches can contain evicted log markers. Use the durable
-					// same-ID records from the source JSONL whenever they exist so the
-					// fork remains self-contained after the source is unavailable.
-					liveEntries = liveEntries.map((entry) => durableById.get(entry.id) ?? entry)
-				} catch (err) {
-					if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err
-				}
-				sourceEntries = [liveHeader, ...liveEntries]
-			} else {
-				sourceEntries = parseSessionEntries(readFileSync(sourcePath, "utf8"))
-			}
-			// In-memory managers migrate entries and regenerate the selected
-			// branch without registering staging paths in Pi's process-wide live
-			// session set or rewriting the source file.
-			// In-memory managers migrate entries and regenerate the selected
-			// branch without registering staging paths in Pi's process-wide live
-			// session set or rewriting the source file.
-			const stagedSource = SessionManager.inMemory(params.cwd, undefined, sourceEntries)
-			const liveLeafId = source?.session.sessionManager.getLeafId()
-			if (liveLeafId) stagedSource.branch(liveLeafId)
-			const leafId = stagedSource.getLeafId()
-			if (leafId) stagedSource.createBranchedSession(leafId)
-			else stagedSource.newSession({ parentSession: sourcePath })
-
-			sessionId = stagedSource.getSessionId()
-			const timestamp = new Date().toISOString()
-			const forkHeader: SessionHeader = {
-				type: "session",
-				version: CURRENT_SESSION_VERSION,
-				id: sessionId,
-				timestamp,
+			const fork = persistAcpFork({
+				source: source
+					? {
+							sessionId: source.session.sessionId,
+							cwd: source.cwd,
+							sessionFile: source.session.sessionFile,
+							sessionManager: source.session.sessionManager,
+						}
+					: undefined,
 				cwd: params.cwd,
-				parentSession: sourcePath,
-			}
-			mkdirSync(sessionDir, { recursive: true })
-			forkedPath = join(sessionDir, `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`)
-			const provenance = {
-				type: "custom",
-				customType: ACP_FORK_ENTRY_TYPE,
-				data: { sourceSessionId: params.sessionId },
-				id: randomUUID(),
-				parentId: null,
-				timestamp,
-			}
-			// Retain structural entry IDs and parentId links, but prevent recovery
-			// from identifying or adopting children through copied associations.
-			const independentEntries = stagedSource
-				.getEntries()
-				.map((entry) =>
-					entry.type === "custom" && entry.customType === "subagents:record"
-						? { ...entry, customType: ACP_FORK_EXTERNAL_SUBAGENT_ENTRY, data: {} }
-						: entry,
-				)
-			const contents = `${[forkHeader, provenance, ...independentEntries].map((entry) => JSON.stringify(entry)).join("\n")}\n`
-			writeFileSync(forkedPath, contents, { flag: "wx" })
+				sessionDir,
+				sourceId: params.sessionId,
+			})
+			sessionId = fork.sessionId
+			forkedPath = fork.path
 		} catch (err) {
 			if (forkedPath) rmSync(forkedPath, { force: true })
 			const msg = err instanceof Error ? err.message : String(err)
@@ -4457,95 +4405,6 @@ export function toAcpSessionInfo(info: PiSessionInfo): AcpSessionInfo {
 		title: title.length > 0 ? title : null,
 		updatedAt: info.modified.toISOString(),
 	}
-}
-
-// Mirrors pi's getDefaultSessionDir (core/session-manager.js): pi declares the
-// helper but doesn't re-export it from the package index. Replicated inline so
-// listSessions points at kimchi's agentDir (~/.config/kimchi/harness/sessions/...)
-// instead of pi's own ~/.pi/agent/sessions/... — pi reads PI_CODING_AGENT_DIR,
-// not KIMCHI_CODING_AGENT_DIR, so without explicit sessionDir threading the
-// default lookup misses every kimchi session. Encoding is a public on-disk
-// format; drift surfaces as "no sessions found" rather than silent corruption.
-function encodeCwdDir(cwd: string): string {
-	return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`
-}
-
-// Find the on-disk JSONL for a sessionId. pi names files
-// `<isoTimestamp>_<sessionId>.jsonl` — match that suffix, with a fallback to
-// the bare `<sessionId>.jsonl` form so a hypothetical future pi format change
-// still resolves. That fallback is scoped to the already cwd-encoded directory
-// and the loader validates the file header id/cwd before opening it; a hand-
-// placed file must still match both to load. Returns null when the directory is
-// missing or no file matches; rethrows other errno (EACCES, EMFILE, …) so the
-// caller can surface them instead of masquerading as "session not found".
-function resolveSessionPathById(sessionDir: string, sessionId: string): string | null {
-	let entries: string[]
-	try {
-		entries = readdirSync(sessionDir)
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null
-		throw err
-	}
-	const suffix = `_${sessionId}.jsonl`
-	const bare = `${sessionId}.jsonl`
-	const match = entries.find((f) => f === bare || f.endsWith(suffix))
-	return match ? join(sessionDir, match) : null
-}
-
-const SESSION_HEADER_PEEK_BYTES = 8 * 1024
-
-function parseSessionHeader(raw: string): Pick<SessionHeader, "id" | "cwd" | "parentSession"> | null {
-	for (const line of raw.split("\n")) {
-		const trimmed = line.trim()
-		if (!trimmed) continue
-		let entry: unknown
-		try {
-			entry = JSON.parse(trimmed)
-		} catch {
-			continue
-		}
-		if (!entry || typeof entry !== "object" || (entry as { type?: unknown }).type !== "session") continue
-		const header = entry as { id?: unknown; cwd?: unknown; parentSession?: unknown }
-		if (typeof header.id !== "string" || typeof header.cwd !== "string") return null
-		return {
-			id: header.id,
-			cwd: header.cwd,
-			parentSession: typeof header.parentSession === "string" ? header.parentSession : undefined,
-		}
-	}
-	return null
-}
-
-function readSessionHeaderPeek(sessionPath: string): { raw: string; complete: boolean } {
-	const fd = openSync(sessionPath, "r")
-	try {
-		const buffer = Buffer.allocUnsafe(SESSION_HEADER_PEEK_BYTES)
-		const bytesRead = readSync(fd, buffer, 0, buffer.length, 0)
-		return {
-			raw: buffer.toString("utf-8", 0, bytesRead),
-			complete: bytesRead < SESSION_HEADER_PEEK_BYTES,
-		}
-	} finally {
-		closeSync(fd)
-	}
-}
-
-function readSessionHeader(sessionPath: string): Pick<SessionHeader, "id" | "cwd" | "parentSession"> | null {
-	const peek = readSessionHeaderPeek(sessionPath)
-	const parseablePeek = peek.complete ? peek.raw : peek.raw.slice(0, Math.max(0, peek.raw.lastIndexOf("\n") + 1))
-	const header = parseSessionHeader(parseablePeek)
-	if (header || peek.complete) return header
-	return parseSessionHeader(readFileSync(sessionPath, "utf-8"))
-}
-
-const ACP_FORK_ENTRY_TYPE = "kimchi:acp-fork"
-const ACP_FORK_EXTERNAL_SUBAGENT_ENTRY = "kimchi:acp-fork-subagent-metadata"
-
-/** The positive lineage proof accepted from an ACP-created fork. Unknown or
- * unreadable parented files retain the default read-only boundary. */
-function hasAcpForkProvenance(sessionPath: string): boolean {
-	const provenance = parseSessionEntries(readSessionHeaderPeek(sessionPath).raw)[1]
-	return provenance?.type === "custom" && provenance.customType === ACP_FORK_ENTRY_TYPE
 }
 
 function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
