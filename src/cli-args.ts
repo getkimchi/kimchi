@@ -444,6 +444,9 @@ function isPathLike(value: string): boolean {
 
 export function isCliAtFileArg(arg: string, index: number, args: string[]): boolean {
 	if (!arg.startsWith("@") || arg === "@") return false
+	// The local --additional-skill-paths value is an option value, but Pi's
+	// parser cannot know this Kimchi-local flag and would read it as a positional.
+	if (isAdditionalSkillPathsValueIndex(index, args)) return false
 	// Use Pi's parser as the source of truth instead of mirroring every value-taking flag.
 	return parsePiArgs(args.slice(0, index + 1)).fileArgs.length > parsePiArgs(args.slice(0, index)).fileArgs.length
 }
@@ -563,6 +566,12 @@ function scanAdditionalSkillsPathsArgs(args: string[]): AdditionalSkillsPathsOcc
 		inValuePosition = VALUE_FLAG_TOKENS.has(arg)
 	}
 	return occurrences
+}
+
+/** True when the token at `index` is a separated `--additional-skill-paths`
+ * value — an option value, never a positional @file. */
+function isAdditionalSkillPathsValueIndex(index: number, args: string[]): boolean {
+	return scanAdditionalSkillsPathsArgs(args).some((occurrence) => occurrence.valueIndex === index)
 }
 
 /**

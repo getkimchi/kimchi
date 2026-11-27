@@ -267,6 +267,30 @@ describe("normalizeAtFileArgs with CLI parsing", () => {
 			rmSync(tmp, { recursive: true, force: true })
 		}
 	})
+
+	it("leaves an @-prefixed --additional-skill-paths value unchanged", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "cli-at-file-args-"))
+		try {
+			// An @-named root directory actually existing is the failing case:
+			// misclassified as a positional, startup would reject it as an @file
+			// directory instead of parsing it as the local option's value.
+			mkdirSync(join(tmp, "@private-skills"))
+			writeFileSync(join(tmp, "prompt.md"), "hi")
+
+			expect(isCliAtFileArg("@private-skills", 1, ["--additional-skill-paths", "@private-skills"])).toBe(false)
+
+			const result = normalizeAtFileArgs(
+				["--additional-skill-paths", "@private-skills", "@prompt.md"],
+				tmp,
+				isCliAtFileArg,
+			)
+
+			expect(result.args).toEqual(["--additional-skill-paths", "@private-skills", `@${join(tmp, "prompt.md")}`])
+			expect(result.directoryArgs).toEqual([])
+		} finally {
+			rmSync(tmp, { recursive: true, force: true })
+		}
+	})
 })
 
 describe("isExperimentalFeaturesArg", () => {

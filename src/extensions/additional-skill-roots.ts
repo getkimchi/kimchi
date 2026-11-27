@@ -2,24 +2,10 @@ import { resolve } from "node:path"
 import type { ExtensionAPI, InlineExtension } from "@earendil-works/pi-coding-agent"
 
 /**
- * Non-ACP contribution of `--additional-skill-paths` roots.
- *
- * Upstream pi's `main()` has no `additionalSkillPaths` parameter (only
- * `DefaultResourceLoader` does), so non-ACP modes surface the roots through
- * the established inline `resources_discover` mechanism instead. ACP does not
- * load this factory: its loaders receive the roots directly through
- * `RunAcpOptions.additionalSkillPaths`.
- *
- * The factory MUST be registered ahead of every other skill-contributing
- * inline factory. The upstream loader scans settings/native
- * `additionalSkillPaths` paths first and then appends extension
- * `resources_discover` contributions in factory registration order
- * (first-named-skill-wins on collisions), so a prepended registration gives
- * the additional roots exactly the collision precedence ACP's native
- * `additionalSkillPaths` have: after base/settings, before repository
- * contributions. Tail-appending would reverse that precedence, and
- * rewriting the flag to upstream `--skill` would take `--skill`'s separate
- * first-slot merge order instead.
+ * Non-ACP contribution of `--additional-skill-paths` roots: upstream pi's
+ * main() has no additionalSkillPaths parameter, so the roots ride the inline
+ * resources_discover mechanism. ACP does not load this factory — its loaders
+ * receive the roots directly through RunAcpOptions.additionalSkillPaths.
  */
 export function createAdditionalSkillRootsExtension(getRoots: () => string[]): InlineExtension {
 	const factory = (pi: ExtensionAPI): void => {

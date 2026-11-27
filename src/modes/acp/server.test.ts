@@ -10506,6 +10506,107 @@ describe("newSession skill commands", () => {
 		}
 	})
 
+	it("re-advertises palettes when a relative additional skill path changes in an untrusted cwd", async () => {
+		const { dir, skillName, skill } = makeSkillDir()
+		const notifySkillAdded = await simulateSkillWatchEvents()
+		// Hermetic home: the watcher resolves roots from os.homedir() ($HOME).
+		vi.stubEnv("HOME", mkdtempSync(join(tmpdir(), "acp-server-home-")))
+		const agentDir = mkdtempSync(join(tmpdir(), "acp-server-agdir-"))
+		// A relative root under the (untrusted) session cwd: the config-path
+		// resolver would drop it, but process-scoped roots are watched as-is.
+		const privateSkills = join(dir, "private-skills")
+		mkdirSync(privateSkills)
+		const skills: Skill[] = []
+		const { fake, reloads } = makeRefreshableSession("session-skill-watch-relative", dir, skills)
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir,
+			sessionFactory: factory,
+			additionalSkillPaths: ["private-skills"],
+		})
+		try {
+			await agent.newSession({ cwd: dir, mcpServers: [] })
+			await flushDeferredCommands()
+
+			expect(notifySkillAdded.addedRoots()).toContain(privateSkills)
+
+			const baseline = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+			const baselineCmds =
+				(baseline?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
+			expect(baselineCmds.map((c) => c.name)).not.toContain(`skill:${skillName}`)
+
+			skills.push(skill)
+			updates.length = 0
+			const reloadsBase = reloads.n
+
+			mkdirSync(join(privateSkills, skillName), { recursive: true })
+			writeFileSync(join(privateSkills, skillName, "SKILL.md"), `---\nname: ${skillName}\n---\nbody`, "utf-8")
+			notifySkillAdded(join(privateSkills, skillName, "SKILL.md"))
+			await waitFor(() => updates.some((u) => u.update.sessionUpdate === "available_commands_update"), 5000)
+
+			expect(reloads.n).toBe(reloadsBase + 1)
+			const repaint = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+			const repaintedCmds =
+				(repaint?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
+			expect(repaintedCmds.map((c) => c.name)).toContain(`skill:${skillName}`)
+		} finally {
+			await agent.shutdown()
+			vi.unstubAllEnvs()
+		}
+	})
+
+	it("re-advertises palettes when an additional skill path created after startup changes", async () => {
+		const { dir, skillName, skill } = makeSkillDir()
+		const notifySkillAdded = await simulateSkillWatchEvents()
+		// Hermetic home: the watcher resolves roots from os.homedir() ($HOME).
+		vi.stubEnv("HOME", mkdtempSync(join(tmpdir(), "acp-server-home-")))
+		const agentDir = mkdtempSync(join(tmpdir(), "acp-server-agdir-"))
+		// The root does NOT exist when the session is created: the watcher must
+		// still watch it (chokidar tolerates roots that appear later).
+		const privateSkills = join(mkdtempSync(join(tmpdir(), "acp-server-late-parent-")), "skills")
+		const skills: Skill[] = []
+		const { fake, reloads } = makeRefreshableSession("session-skill-watch-late", dir, skills)
+		const factory: AcpSessionFactory = async () => asSession(fake)
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir,
+			sessionFactory: factory,
+			additionalSkillPaths: [privateSkills],
+		})
+		try {
+			await agent.newSession({ cwd: dir, mcpServers: [] })
+			await flushDeferredCommands()
+
+			expect(notifySkillAdded.addedRoots()).toContain(privateSkills)
+
+			const baseline = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+			const baselineCmds =
+				(baseline?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
+			expect(baselineCmds.map((c) => c.name)).not.toContain(`skill:${skillName}`)
+
+			skills.push(skill)
+			updates.length = 0
+			const reloadsBase = reloads.n
+
+			mkdirSync(join(privateSkills, skillName), { recursive: true })
+			writeFileSync(join(privateSkills, skillName, "SKILL.md"), `---\nname: ${skillName}\n---\nbody`, "utf-8")
+			notifySkillAdded(join(privateSkills, skillName, "SKILL.md"))
+			await waitFor(() => updates.some((u) => u.update.sessionUpdate === "available_commands_update"), 5000)
+
+			expect(reloads.n).toBe(reloadsBase + 1)
+			const repaint = updates.find((u) => u.update.sessionUpdate === "available_commands_update")
+			const repaintedCmds =
+				(repaint?.update as { availableCommands?: Array<Record<string, unknown>> }).availableCommands ?? []
+			expect(repaintedCmds.map((c) => c.name)).toContain(`skill:${skillName}`)
+		} finally {
+			await agent.shutdown()
+			vi.unstubAllEnvs()
+		}
+	})
+
 	it("re-advertises palettes when a project skill changes on disk", async () => {
 		const { dir, skillName, skill } = makeSkillDir()
 		const notifySkillAdded = await simulateSkillWatchEvents()

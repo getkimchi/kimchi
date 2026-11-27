@@ -46,8 +46,7 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 	private readonly discoveryCwd: string
 	private readonly discoveryAgentDir: string
 	private readonly discoverySettingsManager: SettingsManager
-	/** Process-scoped skill roots (--additional-skill-paths): handed to every
-	 *  throwaway discovery loader so refreshes never drop them. */
+	/** Process-scoped skill roots (--additional-skill-paths), passed to every discovery loader. */
 	private readonly additionalSkillPaths: string[]
 	private readonly baseAppend: () => string[]
 	/**
@@ -73,9 +72,7 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 		cwd: string
 		agentDir: string
 		settingsManager: SettingsManager
-		/** Process-scoped skill roots from --additional-skill-paths — the same
-		 *  array the main loader was constructed with. Required so no future
-		 *  call site can silently drop the paths from the refresh scan. */
+		/** Same array the main loader was constructed with. */
 		additionalSkillPaths: string[]
 		/** ACP append base (CLI flag + `_meta["kimchi.dev"].appendSystemPrompt`). */
 		baseAppend: () => string[]
@@ -223,8 +220,7 @@ export class AcpSessionResourceLoader implements ResourceLoader {
 			settingsManager: this.discoverySettingsManager,
 			// Resources-only: no extension loading, no inline factories, no
 			// additional extension paths — the live set stays on the main loader.
-			// The process-scoped additional skill roots ARE scanned: the main
-			// loader sees them, so a refresh without them would drop the skills.
+			// additionalSkillPaths stays: the main loader scans it, so refreshes must too.
 			noExtensions: true,
 			noPromptTemplates: true,
 			noThemes: true,

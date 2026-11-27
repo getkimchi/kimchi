@@ -1,3 +1,4 @@
+import { resolve } from "node:path"
 import { type FSWatcher, watch } from "chokidar"
 
 import { isRunningUnderBun } from "../../env.js"
@@ -35,6 +36,15 @@ function sessionSkillRoots(cwd: string, opts: { agentDir: string; extraPaths: re
 }
 
 /**
+ * Process-scoped --additional-skill-paths roots for one session: explicit
+ * user paths, so they resolve against the session cwd and skip the config
+ * trust/existence filters the central resolver applies to config paths.
+ */
+function additionalSkillRoots(cwd: string, paths: readonly string[]): string[] {
+	return paths.filter((p) => p !== "").map((p) => resolve(cwd, p))
+}
+
+/**
  * Watches skill roots on disk and requests a palette re-advertisement when
  * they change (skill upload/edit/delete). chokidar tolerates roots that do
  * not exist yet and reports cross-platform. Events are coalesced per burst
@@ -52,6 +62,8 @@ export function createSkillWatcher(opts: {
 	agentDir: string
 	/** Kimchi-config skillPaths, read per change event so config edits are picked up. */
 	getExtraSkillPaths?: () => string[]
+	/** Process-scoped --additional-skill-paths roots, resolved per session cwd. */
+	getAdditionalSkillPaths?: () => string[]
 	requestRefresh: () => void
 }): SkillWatcher {
 	let watcher: FSWatcher | undefined
@@ -59,6 +71,7 @@ export function createSkillWatcher(opts: {
 	const watched = new Set<string>()
 	const sessions = new Map<string, number>()
 	const extraPaths = (): readonly string[] => opts.getExtraSkillPaths?.() ?? []
+	const additionalPaths = (): readonly string[] => opts.getAdditionalSkillPaths?.() ?? []
 
 	// Whole burst → one pass: sync root resolution (existsSync chains,
 	// ancestor walks, config read) once per quiet window instead of per event.
@@ -76,7 +89,11 @@ export function createSkillWatcher(opts: {
 
 	const refreshRoots = (): void => {
 		const extras = extraPaths()
-		for (const cwd of sessions.keys()) add(sessionSkillRoots(cwd, { agentDir: opts.agentDir, extraPaths: extras }))
+		const additional = additionalPaths()
+		for (const cwd of sessions.keys()) {
+			add(sessionSkillRoots(cwd, { agentDir: opts.agentDir, extraPaths: extras }))
+			add(additionalSkillRoots(cwd, additional))
+		}
 	}
 
 	const ensure = (): FSWatcher => {
@@ -111,6 +128,7 @@ export function createSkillWatcher(opts: {
 			sessions.set(session.cwd, refs + 1)
 			if (refs === 0) {
 				add(sessionSkillRoots(session.cwd, { agentDir: opts.agentDir, extraPaths: extraPaths() }))
+				add(additionalSkillRoots(session.cwd, additionalPaths()))
 			}
 		},
 		/**
