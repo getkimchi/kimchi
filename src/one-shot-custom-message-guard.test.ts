@@ -6,7 +6,7 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { type AssistantMessage, createAssistantEntry } from "./extensions/__mocks__/session-entries.js"
-import { installOneShotHiddenMessageGuard } from "./one-shot-hidden-message-guard.js"
+import { installOneShotCustomMessageGuard } from "./one-shot-custom-message-guard.js"
 
 type SessionMessage = Extract<
 	AgentSessionEvent,
@@ -29,6 +29,7 @@ function createHarness(
 	mode: ExtensionContext["mode"] = "print",
 	appendFailure?: Error,
 	bindings: ModeBinding = { mode },
+	beforeSessionDispose?: () => Promise<void>,
 ) {
 	const appended: CustomMessage[] = []
 	let branch = [createAssistantEntry([], { id: "original" })]
@@ -70,10 +71,11 @@ function createHarness(
 	const runtimeProto = {
 		session,
 		async dispose() {
+			if (beforeSessionDispose) await beforeSessionDispose()
 			this.session.dispose()
 		},
 	}
-	installOneShotHiddenMessageGuard({ prototype: proto }, { prototype: runtimeProto })
+	installOneShotCustomMessageGuard({ prototype: proto }, { prototype: runtimeProto })
 	void session.bindExtensions(bindings)
 	return {
 		session,
@@ -93,7 +95,7 @@ function createHarness(
 	}
 }
 
-describe("one-shot hidden-message guard", () => {
+describe("one-shot custom-message guard", () => {
 	it.each(["print", "json"] as const)("holds every hidden custom message after a final answer in %s mode", (mode) => {
 		const h = createHarness(mode)
 		h.session._emit(assistantEnd())
@@ -107,14 +109,47 @@ describe("one-shot hidden-message guard", () => {
 		expect(h.emitted).toHaveLength(1)
 	})
 
-	it("preserves visible custom messages at the terminal tail", () => {
+	it("persists visible prompt summaries after final-answer selection", async () => {
 		const h = createHarness()
 		h.session._emit(assistantEnd())
-		const visible = customMessage(true)
+		const visible = customMessage(true, "prompt-summary")
 
 		h.session._appendCustomMessage(visible)
+		expect(h.appended).toEqual([])
+
+		await h.shutdown()
+		expect(h.appended).toEqual([visible])
+	})
+
+	it("keeps other visible custom messages during direct session replacement", () => {
+		const h = createHarness()
+		h.session._emit(assistantEnd())
+		const visible = customMessage(true, "extension-result")
+
+		h.session._appendCustomMessage(visible)
+		h.dispose()
 
 		expect(h.appended).toEqual([visible])
+	})
+
+	it("persists messages appended while final runtime disposal is pending", async () => {
+		let releaseDisposal = () => {}
+		const disposalGate = new Promise<void>((resolve) => {
+			releaseDisposal = resolve
+		})
+		const h = createHarness("print", undefined, { mode: "print" }, () => disposalGate)
+		h.session._emit(assistantEnd())
+		const hidden = customMessage(false, "todo-state")
+		const visible = customMessage(true, "prompt-summary")
+
+		const shutdown = h.shutdown()
+		h.session._appendCustomMessage(hidden)
+		h.session._appendCustomMessage(visible)
+		expect(h.appended).toEqual([])
+
+		releaseDisposal()
+		await shutdown
+		expect(h.appended).toEqual([hidden, visible])
 	})
 
 	it("keeps hidden steers delivered after an assistant tool turn", () => {
@@ -300,7 +335,7 @@ describe("one-shot hidden-message guard", () => {
 			_startRun: (...args: unknown[]) => Promise<void>
 			_appendCustomMessage: (message: CustomMessage) => void
 			dispose: () => void
-			_kimchiOneShotHiddenMessageGuard?: boolean
+			_kimchiOneShotCustomMessageGuard?: boolean
 		} = {
 			_extensionMode: "print",
 			async bindExtensions() {},
@@ -313,8 +348,8 @@ describe("one-shot hidden-message guard", () => {
 			dispose() {},
 		}
 		const runtimeProto = { async dispose() {} }
-		installOneShotHiddenMessageGuard({ prototype: proto }, { prototype: runtimeProto })
-		installOneShotHiddenMessageGuard({ prototype: proto }, { prototype: runtimeProto })
+		installOneShotCustomMessageGuard({ prototype: proto }, { prototype: runtimeProto })
+		installOneShotCustomMessageGuard({ prototype: proto }, { prototype: runtimeProto })
 		const session = Object.create(proto) as typeof proto
 		session._emit(assistantEnd("toolUse"))
 		const recall = customMessage()

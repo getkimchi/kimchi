@@ -360,6 +360,45 @@ describe("non-interactive run outcome guard (compiled binary)", () => {
 	})
 
 	it.each(PRINT_MODES)(
+		"trailing annotations do not displace the final assistant answer in %s mode",
+		TIMEOUT,
+		async (mode, modeArgs) => {
+			const { result, sessionText } = await runKimchi({
+				args: ["--print", ...modeArgs, ...MODEL_ARGS, "answer normally"],
+				responses: [{ stream: ["ANSWER BEFORE ANNOTATIONS"] }],
+				prepare: (workDir, homeDir) =>
+					writeProbeExtension(
+						workDir,
+						homeDir,
+						"trailing-annotations.ts",
+						`export default function trailingAnnotations(pi) {
+  pi.on("agent_settled", () => {
+    for (const [customType, display] of [["todo-state", false], ["prompt-summary", true]]) {
+      pi.sendMessage({
+        customType,
+        content: [{ type: "text", text: "<system-annotation>" + customType + "</system-annotation>" }],
+        display,
+        details: {},
+      }, { triggerTurn: false })
+    }
+  })
+}
+`,
+					),
+			})
+
+			expect(result.timedOut, result.failure).toBe(false)
+			expect(result.code, result.failure).toBe(0)
+			expectNoGuardMarker(result)
+			expect(result.stdout, result.failure).toContain("ANSWER BEFORE ANNOTATIONS")
+			expect(result.stdout, result.failure).not.toContain('"customType":"prompt-summary"')
+			if (mode === "text") expectTextOutcomeEquivalence(result)
+			expect(sessionText, result.failure).toContain('"customType":"todo-state"')
+			expect(sessionText, result.failure).toContain('"customType":"prompt-summary"')
+		},
+	)
+
+	it.each(PRINT_MODES)(
 		"todo changes do not displace the final assistant answer in %s mode",
 		TIMEOUT,
 		async (mode, modeArgs) => {

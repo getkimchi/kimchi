@@ -11,6 +11,19 @@ function assistantEntry(id: string, text: string, stopReason: AssistantMessage["
 	return createAssistantEntry(text ? [{ type: "text", text }] : [], { id, stopReason })
 }
 
+function customMessageEntry(id: string, customType: string, display: boolean): SessionEntry {
+	return {
+		type: "custom_message",
+		id,
+		parentId: null,
+		timestamp: "2",
+		customType,
+		content: [{ type: "text", text: `<system-annotation>${customType}</system-annotation>` }],
+		display,
+		details: {},
+	}
+}
+
 function setup(mode: ExtensionContext["mode"], branch: SessionEntry[] = [], sessionFile = "/tmp/s.jsonl") {
 	const harness = createExtensionApi()
 	const tracker = createRunOutcomeTracker()
@@ -172,6 +185,83 @@ describe("createRunOutcomeTracker", () => {
 			aborted: false,
 			finalEntry: final,
 			sessionPath: "/tmp/x.jsonl",
+		})
+	})
+
+	it("ignores custom annotations appended after the final answer", async () => {
+		const final = assistantEntry("a", "answer")
+		const branch = [
+			final,
+			customMessageEntry("todo", "todo-state", false),
+			customMessageEntry("summary", "prompt-summary", true),
+		]
+		const { harness, tracker, ctx } = setup("print", branch)
+		await harness.emit("session_start", start, ctx)
+		await harness.emit("input", input, ctx)
+		await harness.emit("agent_settled", settled(), ctx)
+		const snapshot = tracker.getSnapshot()
+		expect(snapshot.finalEntry).toBe(final)
+		expect(classifyRunOutcome(snapshot)).toEqual({ kind: "ok" })
+	})
+
+	it("still reports no result when custom annotations follow an empty answer", async () => {
+		const final = assistantEntry("a", "")
+		const branch = [
+			final,
+			customMessageEntry("todo", "todo-state", false),
+			customMessageEntry("summary", "prompt-summary", true),
+		]
+		const { harness, tracker, ctx } = setup("print", branch)
+		await harness.emit("session_start", start, ctx)
+		await harness.emit("input", input, ctx)
+		await harness.emit("agent_settled", settled(), ctx)
+		expect(classifyRunOutcome(tracker.getSnapshot())).toMatchObject({
+			kind: "no-result",
+			lastEvent: { kind: "final-message", role: "assistant", stopReason: "stop" },
+		})
+	})
+
+	it("keeps no-result for other visible custom messages", async () => {
+		const final = assistantEntry("a", "answer")
+		const custom = customMessageEntry("result", "extension-result", true)
+		const { harness, tracker, ctx } = setup("print", [final, custom])
+		await harness.emit("session_start", start, ctx)
+		await harness.emit("input", input, ctx)
+		await harness.emit("agent_settled", settled(), ctx)
+		const snapshot = tracker.getSnapshot()
+		expect(snapshot.finalEntry).toBe(custom)
+		expect(classifyRunOutcome(snapshot)).toMatchObject({
+			kind: "no-result",
+			lastEvent: { kind: "final-message", role: "custom" },
+		})
+	})
+
+	it("keeps tool results eligible after custom annotations", async () => {
+		const toolResult: SessionEntry = {
+			type: "message",
+			id: "tool-result",
+			parentId: null,
+			timestamp: "2",
+			message: {
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: "read",
+				content: [{ type: "text", text: "done" }],
+				details: {},
+				isError: false,
+				timestamp: 2,
+			},
+		}
+		const final = customMessageEntry("summary", "prompt-summary", true)
+		const { harness, tracker, ctx } = setup("print", [assistantEntry("a", "", "toolUse"), toolResult, final])
+		await harness.emit("session_start", start, ctx)
+		await harness.emit("input", input, ctx)
+		await harness.emit("agent_settled", settled(), ctx)
+		const snapshot = tracker.getSnapshot()
+		expect(snapshot.finalEntry).toBe(toolResult)
+		expect(classifyRunOutcome(snapshot)).toMatchObject({
+			kind: "no-result",
+			lastEvent: { kind: "final-message", role: "toolResult" },
 		})
 	})
 
