@@ -70,6 +70,16 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/** Waits for `ended` or `ms`, whichever comes first, and clears the timer. */
+async function untilEndedOr(ended: Promise<void>, ms: number): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined
+	try {
+		await Promise.race([ended, new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)))])
+	} finally {
+		clearTimeout(timer)
+	}
+}
+
 /**
  * POSIX-safe single-quote escaping. Double-quote interpolation
  * (JSON.stringify) is NOT safe for shell embedding: the outer shell
@@ -151,6 +161,9 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<SpawnDaemon
 	child.on("error", (err) => {
 		spawnError = err
 	})
+	// Ends the crash-grace wait early: a command that dies at startup is
+	// reported at once, not after the full grace.
+	const ended = new Promise<void>((resolve) => child.once("exit", () => resolve()))
 	child.unref()
 
 	if (child.pid === undefined) {
@@ -173,7 +186,7 @@ export async function spawnDaemon(opts: SpawnDaemonOptions): Promise<SpawnDaemon
 	// (port-in-use, missing binary, bad flags). The single most common
 	// "server started" lie is a command that exits inside the first second.
 	const grace = opts.crashGraceMs ?? CRASH_GRACE_MS
-	if (grace > 0) await sleep(grace)
+	if (grace > 0) await untilEndedOr(ended, grace)
 	if (!isPidAlive(child.pid)) {
 		const tail = readLogTail(logFile, 2048)
 		unregisterDaemon(stateDir, id)

@@ -4,6 +4,8 @@ import { getParsedCliArgs } from "../../cli-args.js"
 import { resolveReviewDirectories } from "./paths.js"
 import {
 	DEFAULT_WRITER_LIMIT,
+	REVIEW_FINDING_PRIORITIES,
+	REVIEW_FINDING_TYPES,
 	type ReviewSubmitContext,
 	type SubmitResult,
 	submitFinding,
@@ -105,22 +107,8 @@ export default function reviewSubmitExtension(pi: ExtensionAPI, binding?: Review
 						"Reasoning and evidence, including what was run, or that this is from reading code; 1–2000 code points",
 				}),
 				suggestion: Type.String({ description: "The actionable fix, 1–500 Unicode code points after trimming" }),
-				priority: Type.Union([
-					Type.Literal("P0"),
-					Type.Literal("P1"),
-					Type.Literal("P2"),
-					Type.Literal("P3"),
-					Type.Literal("P4"),
-				]),
-				type: Type.Union([
-					Type.Literal("bug"),
-					Type.Literal("security"),
-					Type.Literal("reliability"),
-					Type.Literal("performance"),
-					Type.Literal("convention"),
-					Type.Literal("test-gap"),
-					Type.Literal("docs"),
-				]),
+				priority: Type.Union(REVIEW_FINDING_PRIORITIES.map((value) => Type.Literal(value))),
+				type: Type.Union(REVIEW_FINDING_TYPES.map((value) => Type.Literal(value))),
 				derived_from: Type.Optional(
 					Type.Array(Type.String(), {
 						maxItems: 50,

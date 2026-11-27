@@ -14,6 +14,7 @@ import { checkpointReviewPanelFallback, finalizeReviewPanel } from "./finalize.j
 import { type ReviewLensId, resolveReviewPanel } from "./lenses.js"
 import {
 	buildFallbackCheckpoint,
+	buildFinalFallback,
 	capFinalReviewFindings,
 	readFinalFindings,
 	readFindingWriter,
@@ -419,6 +420,9 @@ describe("review panel reconciliation and fallback", () => {
 		{ name: "a discontinuous sequence", overrides: { seq: 99 } },
 		{ name: "an arbitrary ID", overrides: { id: "wrong" } },
 		{ name: "an empty timestamp", overrides: { created_at: "" } },
+		{ name: "a non-timestamp string", overrides: { created_at: "yesterday" } },
+		{ name: "an impossible calendar date", overrides: { created_at: "2026-02-30T12:00:00Z" } },
+		{ name: "a timestamp with a non-UTC offset", overrides: { created_at: "2026-11-24T12:00:00+01:00" } },
 	])("rejects $name during final serialization", ({ overrides }) => {
 		const invalid = { ...candidate("spec", 1).finding, id: "final-1", writer: "final", ...overrides }
 		expect(() => serializeFinalFindings([invalid])).toThrow()
@@ -786,6 +790,23 @@ describe("review panel reconciliation and fallback", () => {
 		expect(result.summary.body).toContain("P3=1, P4=3")
 	})
 
+	it("ranks fallback findings by capped priority before enforcing the finding limit", async () => {
+		const docs = Array.from({ length: DEFAULT_WRITER_LIMIT }, (_, index) =>
+			candidate("standards", index + 1, { line: index + 1, type: "docs", priority: "P1" }),
+		)
+		const bug = candidate("spec", 1, { priority: "P2" })
+		const store = await makeStore([...docs, bug])
+		const checkpoint = await checkpointReviewPanelFallback(store, reviewPanelPaths(outputDir).findingsPath)
+		expect(checkpoint).toHaveLength(DEFAULT_WRITER_LIMIT)
+		expect(checkpoint.every((finding) => finding.priority === "P1")).toBe(true)
+
+		const result = await finalizeReviewPanel({ store, outputDir, contextDir, hasVerifier: false })
+		expect(result.findings).toHaveLength(DEFAULT_WRITER_LIMIT)
+		expect(result.findings[0]).toMatchObject({ id: "final-1", priority: "P2", derived_from: [bug.id] })
+		expect(result.state.reconciliation.provenance?.["final-1"]).toEqual([bug.id])
+		expect(result.summary.coverage?.findings_by_priority).toMatchObject({ P2: 1, P4: DEFAULT_WRITER_LIMIT - 1 })
+	})
+
 	it("repairs provenance when capped fallback publication crashed before its state update", async () => {
 		const candidates = [
 			candidate("standards", 1, {
@@ -808,7 +829,7 @@ describe("review panel reconciliation and fallback", () => {
 			["final-1", ["standards-1"]],
 			["final-2", ["spec-1"]],
 		])
-		const published = capFinalReviewFindings(checkpoint)
+		const published = buildFinalFallback(candidates)
 		await store.update((state) => {
 			state.reconciliation.status = "fallback"
 			state.reconciliation.reason = "Semantic reconciliation was unavailable; the deterministic fallback is final."

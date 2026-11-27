@@ -34,6 +34,7 @@ const COMMENTABLE_LINES_SCHEMA_VERSION = "commentable-lines/v1"
 const COMMENTS_SCHEMA_VERSION = "review-comments/v1"
 const MAX_CONSUMER_INT32 = 2_147_483_647
 const WRITER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
+const UTC_TIMESTAMP_PATTERN = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|\+00:00)$/i
 
 const FINDING_FIELDS = [
 	"path",
@@ -707,6 +708,15 @@ export function validateStoredReviewFinding(input: Record<string, unknown>): Sub
 	return validateFindingValues(input as unknown as FindingInput)
 }
 
+function isReviewFindingTimestamp(value: unknown): boolean {
+	if (typeof value !== "string" || value.length > 64) return false
+	const dateTime = UTC_TIMESTAMP_PATTERN.exec(value)?.[1]?.toUpperCase()
+	if (!dateTime) return false
+	const date = new Date(`${dateTime}Z`)
+	// Date normalizes some out-of-range components instead of rejecting them.
+	return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 19) === dateTime
+}
+
 /** Validate schema, writer, sequence, matching ID, and timestamp for a stored finding. */
 export function validateReviewFindingIdentity(
 	input: Record<string, unknown>,
@@ -721,13 +731,8 @@ export function validateReviewFindingIdentity(
 	if (input.id !== `${writer}-${expectedSeq}`) {
 		return invalidField("id", `id must be ${writer}-${expectedSeq}.`)
 	}
-	if (
-		typeof input.created_at !== "string" ||
-		input.created_at.length === 0 ||
-		input.created_at.includes("\0") ||
-		utf8Length(input.created_at) > 64
-	) {
-		return invalidField("created_at", "created_at must be a non-empty timestamp of at most 64 UTF-8 bytes without NUL.")
+	if (!isReviewFindingTimestamp(input.created_at)) {
+		return invalidField("created_at", "created_at must be an RFC 3339 UTC timestamp of at most 64 bytes.")
 	}
 	return undefined
 }

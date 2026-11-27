@@ -16,6 +16,7 @@ import { REVIEW_FINDING_CONTRACT_PROMPT } from "./finding-contract.js"
 import {
 	atomicWriteReviewFile,
 	buildFallbackCheckpoint,
+	buildFinalFallback,
 	candidateInputDigest,
 	capFinalReviewFindings,
 	orderedCandidates,
@@ -439,7 +440,7 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 	} else {
 		// Fallback records and complete provenance are one deterministic derivation.
 		// Always publish both so a rerun converges after a crash between either write.
-		const published = capFinalReviewFindings(buildFallbackCheckpoint(candidates))
+		const published = buildFinalFallback(candidates)
 		await writeFinalFindings(paths.findingsPath, published.records)
 		await store.update((state) => {
 			state.reconciliation.provenance = published.provenance
