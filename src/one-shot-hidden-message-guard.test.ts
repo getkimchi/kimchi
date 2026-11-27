@@ -1,5 +1,10 @@
-import { AgentSession, type AgentSessionEvent, type ExtensionContext } from "@earendil-works/pi-coding-agent"
-import { describe, expect, it } from "vitest"
+import {
+	AgentSession,
+	type AgentSessionEvent,
+	AgentSessionRuntime,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent"
+import { describe, expect, it, vi } from "vitest"
 import { type AssistantMessage, createAssistantEntry } from "./extensions/__mocks__/session-entries.js"
 import { installOneShotHiddenMessageGuard } from "./one-shot-hidden-message-guard.js"
 
@@ -18,8 +23,9 @@ function customMessage(display = false, customType = "memory-recall"): CustomMes
 	return { role: "custom", customType, content: "context", display, timestamp: Date.now() }
 }
 
-function createHarness(mode: ExtensionContext["mode"] = "print") {
+function createHarness(mode: ExtensionContext["mode"] = "print", appendFailure?: Error) {
 	const appended: CustomMessage[] = []
+	let branch = [createAssistantEntry([], { id: "original" })]
 	const emitted: AgentSessionEvent[] = []
 	let runStarts = 0
 	let continuations = 0
@@ -27,6 +33,10 @@ function createHarness(mode: ExtensionContext["mode"] = "print") {
 	const appendsAtContinue: number[] = []
 	const proto = {
 		_extensionMode: mode,
+		sessionManager: {
+			getLeafId: () => branch.at(-1)?.id ?? null,
+			getBranch: () => branch,
+		},
 		agent: {
 			async continue(..._args: unknown[]) {
 				continuations++
@@ -40,14 +50,21 @@ function createHarness(mode: ExtensionContext["mode"] = "print") {
 			runStarts++
 		},
 		_appendCustomMessage(message: CustomMessage) {
+			if (appendFailure) throw appendFailure
 			appended.push(message)
 		},
 		dispose() {
 			disposals++
 		},
 	}
-	installOneShotHiddenMessageGuard({ prototype: proto })
 	const session = Object.create(proto) as typeof proto
+	const runtimeProto = {
+		session,
+		async dispose() {
+			this.session.dispose()
+		},
+	}
+	installOneShotHiddenMessageGuard({ prototype: proto }, { prototype: runtimeProto })
 	return {
 		session,
 		appended,
@@ -59,6 +76,10 @@ function createHarness(mode: ExtensionContext["mode"] = "print") {
 		startRun: () => session._startRun({}),
 		continueRun: () => session.agent.continue(),
 		dispose: () => session.dispose(),
+		shutdown: () => runtimeProto.dispose(),
+		selectBranch: (...entryIds: string[]) => {
+			branch = entryIds.map((id) => createAssistantEntry([], { id }))
+		},
 	}
 }
 
@@ -144,7 +165,7 @@ describe("one-shot hidden-message guard", () => {
 		expect(h.appended).toEqual([first, second, active])
 	})
 
-	it("discards a genuinely final buffer only on dispose", async () => {
+	it("discards buffered messages on direct session disposal during replacement", async () => {
 		const h = createHarness()
 		await h.startRun()
 		h.session._emit(assistantEnd())
@@ -157,6 +178,84 @@ describe("one-shot hidden-message guard", () => {
 
 		expect(h.disposals()).toBe(1)
 		expect(h.appended).toEqual([])
+	})
+
+	it("persists buffered messages once on final runtime disposal", async () => {
+		const h = createHarness()
+		await h.startRun()
+		h.session._emit(assistantEnd())
+		const first = customMessage(false, "first")
+		const second = customMessage(false, "second")
+		h.session._appendCustomMessage(first)
+		h.session._appendCustomMessage(second)
+		h.session._emit({ type: "agent_settled", aborted: false })
+		expect(h.appended).toEqual([])
+
+		await h.shutdown()
+		await h.continueRun()
+
+		expect(h.disposals()).toBe(1)
+		expect(h.appended).toEqual([first, second])
+	})
+
+	it("persists only messages from the selected branch at final shutdown", async () => {
+		const h = createHarness()
+		h.session._emit(assistantEnd())
+		h.session._appendCustomMessage(customMessage(false, "original-only"))
+
+		h.selectBranch("sibling")
+		const sibling = customMessage(false, "sibling-only")
+		h.session._appendCustomMessage(sibling)
+		h.selectBranch("sibling", "metadata")
+
+		await h.shutdown()
+
+		expect(h.appended).toEqual([sibling])
+	})
+
+	it("keeps buffered context on its original branch across subsequent runs", async () => {
+		const h = createHarness()
+		h.session._emit(assistantEnd())
+		const original = customMessage(false, "original-only")
+		h.session._appendCustomMessage(original)
+
+		h.selectBranch("sibling")
+		await h.startRun()
+		expect(h.appended).toEqual([])
+
+		h.selectBranch("original")
+		await h.startRun()
+		expect(h.appended).toEqual([original])
+	})
+
+	it.each([0, 74])("completes teardown after a terminal append fails with exit code %s", async (exitCode) => {
+		const h = createHarness("print", new Error("ENOSPC"))
+		const previousExitCode = process.exitCode
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			process.exitCode = exitCode
+			h.session._emit(assistantEnd())
+			h.session._appendCustomMessage(customMessage())
+
+			await h.shutdown()
+
+			expect(h.disposals()).toBe(1)
+			expect(process.exitCode).toBe(exitCode || 1)
+			expect(stderr).toHaveBeenCalledWith("Failed to persist buffered session messages:", expect.any(Error))
+		} finally {
+			process.exitCode = previousExitCode
+			stderr.mockRestore()
+		}
+	})
+
+	it("propagates an append failure before the next model request", async () => {
+		const failure = new Error("ENOSPC")
+		const h = createHarness("print", failure)
+		h.session._emit(assistantEnd())
+		h.session._appendCustomMessage(customMessage())
+
+		await expect(h.startRun()).rejects.toBe(failure)
+		expect(h.runStarts()).toBe(0)
 	})
 
 	it.each(["tui", "rpc"] as const)("does not change hidden delivery in %s mode", (mode) => {
@@ -173,6 +272,7 @@ describe("one-shot hidden-message guard", () => {
 		const appended: CustomMessage[] = []
 		const proto: {
 			_extensionMode: "print"
+			sessionManager: { getBranch: () => []; getLeafId: () => null }
 			_emit: (event: AgentSessionEvent) => void
 			_startRun: (...args: unknown[]) => Promise<void>
 			_appendCustomMessage: (message: CustomMessage) => void
@@ -180,6 +280,7 @@ describe("one-shot hidden-message guard", () => {
 			_kimchiOneShotHiddenMessageGuard?: boolean
 		} = {
 			_extensionMode: "print",
+			sessionManager: { getBranch: () => [], getLeafId: () => null },
 			_emit() {},
 			async _startRun() {},
 			_appendCustomMessage(message) {
@@ -187,8 +288,9 @@ describe("one-shot hidden-message guard", () => {
 			},
 			dispose() {},
 		}
-		installOneShotHiddenMessageGuard({ prototype: proto })
-		installOneShotHiddenMessageGuard({ prototype: proto })
+		const runtimeProto = { async dispose() {} }
+		installOneShotHiddenMessageGuard({ prototype: proto }, { prototype: runtimeProto })
+		installOneShotHiddenMessageGuard({ prototype: proto }, { prototype: runtimeProto })
 		const session = Object.create(proto) as typeof proto
 		session._emit(assistantEnd("toolUse"))
 		const recall = customMessage()
@@ -203,5 +305,6 @@ describe("one-shot hidden-message guard", () => {
 		for (const method of ["_emit", "_startRun", "_appendCustomMessage", "dispose"]) {
 			expect(typeof proto[method], method).toBe("function")
 		}
+		expect(typeof AgentSessionRuntime.prototype.dispose).toBe("function")
 	})
 })

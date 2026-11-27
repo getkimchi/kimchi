@@ -52,12 +52,16 @@ In text mode, stdout shows the text of the last message, as pi decides it. These
 
 A final message that ended with a model error, an abort, or truncation exits `1` in both text and JSON mode. The diagnostic goes to stderr, and the JSON event stream also carries the assistant stop reason.
 
+Native text mode already printed raw provider diagnostics and exited `1` on a final abort. In JSON mode, when Pi leaves the exit code at zero for a final model failure, Kimchi now supplies exit `1` and writes the raw provider diagnostic to stderr as well.
+
+Hidden context and state messages emitted after the final answer are persisted to the active session branch during final one-shot shutdown, after text output has been queued and the JSON subscriber has detached. Pending messages from other branches are discarded at shutdown. If saving the messages fails, Kimchi reports the error on stderr, exits with a nonzero status, and lets stdout finish draining.
+
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | `0` | A real answer, or a normal command such as `--list-models` |
-| `1` | Model error, abort, or truncation |
+| `1` | Model error, abort, truncation, or session save failure |
 | `2` | No prompt reached the agent |
 | `3` | The run finished without a final answer |
 | `74` | Provider infrastructure failure |

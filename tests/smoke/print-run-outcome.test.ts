@@ -29,6 +29,11 @@ interface RunResult {
 	failure: string
 }
 
+interface SharedFixture {
+	tempRoot: string
+	fake: FakeOpenAiServer
+}
+
 interface RunOptions {
 	args: string[]
 	responses?: FakeResponseScript[]
@@ -37,6 +42,8 @@ interface RunOptions {
 	session?: "file" | "none"
 	prepare?: (workDir: string, homeDir: string) => void
 	permissions?: string
+	/** Reuse one fake server and session directory across independent processes. */
+	fixture?: SharedFixture
 }
 
 interface Harness {
@@ -90,10 +97,10 @@ function spawnKimchi(
 }
 
 async function runKimchi(options: RunOptions): Promise<Harness> {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-print-outcome-"))
-	let fake: FakeOpenAiServer | undefined
+	const tempRoot = options.fixture?.tempRoot ?? mkdtempSync(join(tmpdir(), "kimchi-print-outcome-"))
+	let fake = options.fixture?.fake
 	try {
-		fake = await startFakeOpenAiServer({ responses: options.responses ?? [] })
+		fake ??= await startFakeOpenAiServer({ responses: options.responses ?? [] })
 		const homeDir = join(tempRoot, "home")
 		const workDir = join(tempRoot, "work")
 		const sessionPath = join(tempRoot, "main.jsonl")
@@ -112,8 +119,10 @@ async function runKimchi(options: RunOptions): Promise<Harness> {
 		const sessionText = existsSync(sessionPath) ? readFileSync(sessionPath, "utf-8") : undefined
 		return { result, sessionPath, workDir, requests: fake.requests, ...(sessionText ? { sessionText } : {}) }
 	} finally {
-		await fake?.stop().catch(() => {})
-		rmSync(tempRoot, { recursive: true, force: true })
+		if (!options.fixture) {
+			await fake?.stop().catch(() => {})
+			rmSync(tempRoot, { recursive: true, force: true })
+		}
 	}
 }
 
@@ -260,6 +269,17 @@ export default function recallProbe(pi) {
 	}
 }
 
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content
+	if (!Array.isArray(content)) return ""
+	return content
+		.flatMap((part) => {
+			if (typeof part !== "object" || part === null || !("text" in part) || typeof part.text !== "string") return []
+			return [part.text]
+		})
+		.join("\n")
+}
+
 function parseJsonLines(stdout: string): { type?: string }[] {
 	return stdout
 		.split("\n")
@@ -351,6 +371,76 @@ describe("non-interactive run outcome guard (compiled binary)", () => {
 			} else {
 				expect(result.stdout, result.failure).toContain("ANSWER AFTER TODO STATE")
 				expect(result.stdout, result.failure).not.toContain('"customType":"todo-state"')
+			}
+		},
+	)
+
+	it.each(PRINT_MODES)(
+		"persists a cleared todo state across fresh processes after a %s answer",
+		TIMEOUT,
+		async (mode, modeArgs) => {
+			const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-print-clear-resume-"))
+			const fake = await startFakeOpenAiServer({
+				responses: [
+					...createTodosThenScript({ stream: ["PENDING STATE ANSWER"] }),
+					{
+						toolCalls: [
+							{
+								id: "call_clear_todos",
+								type: "function",
+								function: { name: "clear_todos", arguments: "{}" },
+							},
+						],
+					},
+					{ stream: ["CLEARED STATE ANSWER"] },
+					{ stream: ["RESUMED CLEARED ANSWER"] },
+				],
+			})
+			const fixture = { tempRoot, fake }
+			const expectAnswer = ({ result }: Harness, answer: string) => {
+				expect(result.timedOut, result.failure).toBe(false)
+				expect(result.code, result.failure).toBe(0)
+				expectNoGuardMarker(result)
+				if (mode === "text") {
+					expect(result.stdout, result.failure).toBe(`${answer}\n`)
+				} else {
+					expect(result.stdout, result.failure).toContain(answer)
+					expect(result.stdout, result.failure).not.toContain('"customType":"todo-state"')
+				}
+			}
+			try {
+				const seeded = await runKimchi({
+					fixture,
+					args: ["--print", ...modeArgs, ...MODEL_ARGS, "create a pending todo"],
+				})
+				const cleared = await runKimchi({
+					fixture,
+					args: ["--print", ...modeArgs, ...MODEL_ARGS, "clear the todo"],
+				})
+				const resumed = await runKimchi({
+					fixture,
+					args: ["--print", ...modeArgs, ...MODEL_ARGS, "continue after a fresh-process resume"],
+				})
+
+				expectAnswer(seeded, "PENDING STATE ANSWER")
+				expectAnswer(cleared, "CLEARED STATE ANSWER")
+				expectAnswer(resumed, "RESUMED CLEARED ANSWER")
+
+				const chatRequests = resumed.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+				const lastRequest = chatRequests.at(-1)
+				if (!lastRequest) throw new Error(`No resumed chat request. ${resumed.result.failure}`)
+				const messages = (lastRequest.body as { messages?: { role?: string; content?: unknown }[] }).messages ?? []
+				const stateBlocks = messages
+					.filter((message) => message.role === "user")
+					.map((message) => messageText(message.content))
+					.filter((text) => text.includes("## Current Todos"))
+				expect(stateBlocks, resumed.result.failure).toHaveLength(1)
+				expect(stateBlocks[0], resumed.result.failure).toContain("The todo list was cleared.")
+				expect(stateBlocks[0], resumed.result.failure).not.toContain("Verify the answer")
+				expect(cleared.sessionText, cleared.result.failure).toContain("The todo list was cleared.")
+			} finally {
+				await fake.stop().catch(() => {})
+				rmSync(tempRoot, { recursive: true, force: true })
 			}
 		},
 	)

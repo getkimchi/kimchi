@@ -1,4 +1,10 @@
-import { AgentSession, type AgentSessionEvent, type ExtensionContext } from "@earendil-works/pi-coding-agent"
+import {
+	AgentSession,
+	type AgentSessionEvent,
+	AgentSessionRuntime,
+	type ExtensionContext,
+	type SessionManager,
+} from "@earendil-works/pi-coding-agent"
 
 type SessionMessage = Extract<
 	AgentSessionEvent,
@@ -6,7 +12,13 @@ type SessionMessage = Extract<
 >["message"]
 type CustomMessage = Extract<SessionMessage, { role: "custom" }>
 
+interface BufferedMessage {
+	originLeafId: string | null
+	message: CustomMessage
+}
+
 interface PatchableSession {
+	sessionManager: Pick<SessionManager, "getBranch" | "getLeafId">
 	_extensionMode?: ExtensionContext["mode"]
 	agent?: { continue: (...args: unknown[]) => Promise<void> }
 	_emit?: (event: AgentSessionEvent) => void
@@ -20,16 +32,35 @@ export interface OneShotSessionClass {
 	prototype: PatchableSession
 }
 
+interface PatchableSessionRuntime {
+	session?: PatchableSession
+	dispose?: (...args: unknown[]) => Promise<void>
+}
+
+export interface OneShotSessionRuntimeClass {
+	prototype: PatchableSessionRuntime
+}
+
 const terminalAssistantTail = new WeakMap<PatchableSession, boolean>()
-const bufferedMessages = new WeakMap<PatchableSession, CustomMessage[]>()
+const bufferedMessages = new WeakMap<PatchableSession, BufferedMessage[]>()
 const continueWrappedAgents = new WeakSet<NonNullable<PatchableSession["agent"]>>()
+const finalDisposalSessions = new WeakSet<PatchableSession>()
 
 function replayBuffered(session: PatchableSession, originalAppend: (message: CustomMessage) => void): void {
 	terminalAssistantTail.set(session, false)
 	const pending = bufferedMessages.get(session)
 	if (!pending) return
-	bufferedMessages.delete(session)
-	for (const message of pending) originalAppend.call(session, message)
+	// New entries can advance the leaf on the same branch. Ancestry keeps those
+	// messages eligible while excluding messages buffered on sibling branches.
+	const activeBranchIds = new Set<string | null>(session.sessionManager.getBranch().map(({ id }) => id))
+	activeBranchIds.add(null)
+	const inactive = pending.filter(({ originLeafId }) => !activeBranchIds.has(originLeafId))
+	if (inactive.length > 0) bufferedMessages.set(session, inactive)
+	else bufferedMessages.delete(session)
+
+	for (const { originLeafId, message } of pending) {
+		if (activeBranchIds.has(originLeafId)) originalAppend.call(session, message)
+	}
 }
 
 function installContinueReplay(session: PatchableSession, originalAppend: (message: CustomMessage) => void): void {
@@ -52,23 +83,28 @@ function installContinueReplay(session: PatchableSession, originalAppend: (messa
  * After a non-tool assistant message_end, print/JSON hidden appends are held
  * in order instead of persisted. They are replayed immediately before the next
  * model request: Agent.continue for retries/compaction/queued continuations,
- * or _startRun for a new prompt or extension-triggered turn. Only dispose()
- * discards the buffer; agent_end/agent_settled do not, since deferred extension
- * turns may still follow them. Interactive/RPC and visible messages are untouched.
+ * or _startRun for a new prompt or extension-triggered turn. Final runtime
+ * disposal persists remaining messages from the active branch after the answer
+ * is selected and the JSON subscriber detaches. Direct session disposal during
+ * replacement discards the buffer.
+ * Interactive/RPC and visible messages are untouched.
  *
  * REMOVE when AgentSession natively supports this buffering for one-shot runs.
  * This is an adapter, not a change to bundled pi sources.
  */
 export function installOneShotHiddenMessageGuard(
 	sessionClass: OneShotSessionClass = AgentSession as unknown as OneShotSessionClass,
+	runtimeClass: OneShotSessionRuntimeClass = AgentSessionRuntime as unknown as OneShotSessionRuntimeClass,
 ): void {
 	const proto = sessionClass.prototype
+	const runtimeProto = runtimeClass.prototype
 	if (proto._kimchiOneShotHiddenMessageGuard) return
 	const originalEmit = proto._emit
 	const originalStartRun = proto._startRun
 	const originalAppend = proto._appendCustomMessage
 	const originalDispose = proto.dispose
-	if (!originalEmit || !originalStartRun || !originalAppend || !originalDispose) {
+	const originalRuntimeDispose = runtimeProto.dispose
+	if (!originalEmit || !originalStartRun || !originalAppend || !originalDispose || !originalRuntimeDispose) {
 		console.warn("one-shot hidden-message guard: required AgentSession internals not found; guard inactive")
 		return
 	}
@@ -90,7 +126,7 @@ export function installOneShotHiddenMessageGuard(
 		const oneShot = this._extensionMode === "print" || this._extensionMode === "json"
 		if (oneShot && terminalAssistantTail.get(this) && message.display === false) {
 			const pending = bufferedMessages.get(this) ?? []
-			pending.push(message)
+			pending.push({ originLeafId: this.sessionManager.getLeafId(), message })
 			bufferedMessages.set(this, pending)
 			return
 		}
@@ -98,9 +134,28 @@ export function installOneShotHiddenMessageGuard(
 	}
 
 	proto.dispose = function (this: PatchableSession): void {
-		bufferedMessages.delete(this)
-		terminalAssistantTail.delete(this)
-		originalDispose.call(this)
+		const finalDisposal = finalDisposalSessions.delete(this)
+		try {
+			if (finalDisposal) replayBuffered(this, originalAppend)
+		} catch (error) {
+			// Pi drains its stdout queue only after runtime disposal returns.
+			console.error("Failed to persist buffered session messages:", error)
+			if (Number(process.exitCode ?? 0) === 0) process.exitCode = 1
+		} finally {
+			bufferedMessages.delete(this)
+			terminalAssistantTail.delete(this)
+			originalDispose.call(this)
+		}
+	}
+
+	runtimeProto.dispose = async function (this: PatchableSessionRuntime, ...args: unknown[]): Promise<void> {
+		const session = this.session
+		if (session) finalDisposalSessions.add(session)
+		try {
+			await originalRuntimeDispose.apply(this, args)
+		} finally {
+			if (session) finalDisposalSessions.delete(session)
+		}
 	}
 
 	proto._kimchiOneShotHiddenMessageGuard = true
