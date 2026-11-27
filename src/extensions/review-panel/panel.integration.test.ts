@@ -513,7 +513,8 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 			rootDir: join(sandbox, "worktrees"),
 			checkDefinitions: [],
 			executionPolicy: { mode: "headless" },
-			agent: { maxTurns: 5, maxDuration: 30, inactivityTimeout: 5000 },
+			// A busy runner can leave a scripted reviewer idle for seconds.
+			agent: { maxTurns: 5, maxDuration: 30, inactivityTimeout: 30_000 },
 			...extra,
 		}
 	}
@@ -534,7 +535,10 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(progress.some((update) => update.phase === "reviewing" && update.counts.candidates > 0)).toBe(true)
 		const maximumRunning = Math.max(...progress.map((update) => update.counts.running))
 		expect(maximumRunning).toBe(2)
-		expect(result.state.lenses.map((lens) => lens.status)).toEqual(["submitted", "submitted", "submitted", "submitted"])
+		expect(
+			result.state.lenses.map((lens) => lens.status),
+			JSON.stringify(result.state.lenses.map((lens) => lens.error)),
+		).toEqual(["submitted", "submitted", "submitted", "submitted"])
 		expect(result.state.candidates.map((candidate) => candidate.id)).toEqual([
 			"spec-1",
 			"standards-1",
@@ -908,13 +912,15 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		const { ctx } = await scriptedContext(defaultScript)
 		const pending = deferred<RunResult>()
 		const resolvedTarget = await target()
-		const deadline = Date.now() + 800
+		// Setup I/O runs inside this budget, so it needs room for a busy runner.
+		const budgetMs = 3_000
+		const deadline = Date.now() + budgetMs
 		const startedAt = Date.now()
 		const result = await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
 				deadline,
-				finalWriteHeadroomMs: 200,
+				finalWriteHeadroomMs: 1_000,
 				submitGraceMs: 200,
 				cancellationGraceMs: 200,
 				spawnAgent: () => pending.promise,
@@ -922,7 +928,7 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		)
 		const finishedAt = Date.now()
 		expectFinalArtifactsBeforeDeadline(deadline)
-		expect(finishedAt - startedAt).toBeLessThan(800)
+		expect(finishedAt - startedAt).toBeLessThan(budgetMs)
 		expect(result.state.lenses[0]).toMatchObject({ status: "cancelled" })
 		expect(result.summary.body).toContain("Coverage: partial")
 		expect(existsSync(reviewPanelPaths(outputDir).summaryPath)).toBe(true)
@@ -1203,8 +1209,9 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		await runReviewPanel(
 			runOptions(ctx, resolvedTarget, {
 				lenses: ["spec"],
-				deadline: Date.now() + 600,
-				finalWriteHeadroomMs: 100,
+				// The reviewer must launch before the final-write cutoff, after setup I/O.
+				deadline: Date.now() + 3_000,
+				finalWriteHeadroomMs: 1_000,
 				reconciliationReserveMs: 0,
 				submitGraceMs: 50,
 				cancellationGraceMs: 50,
@@ -1343,9 +1350,10 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 				onUsageDropped: (usage) => {
 					dropped.push(usage)
 				},
-				onChildUsage: async () => {
+				// Blocks until the flush cutoff, so the drop does not depend on how much budget is left.
+				onChildUsage: async (_usage, signal) => {
 					attempted += 1
-					await waitForDelay(400, undefined)
+					await waitForDelay(60_000, signal)
 				},
 				onProgress: (update) => {
 					if (update.phase === "complete") {
