@@ -5,8 +5,9 @@ function resolveOutcome(
 	isError: boolean | undefined,
 	classification: ToolErrorClassification | undefined,
 	resultText: string,
+	durationMs?: number,
 ): DocumentCliOutcome | undefined {
-	if (classification?.kind === "aborted" && resultText.trim() === "Operation aborted") return undefined
+	if (durationMs === undefined && classification?.kind === "aborted" && resultText.trim() === "Operation aborted") return undefined
 	if (!isError || !classification) return "success"
 	switch (classification.kind) {
 		case "command_outcome":
@@ -99,7 +100,7 @@ export function emitDocumentCliCompleted(
 ): void {
 	const attribution = attributeDocumentCliCommand(input.command)
 	if (!attribution) return
-	const outcome = resolveOutcome(input.isError, input.classification, input.resultText)
+	const outcome = resolveOutcome(input.isError, input.classification, input.resultText, input.durationMs)
 	if (!outcome) return
 	const errorCode =
 		outcome === "nonzero_exit" ? (extractDocumentErrorCode(input.resultText) ?? "unclassified") : undefined

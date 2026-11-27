@@ -21,9 +21,29 @@ describe("pre-execution document abort telemetry", () => {
 			resultText: "Operation aborted",
 			isError: true,
 			classification: { kind: "aborted", message: "Operation aborted" },
-			durationMs: 1,
+			durationMs: undefined,
 			toolCallId: "abort-queued-command",
 		})
 		expect(tm.emit).not.toHaveBeenCalled()
+	})
+
+	it("emits aborted outcome for an in-flight bare abort", () => {
+		const tm = telemetryMock()
+		const ctx = createContext() as ExtensionContext
+		emitDocumentCliCompleted(tm, ctx, {
+			command: "kimchi doc-cli pdf read input.pdf",
+			resultText: "Operation aborted",
+			isError: true,
+			classification: { kind: "aborted", message: "Operation aborted" },
+			durationMs: 4,
+			toolCallId: "abort-in-flight-command",
+		})
+		expect(tm.emit).toHaveBeenCalledOnce()
+		expect(tm.emit).toHaveBeenCalledWith(
+			"document_cli.completed",
+			expect.objectContaining({ outcome: "aborted", duration_ms: 4, tool_use_id: "abort-in-flight-command" }),
+			ctx,
+			undefined,
+		)
 	})
 })
