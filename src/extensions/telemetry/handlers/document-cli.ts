@@ -5,9 +5,8 @@ function resolveOutcome(
 	isError: boolean | undefined,
 	classification: ToolErrorClassification | undefined,
 	resultText: string,
-	durationMs?: number,
 ): DocumentCliOutcome | undefined {
-	if (durationMs === undefined && classification?.kind === "aborted" && resultText.trim() === "Operation aborted") return undefined
+	if (classification?.kind === "aborted" && resultText.trim() === "Operation aborted") return undefined
 	if (!isError || !classification) return "success"
 	switch (classification.kind) {
 		case "command_outcome":
@@ -94,13 +93,13 @@ export function emitDocumentCliCompleted(
 		resultText: string
 		isError?: boolean
 		classification?: ToolErrorClassification
-		durationMs: number
+		durationMs?: number
 		toolCallId: string
 	},
 ): void {
 	const attribution = attributeDocumentCliCommand(input.command)
 	if (!attribution) return
-	const outcome = resolveOutcome(input.isError, input.classification, input.resultText, input.durationMs)
+	const outcome = resolveOutcome(input.isError, input.classification, input.resultText)
 	if (!outcome) return
 	const errorCode =
 		outcome === "nonzero_exit" ? (extractDocumentErrorCode(input.resultText) ?? "unclassified") : undefined
@@ -111,7 +110,7 @@ export function emitDocumentCliCompleted(
 			document_type: attribution.documentType,
 			operation: attribution.operation,
 			outcome,
-			duration_ms: input.durationMs,
+			duration_ms: input.durationMs ?? 0,
 			...(errorCode ? { error_code: errorCode } : {}),
 			turn_index: tm.turnIndex,
 			tool_use_id: input.toolCallId,

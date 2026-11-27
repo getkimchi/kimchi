@@ -1,21 +1,28 @@
 import { describe, expect, it, vi } from "vitest"
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { TelemetryConfig } from "../../../config.js"
 import { createContext } from "../../__mocks__/context.js"
-import type { TelemetryContext } from "../session-context.js"
+import { TelemetryContext } from "../session-context.js"
 import { emitDocumentCliCompleted } from "./document-cli.js"
+import { handleToolExecutionEnd, handleToolExecutionStart } from "./tools.js"
 
 function telemetryMock() {
-	return {
-		emit: vi.fn(),
-		lastRoutedModel: undefined,
-		turnIndex: 1,
-	} as unknown as TelemetryContext
+	const config: TelemetryConfig = {
+		enabled: true,
+		endpoint: "",
+		metricsEndpoint: "",
+		headers: {},
+		apiKey: "",
+	}
+	const tm = new TelemetryContext(config)
+	tm.emit = vi.fn()
+	tm.turnIndex = 1
+	return tm
 }
 
-describe("pre-execution document abort telemetry", () => {
-	it("does not emit completion for a queued command aborted before execution", () => {
+describe("document abort telemetry", () => {
+	it("emits no completion for a queued bare abort", () => {
 		const tm = telemetryMock()
-		const ctx = createContext() as ExtensionContext
+		const ctx = createContext()
 		emitDocumentCliCompleted(tm, ctx, {
 			command: "kimchi doc-cli pdf info input.pdf",
 			resultText: "Operation aborted",
@@ -27,14 +34,14 @@ describe("pre-execution document abort telemetry", () => {
 		expect(tm.emit).not.toHaveBeenCalled()
 	})
 
-	it("emits aborted outcome for an in-flight bare abort", () => {
+	it("preserves the command-aborted outcome for in-flight document commands", () => {
 		const tm = telemetryMock()
-		const ctx = createContext() as ExtensionContext
+		const ctx = createContext()
 		emitDocumentCliCompleted(tm, ctx, {
 			command: "kimchi doc-cli pdf read input.pdf",
-			resultText: "Operation aborted",
+			resultText: "Command aborted",
 			isError: true,
-			classification: { kind: "aborted", message: "Operation aborted" },
+			classification: { kind: "aborted", message: "Command aborted" },
 			durationMs: 4,
 			toolCallId: "abort-in-flight-command",
 		})
@@ -42,6 +49,25 @@ describe("pre-execution document abort telemetry", () => {
 		expect(tm.emit).toHaveBeenCalledWith(
 			"document_cli.completed",
 			expect.objectContaining({ outcome: "aborted", duration_ms: 4, tool_use_id: "abort-in-flight-command" }),
+			ctx,
+			undefined,
+		)
+	})
+})
+
+describe("upstream tool execution end integration", () => {
+	it("preserves an in-flight Command aborted outcome for document commands", () => {
+		const tm = telemetryMock()
+		const ctx = createContext()
+		handleToolExecutionStart(tm, { toolCallId: "upstream-in-flight", toolName: "bash", args: { command: "kimchi doc-cli pdf info input.pdf" } })
+		handleToolExecutionEnd(tm, ctx, {
+			toolCallId: "upstream-in-flight",
+			isError: true,
+			result: { content: [{ type: "text", text: "Command aborted" }], details: {} },
+		})
+		expect(tm.emit).toHaveBeenCalledWith(
+			"document_cli.completed",
+			expect.objectContaining({ outcome: "aborted" }),
 			ctx,
 			undefined,
 		)
