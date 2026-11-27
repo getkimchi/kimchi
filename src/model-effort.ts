@@ -6,13 +6,13 @@ export const MODEL_EFFORT_SELECTION_ENTRY_TYPE = "model_effort_selection"
 
 const CANONICAL_LEVELS = new Set<string>(CANONICAL_THINKING_LEVELS)
 
-export function parseModelThinkingLevel(value: unknown): ModelThinkingLevel | undefined {
+export function parseModelEffortLevel(value: unknown): ModelThinkingLevel | undefined {
 	return typeof value === "string" && CANONICAL_LEVELS.has(value) ? (value as ModelThinkingLevel) : undefined
 }
 
 export function getModelEffortDefault(modelId: string, configPath?: string): ModelThinkingLevel | undefined {
 	// Keep first-use reads live so defaults written by other CLI processes are visible.
-	return parseModelThinkingLevel(readModelEffortDefaults(configPath)[modelId])
+	return parseModelEffortLevel(readModelEffortDefaults(configPath)[modelId])
 }
 
 function recordOf(value: unknown): Record<string, unknown> | undefined {
@@ -26,7 +26,7 @@ export function readSessionEffortSelections(entries: readonly unknown[]): Map<st
 		const record = recordOf(entry)
 		if (record?.type !== "custom" || record.customType !== MODEL_EFFORT_SELECTION_ENTRY_TYPE) continue
 		const data = recordOf(record.data)
-		const effort = parseModelThinkingLevel(data?.value)
+		const effort = parseModelEffortLevel(data?.value)
 		if (typeof data?.modelId !== "string" || data.modelId.length === 0 || !effort) continue
 		selections.set(data.modelId, effort)
 	}

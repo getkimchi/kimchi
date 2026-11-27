@@ -1,16 +1,17 @@
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
+import type { readModelEffortDefaults } from "../../config.js"
 import { isAutoRoutedModel } from "../../extensions/auto-model/constants.js"
+import { parseModelEffortLevel } from "../../model-effort.js"
 import { getModelVirtualIdentity } from "../../models.js"
 import { refFromModel } from "../../shared/model-ref.js"
 import { clampToSelection, thinkingSelection } from "../../thinking-selection.js"
 import { type KimchiDevMeta, kimchiDevMetaOf } from "./capabilities.js"
-import { type ModelThinkingDefaults, parseModelThinkingLevel } from "./model-thinking-persistence.js"
 
-export type ModelThinkingAvailability = "multiple" | "fixed" | "provider-controlled" | "unsupported" | "routed"
+export type ModelEffortAvailability = "multiple" | "fixed" | "provider-controlled" | "unsupported" | "routed"
 
-export interface ModelThinkingMetadata {
-	availability: ModelThinkingAvailability
+export interface ModelEffortMetadata {
+	availability: ModelEffortAvailability
 	levels?: ModelThinkingLevel[]
 	currentValue: ModelThinkingLevel | null
 	/** Distinguishes built-in Auto, with dynamic route resolution and
@@ -37,20 +38,20 @@ export function configuredModelDescription(model: Model<Api>): string | undefine
 	return typeof description === "string" && description.trim() ? description.trim() : undefined
 }
 
-export interface ModelThinkingMetadataContext {
-	thinkingDefaults: ModelThinkingDefaults
-	thinkingByModel: ReadonlyMap<string, ModelThinkingLevel>
+export interface ModelEffortMetadataContext {
+	effortDefaults: ReturnType<typeof readModelEffortDefaults>
+	effortByModel: ReadonlyMap<string, ModelThinkingLevel>
 	currentModel: AgentSession["model"]
 	currentThinkingLevel: AgentSession["thinkingLevel"]
 	settingsManager: AgentSession["settingsManager"]
 }
 
-/** Build one model row's Model Thinking metadata for the versioned modelEffort wire
+/** Build one model row's Effort metadata for the versioned modelEffort wire
  * slot, using the same authorities as when that model becomes active. */
-export function buildModelThinkingMeta(
+export function buildModelEffortMeta(
 	model: Model<Api>,
-	context: ModelThinkingMetadataContext,
-): KimchiDevMeta<{ modelEffort: ModelThinkingMetadata }> {
+	context: ModelEffortMetadataContext,
+): KimchiDevMeta<{ modelEffort: ModelEffortMetadata }> {
 	const virtual = modelVirtualIdentity(model)
 	if (virtual) {
 		return kimchiDevMetaOf({ modelEffort: { availability: "routed", currentValue: null, virtual } })
@@ -71,15 +72,15 @@ export function buildModelThinkingMeta(
 		})
 	}
 
-	const remembered = context.thinkingByModel.get(modelId)
-	const storedThinkingDefault = parseModelThinkingLevel(context.thinkingDefaults[modelId])
+	const remembered = context.effortByModel.get(modelId)
+	const storedDefault = parseModelEffortLevel(context.effortDefaults[modelId])
 	const harnessFallback = isCurrent
 		? context.currentThinkingLevel
 		: (context.settingsManager.getModelThinkingLevel(model.provider, model.id) ??
 			context.settingsManager.getDefaultThinkingLevel() ??
 			context.currentThinkingLevel)
-	const currentValue = parseModelThinkingLevel(
-		clampToSelection(remembered ?? storedThinkingDefault ?? harnessFallback, selection),
+	const currentValue = parseModelEffortLevel(
+		clampToSelection(remembered ?? storedDefault ?? harnessFallback, selection),
 	)
 	return kimchiDevMetaOf({
 		modelEffort: {

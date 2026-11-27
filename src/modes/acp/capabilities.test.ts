@@ -2,7 +2,7 @@ import { expect, it } from "vitest"
 import {
 	getClientOptedIntoArtifacts,
 	getClientOptedIntoMcpOAuthTurn,
-	getClientOptedIntoModelThinking,
+	getClientOptedIntoModelEffort,
 	getClientOptedIntoPRMonitoring,
 } from "./capabilities.js"
 
@@ -46,5 +46,5 @@ it.each([
 	{ flags: { modelEffort: 2 }, allowed: false },
 	{ flags: { modelEffort: 1 }, allowed: true },
 ])("requires modelEffort capability version 1: $flags", ({ flags, allowed }) => {
-	expect(getClientOptedIntoModelThinking(flags ? { _meta: { "kimchi.dev": flags } } : undefined)).toBe(allowed)
+	expect(getClientOptedIntoModelEffort(flags ? { _meta: { "kimchi.dev": flags } } : undefined)).toBe(allowed)
 })

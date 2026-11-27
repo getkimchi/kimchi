@@ -186,21 +186,19 @@ export function getClientOptedIntoPRMonitoring(capabilities: ClientCapabilities 
 }
 
 /**
- * Versioned opt-in for concrete-model Thinking persistence and ACP v1
- * per-model-row metadata under the versioned wire key
- * `_meta["kimchi.dev"].modelEffort`. The wire key retains its established
- * spelling; ACP-local APIs use Model Thinking consistently.
+ * Versioned opt-in for concrete-model Effort persistence and ACP v1
+ * per-model-row metadata under `_meta["kimchi.dev"].modelEffort`.
  * ACP's completed Model Config Option Category RFD covers `model_config`
  * placement only. The vendor default-write operation and row schema
  * (availability, ordered levels, session values, and virtual identity)
  * are own design, no spec track; saved defaults stay inside the CLI.
  */
-export const MODEL_THINKING_CAPABILITY = "modelEffort"
-export const MODEL_THINKING_VERSION = 1
+export const MODEL_EFFORT_CAPABILITY = "modelEffort"
+export const MODEL_EFFORT_VERSION = 1
 
-export function getClientOptedIntoModelThinking(capabilities: ClientCapabilities | undefined): boolean {
+export function getClientOptedIntoModelEffort(capabilities: ClientCapabilities | undefined): boolean {
 	const flags = capabilities?._meta?.[CAPABILITIES_KEY] as Record<string, unknown> | undefined
-	return flags?.[MODEL_THINKING_CAPABILITY] === MODEL_THINKING_VERSION
+	return flags?.[MODEL_EFFORT_CAPABILITY] === MODEL_EFFORT_VERSION
 }
 
 /**

@@ -84,10 +84,12 @@ import {
 	clearApiKey,
 	endpointsForRegion,
 	loadConfig as loadKimchiConfig,
+	readModelEffortDefaults,
 	resolveEndpoints,
 	resolveSelfHostedEndpoints,
 	type WriteApiKeyOptions,
 	writeApiKey,
+	writeModelEffortDefault,
 	writeRegion,
 } from "../../config.js"
 import {
@@ -166,6 +168,12 @@ import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { classifyLLMGatewayError, parseRateLimitRetryAt } from "../../llm-gateway-error.js"
 import { collectDeprecationMarkers } from "../../model-deprecation.js"
+import {
+	getModelEffortDefault,
+	MODEL_EFFORT_SELECTION_ENTRY_TYPE,
+	parseModelEffortLevel,
+	readSessionEffortSelections,
+} from "../../model-effort.js"
 import { applyOrganizationHeader, getModelDescription, updateModelsConfig } from "../../models.js"
 import { oauthConfigForRegion, ssoAvailableRegions } from "../../oauth-config.js"
 import { clearPiAuth, syncOAuthCredentialToKimchiProviders, syncPiAuth } from "../../pi-auth.js"
@@ -198,13 +206,13 @@ import {
 	getClientOptedIntoArtifacts,
 	getClientOptedIntoBackgroundRuns,
 	getClientOptedIntoMcpOAuthTurn,
-	getClientOptedIntoModelThinking,
+	getClientOptedIntoModelEffort,
 	getClientOptedIntoPRMonitoring,
 	getClientSupportsMethod,
 	kimchiDevMetaOf,
 	MCP_OAUTH_TURN_CAPABILITY,
-	MODEL_THINKING_CAPABILITY,
-	MODEL_THINKING_VERSION,
+	MODEL_EFFORT_CAPABILITY,
+	MODEL_EFFORT_VERSION,
 	PR_MONITORING_CAPABILITY,
 } from "./capabilities.js"
 import { registerAcpChildInteraction, registerAcpRootUIContext } from "./child-interaction-registry.js"
@@ -240,19 +248,11 @@ import { handleSsoCredential } from "./ext-methods/sso-credential.js"
 import { handleSteering } from "./ext-methods/steering.js"
 import { type ModelAttribution, modelAttributionFrom, modelMetaFor, spreadModelMeta } from "./model-attribution.js"
 import {
-	buildModelThinkingMeta,
+	buildModelEffortMeta,
 	configuredModelDescription,
-	type ModelThinkingMetadataContext,
+	type ModelEffortMetadataContext,
 	modelVirtualIdentity,
-} from "./model-thinking-metadata.js"
-import {
-	getModelThinkingDefault,
-	MODEL_THINKING_SELECTION_ENTRY_TYPE,
-	parseModelThinkingLevel,
-	readModelThinkingDefaults,
-	readSessionThinkingSelections,
-	writeModelThinkingDefault,
-} from "./model-thinking-persistence.js"
+} from "./model-effort-metadata.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "./permission-prompter-registry.js"
 import { AcpPlanTracker } from "./plans.js"
 import { emitRoutedModelUpdate } from "./routed-model-updates.js"
@@ -703,7 +703,7 @@ export class KimchiAcpAgent {
 					[BACKGROUND_RUNS_CAPABILITY]: true,
 					[MCP_OAUTH_TURN_CAPABILITY]: true,
 					[PR_MONITORING_CAPABILITY]: true,
-					[MODEL_THINKING_CAPABILITY]: MODEL_THINKING_VERSION,
+					[MODEL_EFFORT_CAPABILITY]: MODEL_EFFORT_VERSION,
 					// Cast AI SSO login via the stepwise `_kimchi.dev/sso_*` ext
 					// methods. Clients gate their SSO UI on this flag.
 					sso: true,
@@ -970,7 +970,7 @@ export class KimchiAcpAgent {
 				session,
 				initialMode,
 				(params) => this.send(params),
-				() => buildConfigOptions(record, initialMode.mode, getClientOptedIntoModelThinking(this.clientCapabilities)),
+				() => buildConfigOptions(record, initialMode.mode, getClientOptedIntoModelEffort(this.clientCapabilities)),
 			)
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
@@ -978,7 +978,7 @@ export class KimchiAcpAgent {
 			// extension events are dropped before this.sessions is populated.
 			const record: SessionRecord = {
 				session,
-				thinkingByModel: readSessionThinkingSelections(session.sessionManager.getEntries()),
+				effortByModel: readSessionEffortSelections(session.sessionManager.getEntries()),
 				unsubscribe: () => {},
 				cwd: session.sessionManager.getCwd(),
 				nextBlockId: 0,
@@ -1021,11 +1021,11 @@ export class KimchiAcpAgent {
 			this.scheduleAvailableCommandsUpdate(sessionId)
 			this.scheduleProjectTrustUpdate(sessionId)
 
-			this.restoreModelThinking(record)
+			this.restoreModelEffort(record)
 			const configOptions = buildConfigOptions(
 				record,
 				initialMode.mode,
-				getClientOptedIntoModelThinking(this.clientCapabilities),
+				getClientOptedIntoModelEffort(this.clientCapabilities),
 			)
 			// Seed the tracker with what the client is about to receive, so the
 			// first message_start only re-publishes when the router's pick has
@@ -1145,7 +1145,7 @@ export class KimchiAcpAgent {
 			configOptions: buildConfigOptions(
 				record,
 				this.getInitialPermissionMode(record.session).mode,
-				getClientOptedIntoModelThinking(this.clientCapabilities),
+				getClientOptedIntoModelEffort(this.clientCapabilities),
 			),
 		}
 	}
@@ -1169,7 +1169,7 @@ export class KimchiAcpAgent {
 		return permissionMode
 	}
 
-	private async setModelThinking(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+	private async setModelEffort(params: Record<string, unknown>): Promise<Record<string, unknown>> {
 		const record = this.sessions.get(typeof params.sessionId === "string" ? params.sessionId : "")
 		if (!record) throw RequestError.invalidParams(undefined, "sessionId must identify a current session")
 		if (typeof params.modelId !== "string" || !splitModelRef(params.modelId)) {
@@ -1178,17 +1178,17 @@ export class KimchiAcpAgent {
 		const currentRef = record.session.model ? refFromModel(record.session.model) : undefined
 		const target = findModelByRef(getSessionModelRegistry(record.session), params.modelId)
 		if (!target || modelVirtualIdentity(target)) {
-			throw RequestError.invalidParams(undefined, `model not available for thinking level selection: ${params.modelId}`)
+			throw RequestError.invalidParams(undefined, `model not available for Effort selection: ${params.modelId}`)
 		}
 		const selection = thinkingSelection(
 			currentRef === params.modelId && record.session.model ? record.session.model : target,
 		)
-		const thinkingLevel = parseModelThinkingLevel(params.value)
+		const effort = parseModelEffortLevel(params.value)
 		if (
 			selection.mode !== "levels" ||
 			selection.selectable.length < 2 ||
-			!thinkingLevel ||
-			!selection.selectable.includes(thinkingLevel)
+			!effort ||
+			!selection.selectable.includes(effort)
 		) {
 			throw RequestError.invalidParams(
 				undefined,
@@ -1200,23 +1200,20 @@ export class KimchiAcpAgent {
 		if (!record.session.model || refFromModel(record.session.model) !== params.modelId) {
 			throw RequestError.invalidParams(
 				undefined,
-				"the session model changed during thinking level selection; retry the request",
+				"the session model changed during Effort selection; retry the request",
 			)
 		}
-		this.doSetThinkingLevel(record, thinkingLevel)
+		this.doSetThinkingLevel(record, effort)
 		const configOptions = () =>
 			buildConfigOptions(
 				record,
 				this.getInitialPermissionMode(record.session).mode,
-				getClientOptedIntoModelThinking(this.clientCapabilities),
+				getClientOptedIntoModelEffort(this.clientCapabilities),
 			)
 		try {
-			writeModelThinkingDefault(params.modelId, thinkingLevel)
+			writeModelEffortDefault(params.modelId, effort)
 		} catch (error) {
-			console.error(
-				`[model-thinking] failed to persist ${params.modelId} default after applying session thinking level:`,
-				error,
-			)
+			console.error(`[model-effort] failed to persist ${params.modelId} default after applying session Effort:`, error)
 			// Retain the applied state, but let the client distinguish partial persistence failure.
 			return { configOptions: configOptions(), persistenceFailed: true }
 		}
@@ -1231,8 +1228,8 @@ export class KimchiAcpAgent {
 		if (!session.model) {
 			throw RequestError.invalidParams(undefined, "no model is selected for this session")
 		}
-		if (getClientOptedIntoModelThinking(this.clientCapabilities) && modelVirtualIdentity(session.model)) {
-			throw RequestError.invalidParams(undefined, "routed virtual models have no session thinking level")
+		if (getClientOptedIntoModelEffort(this.clientCapabilities) && modelVirtualIdentity(session.model)) {
+			throw RequestError.invalidParams(undefined, "routed virtual models have no session Effort value")
 		}
 		const selection = thinkingSelection(session.model)
 		if (selection.mode !== "levels" || selection.selectable.length === 0) {
@@ -1245,17 +1242,17 @@ export class KimchiAcpAgent {
 			)
 		}
 		session.setThinkingLevel(value)
-		if (getClientOptedIntoModelThinking(this.clientCapabilities) && !modelVirtualIdentity(session.model)) {
+		if (getClientOptedIntoModelEffort(this.clientCapabilities) && !modelVirtualIdentity(session.model)) {
 			const modelId = refFromModel(session.model)
-			record.thinkingByModel.set(modelId, value)
-			session.sessionManager.appendCustomEntry(MODEL_THINKING_SELECTION_ENTRY_TYPE, { modelId, value })
+			record.effortByModel.set(modelId, value)
+			session.sessionManager.appendCustomEntry(MODEL_EFFORT_SELECTION_ENTRY_TYPE, { modelId, value })
 		}
 	}
 
 	/** Resolve the current concrete model through session memory, then its
 	 * concrete-model default, then the session's existing harness level. */
-	private restoreModelThinking(record: SessionRecord): void {
-		if (!getClientOptedIntoModelThinking(this.clientCapabilities)) return
+	private restoreModelEffort(record: SessionRecord): void {
+		if (!getClientOptedIntoModelEffort(this.clientCapabilities)) return
 		const { session } = record
 		const model = session.model
 		if (!model || modelVirtualIdentity(model)) return
@@ -1263,19 +1260,16 @@ export class KimchiAcpAgent {
 		if (selection.mode !== "levels" || selection.selectable.length === 0) return
 
 		const modelId = refFromModel(model)
-		const remembered = record.thinkingByModel.get(modelId)
-		const stored = remembered ?? getModelThinkingDefault(modelId)
+		const remembered = record.effortByModel.get(modelId)
+		const stored = remembered ?? getModelEffortDefault(modelId)
 		const clamped = clampToSelection(stored ?? session.thinkingLevel, selection)
-		const thinkingLevel = parseModelThinkingLevel(clamped)
-		if (!thinkingLevel) return
-		if (session.thinkingLevel !== thinkingLevel) session.setThinkingLevel(thinkingLevel)
-		record.thinkingByModel.set(modelId, thinkingLevel)
-		if (remembered !== thinkingLevel) {
+		const effort = parseModelEffortLevel(clamped)
+		if (!effort) return
+		if (session.thinkingLevel !== effort) session.setThinkingLevel(effort)
+		record.effortByModel.set(modelId, effort)
+		if (remembered !== effort) {
 			// Pin the baseline too: later defaults must not rewrite this existing session.
-			session.sessionManager.appendCustomEntry(MODEL_THINKING_SELECTION_ENTRY_TYPE, {
-				modelId,
-				value: thinkingLevel,
-			})
+			session.sessionManager.appendCustomEntry(MODEL_EFFORT_SELECTION_ENTRY_TYPE, { modelId, value: effort })
 		}
 	}
 
@@ -1302,13 +1296,13 @@ export class KimchiAcpAgent {
 		}
 
 		try {
-			// Ordinary model selections save a default; Thinking-only switches stay session-scoped.
+			// Ordinary model selections save a default; Effort-only switches stay session-scoped.
 			await session.setModel(target, { persist })
 		} catch {
 			// Pi's setModel only throws "if no auth is configured for the model"
 			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
 		}
-		this.restoreModelThinking(record)
+		this.restoreModelEffort(record)
 		// Both entry points advertise refreshed options here: the model-dependent
 		// reasoning_effort set changes with the model, and unstable_setSessionModel's
 		// legacy wire shape returns {}, so those clients can only learn it via push.
@@ -1319,7 +1313,7 @@ export class KimchiAcpAgent {
 				configOptions: buildConfigOptions(
 					record,
 					this.getInitialPermissionMode(session).mode,
-					getClientOptedIntoModelThinking(this.clientCapabilities),
+					getClientOptedIntoModelEffort(this.clientCapabilities),
 				),
 			},
 		})
@@ -1393,7 +1387,7 @@ export class KimchiAcpAgent {
 				const configOptions = buildConfigOptions(
 					existing,
 					this.getInitialPermissionMode(existing.session).mode,
-					getClientOptedIntoModelThinking(this.clientCapabilities),
+					getClientOptedIntoModelEffort(this.clientCapabilities),
 				)
 				return { response: { configOptions }, publication: this.subagentRegistry.complete(sessionId, recovery) }
 			}
@@ -1443,7 +1437,7 @@ export class KimchiAcpAgent {
 				session,
 				initialMode,
 				(params) => this.send(params),
-				() => buildConfigOptions(record, initialMode.mode, getClientOptedIntoModelThinking(this.clientCapabilities)),
+				() => buildConfigOptions(record, initialMode.mode, getClientOptedIntoModelEffort(this.clientCapabilities)),
 			)
 			// Build the record early so the ACP prompter can allocate ACP
 			// toolCallIds that match the ids later emitted by tool_execution_start.
@@ -1451,7 +1445,7 @@ export class KimchiAcpAgent {
 			// extension events are dropped before this.sessions is populated.
 			const record: SessionRecord = {
 				session,
-				thinkingByModel: readSessionThinkingSelections(session.sessionManager.getEntries()),
+				effortByModel: readSessionEffortSelections(session.sessionManager.getEntries()),
 				unsubscribe: () => {},
 				// The session header cwd was validated against params.cwd above, so
 				// the session manager's cwd is the session's true cwd.
@@ -1504,11 +1498,11 @@ export class KimchiAcpAgent {
 			this.scheduleAvailableCommandsUpdate(sessionId)
 			this.scheduleProjectTrustUpdate(sessionId)
 
-			this.restoreModelThinking(record)
+			this.restoreModelEffort(record)
 			const configOptions = buildConfigOptions(
 				record,
 				initialMode.mode,
-				getClientOptedIntoModelThinking(this.clientCapabilities),
+				getClientOptedIntoModelEffort(this.clientCapabilities),
 			)
 			await this.subagentRegistry.replay(session, replayHistory)
 			// Same seeding as newSession (see there) — a resumed Auto session
@@ -2009,10 +2003,10 @@ export class KimchiAcpAgent {
 				// Kimchi surfaces survive.
 				return handleSetOnboardingFlag({}, params)
 			case AVAILABLE_EXT_METHODS.set_model_effort:
-				if (!getClientOptedIntoModelThinking(this.clientCapabilities)) {
+				if (!getClientOptedIntoModelEffort(this.clientCapabilities)) {
 					throw RequestError.methodNotFound(AVAILABLE_EXT_METHODS.set_model_effort)
 				}
-				return this.setModelThinking(params)
+				return this.setModelEffort(params)
 			case AVAILABLE_EXT_METHODS.set_session_title:
 				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
 			case AVAILABLE_EXT_METHODS.steering:
@@ -3403,7 +3397,7 @@ export class KimchiAcpAgent {
 		const configOptions = buildConfigOptions(
 			entry,
 			this.getInitialPermissionMode(entry.session).mode,
-			getClientOptedIntoModelThinking(this.clientCapabilities),
+			getClientOptedIntoModelEffort(this.clientCapabilities),
 		)
 		const autoName = autoOptionName(configOptions)
 		if (!autoName || autoName === entry.lastModelOptionName) return
@@ -4059,10 +4053,10 @@ function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSel
 
 export function buildModelConfigOption(
 	session: AgentSessionModelConfig,
-	modelThinking?: ModelThinkingMetadataContext,
+	modelEffort?: ModelEffortMetadataContext,
 ): SessionConfigOption {
 	const modelRegistry = getSessionModelRegistry(session)
-	// Registry descriptions join ACP rows only for the negotiated Thinking view.
+	// Registry descriptions join ACP rows only for the negotiated Effort view.
 	// Legacy rows keep their previous marker-only presentation byte-for-byte.
 	const deprecationMarkers = collectDeprecationMarkers(join(loadKimchiConfig().agentConfigDir, "models.json"))
 	const options: SessionConfigSelectOption[] = modelRegistry.getAvailable().map((m) => {
@@ -4072,13 +4066,13 @@ export function buildModelConfigOption(
 		} else {
 			const modelId = refFromModel(m)
 			const marker = deprecationMarkers.get(m.id)
-			const configured = modelThinking ? configuredModelDescription(m) : undefined
-			const description = modelThinking
+			const configured = modelEffort ? configuredModelDescription(m) : undefined
+			const description = modelEffort
 				? (getModelDescription(modelId) ?? ([marker, configured].filter(Boolean).join(" ") || undefined))
 				: marker
 			option = { value: modelId, name: m.name, ...(description ? { description } : {}) }
 		}
-		return modelThinking ? { ...option, _meta: buildModelThinkingMeta(m, modelThinking) } : option
+		return modelEffort ? { ...option, _meta: buildModelEffortMeta(m, modelEffort) } : option
 	})
 	options.sort((a, b) => a.value.localeCompare(b.value))
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
@@ -4123,7 +4117,7 @@ export function buildThinkingConfigOption(
 	// thinkingSelection describes a concrete model's reasoning levels, not
 	// routing identity. A routed alias can have selectable levels while its
 	// concrete model varies per request, so model_config must not offer an
-	// alias-owned Thinking editor. This is a negotiated ACP gate, not a change
+	// alias-owned Effort editor. This is a negotiated ACP gate, not a change
 	// to shared selection or legacy clients' existing Auto behavior.
 	if (category === "model_config" && modelVirtualIdentity(session.model)) return null
 	const selection = thinkingSelection(session.model)
@@ -4163,21 +4157,21 @@ function autoOptionName(configOptions: SessionConfigOption[]): string | undefine
 function buildConfigOptions(
 	record: SessionRecord,
 	defaultMode: PermissionMode,
-	includeModelThinking: boolean,
+	includeModelEffort: boolean,
 ): SessionConfigOption[] {
 	const { session } = record
 	const mode = getPermissionMode(session.sessionId)?.mode ?? defaultMode
-	const modelThinking = includeModelThinking
+	const modelEffort = includeModelEffort
 		? {
-				thinkingDefaults: readModelThinkingDefaults(),
-				thinkingByModel: record.thinkingByModel,
+				effortDefaults: readModelEffortDefaults(),
+				effortByModel: record.effortByModel,
 				currentModel: session.model,
 				currentThinkingLevel: session.thinkingLevel,
 				settingsManager: session.settingsManager,
 			}
 		: undefined
-	const options = [buildPermissionsConfigOption(mode), buildModelConfigOption(session, modelThinking)]
-	const thinking = buildThinkingConfigOption(session, includeModelThinking ? "model_config" : "thought_level")
+	const options = [buildPermissionsConfigOption(mode), buildModelConfigOption(session, modelEffort)]
+	const thinking = buildThinkingConfigOption(session, includeModelEffort ? "model_config" : "thought_level")
 	if (thinking) options.push(thinking)
 	return options
 }
