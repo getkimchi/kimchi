@@ -23,7 +23,13 @@ function customMessage(display = false, customType = "memory-recall"): CustomMes
 	return { role: "custom", customType, content: "context", display, timestamp: Date.now() }
 }
 
-function createHarness(mode: ExtensionContext["mode"] = "print", appendFailure?: Error) {
+type ModeBinding = Pick<Parameters<AgentSession["bindExtensions"]>[0], "mode">
+
+function createHarness(
+	mode: ExtensionContext["mode"] = "print",
+	appendFailure?: Error,
+	bindings: ModeBinding = { mode },
+) {
 	const appended: CustomMessage[] = []
 	let branch = [createAssistantEntry([], { id: "original" })]
 	const emitted: AgentSessionEvent[] = []
@@ -32,7 +38,10 @@ function createHarness(mode: ExtensionContext["mode"] = "print", appendFailure?:
 	let disposals = 0
 	const appendsAtContinue: number[] = []
 	const proto = {
-		_extensionMode: mode,
+		_extensionMode: "print" as ExtensionContext["mode"],
+		async bindExtensions({ mode }: ModeBinding) {
+			if (mode !== undefined) this._extensionMode = mode
+		},
 		sessionManager: {
 			getLeafId: () => branch.at(-1)?.id ?? null,
 			getBranch: () => branch,
@@ -65,6 +74,7 @@ function createHarness(mode: ExtensionContext["mode"] = "print", appendFailure?:
 		},
 	}
 	installOneShotHiddenMessageGuard({ prototype: proto }, { prototype: runtimeProto })
+	void session.bindExtensions(bindings)
 	return {
 		session,
 		appended,
@@ -268,10 +278,23 @@ describe("one-shot hidden-message guard", () => {
 		expect(h.appended).toEqual([state])
 	})
 
+	it("journals hidden messages immediately when extensions bind without a mode", () => {
+		const h = createHarness("print", undefined, {})
+		h.session._emit(assistantEnd())
+		const state = customMessage(false, "todo-state")
+
+		h.session._appendCustomMessage(state)
+		expect(h.appended).toEqual([state])
+
+		h.dispose()
+		expect(h.appended).toEqual([state])
+	})
+
 	it("is idempotent", () => {
 		const appended: CustomMessage[] = []
 		const proto: {
 			_extensionMode: "print"
+			bindExtensions: AgentSession["bindExtensions"]
 			sessionManager: { getBranch: () => []; getLeafId: () => null }
 			_emit: (event: AgentSessionEvent) => void
 			_startRun: (...args: unknown[]) => Promise<void>
@@ -280,6 +303,7 @@ describe("one-shot hidden-message guard", () => {
 			_kimchiOneShotHiddenMessageGuard?: boolean
 		} = {
 			_extensionMode: "print",
+			async bindExtensions() {},
 			sessionManager: { getBranch: () => [], getLeafId: () => null },
 			_emit() {},
 			async _startRun() {},
@@ -302,7 +326,7 @@ describe("one-shot hidden-message guard", () => {
 
 	it("targets the pinned AgentSession append and run lifecycle methods", () => {
 		const proto = AgentSession.prototype as unknown as Record<string, unknown>
-		for (const method of ["_emit", "_startRun", "_appendCustomMessage", "dispose"]) {
+		for (const method of ["bindExtensions", "_emit", "_startRun", "_appendCustomMessage", "dispose"]) {
 			expect(typeof proto[method], method).toBe("function")
 		}
 		expect(typeof AgentSessionRuntime.prototype.dispose).toBe("function")

@@ -205,22 +205,28 @@ function prepareAbortAfterPartialAnswer(workDir: string, homeDir: string): void 
 	)
 }
 
+function writeProbeExtension(workDir: string, homeDir: string, name: string, source: string): void {
+	const harnessSettings = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+	const settings = JSON.parse(readFileSync(harnessSettings, "utf-8")) as Record<string, unknown>
+	const extensionDir = join(workDir, ".kimchi", "extensions")
+	const extensionPath = join(extensionDir, name)
+	mkdirSync(extensionDir, { recursive: true })
+	writeFileSync(
+		harnessSettings,
+		JSON.stringify({ ...settings, defaultProjectTrust: "always", extensions: [extensionPath] }),
+	)
+	writeFileSync(extensionPath, source)
+}
+
 function prepareRecallProbe(
 	timing: "immediate" | "final-message" | "first-error",
 	fact: string,
 ): NonNullable<RunOptions["prepare"]> {
 	return (workDir, homeDir) => {
-		const harnessSettings = join(homeDir, ".config", "kimchi", "harness", "settings.json")
-		const settings = JSON.parse(readFileSync(harnessSettings, "utf-8")) as Record<string, unknown>
-		const extensionDir = join(workDir, ".kimchi", "extensions")
-		const extensionPath = join(extensionDir, "recall-probe.ts")
-		mkdirSync(extensionDir, { recursive: true })
-		writeFileSync(
-			harnessSettings,
-			JSON.stringify({ ...settings, defaultProjectTrust: "always", extensions: [extensionPath] }),
-		)
-		writeFileSync(
-			extensionPath,
+		writeProbeExtension(
+			workDir,
+			homeDir,
+			"recall-probe.ts",
 			`import { runRecall } from ${JSON.stringify(RECALL_MODULE_URL)}
 export default function recallProbe(pi) {
   let releaseSearch
@@ -495,6 +501,57 @@ describe("non-interactive run outcome guard (compiled binary)", () => {
 			const chatRequests = requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
 			expect(chatRequests.length, result.failure).toBeGreaterThan(1)
 			expect(JSON.stringify(chatRequests[1]?.body), result.failure).toContain(fact)
+		},
+	)
+
+	it.each(PRINT_MODES)(
+		"replays hidden context into a second request in the same %s run",
+		TIMEOUT,
+		async (mode, modeArgs) => {
+			const fact = "BUFFERED CONTINUATION FACT"
+			const steer = "CONTINUE WITH THE FACT"
+			const { result, requests, sessionText } = await runKimchi({
+				args: ["--print", ...modeArgs, ...MODEL_ARGS, "answer and continue"],
+				responses: [{ stream: ["FIRST ANSWER"] }, { stream: ["CONTINUATION ANSWER"] }],
+				prepare: (workDir, homeDir) =>
+					writeProbeExtension(
+						workDir,
+						homeDir,
+						"continue-after-answer.ts",
+						`export default function continueAfterAnswer(pi) {
+  let sent = false
+  pi.on("turn_end", (event) => {
+    if (sent || event.message.stopReason !== "stop") return
+    sent = true
+    pi.sendMessage(
+      { customType: "buffered-context", content: ${JSON.stringify(fact)}, display: false },
+      { deliverAs: "steer", triggerTurn: false },
+    )
+    pi.sendMessage(
+      { customType: "continuation-steer", content: ${JSON.stringify(steer)}, display: false },
+      { deliverAs: "steer" },
+    )
+  })
+}
+`,
+					),
+			})
+			expect(result.code, result.failure).toBe(0)
+			expectNoGuardMarker(result)
+			if (mode === "text") {
+				expect(result.stdout, result.failure).toBe("CONTINUATION ANSWER\n")
+			} else {
+				expect(result.stdout, result.failure).toContain("CONTINUATION ANSWER")
+			}
+			const chatRequests = requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+			expect(chatRequests, result.failure).toHaveLength(2)
+			const nextRequest = JSON.stringify(chatRequests[1]?.body)
+			const factPosition = nextRequest.indexOf(fact)
+			expect(factPosition, "buffered fact is missing from the second request").toBeGreaterThanOrEqual(0)
+			expect(nextRequest.indexOf(steer)).toBeGreaterThan(factPosition)
+			const journalFactPosition = sessionText?.indexOf(fact) ?? -1
+			expect(journalFactPosition).toBeGreaterThanOrEqual(0)
+			expect(sessionText?.indexOf(steer)).toBeGreaterThan(journalFactPosition)
 		},
 	)
 

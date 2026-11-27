@@ -2,7 +2,6 @@ import {
 	AgentSession,
 	type AgentSessionEvent,
 	AgentSessionRuntime,
-	type ExtensionContext,
 	type SessionManager,
 } from "@earendil-works/pi-coding-agent"
 
@@ -19,8 +18,10 @@ interface BufferedMessage {
 
 interface PatchableSession {
 	sessionManager: Pick<SessionManager, "getBranch" | "getLeafId">
-	_extensionMode?: ExtensionContext["mode"]
-	agent?: { continue: (...args: unknown[]) => Promise<void> }
+	bindExtensions?: AgentSession["bindExtensions"]
+	agent?: Pick<AgentSession["agent"], "prepareNextTurnWithContext"> & {
+		continue: (...args: unknown[]) => Promise<void>
+	}
 	_emit?: (event: AgentSessionEvent) => void
 	_startRun?: (...args: unknown[]) => Promise<void>
 	_appendCustomMessage?: (message: CustomMessage) => void
@@ -41,12 +42,14 @@ export interface OneShotSessionRuntimeClass {
 	prototype: PatchableSessionRuntime
 }
 
+const oneShotSessions = new WeakSet<PatchableSession>()
 const terminalAssistantTail = new WeakMap<PatchableSession, boolean>()
 const bufferedMessages = new WeakMap<PatchableSession, BufferedMessage[]>()
-const continueWrappedAgents = new WeakSet<NonNullable<PatchableSession["agent"]>>()
+const replayWrappedAgents = new WeakSet<NonNullable<PatchableSession["agent"]>>()
 const finalDisposalSessions = new WeakSet<PatchableSession>()
 
 function replayBuffered(session: PatchableSession, originalAppend: (message: CustomMessage) => void): void {
+	if (!oneShotSessions.has(session)) return
 	terminalAssistantTail.set(session, false)
 	const pending = bufferedMessages.get(session)
 	if (!pending) return
@@ -63,27 +66,34 @@ function replayBuffered(session: PatchableSession, originalAppend: (message: Cus
 	}
 }
 
-function installContinueReplay(session: PatchableSession, originalAppend: (message: CustomMessage) => void): void {
+function installAgentReplay(session: PatchableSession, originalAppend: (message: CustomMessage) => void): void {
 	const agent = session.agent
-	if (!agent || continueWrappedAgents.has(agent)) return
+	if (!agent || replayWrappedAgents.has(agent)) return
 	const originalContinue = agent.continue
 	agent.continue = async function (...args: unknown[]): Promise<void> {
-		// Retry, overflow-compaction recovery, and queued continuations all pass
-		// through Agent.continue inside the SAME AgentSession._startRun.
+		// Retries and post-run recovery enter through Agent.continue.
 		replayBuffered(session, originalAppend)
 		await originalContinue.apply(this, args)
 	}
-	continueWrappedAgents.add(agent)
+	const originalPrepareNextTurn = agent.prepareNextTurnWithContext
+	if (originalPrepareNextTurn) {
+		agent.prepareNextTurnWithContext = function (...args) {
+			// Steers and follow-ups can start another request within the agent
+			// loop. Replay before Pi projects context and checks for compaction.
+			replayBuffered(session, originalAppend)
+			return originalPrepareNextTurn.apply(this, args)
+		}
+	}
+	replayWrappedAgents.add(agent)
 }
 
 /**
  * Keep hidden context/state messages from displacing a one-shot run's final
  * assistant message without losing context needed by a retry or continuation.
  *
- * After a non-tool assistant message_end, print/JSON hidden appends are held
- * in order instead of persisted. They are replayed immediately before the next
- * model request: Agent.continue for retries/compaction/queued continuations,
- * or _startRun for a new prompt or extension-triggered turn. Final runtime
+ * Only sessions explicitly bound in print or JSON mode hold hidden appends after
+ * a non-tool assistant message_end. Replay runs before a new run, an agent
+ * retry, or preparation for a subsequent turn inside the agent loop. Final runtime
  * disposal persists remaining messages from the active branch after the answer
  * is selected and the JSON subscriber detaches. Direct session disposal during
  * replacement discards the buffer.
@@ -99,32 +109,51 @@ export function installOneShotHiddenMessageGuard(
 	const proto = sessionClass.prototype
 	const runtimeProto = runtimeClass.prototype
 	if (proto._kimchiOneShotHiddenMessageGuard) return
+	const originalBindExtensions = proto.bindExtensions
 	const originalEmit = proto._emit
 	const originalStartRun = proto._startRun
 	const originalAppend = proto._appendCustomMessage
 	const originalDispose = proto.dispose
 	const originalRuntimeDispose = runtimeProto.dispose
-	if (!originalEmit || !originalStartRun || !originalAppend || !originalDispose || !originalRuntimeDispose) {
+	if (
+		!originalBindExtensions ||
+		!originalEmit ||
+		!originalStartRun ||
+		!originalAppend ||
+		!originalDispose ||
+		!originalRuntimeDispose
+	) {
 		console.warn("one-shot hidden-message guard: required AgentSession internals not found; guard inactive")
 		return
 	}
 
+	proto.bindExtensions = function (this: PatchableSession, bindings): Promise<void> {
+		// Pi defaults to print even for SDK sessions whose owner omits the mode.
+		if (bindings.mode === "print" || bindings.mode === "json") oneShotSessions.add(this)
+		else if (bindings.mode !== undefined && oneShotSessions.delete(this)) {
+			bufferedMessages.delete(this)
+			terminalAssistantTail.delete(this)
+		}
+		return originalBindExtensions.call(this, bindings)
+	}
+
 	proto._emit = function (this: PatchableSession, event: AgentSessionEvent): void {
-		if (event.type === "message_end" && event.message.role === "assistant") {
+		if (oneShotSessions.has(this) && event.type === "message_end" && event.message.role === "assistant") {
 			terminalAssistantTail.set(this, event.message.stopReason !== "toolUse")
 		}
 		originalEmit.call(this, event)
 	}
 
 	proto._startRun = async function (this: PatchableSession, ...args: unknown[]): Promise<void> {
-		installContinueReplay(this, originalAppend)
-		replayBuffered(this, originalAppend)
+		if (oneShotSessions.has(this)) {
+			installAgentReplay(this, originalAppend)
+			replayBuffered(this, originalAppend)
+		}
 		await originalStartRun.apply(this, args)
 	}
 
 	proto._appendCustomMessage = function (this: PatchableSession, message: CustomMessage): void {
-		const oneShot = this._extensionMode === "print" || this._extensionMode === "json"
-		if (oneShot && terminalAssistantTail.get(this) && message.display === false) {
+		if (oneShotSessions.has(this) && terminalAssistantTail.get(this) && message.display === false) {
 			const pending = bufferedMessages.get(this) ?? []
 			pending.push({ originLeafId: this.sessionManager.getLeafId(), message })
 			bufferedMessages.set(this, pending)
@@ -144,6 +173,7 @@ export function installOneShotHiddenMessageGuard(
 		} finally {
 			bufferedMessages.delete(this)
 			terminalAssistantTail.delete(this)
+			oneShotSessions.delete(this)
 			originalDispose.call(this)
 		}
 	}
