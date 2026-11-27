@@ -201,27 +201,30 @@ describe("ACP review command", () => {
 					try {
 						process.kill(processId, 0)
 						return true
-					} catch {
-						return false
+					} catch (error) {
+						return (error as NodeJS.ErrnoException).code !== "ESRCH"
 					}
 				}
+				const activeReviewPath = join(fixture.workDir, ".kimchi", "review-output", "active-review.json")
 				// A process that survives for 2s writes the marker, permanently
 				// failing this condition just as it failed the old 2.1s sleep.
 				// Successful earlier cleanup no longer waits out the full clock.
+				// Allow 10s so the poll exceeds the 2s marker delay and stays bounded.
 				await waitFor(
 					() => ({
 						survived: existsSync(requiredInterruption().survived),
 						pidAlive: isAlive(pid),
 						grandchildPidAlive: isAlive(grandchildPid),
-						activeReview: existsSync(join(fixture?.workDir ?? "", ".kimchi", "review-output", "active-review.json")),
+						activeReview: existsSync(activeReviewPath),
 					}),
 					({ survived, pidAlive, grandchildPidAlive, activeReview }) =>
 						!survived && !pidAlive && !grandchildPidAlive && !activeReview,
+					10_000,
 				)
 				expect(existsSync(requiredInterruption().survived)).toBe(false)
 				if (pid === undefined || grandchildPid === undefined) throw new Error("Missing reviewer command PID")
-				expect(() => process.kill(pid, 0)).toThrow()
-				expect(() => process.kill(grandchildPid, 0)).toThrow()
+				expect(isAlive(pid)).toBe(false)
+				expect(isAlive(grandchildPid)).toBe(false)
 				expect(existsSync(join(fixture.workDir, ".kimchi", "review-output", "active-review.json"))).toBe(false)
 				const runsRoot = join(fixture.workDir, ".kimchi", "review-output", "runs")
 				const [run] = readdirSync(runsRoot)

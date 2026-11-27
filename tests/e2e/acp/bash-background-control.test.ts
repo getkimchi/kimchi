@@ -54,12 +54,9 @@ it(
 			expect((await pending).stopReason).toBe("end_turn")
 			// Auxiliary requests and the idle exit wake can arrive after the prompt;
 			// only the main-agent history is guaranteed to contain the inspection.
-			const messages =
-				(
-					latestAgentChatRequest(fixture.fake.requests)?.body as
-						| { messages?: Array<Record<string, unknown>> }
-						| undefined
-				)?.messages ?? []
+			const request = latestAgentChatRequest(fixture.fake.requests)
+			expect(request, "main-agent request containing the inspect tool result").toBeDefined()
+			const messages = (request?.body as { messages?: Array<Record<string, unknown>> } | undefined)?.messages ?? []
 			const inspection = messages.find((message) => message.role === "tool" && message.tool_call_id === "inspect")
 			expect(String(inspection?.content)).toContain("not yet acknowledged")
 			expect(String(inspection?.content)).not.toContain("Unknown handle")
@@ -208,7 +205,9 @@ it(
 			)
 			expect(JSON.stringify(requests[2]?.body)).toContain("independent file contents")
 			expect(JSON.stringify(requests[3]?.body)).toContain("Wait checkpoint: requested 1s")
-			expect(JSON.stringify(latestAgentChatRequest(fixture.fake.requests)?.body)).toContain("stopped on request")
+			const stopRequest = latestAgentChatRequest(fixture.fake.requests)
+			expect(stopRequest, "main-agent request containing the selected-process stop result").toBeDefined()
+			expect(JSON.stringify(stopRequest?.body)).toContain("stopped on request")
 			expect(fixture.client.agentTextBySession().get(sessionId)).toContain("Independent work completed")
 		} finally {
 			await fixture.stop()
@@ -405,12 +404,10 @@ it(
 			)
 			// Isolate each tool result from the FINAL request's history by
 			// tool_call_id (earlier requests repeat the same messages).
+			const finalRequest = latestAgentChatRequest(fixture.fake.requests)
+			expect(finalRequest, "main-agent request containing inspect_one and stop tool results").toBeDefined()
 			const lastMessages =
-				(
-					latestAgentChatRequest(fixture.fake.requests)?.body as
-						| { messages?: Array<Record<string, unknown>> }
-						| undefined
-				)?.messages ?? []
+				(finalRequest?.body as { messages?: Array<Record<string, unknown>> } | undefined)?.messages ?? []
 			const toolText = (id: string): string => {
 				const message = lastMessages.find((m) => m.role === "tool" && m.tool_call_id === id)
 				return typeof message?.content === "string" ? message.content : JSON.stringify(message?.content ?? "")
