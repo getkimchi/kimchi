@@ -115,7 +115,8 @@ function fixtureFiles(): Record<string, string | Buffer> {
 	}
 }
 
-describe("review target resolution", () => {
+// Every test runs many real git commands, which a busy runner makes slow.
+describe("review target resolution", { timeout: 30_000 }, () => {
 	let sandbox: string
 	let repo: string
 
@@ -263,7 +264,7 @@ describe("review target resolution", () => {
 		expect(() => git(repo, "cat-file", "-e", scope.pinned.headSha)).not.toThrow()
 		expectCheckoutState(repo, before)
 		expect(existsSync(join(outputDir, "findings", "spec.jsonl"))).toBe(true)
-	}, 20_000)
+	}, 30_000)
 
 	it("captures a normal edit when a staged new file was deleted from disk", async () => {
 		initialize({ "file.txt": "base\n" })

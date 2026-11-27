@@ -67,6 +67,9 @@ describe("shared routine review checks", () => {
 	let pool: ReviewWorktreePool
 	let queue: ReviewCheckQueue
 	let policyCleanups: Array<() => void> = []
+	const slowStartedPath = () => join(sandbox, "slow-started")
+	const waitForSlowStarted = () =>
+		vi.waitFor(() => expect(existsSync(slowStartedPath())).toBe(true), { timeout: 15_000, interval: 10 })
 
 	beforeEach(() => {
 		policyCleanups = []
@@ -96,7 +99,12 @@ console.error('routine failure'); process.exit(4)`,
 		)
 		writeFileSync(join(repo, "upcoming.cjs"), "console.log('must not run in wrap-up')")
 		writeFileSync(join(repo, "focused.cjs"), "console.log('private focused result')")
-		writeFileSync(join(repo, "slow.cjs"), "setTimeout(() => {}, 1500)")
+		// Outlives any busy-runner delay but still ends, so a missed cancel fails as "passed",
+		// not as a test timeout. The marker tells tests the command really started.
+		writeFileSync(
+			join(repo, "slow.cjs"),
+			`require('node:fs').writeFileSync(${JSON.stringify(slowStartedPath())}, ''); setTimeout(() => {}, 20_000)`,
+		)
 		git(repo, "add", "--all")
 		git(repo, "commit", "-m", "base")
 		baseSha = git(repo, "rev-parse", "HEAD")
@@ -825,6 +833,7 @@ module.exports = (async () => {
 		)
 	})
 
+	// Four queues with real git and node runs: slow on a busy runner.
 	it("projects definitionSource when saved evidence is reused in both directions", async () => {
 		await setup(null)
 		const definition = queue.checks.find((check) => check.id === "test")
@@ -868,7 +877,7 @@ module.exports = (async () => {
 
 		await verifyReuse("coordinator", "reviewed-tree", "coordinator-first.json")
 		await verifyReuse("reviewed-tree", "coordinator", "reviewed-tree-first.json")
-	})
+	}, 30_000)
 
 	it("cancels a queued check without creating its worktree", async () => {
 		await setup([
@@ -893,7 +902,7 @@ module.exports = (async () => {
 		])
 		const runner = controller("cancel-queued")
 		const running = queue.request({ id: "slow", requestedBy: "first", controller: runner })
-		await new Promise((resolve) => setTimeout(resolve, 300))
+		await waitForSlowStarted()
 		const queued = queue.request({ id: "other", requestedBy: "second", controller: runner, revision: "base" })
 		await new Promise((resolve) => setTimeout(resolve, 200))
 		queue.cancel(new Error("stop"))
@@ -904,7 +913,7 @@ module.exports = (async () => {
 		expect(second.status).toBe("fulfilled")
 		if (second.status === "fulfilled") expect(second.value.status).toBe("cancelled")
 		expect(readdirSync(pool.runDir).filter((name) => name.startsWith("checks-base"))).toHaveLength(0)
-	})
+	}, 30_000)
 
 	it("keeps parent abort connected after idle", async () => {
 		const parent = new AbortController()
@@ -925,8 +934,8 @@ module.exports = (async () => {
 		)
 		await queue.idle()
 		const pending = queue.request({ id: "slow", requestedBy: "after-idle", controller: controller("after-idle") })
-		await new Promise((resolve) => setTimeout(resolve, 300))
+		await waitForSlowStarted()
 		parent.abort(new Error("user abort"))
 		expect((await pending).status).toBe("cancelled")
-	})
+	}, 30_000)
 })

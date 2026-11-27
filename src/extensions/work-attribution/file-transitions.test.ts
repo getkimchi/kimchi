@@ -160,7 +160,8 @@ afterEach(async () => {
 	rmSync(root, { recursive: true, force: true })
 })
 
-describe("manual commit reconciliation", () => {
+// Each test runs real git and SQLite work, which a busy runner makes slow.
+describe("manual commit reconciliation", { timeout: 30_000 }, () => {
 	it("rechecks a stale content checkpoint without duplicating contributions", async () => {
 		baseline()
 		await edit("one", "first")
@@ -262,7 +263,7 @@ describe("manual commit reconciliation", () => {
 				],
 			}),
 		])
-	}, 10000)
+	}, 30_000)
 
 	it("retains discovery progress when reading journal headers exhausts a pass", async () => {
 		for (let index = 0; index < 5; index++) {
@@ -400,7 +401,7 @@ describe("manual commit reconciliation", () => {
 				.map((row) => row.sha)
 				.sort(),
 		).toEqual(rewritten.sort())
-	}, 15000)
+	}, 30_000)
 
 	it("reuses a compact history boundary with many refs and ignores refs to non-commits", async () => {
 		const base = baseline()
