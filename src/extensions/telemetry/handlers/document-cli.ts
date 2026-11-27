@@ -1,4 +1,24 @@
+
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+
+function resolveOutcome(
+	isError: boolean | undefined,
+	classification: ToolErrorClassification | undefined,
+	resultText: string,
+): DocumentCliOutcome | undefined {
+	if (classification?.kind === "aborted" && resultText.trim() === "Operation aborted") return undefined
+	if (!isError || !classification) return "success"
+	switch (classification.kind) {
+		case "command_outcome":
+			return classification.commandOutcome
+		case "aborted":
+			return "aborted"
+		case "failure":
+			return "execution_error"
+		default:
+			return undefined
+	}
+}
 import { DOC_CLI_COMMANDS, DOC_CLI_SKILLS, type DocCliSkill } from "../../documents/doc-cli-skills.js"
 import { DOCUMENT_ERROR_CODES, type DocumentErrorCode } from "../../documents/model.js"
 import { isDocCliCommand } from "../../permissions/bundled-skill-cli.js"
@@ -63,22 +83,7 @@ export function extractDocumentErrorCode(resultText: string): DocumentErrorCode 
 	return undefined
 }
 
-function resolveOutcome(
-	isError: boolean | undefined,
-	classification: ToolErrorClassification | undefined,
-): DocumentCliOutcome | undefined {
-	if (!isError || !classification) return "success"
-	switch (classification.kind) {
-		case "command_outcome":
-			return classification.commandOutcome
-		case "aborted":
-			return "aborted"
-		case "failure":
-			return "execution_error"
-		default:
-			return undefined
-	}
-}
+
 
 export function emitDocumentCliCompleted(
 	tm: TelemetryContext,
@@ -94,7 +99,7 @@ export function emitDocumentCliCompleted(
 ): void {
 	const attribution = attributeDocumentCliCommand(input.command)
 	if (!attribution) return
-	const outcome = resolveOutcome(input.isError, input.classification)
+	const outcome = resolveOutcome(input.isError, input.classification, input.resultText)
 	if (!outcome) return
 	const errorCode =
 		outcome === "nonzero_exit" ? (extractDocumentErrorCode(input.resultText) ?? "unclassified") : undefined
