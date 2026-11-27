@@ -111,6 +111,8 @@ interface Harness {
 interface HarnessOptions {
 	parkDiscovery?: () => Promise<boolean>
 	lateContributedDir?: string
+	/** Process-scoped --additional-skill-paths roots for BOTH loaders. */
+	additionalSkillPaths?: string[]
 }
 
 async function setupHarness(opts: HarnessOptions = {}): Promise<Harness> {
@@ -151,18 +153,21 @@ async function setupHarness(opts: HarnessOptions = {}): Promise<Harness> {
 	}
 
 	const settingsManager = SettingsManager.create(cwd, agentDir)
+	const additionalSkillPaths = opts.additionalSkillPaths ?? []
 	const mainLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir,
 		settingsManager,
 		extensionFactories: [extension],
 		eventBus: bus,
+		additionalSkillPaths,
 	})
 	const loader = new AcpSessionResourceLoader({
 		mainLoader,
 		cwd,
 		agentDir,
 		settingsManager,
+		additionalSkillPaths,
 		baseAppend: () => ["base append"],
 	})
 	// Mirrors createSessionSettings: the loader is loaded before the session
@@ -245,6 +250,57 @@ describe("AcpSessionResourceLoader — real-loader skill refresh", () => {
 			// One announced bus event reaches exactly one subscriber.
 			h.bus.emit("acp-adapter-test", { marker: "once" })
 			expect(h.deliveries).toEqual([{ marker: "once" }])
+		} finally {
+			await dispose(h)
+		}
+	})
+
+	it("retains additional-path skills across refreshes and reflects add/edit/delete there", async () => {
+		// Process-private root supplied via --additional-skill-paths: the main
+		// loader scans it initially, and every refresh's throwaway discovery
+		// loader must scan the SAME root or the skills vanish on first refresh.
+		const privateSkills = makeTmpDir()
+		writeSkill(privateSkills, "private-skill", "Process-scoped skill")
+		const h = await setupHarness({ additionalSkillPaths: [privateSkills] })
+		try {
+			// Initial palette: settings + extension + the private root's skill.
+			expect(skillNames(h.loader)).toEqual(["ext-skill", "private-skill", "project-skill", "settings-skill"])
+
+			// A refresh keeps the additional-path skill (no vanish on refresh).
+			writeSkill(h.settingsSkills, "unrelated-late-skill", "Appears alongside")
+			await h.loader.refreshSkills(h.session)
+			expect(skillNames(h.loader)).toEqual([
+				"ext-skill",
+				"private-skill",
+				"project-skill",
+				"settings-skill",
+				"unrelated-late-skill",
+			])
+
+			// Add inside the private root: picked up after a refresh.
+			writeSkill(privateSkills, "late-private-skill", "Added after setup v1")
+			await h.loader.refreshSkills(h.session)
+			expect(skillNames(h.loader)).toContain("late-private-skill")
+
+			// Edit there: the refreshed snapshot carries the new description.
+			rewriteSkill(privateSkills, "late-private-skill", "Edited private description v2")
+			await h.loader.refreshSkills(h.session)
+			const edited = h.loader.getSkills().skills.find((s) => s.name === "late-private-skill")
+			expect(edited?.description).toBe("Edited private description v2")
+
+			// Delete there: dropped from the snapshot, the rest retained.
+			rmSync(join(privateSkills, "late-private-skill"), { recursive: true, force: true })
+			await h.loader.refreshSkills(h.session)
+			expect(skillNames(h.loader)).toEqual([
+				"ext-skill",
+				"private-skill",
+				"project-skill",
+				"settings-skill",
+				"unrelated-late-skill",
+			])
+
+			// The refreshes never re-ran the extension factories.
+			expect(h.factoryRuns()).toBe(1)
 		} finally {
 			await dispose(h)
 		}

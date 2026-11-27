@@ -1,6 +1,7 @@
 import type { AvailableCommand } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession, ResourceLoader } from "@earendil-works/pi-coding-agent"
 
+import { isExperimentalFeaturesEnabled } from "../../extensions/experimental.js"
 import { SLASH_COMMANDS } from "../../extensions/slash-commands.js"
 import {
 	type AcpSkillInfo,
@@ -36,6 +37,11 @@ export const AVAILABLE_COMMANDS: AcpAvailableCommand[] = [
 		input: {
 			hint: 'A language name or code (e.g. "ko", "Korean"), or "auto" to reply in the language you write in.',
 		},
+	},
+	{
+		name: "review",
+		description: SLASH_COMMANDS.review.hint,
+		input: { hint: "Target, base, lenses, and concurrency; bare input returns explicit target syntax." },
 	},
 	{
 		name: "pr-watch",
@@ -94,9 +100,10 @@ export function tryParseCompactCommand(text: string): { instructions?: string } 
 export function composeAvailableCommands(
 	skillCommands: ReadonlyMap<string, AcpSkillInfo>,
 	prMonitoring = false,
+	review = isExperimentalFeaturesEnabled(),
 ): AvailableCommand[] {
 	return [
-		...AVAILABLE_COMMANDS.filter(({ name }) => name !== "pr-watch" || prMonitoring),
+		...AVAILABLE_COMMANDS.filter(({ name }) => (name !== "pr-watch" || prMonitoring) && (name !== "review" || review)),
 		...buildSkillAvailableCommands(Array.from(skillCommands.values())),
 	]
 }

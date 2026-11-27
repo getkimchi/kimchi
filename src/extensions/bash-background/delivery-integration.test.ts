@@ -370,6 +370,18 @@ async function setupIntegration(script: ScriptedResponse[]): Promise<Integration
 }
 
 /**
+ * Wait until the exit's steering message is queued. Delivery waits for a
+ * short batch window and then closes the output file, so on a busy runner
+ * it can take longer than the tool the exit happens during. The tests check
+ * which request carries the marker, so they wait for this, not for time.
+ */
+async function exitQueued(harness: IntegrationHarness): Promise<void> {
+	await vi.waitFor(() => expect(harness.state.delivery.hasQueuedAutomatic()).toBe(true), {
+		timeout: 4_000,
+		interval: 5,
+	})
+}
+/**
  * Install a tool_execution_start hook that exits the named background
  * process (emitting the marker) when `triggerTool` starts executing — the
  * unattended exit lands mid-execution while the model keeps calling tools.
@@ -388,11 +400,11 @@ function exitDuringTool(
 			triggered = true
 			harness.ops.emitMatching(commandNeedle, `${MARKER}\n`)
 			await harness.ops.exitMatching(commandNeedle, 0)
+			await exitQueued(harness)
 			if (extra?.alsoAbortAndClearQueues) {
-				// Let the exit watcher + delivery flush enqueue the steering
-				// message, then the user aborts and the TUI/ACP drop queued
-				// steering (clearQueue/clearAllQueues before session.abort()).
-				await new Promise((resolve) => setTimeout(resolve, 150))
+				// The exit's steering message is queued; the user aborts and
+				// the TUI/ACP drop queued steering (clearQueue/clearAllQueues
+				// before session.abort()).
 				harness.agent.abort()
 				harness.agent.clearAllQueues()
 			}
@@ -543,6 +555,7 @@ describe("background bash exit delivery (real installed agent loop)", () => {
 				const first = harness.ops.exitMatching("train-fifo", 0)
 				const second = harness.ops.exitMatching("side-file", 0)
 				await Promise.all([first, second])
+				await exitQueued(harness)
 			}
 			return origEmit(event, payload, context as never)
 		}
@@ -563,6 +576,7 @@ describe("background bash exit delivery (real installed agent loop)", () => {
 		expect(harness.agent.state.messages.filter((m) => JSON.stringify(m).includes(MARKER))).toHaveLength(1)
 	})
 
+	// Eight scripted rounds and three output closes: the longest test here.
 	it("consecutive waits yield to a queued exit batch behind advisory messages", async () => {
 		const stopSurvivor = { stop_handles: [] as string[], wait: false }
 		const harness = await setupIntegration([
@@ -595,6 +609,7 @@ describe("background bash exit delivery (real installed agent loop)", () => {
 				harness.ops.emitMatching("first-exit", `${MARKER} first\n`)
 				harness.ops.emitMatching("second-exit", `${MARKER} second\n`)
 				await Promise.all([harness.ops.exitMatching("first-exit", 0), harness.ops.exitMatching("second-exit", 0)])
+				await exitQueued(harness)
 				stopSurvivor.stop_handles = harness.state.coordinator
 					.handles()
 					.filter((handle) => harness.state.registry.getEntry(handle)?.commandSummary === "survivor")
@@ -622,7 +637,7 @@ describe("background bash exit delivery (real installed agent loop)", () => {
 		})
 		expect(harness.agent.state.messages.filter((m) => JSON.stringify(m).includes(MARKER))).toHaveLength(1)
 		expect(harness.state.delivery.hasPending()).toBe(false)
-	})
+	}, 30_000)
 
 	it("a post-abort exit appends without restarting inference and retires without message_end", async () => {
 		// The user aborts while the process is still RUNNING (the TUI/ACP also
@@ -662,15 +677,20 @@ describe("background bash exit delivery (real installed agent loop)", () => {
 		// The unattended exit lands while the session is idle and terminated.
 		harness.ops.emitMatching("post-abort", `${MARKER}\n`)
 		await harness.ops.exitMatching("post-abort", 0)
+		const appended = () =>
+			harness.agent.state.messages.filter(
+				(m) => (m as { role?: string }).role === "custom" && JSON.stringify(m).includes(MARKER),
+			)
+		// Wait for the append, not a fixed time: delivery closes the output
+		// file first, which a busy runner can slow down.
+		await vi.waitFor(() => expect(appended()).toHaveLength(1), { timeout: 4_000, interval: 5 })
+		// Then give a wrongly woken inference time to show up.
 		await new Promise((resolve) => setTimeout(resolve, 150))
 
 		// No inference restart: no new provider request was made.
 		expect(harness.requests.length).toBe(3)
 		// The payload was appended to the conversation exactly once…
-		const appended = harness.agent.state.messages.filter(
-			(m) => (m as { role?: string }).role === "custom" && JSON.stringify(m).includes(MARKER),
-		)
-		expect(appended).toHaveLength(1)
+		expect(appended()).toHaveLength(1)
 		// …and NO message_end ever fired for it (the append path does not
 		// dispatch extension handlers) — the batch retired on the append.
 		expect(harness.exitMessageEnds).toHaveLength(0)

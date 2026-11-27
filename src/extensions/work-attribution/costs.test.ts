@@ -1963,8 +1963,14 @@ describe("time split across a work's PRs", () => {
 
 describe("breathing twin of the reporting calculation", () => {
 	it("produces the identical report, and lets the loop breathe past the step budget", { timeout: 30_000 }, async () => {
-		// Real macrotask waits: the drain's interleaving matches the production capture pass.
-		const stretch = vi.fn(() => new Promise<void>((resolve) => setTimeout(resolve, 0)))
+		// Real macrotask waits, but only every 256 steps, like the production
+		// stretcher that parks once its row/time budget is spent. Parking on every
+		// step made thousands of real timer waits, which a busy runner stretched
+		// past the test timeout.
+		let steps = 0
+		const stretch = vi.fn(() =>
+			steps++ % 256 === 0 ? new Promise<void>((resolve) => setTimeout(resolve, 0)) : Promise.resolve(),
+		)
 		const records = [commit(), ...Array.from({ length: 2_050 }, (_, index) => request(`req-${index}`))]
 		const observations = [charge("req-0", "1.25"), charge("req-1", null)]
 		const rejected = new Set<string>()

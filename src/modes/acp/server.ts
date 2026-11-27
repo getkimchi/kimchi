@@ -4,7 +4,7 @@
 // Keep this adapter focused on orchestration; extract cohesive logic into tested modules.
 
 import { randomUUID } from "node:crypto"
-import { closeSync, openSync, readdirSync, readFileSync, readSync } from "node:fs"
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { Readable, Writable } from "node:stream"
 import {
@@ -19,6 +19,8 @@ import {
 	type CloseSessionRequest,
 	type CloseSessionResponse,
 	type ContentBlock,
+	type ForkSessionRequest,
+	type ForkSessionResponse,
 	type InitializeRequest,
 	type InitializeResponse,
 	type ListSessionsRequest,
@@ -47,21 +49,24 @@ import {
 	type SetSessionConfigOptionResponse,
 	type ToolCallContent,
 } from "@agentclientprotocol/sdk/unstable"
-import type { Api, AssistantMessage, ImageContent, Model } from "@earendil-works/pi-ai"
+import type { Api, AssistantMessage, ImageContent, Model, ModelThinkingLevel } from "@earendil-works/pi-ai"
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import type { AgentSessionEvent, ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import {
 	type AgentSession,
+	CURRENT_SESSION_VERSION,
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionFactory,
 	estimateTokens,
+	type FileEntry,
 	type InlineExtension,
 	initTheme,
 	ModelRegistry,
 	ModelRuntime,
 	type SessionInfo as PiSessionInfo,
 	ProjectTrustStore,
+	parseSessionEntries,
 	readStoredCredential,
 	type SessionHeader,
 	SessionManager,
@@ -161,6 +166,7 @@ import { getPRWatcher } from "../../extensions/pr-watch/index.js"
 import { formatPRWatchStatus } from "../../extensions/pr-watch/presentation.js"
 import { setPRMonitoringPermitted } from "../../extensions/pr-watch/session-policy.js"
 import { isRefusal, refusalText } from "../../extensions/refused-turns.js"
+import { cancelActiveReview } from "../../extensions/review-command/active-runs.js"
 import { modelSupportsImages } from "../../extensions/vision-support.js"
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { isKimchiProvider, KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
@@ -269,9 +275,11 @@ import { hasConfirmedModelSelection, type RecoveredSubagent } from "./subagent-r
 import { SubagentRegistry, type SubagentRoute } from "./subagent-registry.js"
 import {
 	absoluteSubagentCwd,
+	backgroundAgentIdFromResult,
 	clientSupportsSubagents,
 	presentAgentToolCall,
 	type SubagentSessionCreatedEvent,
+	type SubagentSessionFailedEvent,
 	subagentPromptMessages,
 	subagentSessionCreatedExtension,
 	withSubagentSessionLink,
@@ -420,6 +428,8 @@ export interface RunAcpOptions {
 	 * tests can stub it; production uses the upstream-adapter-backed probe.
 	 */
 	mcpProbe?: McpProbe
+	/** Process-scoped extra roots supplied by --additional-skill-paths. */
+	additionalSkillPaths?: string[]
 }
 
 /**
@@ -567,11 +577,21 @@ export class KimchiAcpAgent {
 	) {
 		this.subagentSessionResolver = options.subagentSessionResolver ?? (() => undefined)
 		this.sessionFactory =
-			options.sessionFactory ?? defaultSessionFactory(options, (event) => this.onSubagentSessionCreated(event))
+			options.sessionFactory ??
+			defaultSessionFactory(
+				options,
+				(event) => this.onSubagentSessionCreated(event),
+				(event) => this.onSubagentSessionFailed(event),
+			)
 		this.agentDir = options.agentDir
 		this.sessionLister = options.sessionLister ?? defaultSessionLister(options)
 		this.sessionLoader =
-			options.sessionLoader ?? defaultSessionLoader(options, (event) => this.onSubagentSessionCreated(event))
+			options.sessionLoader ??
+			defaultSessionLoader(
+				options,
+				(event) => this.onSubagentSessionCreated(event),
+				(event) => this.onSubagentSessionFailed(event),
+			)
 		this.subagentReplayLoader = options.subagentReplayLoader ?? defaultSubagentReplayLoader(options)
 		this.subagentRegistry = new SubagentRegistry<SessionRecord>({
 			enabled: () => clientSupportsSubagents(this.clientCapabilities),
@@ -600,7 +620,11 @@ export class KimchiAcpAgent {
 		this.sso = ssoManager ?? new SsoFlowManager(SSO_FLOW_MANAGER_DEPS)
 		this.skillWatcher = createSkillWatcher({
 			agentDir: options.agentDir,
-			getExtraSkillPaths: () => [...new Set(loadKimchiConfig().skillPaths ?? [])],
+			getSkillPathSources: () => ({
+				// Kimchi-config skillPaths, re-read per change event so mid-process config edits are picked up.
+				configSkillPaths: loadKimchiConfig().skillPaths ?? [],
+				cliAdditionalSkillPaths: options.additionalSkillPaths ?? [],
+			}),
 			requestRefresh: () => this.commandsRefresher.request(),
 		})
 	}
@@ -677,7 +701,7 @@ export class KimchiAcpAgent {
 				// (SessionListCapabilities is `{ _meta? }` — empty object means
 				// "supported"). loadSession remains the top-level flag because
 				// the spec hasn't unified it under sessionCapabilities yet.
-				sessionCapabilities: { list: {}, close: {}, resume: {} },
+				sessionCapabilities: { list: {}, close: {}, resume: {}, fork: {} },
 				promptCapabilities: { image: supportsImages, audio: false, embeddedContext: false },
 				mcpCapabilities: { http: true, sse: false },
 				// Extended capabilities
@@ -708,9 +732,7 @@ export class KimchiAcpAgent {
 	}
 
 	async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
-		// Cursor pagination is out of scope for v1: pi reads only JSONL headers,
-		// so even four-digit session counts comfortably meet the 500ms NFR
-		// (revisit only if real installs hit slowness). `additionalDirectories`
+		// Cursor pagination is out of scope for v1. `additionalDirectories`
 		// (@experimental) is honored when non-empty by the default lister.
 		const piSessions = await this.sessionLister(params)
 		// Dedupe by session id: the default lister merges results from multiple
@@ -722,8 +744,9 @@ export class KimchiAcpAgent {
 		for (const s of piSessions) {
 			if (seen.has(s.id)) continue
 			seen.add(s.id)
-			// Skip subagent sessions: pi marks forked sessions with parentSessionPath
-			// so delegated Agent runs don't clutter the user's session list.
+			// Preserve the established ACP visibility rule for all clients. A
+			// parent marks both delegated runs and ordinary user forks; exposing
+			// the latter requires a separately negotiated capability.
 			if (s.parentSessionPath) continue
 			sessions.push(toAcpSessionInfo(s))
 		}
@@ -978,6 +1001,7 @@ export class KimchiAcpAgent {
 				emittedModelMeta: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
+				pendingAgentSessionLinks: new Map(),
 				heldBackgroundToolCalls: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
@@ -1312,6 +1336,168 @@ export class KimchiAcpAgent {
 		return this.loadSessionInternal({ ...params, mcpServers: params.mcpServers ?? [] }, false)
 	}
 
+	async forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
+		if (params.cursorId != null) {
+			throw RequestError.invalidParams(
+				undefined,
+				"forking at a cursor is not supported; omit cursorId to fork the current tip",
+			)
+		}
+		// Initial values are governed by sessionCapabilities.options, which this
+		// agent does not advertise. Never silently discard client-directed config.
+		if (params.configOptions?.length) {
+			throw RequestError.invalidParams(undefined, "initial configOptions are not supported for session forks")
+		}
+		this.rejectSubagentMutation(params.sessionId)
+
+		const source = this.sessions.get(params.sessionId)
+		if (source?.turn || source?.unsolicitedTurn || source?.pendingPrompts?.size || source?.session.isCompacting) {
+			throw RequestError.invalidRequest(
+				undefined,
+				`session ${params.sessionId} has work in progress; wait for it to finish before forking`,
+			)
+		}
+
+		const setup = {
+			cwd: params.cwd,
+			additionalDirectories: params.additionalDirectories,
+			mcpServers: params.mcpServers ?? [],
+			systemPrompt: params.systemPrompt,
+			_meta: params._meta,
+		}
+		const sessionDir = join(this.agentDir, "sessions", encodeCwdDir(params.cwd))
+		let sourcePath = source?.session.sessionFile
+		if (!sourcePath) {
+			try {
+				sourcePath = resolveSessionPathById(sessionDir, params.sessionId) ?? undefined
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err)
+				throw RequestError.invalidParams(undefined, `failed to locate source session: ${msg}`)
+			}
+		}
+		if (!sourcePath) {
+			throw RequestError.invalidParams(undefined, `unknown or unsaved source session ${params.sessionId}`)
+		}
+
+		let header: Pick<SessionHeader, "id" | "cwd" | "parentSession"> | null
+		try {
+			header = readSessionHeader(sourcePath)
+		} catch (err) {
+			// A live source may have only Pi's assigned future path plus
+			// in-memory entries. That is not a persisted transcript, but its
+			// settings and lineage are still forkable.
+			if (!source || (err as NodeJS.ErrnoException).code !== "ENOENT") {
+				const msg = err instanceof Error ? err.message : String(err)
+				throw RequestError.invalidParams(undefined, `failed to read source session: ${msg}`)
+			}
+			header = { id: params.sessionId, cwd: source.cwd }
+		}
+		if (!header || header.id !== params.sessionId) {
+			throw RequestError.invalidParams(undefined, `source session header id does not match ${params.sessionId}`)
+		}
+		if (header.parentSession && !hasAcpForkProvenance(sourcePath)) {
+			throw RequestError.invalidParams(undefined, `subagent session ${params.sessionId} is read-only`)
+		}
+		const expectedSourceCwd = source?.cwd ?? params.cwd
+		if (header.cwd !== expectedSourceCwd) {
+			throw RequestError.invalidParams(
+				undefined,
+				`source session cwd ${header.cwd} does not match ${expectedSourceCwd}`,
+			)
+		}
+
+		let forkedPath = ""
+		let sessionId = ""
+		try {
+			let sourceEntries: FileEntry[]
+			if (source) {
+				let liveEntries = source.session.sessionManager.getBranch()
+				let liveHeader: SessionHeader = {
+					type: "session",
+					version: CURRENT_SESSION_VERSION,
+					id: params.sessionId,
+					timestamp: new Date().toISOString(),
+					cwd: source.cwd,
+				}
+				try {
+					const persisted = parseSessionEntries(readFileSync(sourcePath, "utf8"))
+					liveHeader = persisted.find((entry) => entry.type === "session") ?? liveHeader
+					const durableById = new Map(
+						persisted.filter((entry) => entry.type !== "session").map((entry) => [entry.id, entry]),
+					)
+					// Live branches can contain evicted log markers. Use the durable
+					// same-ID records from the source JSONL whenever they exist so the
+					// fork remains self-contained after the source is unavailable.
+					liveEntries = liveEntries.map((entry) => durableById.get(entry.id) ?? entry)
+				} catch (err) {
+					if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err
+				}
+				sourceEntries = [liveHeader, ...liveEntries]
+			} else {
+				sourceEntries = parseSessionEntries(readFileSync(sourcePath, "utf8"))
+			}
+			// In-memory managers migrate entries and regenerate the selected
+			// branch without registering staging paths in Pi's process-wide live
+			// session set or rewriting the source file.
+			// In-memory managers migrate entries and regenerate the selected
+			// branch without registering staging paths in Pi's process-wide live
+			// session set or rewriting the source file.
+			const stagedSource = SessionManager.inMemory(params.cwd, undefined, sourceEntries)
+			const liveLeafId = source?.session.sessionManager.getLeafId()
+			if (liveLeafId) stagedSource.branch(liveLeafId)
+			const leafId = stagedSource.getLeafId()
+			if (leafId) stagedSource.createBranchedSession(leafId)
+			else stagedSource.newSession({ parentSession: sourcePath })
+
+			sessionId = stagedSource.getSessionId()
+			const timestamp = new Date().toISOString()
+			const forkHeader: SessionHeader = {
+				type: "session",
+				version: CURRENT_SESSION_VERSION,
+				id: sessionId,
+				timestamp,
+				cwd: params.cwd,
+				parentSession: sourcePath,
+			}
+			mkdirSync(sessionDir, { recursive: true })
+			forkedPath = join(sessionDir, `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`)
+			const provenance = {
+				type: "custom",
+				customType: ACP_FORK_ENTRY_TYPE,
+				data: { sourceSessionId: params.sessionId },
+				id: randomUUID(),
+				parentId: null,
+				timestamp,
+			}
+			// Retain structural entry IDs and parentId links, but prevent recovery
+			// from identifying or adopting children through copied associations.
+			const independentEntries = stagedSource
+				.getEntries()
+				.map((entry) =>
+					entry.type === "custom" && entry.customType === "subagents:record"
+						? { ...entry, customType: ACP_FORK_EXTERNAL_SUBAGENT_ENTRY, data: {} }
+						: entry,
+				)
+			const contents = `${[forkHeader, provenance, ...independentEntries].map((entry) => JSON.stringify(entry)).join("\n")}\n`
+			writeFileSync(forkedPath, contents, { flag: "wx" })
+		} catch (err) {
+			if (forkedPath) rmSync(forkedPath, { force: true })
+			const msg = err instanceof Error ? err.message : String(err)
+			throw RequestError.invalidParams(undefined, `failed to fork session ${params.sessionId}: ${msg}`)
+		}
+		try {
+			sessionId = SessionManager.open(forkedPath, sessionDir, params.cwd).getSessionId()
+			const response = await this.loadSessionInternal({ ...setup, sessionId }, false)
+			return { sessionId, configOptions: response.configOptions }
+		} catch (err) {
+			// The new ID is private until a successful response. If activation did
+			// not leave a live record (or a concurrent attach owns it), remove only
+			// the copy this request created; never touch the source or another live session.
+			if (!sessionId || !this.sessions.has(sessionId)) rmSync(forkedPath, { force: true })
+			throw err
+		}
+	}
+
 	private async loadSessionInternal(params: LoadSessionRequest, replayHistory: boolean): Promise<LoadSessionResponse> {
 		const sessionId = params.sessionId
 		this.rejectSubagentMutation(sessionId)
@@ -1427,6 +1613,7 @@ export class KimchiAcpAgent {
 				emittedModelMeta: new Map(),
 				nextToolCallId: 0,
 				toolCallIdMap: new Map(),
+				pendingAgentSessionLinks: new Map(),
 				heldBackgroundToolCalls: new Map(),
 				skillCommands: new Map(),
 				steerEchoRewrites: [],
@@ -1881,6 +2068,10 @@ export class KimchiAcpAgent {
 		// drain them. Mirrors the TUI's Escape → clearAllQueues() behaviour.
 		const droppedQueue = this.drainQueue(entry)
 		notifyDroppedQueue(this.conn, params.sessionId, droppedQueue, "cancelled")
+		// Extension commands do not create a Pi model turn. Cancel any active
+		// review first so its finalization and cleanup complete before the
+		// cancelled prompt response is released to the client.
+		await cancelActiveReview(params.sessionId)
 		await entry.session.abort()
 		await this.subagentRegistry.stopParent(params.sessionId, false)
 		// Held plan-review turn still in the review pause: abort() above was a
@@ -2153,6 +2344,7 @@ export class KimchiAcpAgent {
 		// against the disposed session.
 		if (entry.turn || entry.unsolicitedTurn) {
 			try {
+				await cancelActiveReview(sessionId, "Review session closing")
 				await entry.session.abort()
 			} catch {
 				// Closing is best-effort cleanup; still resolve the pending prompt
@@ -2615,6 +2807,22 @@ export class KimchiAcpAgent {
 		})
 		record.unsubscribe = session.subscribe((childEvent) => this.onSessionEvent(event.sessionId, childEvent))
 		this.startPlanTracker(record, event.sessionId)
+		const invocation = parent.pendingAgentSessionLinks.get(event.agentId)
+		if (invocation) {
+			parent.pendingAgentSessionLinks.delete(event.agentId)
+			this.send({
+				sessionId: event.parentSessionId,
+				update: this.presentToolCall("Agent", {
+					sessionUpdate: "tool_call_update",
+					toolCallId: invocation.toolCallId,
+					content: withSubagentSessionLink(invocation.content, event.sessionId),
+				}),
+			})
+		}
+	}
+
+	private onSubagentSessionFailed(event: SubagentSessionFailedEvent): void {
+		this.sessions.get(event.parentSessionId)?.pendingAgentSessionLinks.delete(event.agentId)
 	}
 
 	private flushPendingSubagentEvents(parentSessionId: string): void {
@@ -3273,18 +3481,19 @@ export class KimchiAcpAgent {
 					)
 					return
 				}
+				const content = this.agentContent(
+					sessionId,
+					event.toolName,
+					event.toolCallId,
+					this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
+				)
 				const update: SessionUpdate = this.presentToolCall(
 					event.toolName,
 					buildToolCallUpdate({
 						toolCallId: acpToolCallId,
 						piToolCallId: event.toolCallId,
 						status: event.isError ? "failed" : "completed",
-						content: this.agentContent(
-							sessionId,
-							event.toolName,
-							event.toolCallId,
-							this.displayContent(sessionId, [...toolResultContent(event.result), ...diffs]),
-						),
+						content,
 						rawOutput: this.displayOptionalRecord(
 							sessionId,
 							wireSafeToolResult(event.toolName, event.result, getClientOptedIntoMcpOAuthTurn(this.clientCapabilities)),
@@ -3292,6 +3501,14 @@ export class KimchiAcpAgent {
 					}),
 				)
 				this.send({ sessionId, update })
+				const agentId = backgroundAgentIdFromResult(event.result)
+				if (
+					!event.isError &&
+					agentId !== undefined &&
+					this.subagentSessionForTool(sessionId, event.toolCallId) === undefined
+				) {
+					entry.pendingAgentSessionLinks.set(agentId, { toolCallId: acpToolCallId, content })
+				}
 				// Upstream ids can repeat after compaction or even within a turn. Retire
 				// all state keyed on this upstream id so a future call reusing it starts
 				// with a fresh ACP id and clean streaming/announcement state.
@@ -4041,7 +4258,7 @@ const CANONICAL_THINKING_LEVEL_SET = new Set<string>(CANONICAL_THINKING_LEVELS)
  *  levels. Selectable sets are built from curated levels and pi's map keys —
  *  both canonical — but typed as plain strings, so narrowing to the
  *  setThinkingLevel parameter needs this guard instead of a call-site cast. */
-function isCanonicalThinkingLevel(value: string): value is AgentSession["thinkingLevel"] {
+function isCanonicalThinkingLevel(value: string): value is ModelThinkingLevel {
 	return CANONICAL_THINKING_LEVEL_SET.has(value)
 }
 
@@ -4327,6 +4544,16 @@ function readSessionHeader(sessionPath: string): Pick<SessionHeader, "id" | "cwd
 	return parseSessionHeader(readFileSync(sessionPath, "utf-8"))
 }
 
+const ACP_FORK_ENTRY_TYPE = "kimchi:acp-fork"
+const ACP_FORK_EXTERNAL_SUBAGENT_ENTRY = "kimchi:acp-fork-subagent-metadata"
+
+/** The positive lineage proof accepted from an ACP-created fork. Unknown or
+ * unreadable parented files retain the default read-only boundary. */
+function hasAcpForkProvenance(sessionPath: string): boolean {
+	const provenance = parseSessionEntries(readSessionHeaderPeek(sessionPath).raw)[1]
+	return provenance?.type === "custom" && provenance.customType === ACP_FORK_ENTRY_TYPE
+}
+
 function defaultSessionLister(options: RunAcpOptions): AcpSessionLister {
 	return async (params: ListSessionsRequest) => {
 		// Build the set of roots to enumerate: cwd (when present) plus any
@@ -4366,6 +4593,7 @@ async function createSessionSettings(
 	options: RunAcpOptions,
 	params: SessionMcpOAuthOptions & { _meta?: unknown; mcpServers?: ReadonlyArray<McpServer> },
 	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
+	onSubagentSessionFailed?: (event: SubagentSessionFailedEvent) => void,
 ) {
 	// Construct untrusted first: pi's SettingsManager.create defaults
 	// projectTrusted to TRUE, which would let an untrusted repo's
@@ -4402,6 +4630,7 @@ async function createSessionSettings(
 	// snapshots that skill refreshes recompute without extension reloads, and
 	// computes the append prompt per call so a committed skills snapshot is
 	// reflected on the next prompt rebuild (see session-resource-loader.ts).
+	const additionalSkillPaths: string[] = [...(options.additionalSkillPaths ?? [])]
 	const mainLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir: options.agentDir,
@@ -4409,24 +4638,49 @@ async function createSessionSettings(
 		extensionFactories: [
 			...options.extensionFactories,
 			...(mcpExtension ? [mcpExtension] : []),
-			...(onSubagentSessionCreated ? [subagentSessionCreatedExtension(onSubagentSessionCreated)] : []),
+			...(onSubagentSessionCreated
+				? [subagentSessionCreatedExtension(onSubagentSessionCreated, onSubagentSessionFailed)]
+				: []),
 		],
+		additionalSkillPaths,
 	})
 	const resourceLoader = new AcpSessionResourceLoader({
 		mainLoader,
 		cwd,
 		agentDir: options.agentDir,
 		settingsManager,
+		additionalSkillPaths,
 		baseAppend: () => resolveAcpAppendSystemPrompt(params, options) ?? [],
 	})
 	await resourceLoader.reload()
 	return { settingsManager, resourceLoader }
 }
 
+function emptySessionInitialOptions(
+	sessionManager: SessionManager,
+	modelRegistry: ModelRegistry,
+): { model?: Model<Api>; thinkingLevel?: ModelThinkingLevel } {
+	const branch = sessionManager.getBranch()
+	if (branch.some((entry) => entry.type === "message")) return {}
+
+	const modelChange = branch.findLast((entry) => entry.type === "model_change")
+	const model = modelChange
+		? findModelByRef(modelRegistry, `${modelChange.provider}/${modelChange.modelId}`)
+		: undefined
+	const thinkingChange = branch.findLast((entry) => entry.type === "thinking_level_change")
+	if (!thinkingChange) return { model }
+
+	const selection = thinkingSelection(model)
+	if (selection.mode !== "levels" || !isCanonicalThinkingLevel(thinkingChange.thinkingLevel)) return { model }
+	const level = clampToSelection(thinkingChange.thinkingLevel, selection)
+	return { model, thinkingLevel: isCanonicalThinkingLevel(level) ? level : undefined }
+}
+
 /** Exported for tests: the production session loader used by {@link KimchiAcpAgent}. */
 export function defaultSessionLoader(
 	options: RunAcpOptions,
 	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
+	onSubagentSessionFailed?: (event: SubagentSessionFailedEvent) => void,
 ): AcpSessionLoader {
 	return async (params: SessionLoaderParams): Promise<AgentSession> => {
 		const cwd = params.cwd
@@ -4475,7 +4729,9 @@ export function defaultSessionLoader(
 				options,
 				params,
 				onSubagentSessionCreated,
+				onSubagentSessionFailed,
 			)
+			const initialOptions = emptySessionInitialOptions(sessionManager, new ModelRegistry(modelRuntime))
 			const { session } = await createAgentSession({
 				cwd,
 				agentDir: options.agentDir,
@@ -4483,6 +4739,7 @@ export function defaultSessionLoader(
 				resourceLoader,
 				sessionManager,
 				modelRuntime,
+				...initialOptions,
 			})
 			bindSessionScopedOAuth(session, options.agentDir)
 			return session
@@ -4513,7 +4770,7 @@ export function defaultSessionLoader(
 		if (header.cwd !== cwd) {
 			throw RequestError.invalidParams(undefined, `session cwd ${header.cwd} does not match requested cwd ${cwd}`)
 		}
-		if (header.parentSession) {
+		if (header.parentSession && !hasAcpForkProvenance(sessionPath)) {
 			throw RequestError.invalidParams(undefined, `subagent session ${params.sessionId} is read-only`)
 		}
 		let sessionManager: SessionManager
@@ -4537,7 +4794,9 @@ export function defaultSessionLoader(
 			options,
 			params,
 			onSubagentSessionCreated,
+			onSubagentSessionFailed,
 		)
+		const initialOptions = emptySessionInitialOptions(sessionManager, new ModelRegistry(modelRuntime))
 		const { session } = await createAgentSession({
 			cwd,
 			agentDir: options.agentDir,
@@ -4545,6 +4804,7 @@ export function defaultSessionLoader(
 			resourceLoader,
 			sessionManager,
 			modelRuntime,
+			...initialOptions,
 		})
 		bindSessionScopedOAuth(session, options.agentDir)
 		return session
@@ -4611,6 +4871,7 @@ export function defaultSubagentReplayLoader(options: RunAcpOptions): AcpSubagent
 export function defaultSessionFactory(
 	options: RunAcpOptions,
 	onSubagentSessionCreated?: (event: SubagentSessionCreatedEvent) => void,
+	onSubagentSessionFailed?: (event: SubagentSessionFailedEvent) => void,
 ): AcpSessionFactory {
 	return async (params: SessionFactoryParams): Promise<AgentSession> => {
 		const cwd = params.cwd ?? process.cwd()
@@ -4619,6 +4880,7 @@ export function defaultSessionFactory(
 			options,
 			params,
 			onSubagentSessionCreated,
+			onSubagentSessionFailed,
 		)
 		const modelRuntime = await createSsoAwareModelRuntime(options.agentDir)
 		const { session } = await createAgentSession({
@@ -4854,6 +5116,7 @@ export function registerAcpAgentHandlers(app: ReturnType<typeof agent>, getAgent
 		.onRequest(methods.agent.session.load, ({ params }) => getAgent().loadSession(params))
 		.onRequest(methods.agent.session.list, ({ params }) => getAgent().listSessions(params))
 		.onRequest(methods.agent.session.resume, ({ params }) => getAgent().resumeSession(params))
+		.onRequest(methods.agent.session.fork, ({ params }) => getAgent().forkSession(params))
 		.onRequest(methods.agent.session.close, ({ params }) => getAgent().closeSession(params))
 		.onRequest(methods.agent.session.setConfigOption, ({ params }) => getAgent().setSessionConfigOption(params))
 		.onRequest(methods.agent.session.prompt, ({ params }) => getAgent().prompt(params))

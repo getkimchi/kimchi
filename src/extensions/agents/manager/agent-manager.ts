@@ -13,6 +13,7 @@ import { SESSION_TAG_PARENT_SESSION_ID } from "../../../sandbox/worker/types.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import type { RemoteGitWorkflow } from "../../remote-run/git-workflow.js"
 import { captureBaseline, resolveSandboxGitConnection, SandboxGitError } from "../../remote-run/sandbox-git.js"
+import type { ReviewPermissionPolicy } from "../../review-runner/execution.js"
 import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { repoBasename } from "../../teleport/provisioning/paths.js"
@@ -88,6 +89,12 @@ export interface SpawnOptions {
 	cwd?: string
 	/** Inline extensions appended to the child session's loader (load even with extensions disabled). */
 	extensionFactories?: InlineExtension[]
+	/** Review execution controls bound to this child's private checkout and parent approvals. */
+	reviewExecution?: ReviewPermissionPolicy
+	/** Extra inline tool names the host activates for an isolated child. */
+	additionalToolNames?: readonly string[]
+	/** Keep project settings and configuration in the invoking session when cwd names a review worktree. */
+	isolateProjectConfiguration?: boolean
 	/** How inactivity is accounted; "model_only" keeps a running tool from counting as inactivity. */
 	inactivityMode?: InactivityMode
 	/** Ends the child session once the named tool completes and this returns true (an accepted terminal report). */
@@ -218,6 +225,7 @@ export class AgentManager {
 	private onCompact?: OnAgentCompact
 	private onSessionCreated?: OnAgentSessionCreated
 	private onSessionResumed?: OnAgentSessionResumed
+	private onQueuedAbort?: OnAgentComplete
 	private sessionCreatedRecords = new WeakSet<AgentRecord>()
 	private maxConcurrent: number
 
@@ -231,12 +239,14 @@ export class AgentManager {
 		onCompact?: OnAgentCompact,
 		onSessionCreated?: OnAgentSessionCreated,
 		onSessionResumed?: OnAgentSessionResumed,
+		onQueuedAbort?: OnAgentComplete,
 	) {
 		this.onComplete = onComplete
 		this.onStart = onStart
 		this.onCompact = onCompact
 		this.onSessionCreated = onSessionCreated
 		this.onSessionResumed = onSessionResumed
+		this.onQueuedAbort = onQueuedAbort
 		this.maxConcurrent = maxConcurrent
 		this.cleanupInterval = setInterval(() => this.cleanup(), 60_000)
 	}
@@ -374,6 +384,9 @@ export class AgentManager {
 					maxDuration: options.maxDuration,
 					cwd: options.cwd,
 					extensionFactories: options.extensionFactories,
+					reviewExecution: options.reviewExecution,
+					additionalToolNames: options.additionalToolNames,
+					isolateProjectConfiguration: options.isolateProjectConfiguration,
 					agentId: record.id,
 					description: record.description,
 					workerReport: record.taskRef
@@ -1118,6 +1131,7 @@ export class AgentManager {
 			this.queue = this.queue.filter((q) => q.id !== id)
 			record.status = "stopped"
 			record.completedAt = Date.now()
+			this.onQueuedAbort?.(record)
 			return true
 		}
 
@@ -1546,6 +1560,7 @@ export class AgentManager {
 			if (record) {
 				record.status = "stopped"
 				record.completedAt = Date.now()
+				this.onQueuedAbort?.(record)
 				count++
 			}
 		}

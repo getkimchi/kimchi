@@ -22,7 +22,9 @@ import {
 	normalizeResumeIdArgs,
 	parseCliArgs,
 	populateCliArgs,
+	resolveAdditionalSkillPaths,
 	resolveBashProcessLimitSeconds,
+	stripAdditionalSkillsPathsArg,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 import { DANGEROUS_BYPASS_FLAG } from "./extensions/permissions/constants.js"
@@ -45,6 +47,12 @@ describe("value-flag parsing", () => {
 		expect(getParsedCliArgs().options.models).toBe("kimchi-dev/auto,kimchi-dev/glm-5.3")
 		populateCliArgs([])
 		expect(getParsedCliArgs().options.models).toBeUndefined()
+	})
+})
+
+describe("review writer limit parsing", () => {
+	it("preserves a negative equals-form value for structured validation", () => {
+		expect(parseCliArgs(["--review-writer-limit=-1"]).options["review-writer-limit"]).toBe("-1")
 	})
 })
 
@@ -146,6 +154,7 @@ describe("isPreDispatchValueFlag", () => {
 		["--extension"],
 		["-e"],
 		["--skill"],
+		["--additional-skill-paths"],
 		["--prompt-template"],
 		["--theme"],
 		["--name"],
@@ -163,6 +172,28 @@ describe("isPreDispatchValueFlag", () => {
 		["fix tests"],
 	])("does not treat %s as a value flag", (arg) => {
 		expect(isPreDispatchValueFlag(arg)).toBe(false)
+	})
+})
+
+describe("--additional-skill-paths parsing", () => {
+	it("collects repeated flags into an ordered array", () => {
+		populateCliArgs(["--additional-skill-paths", "/tmp/first", "--additional-skill-paths", "/tmp/second"])
+		expect(getParsedCliArgs().options["additional-skill-paths"]).toEqual(["/tmp/first", "/tmp/second"])
+		populateCliArgs([])
+	})
+
+	it("accepts the --flag=value form and mixes it with the spaced form", () => {
+		populateCliArgs(["--additional-skill-paths=/tmp/first", "--additional-skill-paths", "/tmp/second"])
+		expect(getParsedCliArgs().options["additional-skill-paths"]).toEqual(["/tmp/first", "/tmp/second"])
+		populateCliArgs([])
+	})
+
+	it("does not split comma-joined values and stays undefined when absent", () => {
+		// No comma-separated parsing: one flag is one path.
+		populateCliArgs(["--additional-skill-paths", "/a,/b"])
+		expect(getParsedCliArgs().options["additional-skill-paths"]).toEqual(["/a,/b"])
+		populateCliArgs([])
+		expect(getParsedCliArgs().options["additional-skill-paths"]).toBeUndefined()
 	})
 })
 
@@ -237,6 +268,30 @@ describe("normalizeAtFileArgs with CLI parsing", () => {
 				"@scope/pkg",
 				`@${join(tmp, "prompt.md")}`,
 			])
+			expect(result.directoryArgs).toEqual([])
+		} finally {
+			rmSync(tmp, { recursive: true, force: true })
+		}
+	})
+
+	it("leaves an @-prefixed --additional-skill-paths value unchanged", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "cli-at-file-args-"))
+		try {
+			// An @-named root directory actually existing is the failing case:
+			// misclassified as a positional, startup would reject it as an @file
+			// directory instead of parsing it as the local option's value.
+			mkdirSync(join(tmp, "@private-skills"))
+			writeFileSync(join(tmp, "prompt.md"), "hi")
+
+			expect(isCliAtFileArg("@private-skills", 1, ["--additional-skill-paths", "@private-skills"])).toBe(false)
+
+			const result = normalizeAtFileArgs(
+				["--additional-skill-paths", "@private-skills", "@prompt.md"],
+				tmp,
+				isCliAtFileArg,
+			)
+
+			expect(result.args).toEqual(["--additional-skill-paths", "@private-skills", `@${join(tmp, "prompt.md")}`])
 			expect(result.directoryArgs).toEqual([])
 		} finally {
 			rmSync(tmp, { recursive: true, force: true })
@@ -418,6 +473,160 @@ describe("boolean =-form normalization", () => {
 		expect(() => populateCliArgs(["--yolo=1", "fix tests"])).toThrow(
 			/--yolo expects a boolean \(=true or =false\); got --yolo="1"/,
 		)
+	})
+})
+
+describe("stripAdditionalSkillsPathsArg", () => {
+	it.each([
+		["empty args stay empty", [], []],
+		[
+			"no flag: args pass through unchanged",
+			["--model", "cast/gpt-5", "fix tests"],
+			["--model", "cast/gpt-5", "fix tests"],
+		],
+		["separated form is removed with its value", ["--additional-skill-paths", "/tmp/first"], []],
+		["equals form is removed", ["--additional-skill-paths=/tmp/first"], []],
+		[
+			"multiple paths are removed across forms while the rest keeps its order",
+			[
+				"--additional-skill-paths",
+				"/tmp/first",
+				"--additional-skill-paths=/tmp/second",
+				"--additional-skill-paths",
+				"/tmp/third",
+			],
+			[],
+		],
+		[
+			"existing --skill coexists and is never invented",
+			["--skill", "/tmp/upstream", "--additional-skill-paths", "/tmp/extra"],
+			["--skill", "/tmp/upstream"],
+		],
+		[
+			"existing --skill= form coexists",
+			["--additional-skill-paths=/tmp/extra", "--skill=/tmp/upstream"],
+			["--skill=/tmp/upstream"],
+		],
+		[
+			"unrelated tokens and prompt positionals are preserved",
+			["--provider", "kimchi-dev", "--additional-skill-paths", "/tmp/extra", "--print", "fix tests"],
+			["--provider", "kimchi-dev", "--print", "fix tests"],
+		],
+		[
+			"a value-taking option keeps its flag-shaped value intact",
+			["--additional-skill-paths", "/tmp/extra", "--system-prompt", "--print"],
+			["--system-prompt", "--print"],
+		],
+		[
+			"bare -- stops stripping of following tokens",
+			["--additional-skill-paths", "/tmp/extra", "--", "--additional-skill-paths", "literal-positional"],
+			["--", "--additional-skill-paths", "literal-positional"],
+		],
+		[
+			"equals form before -- is stripped, after is not",
+			["--additional-skill-paths=/tmp/extra", "--", "--additional-skill-paths=/tmp/raw"],
+			["--", "--additional-skill-paths=/tmp/raw"],
+		],
+		[
+			"dangling standalone flag without a value is dropped, never rewritten",
+			["--model", "cast/gpt-5", "--additional-skill-paths"],
+			["--model", "cast/gpt-5"],
+		],
+		[
+			"dangling standalone flag before -- is dropped and the separator stays verbatim",
+			["--additional-skill-paths", "--", "literal-positional"],
+			["--", "literal-positional"],
+		],
+		[
+			"a dangling flag followed by -- keeps the separator and later flag-shaped positionals",
+			["--additional-skill-paths", "--", "--additional-skill-paths", "literal-positional"],
+			["--", "--additional-skill-paths", "literal-positional"],
+		],
+		[
+			"a dangling flag as another option's value stays verbatim",
+			["--system-prompt", "--additional-skill-paths"],
+			["--system-prompt", "--additional-skill-paths"],
+		],
+		[
+			"a dangling flag as --system-prompt's value does not stop later stripping",
+			["--system-prompt", "--additional-skill-paths", "--additional-skill-paths=/tmp/x"],
+			["--system-prompt", "--additional-skill-paths"],
+		],
+		[
+			"a dangling flag as an existing --skill's value stays verbatim",
+			["--skill", "--additional-skill-paths"],
+			["--skill", "--additional-skill-paths"],
+		],
+		[
+			"only the exact flag name is stripped; prefixes are not",
+			["--additional-skill-pathsExtra", "/tmp/x"],
+			["--additional-skill-pathsExtra", "/tmp/x"],
+		],
+	])("%s", (_name, input, expected) => {
+		expect(stripAdditionalSkillsPathsArg(input)).toEqual(expected)
+		// Stripping is idempotent: an already-stripped argv is unchanged.
+		expect(stripAdditionalSkillsPathsArg(stripAdditionalSkillsPathsArg(input))).toEqual(expected)
+	})
+
+	it("never leaves the raw flag for pi before a bare --", () => {
+		// The ACP branch of cli.ts resolves appendSystemPrompt by parsing the
+		// stripped argv with pi's parser, and the non-ACP branch hands the
+		// stripped argv to main(). This pins the composition: after stripping,
+		// upstream sees no unknown Kimchi-local flag, explicit --skill options
+		// survive, and appendSystemPrompt survives.
+		const raw = [
+			"--additional-skill-paths",
+			"/tmp/private-skills",
+			"--append-system-prompt",
+			"tail instructions",
+			"--skill",
+			"/tmp/upstream",
+		]
+		const parsed = parsePiArgs(stripAdditionalSkillsPathsArg(raw))
+		expect(parsed.appendSystemPrompt).toEqual(["tail instructions"])
+		expect(parsed.skills).toEqual(["/tmp/upstream"])
+		expect(parsed.unknownFlags.has("additional-skill-paths")).toBe(false)
+	})
+})
+
+describe("--additional-skill-paths malformed-value validation", () => {
+	// node:util parseArgs (strict:false) reports a terminal flag as boolean
+	// `true`, `--additional-skill-paths=` as the empty string, and
+	// `--additional-skill-paths --` as the path value `"--"` — each would
+	// otherwise spread into ACP loader options or non-ACP discovery. The raw
+	// argv must reject all three with a clear startup error.
+	it.each([
+		["terminal standalone flag", ["--additional-skill-paths"]],
+		["empty equals value", ["--additional-skill-paths="]],
+		["bare -- as the following value", ["--additional-skill-paths", "--"]],
+	])("%s is a startup error", (_name, args) => {
+		expect(() => populateCliArgs(args)).toThrow("--additional-skill-paths requires a path")
+	})
+
+	it.each([
+		["the same token as another option's value", ["--system-prompt", "--additional-skill-paths"]],
+		["the same token as an existing --skill's value", ["--skill", "--additional-skill-paths"]],
+		["a token after the bare -- separator", ["--", "--additional-skill-paths"]],
+		["a well-formed separated flag", ["--additional-skill-paths", "/tmp/skills"]],
+		["a well-formed equals flag", ["--additional-skill-paths=/tmp/skills"]],
+	])("%s is accepted", (_name, args) => {
+		expect(() => populateCliArgs(args)).not.toThrow()
+	})
+})
+
+describe("resolveAdditionalSkillPaths", () => {
+	it("returns the validated parsed roots in order", () => {
+		populateCliArgs(["--additional-skill-paths", "/tmp/first", "--additional-skill-paths=/tmp/second"])
+		expect(resolveAdditionalSkillPaths()).toEqual(["/tmp/first", "/tmp/second"])
+	})
+
+	it("returns a typed empty array when the flag is absent", () => {
+		populateCliArgs(["--model", "cast/gpt-5"])
+		expect(resolveAdditionalSkillPaths()).toEqual([])
+	})
+
+	it("accepts an explicit parsed argument", () => {
+		expect(resolveAdditionalSkillPaths(parseCliArgs(["--additional-skill-paths", "/tmp/x"]))).toEqual(["/tmp/x"])
 	})
 })
 

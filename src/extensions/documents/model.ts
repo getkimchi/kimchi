@@ -38,17 +38,19 @@ export interface ExtractedDocument {
 	meta?: Record<string, unknown>
 }
 
-export type DocumentErrorCode =
-	| "not-a-document" // magic bytes match no supported format
-	| "unsupported-format" // recognized but not readable in this phase (legacy .doc/.ppt)
-	| "too-large" // over the 20 MB cap (or KIMCHI_DOCUMENT_MAX_MB)
-	| "safety-limit" // zip-bomb / symlink / path-traversal / entry caps
-	| "corrupt"
-	| "package-validation" // post-edit revalidation failed: the edit produced a package that won't open
-	| "password-protected"
-	| "extraction-failed"
-	| "timeout"
-	| "tool-missing" // optional external tool (e.g. LibreOffice for `render`) not installed
+export const DOCUMENT_ERROR_CODES = [
+	"not-a-document", // magic bytes match no supported format
+	"unsupported-format", // recognized but not readable in this phase (legacy .doc/.ppt)
+	"too-large", // over the 20 MB cap (or KIMCHI_DOCUMENT_MAX_MB)
+	"safety-limit", // zip-bomb / symlink / path-traversal / entry caps
+	"corrupt",
+	"package-validation", // post-edit revalidation failed: the edit produced a package that won't open
+	"password-protected",
+	"extraction-failed",
+	"timeout",
+	"tool-missing", // optional external tool (e.g. LibreOffice for `render`) not installed
+] as const
+export type DocumentErrorCode = (typeof DOCUMENT_ERROR_CODES)[number]
 
 export class DocumentError extends Error {
 	readonly code: DocumentErrorCode

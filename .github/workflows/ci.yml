@@ -130,6 +130,7 @@ jobs:
       timeout-minutes: 15
       use-build: true
       search-tools: true
+      bubblewrap: true
       # The timings file feeds pnpm run test:e2e:tui:timings (docs/ci.md).
       command: KIMCHI_TUI_TIMINGS_OUT="$PWD/tui-e2e-timings.json" pnpm run test:e2e:tui:ci --shard "$SHARD_INDEX/$SHARD_TOTAL"
       report-artifacts: tui-e2e-timings.json

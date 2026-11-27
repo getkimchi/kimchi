@@ -10,6 +10,7 @@ import type { AgentSession, InlineExtension } from "@earendil-works/pi-coding-ag
 import { truncate } from "./utils.js"
 
 export const SUBAGENT_SESSION_CREATED_EVENT = "subagents:session_created"
+export const SUBAGENT_SESSION_FAILED_EVENT = "subagents:failed"
 
 /** Transport payload emitted by the agents extension on its parent's event bus. */
 export interface SubagentCancellation {
@@ -40,6 +41,11 @@ export interface SubagentSessionCreatedPayload {
 }
 
 export type SubagentSessionCreatedEvent = SubagentSessionCreatedPayload
+
+export interface SubagentSessionFailedEvent {
+	agentId: string
+	parentSessionId: string
+}
 
 function stringField(value: Record<string, unknown>, key: string): string | undefined {
 	const field = value[key]
@@ -89,16 +95,31 @@ export function clientSupportsSubagents(capabilities: ClientCapabilities | undef
 	return typeof subagents === "object" && subagents !== null
 }
 
-/** Add the observer to the SAME DefaultResourceLoader extension set as the
+function parseSubagentSessionFailed(value: unknown): SubagentSessionFailedEvent | undefined {
+	if (!value || typeof value !== "object") return undefined
+	const data = value as Record<string, unknown>
+	const agentId = stringField(data, "agentId")
+	const parentSessionId = stringField(data, "parentSessionId")
+	return agentId && parentSessionId ? { agentId, parentSessionId } : undefined
+}
+
+/** Add observers to the SAME DefaultResourceLoader extension set as the
  * parent. No manager lookup and no second extension/runtime binding. */
 export function subagentSessionCreatedExtension(
 	onCreated: (event: SubagentSessionCreatedEvent) => void,
+	onFailed?: (event: SubagentSessionFailedEvent) => void,
 ): InlineExtension {
 	return (pi) => {
 		pi.events.on(SUBAGENT_SESSION_CREATED_EVENT, (value: unknown) => {
 			const event = parseSubagentSessionCreated(value)
 			if (event) onCreated(event)
 		})
+		if (onFailed) {
+			pi.events.on(SUBAGENT_SESSION_FAILED_EVENT, (value: unknown) => {
+				const event = parseSubagentSessionFailed(value)
+				if (event) onFailed(event)
+			})
+		}
 	}
 }
 
@@ -136,6 +157,16 @@ export function subagentReplayPromptMessages(
 	const parentMessageId = replayMessageId("ksp", parentSessionId, event)
 	const childMessageId = replayMessageId("ksc", parentSessionId, event)
 	return directedSubagentPromptMessages(parentSessionId, event, parentMessageId, childMessageId)
+}
+
+/** Only successful asynchronous handoffs can acquire a late session link.
+ * The manager id is stable even if a provider reuses its tool-call id. */
+export function backgroundAgentIdFromResult(result: unknown): string | undefined {
+	if (!result || typeof result !== "object") return undefined
+	const details = (result as { details?: unknown }).details
+	if (!details || typeof details !== "object") return undefined
+	const { status, agentId } = details as { status?: unknown; agentId?: unknown }
+	return status === "background" && typeof agentId === "string" && agentId.length > 0 ? agentId : undefined
 }
 
 /** Session links are native ACP content, not an invented ACP variant. They

@@ -2267,8 +2267,10 @@ describe("incremental translation", () => {
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
 		})
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		// The first chunk leaves the pass without time for another.
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
 			clock.mockReturnValue(start + 4_800)
@@ -2541,8 +2543,10 @@ describe("incremental translation", () => {
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
 		})
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		// The first chunk leaves the pass without time for another: the notes suspend the group mid-way.
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
 			clock.mockReturnValue(start + 4_800)
@@ -2588,8 +2592,10 @@ describe("incremental translation", () => {
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
 		})
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
 			clock.mockReturnValue(start + 4_800)
 		})
@@ -2627,8 +2633,10 @@ describe("incremental translation", () => {
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
 		})
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
 			clock.mockReturnValue(start + 4_800)
 		})
@@ -2662,8 +2670,10 @@ describe("incremental translation", () => {
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
 		})
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
 			clock.mockReturnValue(start + 4_800)
 		})
@@ -2719,8 +2729,10 @@ describe("incremental translation", () => {
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
 		})
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
 			clock.mockReturnValue(start + 4_800)
 		})
@@ -2777,8 +2789,10 @@ describe("incremental translation", () => {
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
 		})
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		vi.mocked(outbox.observeEvents).mockImplementationOnce(() => {
 			clock.mockReturnValue(start + 4_800)
 		})
@@ -2816,8 +2830,10 @@ describe("incremental translation", () => {
 			units: entities.map((entity) => ({ account, entities: [entity], recordHashes: [] })),
 			unresolved: [],
 		}
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		// A large group's read, report and event build take longer than one 5 s pass.
 		vi.mocked(eventBuilder.buildEvents).mockImplementation(async () => {
 			clock.mockReturnValue(start + 6_000)
@@ -2886,8 +2902,10 @@ describe("incremental translation", () => {
 		vi.mocked(eventBuilder.buildEvents).mockImplementation(async (stored) =>
 			ofBig(stored) ? bigGroup.built : smallGroup.built,
 		)
-		const clock = vi.spyOn(Date, "now")
+		// Frozen from the start, so the pass deadline is exactly start + 5 s. A
+		// running clock raced the pass's own start on a slow runner.
 		const start = Date.now()
+		const clock = vi.spyOn(Date, "now").mockReturnValue(start)
 		// The small group (first by work id) completes; the big group's first chunk then exhausts the pass.
 		vi.mocked(outbox.observeEvents).mockImplementation((_dir, _account, list) => {
 			if (list[0]?.entityId === "big-0") clock.mockReturnValue(start + 4_800)

@@ -162,6 +162,24 @@ describe("AgentManager", () => {
 		await record?.promise
 	})
 
+	it("notifies queued aborts without routing them through run completion", () => {
+		const onQueuedAbort = vi.fn()
+		const onComplete = vi.fn()
+		manager = new AgentManager(onComplete, 0, undefined, undefined, undefined, undefined, onQueuedAbort)
+		const first = manager.spawn(fakePi(), fakeCtx(), "Explore", "first", {
+			description: "first",
+			isBackground: true,
+		})
+		expect(manager.abort(first)).toBe(true)
+		expect(onQueuedAbort).toHaveBeenCalledWith(expect.objectContaining({ id: first, status: "stopped" }))
+		expect(onComplete).not.toHaveBeenCalled()
+
+		manager.spawn(fakePi(), fakeCtx(), "Explore", "second", { description: "second", isBackground: true })
+		expect(manager.abortAll()).toBe(1)
+		expect(onQueuedAbort).toHaveBeenCalledTimes(2)
+		expect(onComplete).not.toHaveBeenCalled()
+	})
+
 	it("marks a run as aborted when runAgent reports an abort", async () => {
 		mockRunAgent.mockResolvedValueOnce({
 			responseText: "partial output",

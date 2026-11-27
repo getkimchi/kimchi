@@ -136,6 +136,15 @@ it("repeated real-shell cohorts preserve filtered output and resolve overlapping
 				timeout: 5000,
 			})
 			.toBe(true)
+		// The pid file is on disk at once, but the echo still travels through a
+		// pipe that the registry reads asynchronously. Wait for the output itself.
+		await expect
+			.poll(
+				() =>
+					handles.every((handle, i) => state.registry.snapshotTail(handle).text.includes(`OUTPUT_${cycle}_${i}_END`)),
+				{ timeout: 5000 },
+			)
+			.toBe(true)
 		const selected = await control.execute(
 			`inspect-${cycle}`,
 			{ handles: [handles[0], "missing"] },

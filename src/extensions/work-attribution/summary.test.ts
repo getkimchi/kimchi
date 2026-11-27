@@ -1273,6 +1273,7 @@ describe("readable work summaries", () => {
 		}
 	})
 
+	// Four Bun processes and 24 locked commits take 10-13 s on CI runners.
 	it("serializes three native writers while a reader sees coherent authority, markers and projection", async () => {
 		const workId = randomUUID()
 		expect(native<WorkRecord[]>("records", workId)).toEqual([])
@@ -1319,5 +1320,5 @@ describe("readable work summaries", () => {
 			await Promise.all(writers.map((writer) => writer.stop()))
 			await reader.stop()
 		}
-	}, 15000)
+	}, 60_000)
 })

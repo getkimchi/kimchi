@@ -69,12 +69,14 @@ describePosix("spawnDaemon / stopDaemon (real processes)", () => {
 	})
 
 	it("detects instant crashes inside the grace window and surfaces the log", async () => {
+		// A grace far longer than the test timeout: the crash must end the wait
+		// as soon as the process exits, so a slow runner cannot hide it.
 		const outcome = await spawnDaemon({
 			command: "echo boot-failed-message; exit 3",
 			cwd: dir,
 			name: "crasher",
 			stateDir: dir,
-			crashGraceMs: SHORT_GRACE,
+			crashGraceMs: 60_000,
 		})
 		expect(outcome.ok).toBe(false)
 		if (outcome.ok) return

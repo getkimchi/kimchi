@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import { describe, expect, it } from "vitest"
 import { CLASSIFIER_NOT_CONFIGURED_BLOCK_REASON } from "../../src/extensions/permissions/classifier-health.js"
 import { KIMCHI_INFRA_ERROR_EXIT_CODE } from "../../src/infrastructure-error.js"
@@ -18,6 +19,7 @@ const BINARY_PATH = resolve("dist/bin/kimchi")
 const PACKAGE_DIR = resolve("dist/share/kimchi")
 const PROCESS_EXIT_TIMEOUT_MS = 20_000
 const MODEL_ARGS = ["--provider", "fake", "--model", DEFAULT_MODEL.slug]
+const RECALL_MODULE_URL = pathToFileURL(resolve("src/extensions/memory/recall.ts")).href
 
 interface RunResult {
 	code: number | null
@@ -25,6 +27,11 @@ interface RunResult {
 	stderr: string
 	timedOut: boolean
 	failure: string
+}
+
+interface SharedFixture {
+	tempRoot: string
+	fake: FakeOpenAiServer
 }
 
 interface RunOptions {
@@ -35,12 +42,16 @@ interface RunOptions {
 	session?: "file" | "none"
 	prepare?: (workDir: string, homeDir: string) => void
 	permissions?: string
+	/** Reuse one fake server and session directory across independent processes. */
+	fixture?: SharedFixture
 }
 
 interface Harness {
 	result: RunResult
 	sessionPath: string
 	workDir: string
+	requests: FakeOpenAiServer["requests"]
+	sessionText?: string
 }
 
 function spawnKimchi(
@@ -86,10 +97,10 @@ function spawnKimchi(
 }
 
 async function runKimchi(options: RunOptions): Promise<Harness> {
-	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-print-outcome-"))
-	let fake: FakeOpenAiServer | undefined
+	const tempRoot = options.fixture?.tempRoot ?? mkdtempSync(join(tmpdir(), "kimchi-print-outcome-"))
+	let fake = options.fixture?.fake
 	try {
-		fake = await startFakeOpenAiServer({ responses: options.responses ?? [] })
+		fake ??= await startFakeOpenAiServer({ responses: options.responses ?? [] })
 		const homeDir = join(tempRoot, "home")
 		const workDir = join(tempRoot, "work")
 		const sessionPath = join(tempRoot, "main.jsonl")
@@ -105,10 +116,13 @@ async function runKimchi(options: RunOptions): Promise<Harness> {
 			options.stdin,
 			options.permissions ?? "yolo",
 		)
-		return { result, sessionPath, workDir }
+		const sessionText = existsSync(sessionPath) ? readFileSync(sessionPath, "utf-8") : undefined
+		return { result, sessionPath, workDir, requests: fake.requests, ...(sessionText ? { sessionText } : {}) }
 	} finally {
-		await fake?.stop().catch(() => {})
-		rmSync(tempRoot, { recursive: true, force: true })
+		if (!options.fixture) {
+			await fake?.stop().catch(() => {})
+			rmSync(tempRoot, { recursive: true, force: true })
+		}
 	}
 }
 
@@ -148,6 +162,130 @@ function denyWriteThenScript(final: FakeResponseScript, times = 1): FakeResponse
 	]
 }
 
+function createTodosThenScript(final: FakeResponseScript): FakeResponseScript[] {
+	return [
+		{
+			toolCalls: [
+				{
+					id: "call_create_todos",
+					type: "function",
+					function: {
+						name: "create_todos",
+						arguments: JSON.stringify({ todos: [{ content: "Verify the answer", status: "pending" }] }),
+					},
+				},
+			],
+		},
+		final,
+	]
+}
+
+function prepareAbortAfterPartialAnswer(workDir: string, homeDir: string): void {
+	const harnessSettings = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+	const settings = JSON.parse(readFileSync(harnessSettings, "utf-8")) as Record<string, unknown>
+	const extensionDir = join(workDir, ".kimchi", "extensions")
+	const extensionPath = join(extensionDir, "abort-after-partial-answer.ts")
+	mkdirSync(extensionDir, { recursive: true })
+	writeFileSync(
+		harnessSettings,
+		JSON.stringify({ ...settings, defaultProjectTrust: "always", extensions: [extensionPath] }),
+	)
+	writeFileSync(
+		extensionPath,
+		`export default function abortAfterPartialAnswer(pi) {
+  let todosCreated = false
+  pi.on("tool_result", (event) => {
+    if (event.toolName === "create_todos") todosCreated = true
+  })
+  pi.on("message_update", (_event, ctx) => {
+    if (todosCreated) ctx.abort()
+  })
+}
+`,
+	)
+}
+
+function writeProbeExtension(workDir: string, homeDir: string, name: string, source: string): void {
+	const harnessSettings = join(homeDir, ".config", "kimchi", "harness", "settings.json")
+	const settings = JSON.parse(readFileSync(harnessSettings, "utf-8")) as Record<string, unknown>
+	const extensionDir = join(workDir, ".kimchi", "extensions")
+	const extensionPath = join(extensionDir, name)
+	mkdirSync(extensionDir, { recursive: true })
+	writeFileSync(
+		harnessSettings,
+		JSON.stringify({ ...settings, defaultProjectTrust: "always", extensions: [extensionPath] }),
+	)
+	writeFileSync(extensionPath, source)
+}
+
+function prepareRecallProbe(
+	timing: "immediate" | "final-message" | "first-error",
+	fact: string,
+): NonNullable<RunOptions["prepare"]> {
+	return (workDir, homeDir) => {
+		writeProbeExtension(
+			workDir,
+			homeDir,
+			"recall-probe.ts",
+			`import { runRecall } from ${JSON.stringify(RECALL_MODULE_URL)}
+export default function recallProbe(pi) {
+  let releaseSearch
+  const searchGate = new Promise((resolve) => { releaseSearch = resolve })
+  let recallPromise
+  pi.on("agent_start", (_event, ctx) => {
+    if (recallPromise) return
+    recallPromise = (async () => {
+      const originalInfo = console.info
+      console.info = (...args) => {
+        if (typeof args[0] === "string" && args[0].startsWith("[memory]")) return
+        originalInfo(...args)
+      }
+      try {
+      return await runRecall({
+      trigger: "user-turn",
+      query: "uncovered recall smoke query",
+      pi,
+      ctx,
+      search: async () => {
+        if (${JSON.stringify(timing)} !== "immediate") await searchGate
+        return [{ id: "smoke-fact", memory: ${JSON.stringify(fact)}, score: 0.95 }]
+      },
+      decideGate: null,
+      deliveredFacts: [],
+      deliveredKeys: new Set(),
+      emit: () => {},
+      })
+      } finally {
+        console.info = originalInfo
+      }
+    })().then((outcome) => {
+      console.error("RECALL_PROBE_OUTCOME:" + outcome)
+    })
+  })
+  pi.on("message_end", (event) => {
+    const releaseStopReason = ${JSON.stringify(timing === "final-message" ? "stop" : timing === "first-error" ? "error" : "")}
+    if (event.message.role === "assistant" && event.message.stopReason === releaseStopReason) releaseSearch()
+  })
+  pi.on("agent_settled", async () => {
+    if (recallPromise) await recallPromise
+  })
+}
+`,
+		)
+	}
+}
+
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content
+	if (!Array.isArray(content)) return ""
+	return content
+		.flatMap((part) => {
+			if (typeof part !== "object" || part === null || !("text" in part) || typeof part.text !== "string") return []
+			return [part.text]
+		})
+		.join("\n")
+}
+
 function parseJsonLines(stdout: string): { type?: string }[] {
 	return stdout
 		.split("\n")
@@ -156,6 +294,10 @@ function parseJsonLines(stdout: string): { type?: string }[] {
 }
 
 const TIMEOUT = { timeout: 45_000 }
+const PRINT_MODES = [
+	["text", []],
+	["json", ["--mode", "json"]],
+] as const
 
 describe("non-interactive run outcome guard (compiled binary)", () => {
 	it("denied write then empty answer exits 3 in text mode", TIMEOUT, async () => {
@@ -215,6 +357,278 @@ describe("non-interactive run outcome guard (compiled binary)", () => {
 		expect(result.stdout, result.failure).toBe("The answer.\n")
 		expectNoGuardMarker(result)
 		expectTextOutcomeEquivalence(result)
+	})
+
+	it.each(PRINT_MODES)(
+		"todo changes do not displace the final assistant answer in %s mode",
+		TIMEOUT,
+		async (mode, modeArgs) => {
+			const { result } = await runKimchi({
+				args: ["--print", ...modeArgs, ...MODEL_ARGS, "track work and answer"],
+				responses: createTodosThenScript({ stream: ["ANSWER AFTER TODO STATE"] }),
+			})
+
+			expect(result.timedOut, result.failure).toBe(false)
+			expect(result.code, result.failure).toBe(0)
+			expectNoGuardMarker(result)
+			if (mode === "text") {
+				expect(result.stdout, result.failure).toBe("ANSWER AFTER TODO STATE\n")
+				expectTextOutcomeEquivalence(result)
+			} else {
+				expect(result.stdout, result.failure).toContain("ANSWER AFTER TODO STATE")
+				expect(result.stdout, result.failure).not.toContain('"customType":"todo-state"')
+			}
+		},
+	)
+
+	it.each(PRINT_MODES)(
+		"persists a cleared todo state across fresh processes after a %s answer",
+		TIMEOUT,
+		async (mode, modeArgs) => {
+			const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-print-clear-resume-"))
+			const fake = await startFakeOpenAiServer({
+				responses: [
+					...createTodosThenScript({ stream: ["PENDING STATE ANSWER"] }),
+					{
+						toolCalls: [
+							{
+								id: "call_clear_todos",
+								type: "function",
+								function: { name: "clear_todos", arguments: "{}" },
+							},
+						],
+					},
+					{ stream: ["CLEARED STATE ANSWER"] },
+					{ stream: ["RESUMED CLEARED ANSWER"] },
+				],
+			})
+			const fixture = { tempRoot, fake }
+			const expectAnswer = ({ result }: Harness, answer: string) => {
+				expect(result.timedOut, result.failure).toBe(false)
+				expect(result.code, result.failure).toBe(0)
+				expectNoGuardMarker(result)
+				if (mode === "text") {
+					expect(result.stdout, result.failure).toBe(`${answer}\n`)
+				} else {
+					expect(result.stdout, result.failure).toContain(answer)
+					expect(result.stdout, result.failure).not.toContain('"customType":"todo-state"')
+				}
+			}
+			try {
+				const seeded = await runKimchi({
+					fixture,
+					args: ["--print", ...modeArgs, ...MODEL_ARGS, "create a pending todo"],
+				})
+				const cleared = await runKimchi({
+					fixture,
+					args: ["--print", ...modeArgs, ...MODEL_ARGS, "clear the todo"],
+				})
+				const resumed = await runKimchi({
+					fixture,
+					args: ["--print", ...modeArgs, ...MODEL_ARGS, "continue after a fresh-process resume"],
+				})
+
+				expectAnswer(seeded, "PENDING STATE ANSWER")
+				expectAnswer(cleared, "CLEARED STATE ANSWER")
+				expectAnswer(resumed, "RESUMED CLEARED ANSWER")
+
+				const chatRequests = resumed.requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+				const lastRequest = chatRequests.at(-1)
+				if (!lastRequest) throw new Error(`No resumed chat request. ${resumed.result.failure}`)
+				const messages = (lastRequest.body as { messages?: { role?: string; content?: unknown }[] }).messages ?? []
+				const stateBlocks = messages
+					.filter((message) => message.role === "user")
+					.map((message) => messageText(message.content))
+					.filter((text) => text.includes("## Current Todos"))
+				expect(stateBlocks, resumed.result.failure).toHaveLength(1)
+				expect(stateBlocks[0], resumed.result.failure).toContain("The todo list was cleared.")
+				expect(stateBlocks[0], resumed.result.failure).not.toContain("Verify the answer")
+				expect(cleared.sessionText, cleared.result.failure).toContain("The todo list was cleared.")
+			} finally {
+				await fake.stop().catch(() => {})
+				rmSync(tempRoot, { recursive: true, force: true })
+			}
+		},
+	)
+
+	it.each(PRINT_MODES)(
+		"memory recall resolving at the final message stays out of the %s answer tail",
+		TIMEOUT,
+		async (mode, modeArgs) => {
+			const { result } = await runKimchi({
+				args: ["--print", ...modeArgs, ...MODEL_ARGS, "answer normally"],
+				responses: [{ stream: ["ANSWER BEFORE LATE RECALL"] }],
+				prepare: prepareRecallProbe("final-message", "DELAYED MEMORY FACT"),
+			})
+
+			expect(result.timedOut, result.failure).toBe(false)
+			expect(result.code, result.failure).toBe(0)
+			expect(result.stderr, result.failure).toContain("RECALL_PROBE_OUTCOME:injected")
+			expectNoGuardMarker(result)
+			if (mode === "text") {
+				expect(result.stdout, result.failure).toBe("ANSWER BEFORE LATE RECALL\n")
+				expectTextOutcomeEquivalence(result)
+			} else {
+				expect(result.stdout, result.failure).toContain("ANSWER BEFORE LATE RECALL")
+				expect(result.stdout, result.failure).not.toContain('"customType":"memory-recall"')
+			}
+		},
+	)
+
+	it.each(PRINT_MODES)(
+		"retry replays first-error memory context into the next %s request",
+		TIMEOUT,
+		async (mode, modeArgs) => {
+			const fact = "RETRY MEMORY CONTEXT"
+			const { result, requests, sessionText } = await runKimchi({
+				args: ["--print", ...modeArgs, ...MODEL_ARGS, "retry with memory"],
+				responses: [{ status: 503, body: { error: "Service Unavailable" } }, { stream: ["RETRY ANSWER"] }],
+				prepare: prepareRecallProbe("first-error", fact),
+			})
+
+			expect(result.timedOut, result.failure).toBe(false)
+			expect(result.code, result.failure).toBe(0)
+			expect(result.stderr, result.failure).toContain("RECALL_PROBE_OUTCOME:injected")
+			expectNoGuardMarker(result)
+			if (mode === "text") {
+				expect(result.stdout, result.failure).toBe("RETRY ANSWER\n")
+				expectTextOutcomeEquivalence(result)
+			} else {
+				expect(result.stdout, result.failure).toContain("RETRY ANSWER")
+				expect(result.stdout, result.failure).toContain('"customType":"memory-recall"')
+			}
+			expect(sessionText, result.failure).toContain(fact)
+			const chatRequests = requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+			expect(chatRequests.length, result.failure).toBeGreaterThan(1)
+			expect(JSON.stringify(chatRequests[1]?.body), result.failure).toContain(fact)
+		},
+	)
+
+	it.each(PRINT_MODES)(
+		"replays hidden context into a second request in the same %s run",
+		TIMEOUT,
+		async (mode, modeArgs) => {
+			const fact = "BUFFERED CONTINUATION FACT"
+			const steer = "CONTINUE WITH THE FACT"
+			const { result, requests, sessionText } = await runKimchi({
+				args: ["--print", ...modeArgs, ...MODEL_ARGS, "answer and continue"],
+				responses: [{ stream: ["FIRST ANSWER"] }, { stream: ["CONTINUATION ANSWER"] }],
+				prepare: (workDir, homeDir) =>
+					writeProbeExtension(
+						workDir,
+						homeDir,
+						"continue-after-answer.ts",
+						`export default function continueAfterAnswer(pi) {
+  let sent = false
+  pi.on("turn_end", (event) => {
+    if (sent || event.message.stopReason !== "stop") return
+    sent = true
+    pi.sendMessage(
+      { customType: "buffered-context", content: ${JSON.stringify(fact)}, display: false },
+      { deliverAs: "steer", triggerTurn: false },
+    )
+    pi.sendMessage(
+      { customType: "continuation-steer", content: ${JSON.stringify(steer)}, display: false },
+      { deliverAs: "steer" },
+    )
+  })
+}
+`,
+					),
+			})
+			expect(result.code, result.failure).toBe(0)
+			expectNoGuardMarker(result)
+			if (mode === "text") {
+				expect(result.stdout, result.failure).toBe("CONTINUATION ANSWER\n")
+			} else {
+				expect(result.stdout, result.failure).toContain("CONTINUATION ANSWER")
+			}
+			const chatRequests = requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+			expect(chatRequests, result.failure).toHaveLength(2)
+			const nextRequest = JSON.stringify(chatRequests[1]?.body)
+			const factPosition = nextRequest.indexOf(fact)
+			expect(factPosition, "buffered fact is missing from the second request").toBeGreaterThanOrEqual(0)
+			expect(nextRequest.indexOf(steer)).toBeGreaterThan(factPosition)
+			const journalFactPosition = sessionText?.indexOf(fact) ?? -1
+			expect(journalFactPosition).toBeGreaterThanOrEqual(0)
+			expect(sessionText?.indexOf(steer)).toBeGreaterThan(journalFactPosition)
+		},
+	)
+
+	it("memory recall resolving during a tool turn reaches the next model request", TIMEOUT, async () => {
+		const fact = "RECALL DURING ACTIVE TURN"
+		const { result, requests } = await runKimchi({
+			args: ["--print", ...MODEL_ARGS, "use memory while answering"],
+			responses: createTodosThenScript({ stream: ["ANSWER WITH ACTIVE RECALL"] }),
+			prepare: prepareRecallProbe("immediate", fact),
+		})
+
+		expect(result.timedOut, result.failure).toBe(false)
+		expect(result.code, result.failure).toBe(0)
+		expect(result.stdout, result.failure).toBe("ANSWER WITH ACTIVE RECALL\n")
+		expect(result.stderr, result.failure).toContain("RECALL_PROBE_OUTCOME:injected")
+		const chatRequests = requests.filter((request) => request.url.startsWith("/openai/v1/chat/completions"))
+		expect(chatRequests.length, result.failure).toBeGreaterThan(1)
+		expect(
+			chatRequests.slice(1).some((request) => JSON.stringify(request.body).includes(fact)),
+			result.failure,
+		).toBe(true)
+	})
+
+	for (const scenario of [
+		{
+			name: "length",
+			stopReason: "length",
+			response: { stream: ["PARTIAL ANSWER"], finishReason: "length" },
+			diagnostic: "Response was truncated: the model reached its output token limit.",
+		},
+		{
+			name: "stream error",
+			stopReason: "error",
+			response: { streamError: "SCRIPTED STREAM FAILURE" },
+			diagnostic: "Provider finish_reason: error",
+			eventText: "SCRIPTED STREAM FAILURE",
+		},
+	] satisfies Array<{
+		name: string
+		stopReason: "length" | "error"
+		response: FakeResponseScript
+		diagnostic: string
+		eventText?: string
+	}>) {
+		it.each(PRINT_MODES)(`${scenario.name} after todo changes exits 1 in %s mode`, TIMEOUT, async (mode, modeArgs) => {
+			const { result } = await runKimchi({
+				args: ["--print", ...modeArgs, ...MODEL_ARGS, "track work and answer"],
+				responses: createTodosThenScript(scenario.response),
+			})
+
+			expect(result.timedOut, result.failure).toBe(false)
+			expect(result.code, result.failure).toBe(1)
+			expect(result.stderr, result.failure).toContain(scenario.diagnostic)
+			expectNoGuardMarker(result)
+			if (mode === "json") {
+				expect(result.stdout, result.failure).toContain(`"stopReason":"${scenario.stopReason}"`)
+				expect(result.stdout, result.failure).not.toContain('"customType":"todo-state"')
+				if (scenario.eventText) expect(result.stdout, result.failure).toContain(scenario.eventText)
+			}
+		})
+	}
+
+	it.each(PRINT_MODES)("aborted answer after todo changes exits 1 in %s mode", TIMEOUT, async (mode, modeArgs) => {
+		const { result } = await runKimchi({
+			args: ["--print", ...modeArgs, ...MODEL_ARGS, "track work and answer"],
+			responses: createTodosThenScript({ stream: ["ABORT DURING ANSWER"] }),
+			prepare: prepareAbortAfterPartialAnswer,
+		})
+
+		expect(result.timedOut, result.failure).toBe(false)
+		expect(result.code, result.failure).toBe(1)
+		expect(result.stderr, result.failure).toContain("Request was aborted")
+		expectNoGuardMarker(result)
+		if (mode === "json") {
+			expect(result.stdout, result.failure).toContain('"stopReason":"aborted"')
+			expect(result.stdout, result.failure).not.toContain('"customType":"todo-state"')
+		}
 	})
 
 	it("print with no prompt exits 2 with actionable stderr", TIMEOUT, async () => {

@@ -44,7 +44,11 @@ export default defineConfig({
 		// Per-file isolated home: os.homedir() reads USERPROFILE on Windows and
 		// ignores HOME, so per-test HOME stubs alone don't protect the real profile.
 		// Relies on the default isolate: true, which reruns the setup for each file.
-		setupFiles: ["./tests/setup/isolated-home.ts", "./tests/setup/work-ledger.ts"],
+		setupFiles: [
+			"./tests/setup/isolated-home.ts",
+			"./tests/setup/work-ledger.ts",
+			"./tests/setup/event-loop-jitter.ts",
+		],
 		// Once per run, before any file: the resources postinstall generates (tests/setup/generated-resources.ts).
 		globalSetup: ["./tests/setup/generated-resources.ts"],
 		env: {

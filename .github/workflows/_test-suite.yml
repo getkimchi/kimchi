@@ -31,6 +31,10 @@ on:
         description: "Put ripgrep and fd on PATH"
         type: boolean
         default: false
+      bubblewrap:
+        description: "Install bubblewrap for the strong Linux review-command boundary"
+        type: boolean
+        default: false
       playwright:
         description: "Install Playwright Chromium"
         type: boolean
@@ -59,6 +63,15 @@ jobs:
         shard: ${{ fromJSON(inputs.shards) }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install bubblewrap
+        if: inputs.bubblewrap
+        run: |
+          sudo apt-get update && sudo apt-get install --yes --no-install-recommends bubblewrap
+          # Noble's AppArmor policy denies unprivileged user namespaces to both
+          # bwrap and unshare. Relax it only on this disposable CI runner so the
+          # suite exercises the offline boundary, not its online-approval fallback.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - uses: ./.github/actions/setup
         with:

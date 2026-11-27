@@ -6,7 +6,8 @@
 			"!dist/",
 			"!node_modules/",
 			"!src/core/export-html/",
-			"!src/extensions/mcp-adapter/app-bridge.bundle.js"
+			"!src/extensions/mcp-adapter/app-bridge.bundle.js",
+			"!src/extensions/review-submit/testdata"
 		]
 	},
 	"vcs": {

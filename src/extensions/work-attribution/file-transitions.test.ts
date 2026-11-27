@@ -730,6 +730,8 @@ describe("manual commit reconciliation", () => {
 		).toEqual(["first", "second"])
 	})
 
+	// Six reconcile passes start real git processes, so this gets the slow-git timeout.
+	// The budget clock is mocked, so the result does not depend on speed.
 	it.each([false, true])("advances through a bounded backlog across launches (mixed newest: %s)", async (mixed) => {
 		baseline()
 		const expected: string[] = []
@@ -756,7 +758,7 @@ describe("manual commit reconciliation", () => {
 				.sort(),
 			warn.mock.calls.map((call) => String(call[1])).join("\n"),
 		).toEqual(expected.sort())
-	})
+	}, 30_000)
 
 	it("retries the whole commit when reading a parent file exhausts the budget", async () => {
 		baseline()

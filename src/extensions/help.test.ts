@@ -6,6 +6,7 @@ import { type Component, visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, onTestFinished, vi } from "vitest"
 import { createCommandContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { withExperimentalFeatures } from "./experimental.js"
 import helpExtension from "./help.js"
 import { SLASH_COMMANDS } from "./slash-commands.js"
 
@@ -108,6 +109,17 @@ describe("help — rating shortcuts", () => {
 })
 
 describe("help — slash command list", () => {
+	it("lists /review only when experimental features are enabled", async () => {
+		await withExperimentalFeatures(false, async () => {
+			const component = await mountHelpOverlay()
+			expect(component.render(80).join("\n")).not.toContain("/review")
+		})
+		await withExperimentalFeatures(true, async () => {
+			const component = await mountHelpOverlay()
+			expect(component.render(80).join("\n")).toContain("/review")
+		})
+	})
+
 	// pi's interactive mode handles these itself (/settings, /model and
 	// /scoped-models in its submit handler; /compact, /name and /new as core
 	// commands), so no kimchi extension ever calls registerCommand for them.

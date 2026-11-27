@@ -22,6 +22,8 @@ import {
 	normalizeBooleanFlagArgs,
 	normalizeResumeIdArgs,
 	populateCliArgs,
+	resolveAdditionalSkillPaths,
+	stripAdditionalSkillsPathsArg,
 	stripExperimentalFeaturesArg,
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
@@ -30,6 +32,7 @@ import { dispatchSubcommand } from "./commands/dispatch.js"
 import { isKnownCommand } from "./commands/registry.js"
 import { createGuidedCodemodeExtension } from "./extensions/codemode/guidance.js"
 import { installModelTableRenderer } from "./model-selector-table.js"
+import { installOneShotHiddenMessageGuard } from "./one-shot-hidden-message-guard.js"
 import { setProjectScopeTrusted } from "./project-scope-trust.js"
 import { resolvePreMainProjectTrustWithOverrides } from "./project-trust.js"
 import { installThinkingLevelAdvisor } from "./thinking-selection.js"
@@ -65,6 +68,7 @@ import { isBunBinary } from "./env.js"
 import { discoverEnvironmentModels, installEnvironmentModels } from "./environment-models.js"
 import activityExtension from "./extensions/activity.js"
 import idleGcExtension from "./extensions/adaptive-gc.js"
+import { createAdditionalSkillRootsExtension } from "./extensions/additional-skill-roots.js"
 import { installAgentEndWillRetryPatch } from "./extensions/agent-end-will-retry.js"
 import agentsExtension from "./extensions/agents/index.js"
 import { WEB_TOOL_MANAGED_FACTORIES } from "./extensions/agents/manager/subagent-web-tools.js"
@@ -161,6 +165,8 @@ import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
 import refusedTurnsExtension, { applyRefusalNoticeRenderingPatch } from "./extensions/refused-turns.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import requestTimingExtension from "./extensions/request-timing.js"
+import reviewCommandExtension from "./extensions/review-command/index.js"
+import reviewSubmitExtension from "./extensions/review-submit/index.js"
 import { createRunOutcomeTracker } from "./extensions/run-outcome.js"
 import sessionMemoryStatsExtension from "./extensions/session-memory-stats.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
@@ -349,6 +355,7 @@ async function cliMain(): Promise<void> {
 	const infrastructureErrorTracker = createInfrastructureErrorTracker()
 	// Detects print/json runs that end without a prompt or final answer.
 	const runOutcomeTracker = createRunOutcomeTracker()
+	installOneShotHiddenMessageGuard()
 	if (!IS_ACP_MODE) observeAgentSessionPrompts(AgentSession.prototype, runOutcomeTracker.notePrompt)
 
 	// --- Org policy ---
@@ -826,6 +833,11 @@ async function cliMain(): Promise<void> {
 			// `--exclude-tools bash_control` is honored: those sessions fall back
 			// to plain blocking bash instead (execute-time availability check).
 			const piArgs = coupleBashControlToolArg(rawArgs)
+			if (getParsedCliArgs().options.review === true && !piArgs.includes("--no-context-files")) {
+				// APA supplies review instructions through review-context/. Disable
+				// upstream global and ancestor AGENTS.md/CLAUDE.md discovery too.
+				piArgs.push("--no-context-files")
+			}
 
 			// Probe runs here (before pi-mono takes stdin) so the result is cached for
 			// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
@@ -919,7 +931,23 @@ async function cliMain(): Promise<void> {
 			// decides per client at initialize instead (server.ts). See
 			// extensions/bash-background/session-policy.ts.
 			if (getCliModeArg(rawArgs) === "rpc") setBackgroundRunsPermitted(true)
+			// Process-scoped additional skill roots from --additional-skill-paths,
+			// already validated by populateCliArgs. Non-ACP modes contribute them
+			// through the inline additional-skill-roots extension below (upstream
+			// main() has no additionalSkillPaths parameter); ACP consumes them
+			// directly through RunAcpOptions, so it must not load this factory too.
+			const additionalSkillRoots = resolveAdditionalSkillPaths()
 			const extensionFactories = [
+				// --additional-skill-paths roots, non-ACP only, and FIRST among
+				// skill-contributing factories: upstream's loader appends extension
+				// contributions after settings/native additionalSkillPaths, with
+				// first-named-skill-wins, so prepending lands the additional roots
+				// exactly where ACP's native additionalSkillPaths sit (after
+				// base/settings, before repository contributions). Existing factory
+				// order is untouched.
+				...(additionalSkillRoots.length > 0 && !IS_ACP_MODE
+					? [createAdditionalSkillRootsExtension(() => additionalSkillRoots)]
+					: []),
 				// First so its session_start handler syncs project trust onto the
 				// settings watcher before any other handler reads settings.
 				settingsTrustSyncExtension,
@@ -943,6 +971,11 @@ async function cliMain(): Promise<void> {
 				// re-enable only deliberately via registerSkillManageTool.
 				(pi: ExtensionAPI) => skillsManagerExtension(pi, { registerSkillManageTool: false }),
 				artifactRecorderExtension,
+				// APA activates these process-scoped review tools with --review.
+				// Loading them through the normal inline extension list puts all three
+				// in the initial system message before the first model call.
+				reviewSubmitExtension,
+				reviewCommandExtension,
 				statsExtension,
 				statusExtension,
 				budgetCommandExtension,
@@ -1123,18 +1156,32 @@ async function cliMain(): Promise<void> {
 				await runAcpMode({
 					extensionFactories,
 					agentDir,
+					// Process-scoped skill roots from --additional-skill-paths. Only the
+					// ACP mode consumes them; the existing --skill behavior stays on
+					// upstream pi and is deliberately not forwarded here.
+					additionalSkillPaths: getParsedCliArgs().options["additional-skill-paths"],
 					...(mcpAdapterExtensions.length > 0
 						? {
 								mcpExtensionFactory: createKimchiMcpAdapterExtension,
 								mcpProbe: new UpstreamMcpProbe(),
 							}
 						: {}),
-					appendSystemPrompt: parsePiArgs(piArgs).appendSystemPrompt,
+					// Same strip as the non-ACP branch: --additional-skill-paths is a
+					// Kimchi-local flag, so even this appendSystemPrompt-only parse must
+					// not feed the raw token to upstream pi (lenient today, strict
+					// tomorrow). Stripping first leaves pi parsing only flags it knows,
+					// preserves every other option value, and never converts the roots
+					// to --skill.
+					appendSystemPrompt: parsePiArgs(stripAdditionalSkillsPathsArg(piArgs)).appendSystemPrompt,
 				})
 			} else {
-				// Delegate to pi-mono's CLI main function, injecting the kimchi extension
+				// Delegate to pi-mono's CLI main function, injecting the kimchi extension.
+				// --additional-skill-paths is Kimchi-local: strip it so non-ACP modes
+				// never see the raw flag; its roots are contributed additively by the
+				// prepended additional-skill-roots inline extension instead (never
+				// rewritten to --skill).
 				const { main } = await import("@earendil-works/pi-coding-agent")
-				await main(piArgs, { extensionFactories })
+				await main(stripAdditionalSkillsPathsArg(piArgs), { extensionFactories })
 			}
 			applyPostMainInfrastructureExitPolicy(
 				infrastructureErrorTracker.getFailure(),

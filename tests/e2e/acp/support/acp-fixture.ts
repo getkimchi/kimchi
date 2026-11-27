@@ -40,12 +40,28 @@ const STARTUP_TIMEOUT_MS = 30_000
 /** Hard cap on a single `prompt()` round-trip so a regression can't hang CI. */
 const PROMPT_TIMEOUT_MS = 60_000
 
+/** Typed agent-method helpers layered onto the SDK 2.x `ClientContext`. The
+ * 2.x client API removed the legacy `ClientConnection` convenience methods
+ * (`loadSession`, `setSessionConfigOption`, ...) in favor of generic
+ * `request(method, params)`. Tests still read those calls as named methods,
+ * so the fixture re-exposes the two the suite uses via the checked-in method
+ * spec names — the same `methods.agent.session.*` constants the server side
+ * dispatches on. */
+export interface AgentMethodHelpers {
+	loadSession(params: acp.LoadSessionRequest): Promise<acp.LoadSessionResponse>
+	setSessionConfigOption(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse>
+}
+
+/** Client context handed to tests: the SDK `ClientContext` plus the legacy
+ * named agent-method helpers above. */
+export type TestClientContext = ClientContext & AgentMethodHelpers
+
 export interface AcpFixture {
 	homeDir: string
 	workDir: string
 	fake: FakeOpenAiServer
 	proc: ChildProcess
-	conn: ClientContext
+	conn: TestClientContext
 	client: RecordingClient
 	/** The initialize() response captured at connection setup, so tests can assert negotiated agent capabilities without a second initialization call. */
 	initializeResponse: acp.InitializeResponse
@@ -130,6 +146,14 @@ export interface AcpFixtureOptions {
 	 * Defaults to `workDir` (the ACP protocol's session cwd).
 	 */
 	processCwd?: string
+	/**
+	 * Seconds a bash command may run before the tool moves it to the
+	 * background. Defaults to 2, so background-bash scenarios hand off fast.
+	 * Tests whose command must finish inside the tool call (real work, not a
+	 * scripted sleep) need more: under parallel CI load such a command can
+	 * take longer than 2s and then still runs when the turn ends.
+	 */
+	bashHandoffSeconds?: number
 }
 
 export interface StartAcpFixtureOptions extends AcpFixtureOptions {
@@ -528,7 +552,7 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 				// Background-bash scenarios script short sleeps (3–6s) that must
 				// hand off; keep the e2e handoff at 2s instead of the 15s product
 				// default (covered by unit tests).
-				KIMCHI_E2E_BASH_HANDOFF_SECONDS: "2",
+				KIMCHI_E2E_BASH_HANDOFF_SECONDS: String(options.bashHandoffSeconds ?? 2),
 				// Keep the /v1/me identity lookup (telemetry pre-session) on the
 				// fake server; otherwise it would reach the real app API.
 				KIMCHI_REMOTE_ENDPOINT: fake.baseUrl,
@@ -560,7 +584,23 @@ export async function startAcpFixture(options: StartAcpFixtureOptions): Promise<
 			.onRequest(acp.methods.client.elicitation.create, ({ params }) => recordingClient.createElicitation(params))
 			.onRequest("*", ({ method, params }) => recordingClient.extMethod(method, params))
 			.onNotification("*", ({ method, params }) => recordingClient.extNotification(method, params))
-		const conn = app.connect(stream).agent
+		const rawConn = app.connect(stream).agent
+		// Named agent-method seam over the 2.x generic request API (see
+		// AgentMethodHelpers). The proxy keeps `this` bound to the underlying
+		// ClientContext for everything else.
+		const conn: TestClientContext = new Proxy(rawConn, {
+			get(target, prop, receiver) {
+				if (prop === "loadSession") {
+					return (params: acp.LoadSessionRequest) => target.request(acp.methods.agent.session.load, params)
+				}
+				if (prop === "setSessionConfigOption") {
+					return (params: acp.SetSessionConfigOptionRequest) =>
+						target.request(acp.methods.agent.session.setConfigOption, params)
+				}
+				const value = Reflect.get(target, prop, receiver)
+				return typeof value === "function" ? value.bind(target) : value
+			},
+		})
 
 		// If kimchi crashes on startup this rejects within the timeout.
 		const initResult = await Promise.race([

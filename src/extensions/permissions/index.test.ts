@@ -48,6 +48,7 @@ import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { CUSTOM_BRANCH_ITEM, CUSTOM_BRANCH_PROMPT } from "../remote-run/git-workflow.js"
 import { runCloudAgent } from "../remote-run/runner.js"
+import { createReviewExecutionController } from "../review-runner/execution.js"
 import { STALE_CTX_MESSAGE_PREFIX } from "../stale-ctx.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { COST_PER_PR_RESOURCE_ID } from "../work-attribution/resource.js"
@@ -6733,6 +6734,109 @@ describe("document-skill CLI route (kimchi doc-cli)", () => {
 				permissionMode: "auto",
 			},
 		])
+	})
+})
+
+describe("review result submissions in plan mode", () => {
+	function reviewExecution() {
+		const path = "/tmp/review-plan-worker"
+		return createReviewExecutionController({
+			mode: "local",
+			worktree: {
+				id: "plan",
+				kind: "reviewer",
+				revision: "head",
+				path,
+				pinnedSha: "a".repeat(40),
+				scratchDir: `${path}/scratch`,
+				buildDir: `${path}/build`,
+				cacheDir: `${path}/cache`,
+				homeDir: `${path}/home`,
+				env: {},
+			},
+		})
+	}
+
+	function decisions(harness: ReturnType<typeof createPermissionsHarness>): unknown[] {
+		const emitted: unknown[] = []
+		harness.pi.events.on(PERMISSION_EVENTS.TOOL_DECISION, (event) => emitted.push(event))
+		return emitted
+	}
+
+	let workerSequence = 0
+	async function plannedWorker(
+		toolNames: string[],
+		execution?: WorkerPermissionsOptions["reviewExecution"],
+	): Promise<{ harness: ReturnType<typeof createPermissionsHarness>; ctx: ExtensionContext }> {
+		const parentSessionId = `review-plan-parent-${++workerSequence}`
+		const parent = createPermissionsHarness(["read"], { plan: true })
+		await parent.fire("session_start", {}, createMockContext([], parentSessionId))
+		const harness = createWorkerHarness(toolNames, {
+			parentSessionId,
+			persona: "Reviewer",
+			...(execution ? { reviewExecution: execution } : {}),
+		})
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+		return { harness, ctx }
+	}
+
+	it("accepts submit_finding as preapproved for a review worker", async () => {
+		const { harness, ctx } = await plannedWorker(["submit_finding", "run_review_command"], reviewExecution())
+		const emitted = decisions(harness)
+
+		await expect(
+			harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "review-submit-plan", toolName: "submit_finding", input: {} },
+				ctx,
+			),
+		).resolves.toBeUndefined()
+		expect(emitted).toContainEqual(expect.objectContaining({ decision: "accept", sourceDetail: "preapproved" }))
+	})
+
+	it("keeps run_review_command behind plan_gate for a review worker", async () => {
+		const { harness, ctx } = await plannedWorker(["submit_finding", "run_review_command"], reviewExecution())
+		const emitted = decisions(harness)
+
+		await expect(
+			harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "review-command-plan", toolName: "run_review_command", input: {} },
+				ctx,
+			),
+		).resolves.toMatchObject({ block: true })
+		expect(emitted).toContainEqual(expect.objectContaining({ decision: "reject", sourceDetail: "plan_gate" }))
+	})
+
+	it("rejects submit_finding from a worker without review execution", async () => {
+		const { harness, ctx } = await plannedWorker(["submit_finding"])
+		const emitted = decisions(harness)
+
+		await expect(
+			harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "ordinary-submit-plan", toolName: "submit_finding", input: {} },
+				ctx,
+			),
+		).resolves.toMatchObject({ block: true })
+		expect(emitted).toContainEqual(expect.objectContaining({ decision: "reject", sourceDetail: "plan_gate" }))
+	})
+
+	it("rejects submit_finding from the main session", async () => {
+		const harness = createPermissionsHarness(["submit_finding"], { plan: true })
+		const emitted = decisions(harness)
+		const ctx = createClassifierContext()
+		await harness.fire("session_start", {}, ctx)
+
+		await expect(
+			harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "main-submit-plan", toolName: "submit_finding", input: {} },
+				ctx,
+			),
+		).resolves.toMatchObject({ block: true })
+		expect(emitted).toContainEqual(expect.objectContaining({ decision: "reject", sourceDetail: "plan_gate" }))
 	})
 })
 
