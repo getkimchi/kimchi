@@ -250,8 +250,9 @@ export interface FinalizeReviewPanelOptions {
 	hasVerifier: boolean
 	/** Synchronize source writers immediately before replacing any final artifact. */
 	beforePublish?: () => Promise<void>
-	/** Trusted sandbox or coordinator environment limitations, merged with reviewer reports. */
-	environmentGaps?: EnvironmentGap[]
+	/** Trusted sandbox or coordinator environment limitations, merged with reviewer reports.
+	 * A callback reads late-created verifier receipts immediately before summary output. */
+	environmentGaps?: EnvironmentGap[] | (() => readonly EnvironmentGap[])
 }
 
 async function publishValidatedReconciliation(
@@ -455,7 +456,11 @@ export async function finalizeReviewPanel(options: FinalizeReviewPanelOptions): 
 	})
 	const input = {
 		body: summaryBody(store, findings),
-		environment_gaps: await collectEnvironmentGaps(store, outputDir, options.environmentGaps),
+		environment_gaps: await collectEnvironmentGaps(
+			store,
+			outputDir,
+			typeof options.environmentGaps === "function" ? options.environmentGaps() : options.environmentGaps,
+		),
 		coverage,
 	}
 	let summary: ReviewSummaryRecord | undefined

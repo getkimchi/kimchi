@@ -5,6 +5,8 @@ import type {
 	ReviewAgentSpawner,
 	ReviewCheckDefinition,
 	ReviewCommandRecord,
+	ReviewEnvironmentGap,
+	ReviewEnvironmentSettings,
 	ReviewExecutionPolicyOptions,
 } from "../review-runner/index.js"
 import type {
@@ -146,6 +148,8 @@ export interface RunReviewPanelOptions extends ReviewPanelSelectionInput {
 	target: ResolvedReviewTarget
 	outputDir: string
 	checkDefinitions?: ReviewCheckDefinition[]
+	environment?: ReviewEnvironmentSettings
+	environmentValidationGaps?: readonly ReviewEnvironmentGap[]
 	environmentGaps?: EnvironmentGap[]
 	executionPolicy?: ReviewExecutionPolicyOptions
 	/** Absolute epoch-millisecond deadline, parsed by stage 5 from the manifest's RFC 3339 timestamp. */
@@ -188,6 +192,8 @@ export interface WrapUpReviewPanelOptions {
 	/** Stage 5 passes the new manifest identity. Deadline intentionally is not part of identity. */
 	expected?: ReviewPanelIdentity
 	checkDefinitions?: ReviewCheckDefinition[]
+	environment?: ReviewEnvironmentSettings
+	environmentValidationGaps?: readonly ReviewEnvironmentGap[]
 	environmentGaps?: EnvironmentGap[]
 	executionPolicy?: ReviewExecutionPolicyOptions
 	deadline?: number

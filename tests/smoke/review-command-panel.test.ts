@@ -10,7 +10,7 @@ import {
 	writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { expect, it } from "vitest"
 import {
 	type FakeOpenAiServer,
@@ -60,7 +60,7 @@ interface RunningPrint {
 function parseEvents(stdout: string): JsonEvent[] {
 	return stdout
 		.split("\n")
-		.filter(Boolean)
+		.filter((line) => line.startsWith("{"))
 		.map((line) => JSON.parse(line) as JsonEvent)
 }
 
@@ -75,6 +75,7 @@ function runPrint(
 		worktreeTempDir?: string
 		sessionDir?: string
 		cwd?: string
+		experimental?: boolean
 	} = {},
 ): RunningPrint {
 	const runDir = join(homeDir, "run")
@@ -92,6 +93,7 @@ function runPrint(
 			"max",
 			"--yolo",
 			"--no-approve",
+			...(options.experimental ? ["--enable-experimental-features"] : []),
 			...(options.sessionId ? ["--session", options.sessionId] : []),
 			...(options.sessionDir ? ["--session-dir", options.sessionDir] : []),
 			"--review",
@@ -245,6 +247,34 @@ async function cleanup(tempRoot: string, fake: FakeOpenAiServer): Promise<void> 
 	rmSync(tempRoot, { recursive: true, force: true })
 }
 
+function shellArgument(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+function hasLocalCacheBoundary(): boolean {
+	try {
+		if (process.platform === "darwin") {
+			execFileSync(
+				"sandbox-exec",
+				["-p", "(version 1)(allow default)(deny network-outbound)", process.execPath, "--version"],
+				{
+					stdio: "ignore",
+				},
+			)
+			return true
+		}
+		if (process.platform === "linux") {
+			execFileSync("bwrap", ["--unshare-net", "--ro-bind", "/", "/", process.execPath, "--version"], {
+				stdio: "ignore",
+			})
+			return true
+		}
+	} catch {
+		return false
+	}
+	return false
+}
+
 it("dispatches a zero-finding manifest panel with ordered events and ingestible artifacts", {
 	timeout: 45_000,
 }, async () => {
@@ -267,6 +297,96 @@ it("dispatches a zero-finding manifest panel with ordered events and ingestible 
 		expect(readFileSync(join(f.directories.outputDir, "findings", "final.jsonl"), "utf8")).toBe(finalFindings)
 	} finally {
 		await cleanup(f.tempRoot, f.fake)
+	}
+})
+
+it("runs a local lens command against a read-only cache without changing its bytes", {
+	timeout: 45_000,
+}, async (ctx) => {
+	if (!hasLocalCacheBoundary()) {
+		ctx.skip("sandbox-exec or bwrap is required for read-only cache enforcement")
+		return
+	}
+	const tempRoot = mkdtempSync(join(tmpdir(), "kimchi-review-cache-smoke-"))
+	const cacheDir = join(tempRoot, "fixture-cache")
+	mkdirSync(cacheDir, { recursive: true })
+	writeFileSync(join(cacheDir, "artifact.txt"), "smoke-cache-bytes\n")
+	const readSource =
+		"const fs=require('node:fs');const path=require('node:path');console.log(fs.readFileSync(path.join(process.env.REVIEW_FIXTURE_CACHE,'artifact.txt'),'utf8'))"
+	const writeSource =
+		"require('node:fs').writeFileSync(require('node:path').join(process.env.REVIEW_FIXTURE_CACHE,'created.txt'),'denied')"
+	const command = (source: string) => [process.execPath, "-e", source].map(shellArgument).join(" ")
+	const matchesLens = (request: { body: unknown }) => JSON.stringify(request.body).includes("REVIEW_LENS spec")
+	const toolCount = (request: { body: unknown }) => (JSON.stringify(request.body).match(/"role":"tool"/g) ?? []).length
+	const turn = (count: number) => (request: { body: unknown }) => matchesLens(request) && toolCount(request) === count
+	const tool = (count: number, name: string, args: Record<string, unknown>): FakeResponseScript => ({
+		match: turn(count),
+		toolCalls: [{ id: `cache_call_${count}`, function: { name, arguments: JSON.stringify(args) } }],
+		usage: { prompt_tokens: 9, completion_tokens: 4 },
+	})
+	const scripts: FakeResponseScript[] = [
+		tool(0, "run_review_command", { command: command(readSource), intended_check: "read shared cache" }),
+		tool(1, "run_review_command", { command: command(writeSource), intended_check: "attempt shared cache write" }),
+		tool(2, "submit_summary", { body: "Read passed and the cache write failed as required.", environment_gaps: [] }),
+		{ match: turn(3), stream: ["Cache checks complete"], usage: { prompt_tokens: 9, completion_tokens: 4 } },
+		{
+			match: (request) => JSON.stringify(request.body).includes("semantic review reconciler"),
+			stream: [
+				JSON.stringify({ schema_version: "review-reconciliation/v1", findings: [], decisions: [], threads: [] }),
+			],
+			usage: { prompt_tokens: 9, completion_tokens: 4 },
+		},
+	]
+	const f = await fixture({
+		scripts,
+		reviewSettings: {
+			environment: {
+				caches: [{ id: "fixture", path: realpathSync(cacheDir) }],
+				toolchains: [],
+				profiles: {
+					default: {
+						readOnlyCaches: ["fixture"],
+						privateDirs: [],
+						env: { REVIEW_FIXTURE_CACHE: `\${cache:fixture}` },
+						setup: [],
+						probes: [],
+					},
+					repositories: {},
+				},
+			},
+		},
+	})
+	try {
+		const result = await runPrint(f.homeDir, `/review branch main --base ${f.baseSha} --lens spec`, f.directories, {
+			cwd: f.checkout,
+			experimental: true,
+		}).done
+		expect(result.timedOut, `${result.stdout}\n${result.stderr}`).toBe(false)
+		expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0)
+		const summaryPath = result.stdout.match(/^Report:\s*(.+)$/m)?.[1]?.trim()
+		expect(summaryPath, `${result.stdout}\n${result.stderr}`).toBeTruthy()
+		if (!summaryPath) throw new Error("Local review did not report its summary path")
+		const actualOutputDir = dirname(dirname(summaryPath))
+		const panel = JSON.parse(readFileSync(join(actualOutputDir, "state", "panel.json"), "utf8"))
+		const commands = panel.lenses[0].commands
+		const cacheRead = commands.find((record: { intendedCheck: string }) => record.intendedCheck === "read shared cache")
+		const cacheWrite = commands.find(
+			(record: { intendedCheck: string }) => record.intendedCheck === "attempt shared cache write",
+		)
+		expect(cacheRead).toMatchObject({ status: "passed", network: "offline" })
+		expect(cacheRead.output).toContain("smoke-cache-bytes")
+		expect(cacheWrite).toMatchObject({ status: "failed", network: "offline" })
+		expect(readFileSync(join(cacheDir, "artifact.txt"), "utf8")).toBe("smoke-cache-bytes\n")
+		expect(existsSync(join(cacheDir, "created.txt"))).toBe(false)
+		const environments = JSON.parse(readFileSync(join(actualOutputDir, "state", "environments.json"), "utf8"))
+		expect(environments.environments.length).toBeGreaterThanOrEqual(1)
+		expect(environments.environments.every((receipt: { readiness: string }) => receipt.readiness === "ready")).toBe(
+			true,
+		)
+		expect(environments.environments[0].resolvedCaches[0].path).toBe(realpathSync(cacheDir))
+	} finally {
+		await cleanup(f.tempRoot, f.fake)
+		rmSync(tempRoot, { recursive: true, force: true })
 	}
 })
 

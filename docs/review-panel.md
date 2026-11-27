@@ -145,6 +145,50 @@ marker and parent link make the children visible in the session picker. They are
 not attached to the parent's HTML export or ACP subagent recovery because review
 children are not launched through the Agent tool manager.
 
+## Prepared environments, prompts, and agent metrics
+
+Trusted user-level `review.environment` settings select one generic default
+profile and optional per-canonical-repository replacements for reviewer,
+base/head command, routine-check, and reconciliation-verifier worktrees. For
+example, a profile can set `env: { "ARTIFACT_ROOT": "${cache:artifacts}" }`
+after declaring `artifacts` in the trusted read-only cache catalog. Full
+settings, argv setup/probe syntax, generic/Go/pnpm worked examples, path
+validation, and platform semantics are documented in
+[review-runner.md](review-runner.md#trusted-prepared-review-environments).
+Empty or invalid environment-only configuration remains isolated; invalid
+configuration adds a typed gap instead of crashing panel startup.
+
+`state/environments.json` stores each worktree's preparation receipt before
+that worktree becomes ready. ReviewRunner appends the receipt's bounded actual
+note only when a profile applies or gaps exist; no-config prompts stay
+byte-identical while receipts persist. The note describes
+available read-only inputs, private directories, setup/probe outcomes, and
+residual gaps, and forbids manual dependency links/downloads or unrelated
+caches. Receipt gaps join coordinator and reviewer gaps at final summary
+production, after late verifier worktrees have been prepared. Public
+`review-finding/v1` and `review-summary/v1` finding schemas are unchanged.
+
+Every lens/verifier attempt also appends an ordered record to mode-0600,
+atomically written `state/agents.json` (`review-agents/v1`). Records include:
+
+- stable runner `runId`, writer, and per-writer attempt sequence;
+- worktree and environment-receipt digest;
+- child `sessionFile` when the parent session supports one;
+- start/end ISO timestamps, `durationMs`, and numeric `durationSeconds`;
+- turns/maxTurns, aborted/steered state, abort reason, and last assistant stop
+  reason;
+- first accepted submission-tool completion time;
+- per-provider/model `input`, `output`, `cacheRead`, and `cacheWrite` totals;
+- spawn error, when the attempt failed before returning a normal result.
+
+Timing starts only after worktree setup/probes and receipt persistence, so the
+agent investigation duration excludes dependency preparation. The existing
+differential `child_usage` stream still handles live delivery deadlines;
+`agents.json` is the durable per-attempt record for later analysis of reviewer runs.
+Environment and agent histories load at startup and merge read-modify-write
+updates under the shared review-output lock, so later pools and resumed
+verifiers cannot erase earlier lenses or attempts.
+
 ## Candidate and final checkpoints
 
 Reviewer files remain `findings/<lens>.jsonl`. Every ingest revalidates writer,

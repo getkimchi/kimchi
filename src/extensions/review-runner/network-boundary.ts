@@ -6,9 +6,11 @@ import type { ReviewWorktree } from "./types.js"
 
 export interface ReviewNetworkBoundary {
 	kind: "sandbox-exec" | "bwrap" | "unshare-net"
+	/** Optional for pre-existing fixtures and non-Linux injected boundaries. */
+	preparationPidNamespace?: boolean
 	/** Enclose a command in its detected network boundary. The unshare-net
 	 * fallback does not provide the other kinds' private-worktree write boundary. */
-	wrap: (command: string, worktree: ReviewWorktree) => string
+	wrap: (command: string, worktree: ReviewWorktree, options?: { preparation?: boolean }) => string
 }
 
 const MACOS_DETECTION_PROFILE = `(version 1)
@@ -36,7 +38,7 @@ function privateWritePaths(worktree: ReviewWorktree): string[] {
 	]
 }
 
-function linuxBoundaryArguments(worktree: ReviewWorktree, command: string): string[] {
+function linuxBoundaryArguments(worktree: ReviewWorktree, command: string, preparation = false): string[] {
 	return [
 		"bwrap",
 		"--unshare-net",
@@ -46,7 +48,9 @@ function linuxBoundaryArguments(worktree: ReviewWorktree, command: string): stri
 		"--dev-bind",
 		"/dev/null",
 		"/dev/null",
+		...(preparation ? ["--unshare-pid", "--die-with-parent"] : []),
 		...privateWritePaths(worktree).flatMap((path) => ["--bind", path, path]),
+		...(worktree.readOnlyCachePaths ?? []).flatMap((path) => ["--ro-bind", path, path]),
 		"--",
 		"/bin/sh",
 		"-c",
@@ -60,10 +64,16 @@ function macosProfile(worktree: ReviewWorktree): string {
 	const writeAllows = privateWritePaths(worktree)
 		.map((path) => `(allow file-write* (subpath ${JSON.stringify(path)}))`)
 		.join("\n")
+	// This final deny is intentional defense in depth: a selected cache may
+	// contain a private root, but no earlier broad allow may make it writable.
+	const cacheWriteDenies = (worktree.readOnlyCachePaths ?? [])
+		.map((path) => `(deny file-write* (subpath ${JSON.stringify(path)}))`)
+		.join("\n")
 	return `${MACOS_DETECTION_PROFILE}
 (deny file-write*)
 (allow file-write* (literal "/dev/null"))
-${writeAllows}`
+${writeAllows}
+${cacheWriteDenies}`
 }
 
 function succeeds(command: string, args: readonly string[]): Promise<boolean> {
@@ -76,14 +86,29 @@ async function detectLinuxBoundary(
 	probe: (command: string, args: readonly string[]) => Promise<boolean> = succeeds,
 ): Promise<ReviewNetworkBoundary | undefined> {
 	if (await probe("bwrap", ["--unshare-net", "--ro-bind", "/", "/", process.execPath, "--version"])) {
+		const preparationPidNamespace = await probe("bwrap", [
+			"--unshare-net",
+			"--unshare-pid",
+			"--die-with-parent",
+			"--ro-bind",
+			"/",
+			"/",
+			process.execPath,
+			"--version",
+		])
 		return {
 			kind: "bwrap",
-			wrap: (command, worktree) => linuxBoundaryArguments(worktree, command).map(shellQuote).join(" "),
+			preparationPidNamespace,
+			wrap: (command, worktree, options) =>
+				linuxBoundaryArguments(worktree, command, options?.preparation === true && preparationPidNamespace)
+					.map(shellQuote)
+					.join(" "),
 		}
 	}
 	if (await probe("unshare", ["--net", "--map-root-user", process.execPath, "--version"])) {
 		return {
 			kind: "unshare-net",
+			preparationPidNamespace: false,
 			wrap: (command) => `unshare --net --map-root-user -- /bin/sh -c ${shellQuote(command)}`,
 		}
 	}
@@ -96,6 +121,7 @@ async function detectPlatformBoundary(): Promise<ReviewNetworkBoundary | undefin
 			return undefined
 		return {
 			kind: "sandbox-exec",
+			preparationPidNamespace: false,
 			wrap: (command, worktree) =>
 				`sandbox-exec -p ${shellQuote(macosProfile(worktree))} /bin/sh -c ${shellQuote(command)}`,
 		}
@@ -165,19 +191,11 @@ const SAFE_VARIABLES = new Set([
 	"CI",
 ])
 
-/** Build a local offline environment from a narrow allowlist, not from a
- * subtractive scrub of the invoking process. Registry/index/user-config values
- * always use fixed credential-free/public defaults or private paths. */
-export function offlineEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-	const environment: NodeJS.ProcessEnv = {}
-	for (const [key, value] of Object.entries(base)) {
-		if (value === undefined) continue
-		if (SAFE_VARIABLES.has(key) || key.startsWith("LC_") || PRIVATE_WORKTREE_VARIABLES.has(key)) {
-			environment[key] = value
-		}
-	}
-	environment.NPM_CONFIG_USERCONFIG = join(environment.HOME ?? base.HOME ?? "", ".npmrc")
-	environment.NPM_CONFIG_GLOBALCONFIG = join(environment.HOME ?? base.HOME ?? "", ".npmrc-global")
+/** Apply only mandatory network/no-prompt guarantees. Non-network toolchain
+ * choices can be overridden by a trusted environment profile before this pass. */
+export function applyOfflineGuarantees(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	environment.NPM_CONFIG_USERCONFIG = join(environment.HOME ?? "", ".npmrc")
+	environment.NPM_CONFIG_GLOBALCONFIG = join(environment.HOME ?? "", ".npmrc-global")
 	environment.NPM_CONFIG_REGISTRY = "https://registry.npmjs.org/"
 	environment.npm_config_offline = "true"
 	environment.NPM_CONFIG_OFFLINE = "true"
@@ -187,8 +205,6 @@ export function offlineEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	environment.YARN_ENABLE_NETWORK = "0"
 	environment.BUN_CONFIG_OFFLINE = "true"
 	environment.GOPROXY = "off"
-	environment.GOTOOLCHAIN = "local"
-	environment.GOFLAGS = `${environment.GOFLAGS ?? ""} -mod=mod`.trim()
 	environment.PIP_NO_INDEX = "1"
 	environment.PIP_DISABLE_PIP_VERSION_CHECK = "1"
 	environment.UV_OFFLINE = "1"
@@ -201,4 +217,20 @@ export function offlineEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	environment.GIT_CONFIG_NOSYSTEM = "1"
 	environment.GIT_TERMINAL_PROMPT = "0"
 	return environment
+}
+
+/** Build a local offline environment from a narrow allowlist, not from a
+ * subtractive scrub of the invoking process. Registry/index/user-config values
+ * always use fixed credential-free/public defaults or private paths. */
+export function offlineEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const environment: NodeJS.ProcessEnv = {}
+	for (const [key, value] of Object.entries(base)) {
+		if (value === undefined) continue
+		if (SAFE_VARIABLES.has(key) || key.startsWith("LC_") || PRIVATE_WORKTREE_VARIABLES.has(key)) {
+			environment[key] = value
+		}
+	}
+	environment.GOTOOLCHAIN = "local"
+	environment.GOFLAGS = `${environment.GOFLAGS ?? ""} -mod=mod`.trim()
+	return applyOfflineGuarantees(environment)
 }

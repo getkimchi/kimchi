@@ -26,8 +26,9 @@ import { parseReviewTargetArgs } from "../review-targets/parser.js"
 import { resolveReviewTarget } from "../review-targets/resolve.js"
 import type { ExplicitReviewRequest, ResolvedReviewTarget } from "../review-targets/types.js"
 import type { ReviewCheckDefinition } from "./check-config.js"
-import { ReviewCheckQueue, ReviewCheckStateError } from "./checks.js"
-import { createReviewExecutionController, type ReviewCommandRecord } from "./execution.js"
+import { ReviewCheckQueue, type ReviewCheckQueueOptions, ReviewCheckStateError } from "./checks.js"
+import type { ReviewEnvironmentSettings } from "./environment.js"
+import { createReviewExecutionController, executeReviewCommand, type ReviewCommandRecord } from "./execution.js"
 import type { ReviewNetworkBoundary } from "./network-boundary.js"
 import { registerReviewChildTools } from "./tools.js"
 import type { ReviewWorktree, ReviewWorktreePool } from "./types.js"
@@ -42,6 +43,23 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 const testBoundary: ReviewNetworkBoundary = { kind: "sandbox-exec", wrap: (command) => command }
+
+function environmentWithMarker(marker: string): ReviewEnvironmentSettings {
+	return {
+		caches: [],
+		toolchains: [],
+		profiles: {
+			default: {
+				readOnlyCaches: [],
+				privateDirs: [],
+				env: { ENVIRONMENT_MARKER: marker },
+				setup: [],
+				probes: [],
+			},
+			repositories: {},
+		},
+	}
+}
 
 function requesterWorktree(root: string, id: string): ReviewWorktree {
 	return {
@@ -146,6 +164,8 @@ console.error('routine failure'); process.exit(4)`,
 		checkDefinitions: ReviewCheckDefinition[] | null = definitions,
 		contextMode: "tui" | "print" = "tui",
 		signal?: AbortSignal,
+		environment?: ReviewEnvironmentSettings,
+		executeCommand?: ReviewCheckQueueOptions["executeCommand"],
 	) {
 		target = await resolveReviewTarget(
 			parseReviewTargetArgs(["branch", "main", "--base", baseSha]) as ExplicitReviewRequest,
@@ -154,12 +174,19 @@ console.error('routine failure'); process.exit(4)`,
 				contextDir: join(sandbox, "review-context"),
 			},
 		)
-		pool = await createReviewWorktreePool({ target, outputDir, rootDir: join(sandbox, "worktrees"), concurrency: 2 })
+		pool = await createReviewWorktreePool({
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees"),
+			concurrency: 2,
+			...(environment ? { environment } : {}),
+		})
 		queue = await ReviewCheckQueue.create({
 			scope: target.scope,
 			worktrees: pool,
 			outputDir,
 			...(checkDefinitions === null ? {} : { definitions: checkDefinitions }),
+			...(executeCommand ? { executeCommand } : {}),
 			...(signal ? { signal } : {}),
 		})
 		return createContext({ cwd: repo, mode: contextMode, hasUI: contextMode === "tui" })
@@ -870,7 +897,65 @@ module.exports = (async () => {
 		await verifyReuse("reviewed-tree", "coordinator", "reviewed-tree-first.json")
 	})
 
-	it("cancels a queued check without creating its worktree", async () => {
+	it("keys and executes in the same ready worktree and does not reuse a changed environment", async () => {
+		const executed: ReviewWorktree[] = []
+		await setup(definitions, "tui", undefined, environmentWithMarker("alpha"), async (commandController, request) => {
+			executed.push(request.worktree)
+			return executeReviewCommand(commandController, request)
+		})
+		const firstPool = pool
+		const first = await queue.request({ id: "test", requestedBy: "alpha", controller: controller("alpha") })
+		expect(first.status).toBe("passed")
+		const assigned = firstPool.existingWorktree("routine-head", { kind: "checks", revision: "head" })
+		expect(executed).toEqual([assigned])
+		expect(executed[0]?.environment?.receiptDigest).toBe(first.profile.environment.receiptDigest)
+		expect(first.profile.environment.requestedSpecDigest).toMatch(/^[a-f0-9]{64}$/)
+		await queue.dispose()
+		await firstPool.cleanup()
+
+		pool = await createReviewWorktreePool({
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees-changed"),
+			concurrency: 2,
+			environment: environmentWithMarker("beta"),
+		})
+		queue = await ReviewCheckQueue.create({ scope: target.scope, worktrees: pool, outputDir, definitions })
+		const changed = await queue.request({ id: "test", requestedBy: "beta", controller: controller("beta") })
+		expect(changed.status).toBe("passed")
+		expect(changed.profile.environment.requestedSpecDigest).not.toBe(first.profile.environment.requestedSpecDigest)
+		expect(changed.key).not.toBe(first.key)
+	})
+
+	it("never reuses legacy saved results without environment evidence", async () => {
+		await setup()
+		const first = await queue.request({ id: "test", requestedBy: "current", controller: controller("current") })
+		const routine = pool.existingWorktree("routine-head", { kind: "checks", revision: "head" })
+		if (!routine) throw new Error("routine worktree was not acquired before the first key")
+		expect(runCount(routine)).toBe(1)
+		await queue.dispose()
+		const statePath = join(outputDir, "state", "routine-checks.json")
+		const state = JSON.parse(readFileSync(statePath, "utf8"))
+		const legacy = state.checks[0]
+		const keyParts = JSON.parse(legacy.key)
+		keyParts.profile.environment = undefined
+		legacy.key = JSON.stringify(keyParts)
+		legacy.profile.environment = undefined
+		writeFileSync(statePath, JSON.stringify(state, null, 2))
+
+		queue = await ReviewCheckQueue.create({ scope: target.scope, worktrees: pool, outputDir, definitions })
+		const current = await queue.request({
+			id: "test",
+			requestedBy: "after-legacy",
+			controller: controller("after-legacy"),
+		})
+		expect(current.status).toBe("passed")
+		expect(current).not.toBe(first)
+		expect(runCount(routine)).toBe(2)
+		expect(current.profile.environment.receiptDigest).toBe(routine.environment?.receiptDigest)
+	})
+
+	it("acquires a queued check worktree before keying but does not execute it after cancellation", async () => {
 		await setup([
 			{
 				id: "slow",
@@ -903,7 +988,10 @@ module.exports = (async () => {
 		if (first.status === "fulfilled") expect(first.value.status).toBe("cancelled")
 		expect(second.status).toBe("fulfilled")
 		if (second.status === "fulfilled") expect(second.value.status).toBe("cancelled")
-		expect(readdirSync(pool.runDir).filter((name) => name.startsWith("checks-base"))).toHaveLength(0)
+		expect(readdirSync(pool.runDir).filter((name) => name.startsWith("checks-base"))).toHaveLength(1)
+		const baseWorktree = await pool.getWorktree("routine-base", { kind: "checks", revision: "base" })
+		expect(baseWorktree.environment?.readiness).toBe("ready")
+		expect(runCount(baseWorktree)).toBe(0)
 	})
 
 	it("keeps parent abort connected after idle", async () => {

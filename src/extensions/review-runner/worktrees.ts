@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { link, mkdir, open, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises"
+import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import {
@@ -7,10 +7,34 @@ import {
 	currentReviewOwnerIdentity,
 	reviewProcessStartIdentity,
 } from "../review-command/owner-identity.js"
+import { reviewStateArray, updateReviewJson } from "../review-panel/output.js"
 import { checkReviewDirectory } from "../review-submit/directory-safety.js"
 import { gitBytes, gitResultError, gitText, repositoryRoot } from "../review-targets/git.js"
 import { cleanupReviewSnapshot } from "../review-targets/resolve.js"
+import {
+	emptyReviewEnvironmentSettings,
+	prepareReviewEnvironment,
+	REVIEW_ENVIRONMENT_OUTPUT_LIMIT,
+	REVIEW_ENVIRONMENT_TOTAL_TIMEOUT_MS,
+	REVIEW_ENVIRONMENTS_STATE_VERSION,
+	type ReviewEnvironmentBoundary,
+	type ReviewEnvironmentCommand,
+	type ReviewEnvironmentExecutionResult,
+	type ReviewEnvironmentGap,
+	type ReviewEnvironmentPlan,
+	type ReviewEnvironmentReceipt,
+	resolveReviewEnvironmentPlan,
+	reviewEnvironmentReceiptDigest,
+} from "./environment.js"
+import {
+	createReviewExecutionController,
+	executeReviewCommand,
+	type ReviewExecutionMode,
+	reviewExecutionMode,
+} from "./execution.js"
 import { captureReviewWorktreeGitAdmin } from "./git-admin.js"
+import { detectReviewNetworkBoundary, type ReviewNetworkBoundary } from "./network-boundary.js"
+import { PreparationContainmentError, withPreparationDescendantCleanup } from "./preparation-process.js"
 import type {
 	RecoveredReviewWorktrees,
 	RecoverReviewWorktreesOptions,
@@ -35,7 +59,7 @@ interface WorktreeManifestEntry {
 	path: string
 	pinnedSha: string
 	gitAdminDir?: string
-	status: "pending" | "ready"
+	status: "pending" | "ready" | "unready"
 }
 
 interface WorktreeManifest {
@@ -206,20 +230,42 @@ function worktreeEnvironment(worktree: Omit<ReviewWorktree, "env">): Record<stri
 	}
 }
 
+async function canonicalPreparationCwd(worktreePath: string, requestedCwd: string): Promise<string> {
+	const canonicalRoot = await realpath(worktreePath)
+	let current = canonicalRoot
+	for (const part of requestedCwd.split(/[\\/]/).filter((part) => part && part !== ".")) {
+		current = join(current, part)
+		const metadata = await lstat(current)
+		if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+			throw new Error(`Environment preparation cwd ${requestedCwd} traverses a symbolic link or non-directory.`)
+		}
+	}
+	const canonical = await realpath(current)
+	if (!contained(canonicalRoot, canonical)) {
+		throw new Error(`Environment preparation cwd ${requestedCwd} escapes its assigned worktree.`)
+	}
+	return canonical
+}
+
 class WorktreePool implements ReviewWorktreePool {
 	private readonly worktrees = new Map<string, ReviewWorktree>()
 	private readonly entries = new Map<string, WorktreeManifestEntry>()
 	private readonly pending = new Map<string, Promise<ReviewWorktree>>()
+	private readonly receipts = new Map<string, ReviewEnvironmentReceipt>()
+	private receiptTail: Promise<void> = Promise.resolve()
 	private readonly waiters: Array<{
 		id: string
 		signal?: AbortSignal
 		onAbort?: () => void
+		settled?: boolean
 		resolve: (lease: ReviewWorktreeLease) => void
 		reject: (error: unknown) => void
 	}> = []
 	private activeLeases = 0
 	private cleaned = false
 	private cleanupPromise?: Promise<void>
+	private readonly preparationAbort = new AbortController()
+	private readonly preparationSignal: AbortSignal
 
 	constructor(
 		readonly scope: ReviewWorktreeOptions["target"]["scope"],
@@ -228,12 +274,82 @@ class WorktreePool implements ReviewWorktreePool {
 		private readonly concurrency: number,
 		private readonly releaseTarget: () => Promise<void>,
 		private readonly manifest: WorktreeManifest,
+		private readonly environmentPlan: ReviewEnvironmentPlan,
+		private readonly executionMode: ReviewExecutionMode,
+		private readonly environmentBoundary: ReviewEnvironmentBoundary,
+		private readonly networkBoundary: ReviewNetworkBoundary | undefined,
+		private readonly signal: AbortSignal | undefined,
+		private readonly preparationTimeoutMs: number,
 		private readonly crashPoint?: ReviewWorktreeOptions["worktreeCrashPoint"],
-	) {}
+	) {
+		this.preparationSignal = this.signal
+			? AbortSignal.any([this.signal, this.preparationAbort.signal])
+			: this.preparationAbort.signal
+	}
+
+	get environmentReceipts(): readonly ReviewEnvironmentReceipt[] {
+		return [...this.receipts.values()]
+	}
+
+	get environmentGaps(): readonly ReviewEnvironmentGap[] {
+		const gaps = new Map<string, ReviewEnvironmentGap>()
+		for (const gap of [...this.environmentPlan.gaps, ...this.environmentReceipts.flatMap((receipt) => receipt.gaps)]) {
+			gaps.set(JSON.stringify([gap.kind, gap.name, gap.note]), gap)
+		}
+		return [...gaps.values()]
+	}
+
+	private environmentsPath(): string {
+		return join(this.manifest.outputDir, "state", "environments.json")
+	}
+
+	async loadEnvironmentReceipts(): Promise<void> {
+		let current: unknown
+		try {
+			current = JSON.parse(await readFile(this.environmentsPath(), "utf8"))
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+		}
+		this.receipts.clear()
+		for (const value of reviewStateArray(current, REVIEW_ENVIRONMENTS_STATE_VERSION, "environments")) {
+			if (value && typeof value === "object" && typeof (value as ReviewEnvironmentReceipt).worktreeId === "string") {
+				const receipt = value as ReviewEnvironmentReceipt
+				this.receipts.set(receipt.worktreeId, receipt)
+			}
+		}
+	}
+
+	private async persistReceipt(key: string, receipt: ReviewEnvironmentReceipt): Promise<void> {
+		this.receipts.set(key, receipt)
+		const operation = this.receiptTail
+			.catch(() => {})
+			.then(() =>
+				updateReviewJson(this.environmentsPath(), (current) => {
+					const merged = new Map<string, ReviewEnvironmentReceipt>()
+					for (const previous of reviewStateArray(current, REVIEW_ENVIRONMENTS_STATE_VERSION, "environments")) {
+						if (
+							previous &&
+							typeof previous === "object" &&
+							typeof (previous as ReviewEnvironmentReceipt).worktreeId === "string"
+						) {
+							const existing = previous as ReviewEnvironmentReceipt
+							merged.set(existing.worktreeId, existing)
+						}
+					}
+					for (const currentReceipt of this.receipts.values()) merged.set(currentReceipt.worktreeId, currentReceipt)
+					return {
+						schema_version: REVIEW_ENVIRONMENTS_STATE_VERSION,
+						environments: [...merged.values()],
+					}
+				}),
+			)
+		this.receiptTail = operation
+		return operation
+	}
 
 	async getWorktree(
 		id: string,
-		options: { kind?: ReviewCheckoutKind; revision?: ReviewRevision } = {},
+		options: { kind?: ReviewCheckoutKind; revision?: ReviewRevision; signal?: AbortSignal } = {},
 	): Promise<ReviewWorktree> {
 		if (this.cleaned) throw new Error("Reviewer worktrees have already been cleaned up.")
 		if (!id) throw new Error("A reviewer or check worktree requires a stable non-empty ID.")
@@ -244,9 +360,18 @@ class WorktreePool implements ReviewWorktreePool {
 		if (existing) return existing
 		const pending = this.pending.get(key)
 		if (pending) return pending
-		const creation = this.createWorktree(key, id, kind, revision).finally(() => this.pending.delete(key))
+		const creation = this.createWorktree(key, id, kind, revision, options.signal).finally(() =>
+			this.pending.delete(key),
+		)
 		this.pending.set(key, creation)
 		return creation
+	}
+
+	existingWorktree(
+		id: string,
+		options: { kind?: ReviewCheckoutKind; revision?: ReviewRevision } = {},
+	): ReviewWorktree | undefined {
+		return this.worktrees.get(`${options.kind ?? "reviewer"}:${options.revision ?? "head"}:${id}`)
 	}
 
 	private async createWorktree(
@@ -254,32 +379,37 @@ class WorktreePool implements ReviewWorktreePool {
 		id: string,
 		kind: ReviewCheckoutKind,
 		revision: ReviewRevision,
+		perRunSignal?: AbortSignal,
 	): Promise<ReviewWorktree> {
-		return serializeRepository(this.repository, async () => {
-			const existing = this.worktrees.get(key)
-			if (existing) return existing
-			const directory = join(this.runDir, safeName(key))
-			const path = join(directory, "checkout")
-			const worktreeBase = {
-				id,
-				kind,
-				revision,
-				path,
-				pinnedSha: revisionSha(revision, this.manifest.baseSha, this.manifest.headSha),
-				scratchDir: join(directory, "scratch"),
-				buildDir: join(directory, "build"),
-				cacheDir: join(directory, "cache"),
-				homeDir: join(directory, "home"),
-			}
-			const entry: WorktreeManifestEntry = {
-				id,
-				kind,
-				revision,
-				path,
-				pinnedSha: worktreeBase.pinnedSha,
-				status: "pending",
-			}
-			try {
+		const preparationSignal = perRunSignal
+			? AbortSignal.any([this.preparationSignal, perRunSignal])
+			: this.preparationSignal
+		const existing = this.worktrees.get(key)
+		if (existing) return existing
+		const directory = join(this.runDir, safeName(key))
+		const path = join(directory, "checkout")
+		const worktreeBase = {
+			id,
+			kind,
+			revision,
+			path,
+			pinnedSha: revisionSha(revision, this.manifest.baseSha, this.manifest.headSha),
+			scratchDir: join(directory, "scratch"),
+			buildDir: join(directory, "build"),
+			cacheDir: join(directory, "cache"),
+			homeDir: join(directory, "home"),
+		}
+		const entry: WorktreeManifestEntry = {
+			id,
+			kind,
+			revision,
+			path,
+			pinnedSha: worktreeBase.pinnedSha,
+			status: "pending",
+		}
+		const preparationDeadline = Date.now() + this.preparationTimeoutMs
+		try {
+			const { worktreeMetadata, commonGitDir } = await serializeRepository(this.repository, async () => {
 				await mkdir(directory, { recursive: true, mode: 0o700 })
 				await Promise.all(
 					[worktreeBase.scratchDir, worktreeBase.buildDir, worktreeBase.cacheDir, worktreeBase.homeDir].map((part) =>
@@ -297,29 +427,215 @@ class WorktreePool implements ReviewWorktreePool {
 				await this.crashPoint?.("after-add", { path, runDir: this.runDir })
 				const gitAdminDir = await captureReviewWorktreeGitAdmin(path, AbortSignal.timeout(CLEANUP_TIMEOUT_MS))
 				entry.gitAdminDir = gitAdminDir
-				entry.status = "ready"
+				const worktreeMetadata = { ...worktreeBase, gitAdminDir }
+				const commonGitDir = await realpath(
+					await gitText(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+						signal: AbortSignal.timeout(CLEANUP_TIMEOUT_MS),
+					}),
+				)
+				return { worktreeMetadata, commonGitDir }
+			})
+			// Setup/probes are per-worktree and run outside the repository lock.
+			// Only Git registration and manifest transitions serialize.
+			const prepared = await prepareReviewEnvironment({
+				worktreeId: key,
+				worktree: worktreeMetadata,
+				privateEnv: worktreeEnvironment(worktreeMetadata),
+				plan: this.environmentPlan,
+				boundary: this.environmentBoundary,
+				forbiddenCachePaths: [
+					this.repository,
+					this.manifest.contextDir,
+					this.manifest.outputDir,
+					this.runDir,
+					commonGitDir,
+					worktreeBase.path,
+					worktreeBase.scratchDir,
+					worktreeBase.buildDir,
+					worktreeBase.cacheDir,
+					worktreeBase.homeDir,
+				],
+				signal: preparationSignal,
+				execute: (current, command) =>
+					this.executeEnvironmentCommand(current, command, preparationDeadline, preparationSignal),
+				resetToIsolated: (current) => this.resetToIsolated(current),
+			})
+			const worktree = prepared.worktree
+			if (
+				this.environmentPlan.requestedSpec.readOnlyCaches.length === 0 &&
+				this.environmentPlan.requestedSpec.privateDirs.length === 0 &&
+				Object.keys(this.environmentPlan.requestedSpec.env).length === 0 &&
+				this.environmentPlan.requestedSpec.toolchain === undefined &&
+				this.environmentPlan.requestedSpec.setup.length === 0 &&
+				this.environmentPlan.requestedSpec.probes.length === 0
+			) {
+				worktree.env = worktreeEnvironment(worktreeMetadata)
+				if (this.executionMode === "headless" && worktree.environment) {
+					worktree.environment.environment = worktree.env
+					worktree.environment.receiptDigest = reviewEnvironmentReceiptDigest(worktree.environment)
+				}
+			}
+			const receipt = worktree.environment ?? prepared.receipt
+			await this.persistReceipt(key, receipt)
+			return await serializeRepository(this.repository, async () => {
+				entry.status = receipt.readiness === "unready" ? "unready" : "ready"
 				this.entries.set(key, entry)
 				this.manifest.worktrees = [...this.entries.values()]
 				this.manifest.updatedAt = Date.now()
 				await atomicJson(join(this.runDir, MANIFEST), this.manifest)
-				const worktreeMetadata = { ...worktreeBase, gitAdminDir }
-				const worktree: ReviewWorktree = { ...worktreeMetadata, env: worktreeEnvironment(worktreeMetadata) }
+				if (receipt.readiness === "unready") {
+					throw new Error(`Review environment ${key} is unready; see state/environments.json for its receipt and gaps.`)
+				}
 				this.worktrees.set(key, worktree)
 				return worktree
-			} catch (error) {
+			})
+		} catch (error) {
+			await serializeRepository(this.repository, async () => {
 				await rm(path, { recursive: true, force: true }).catch(() => {})
 				await gitText(this.repository, ["worktree", "prune"], {
 					signal: AbortSignal.timeout(CLEANUP_TIMEOUT_MS),
 				}).catch(() => {})
-				throw error
+			}).catch(() => {})
+			throw error
+		}
+	}
+
+	private async executeEnvironmentCommand(
+		worktree: ReviewWorktree,
+		command: ReviewEnvironmentCommand,
+		preparationDeadline: number,
+		preparationSignal: AbortSignal,
+	): Promise<ReviewEnvironmentExecutionResult> {
+		const remainingMs = preparationDeadline - Date.now()
+		if (remainingMs <= 0) {
+			return {
+				status: "cancelled",
+				elapsedMs: 0,
+				output: `Environment preparation exceeded its overall ${this.preparationTimeoutMs} ms limit.`,
+				timedOut: true,
 			}
+		}
+		const commandTimeoutMs = Math.min(command.timeoutMs, remainingMs)
+		const controller = createReviewExecutionController({
+			mode: this.executionMode,
+			worktree,
+			executionGroup: resolve(this.manifest.outputDir),
+			networkBoundary: this.networkBoundary ?? null,
 		})
+		const timeout = new AbortController()
+		let timedOut = false
+		const timer = setTimeout(() => {
+			timedOut = true
+			timeout.abort(new Error(`Environment command exceeded its bounded ${commandTimeoutMs} ms timeout.`))
+		}, commandTimeoutMs)
+		timer.unref()
+		const signal = AbortSignal.any([preparationSignal, timeout.signal])
+		const startedAt = Date.now()
+		const shellCommand = command.argv.map((argument) => `'${argument.replace(/'/g, `'\\''`)}'`).join(" ")
+		try {
+			const cwd = await canonicalPreparationCwd(worktree.path, command.cwd)
+			const record = await withPreparationDescendantCleanup({
+				pidFile: join(worktree.scratchDir, `.preparation-${randomUUID()}.pid`),
+				signal,
+				execute: ({ pidFile, signal: executionSignal, preparationId }) =>
+					executeReviewCommand(controller, {
+						command: shellCommand,
+						cwd,
+						intendedCheck: "trusted environment preparation",
+						worktree,
+						offlineOnly: true,
+						authorizationAlreadyChecked: true,
+						signal: executionSignal,
+						preparationPidFile: pidFile,
+						preparationId,
+						outputLimit: REVIEW_ENVIRONMENT_OUTPUT_LIMIT,
+					}),
+			})
+			return {
+				status: record.status,
+				...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
+				elapsedMs: record.elapsedMs,
+				output: record.output,
+				timedOut,
+			}
+		} catch (error) {
+			return {
+				status: signal.aborted ? "cancelled" : "failed",
+				elapsedMs: Date.now() - startedAt,
+				output: error instanceof Error ? error.message : String(error),
+				timedOut,
+				...(error instanceof PreparationContainmentError
+					? {
+							gap: {
+								kind: "preparation_containment",
+								name: command.argv[0] ?? "setup",
+								note: error.message,
+							},
+						}
+					: {}),
+			}
+		} finally {
+			clearTimeout(timer)
+		}
+	}
+
+	private async resetToIsolated(
+		worktree: ReviewWorktree,
+	): Promise<{ worktree: Omit<ReviewWorktree, "env">; privateEnv: Record<string, string> }> {
+		const fresh = await serializeRepository(this.repository, async () => {
+			await gitText(this.repository, ["worktree", "remove", "--force", worktree.path], {
+				signal: AbortSignal.timeout(CLEANUP_TIMEOUT_MS),
+			}).catch(async () => {
+				await rm(worktree.path, { recursive: true, force: true })
+			})
+			await gitText(this.repository, ["worktree", "prune"], {
+				signal: AbortSignal.timeout(CLEANUP_TIMEOUT_MS),
+			}).catch(() => {})
+
+			const directory = join(
+				this.runDir,
+				`${safeName(`${worktree.kind}:${worktree.revision}:${worktree.id}`)}-fallback-${randomUUID()}`,
+			)
+			const path = join(directory, "checkout")
+			const base = {
+				id: worktree.id,
+				kind: worktree.kind,
+				revision: worktree.revision,
+				path,
+				pinnedSha: worktree.pinnedSha,
+				scratchDir: join(directory, "scratch"),
+				buildDir: join(directory, "build"),
+				cacheDir: join(directory, "cache"),
+				homeDir: join(directory, "home"),
+			}
+			await mkdir(directory, { recursive: true, mode: 0o700 })
+			await Promise.all(
+				[base.scratchDir, base.buildDir, base.cacheDir, base.homeDir].map((part) =>
+					mkdir(part, { recursive: true, mode: 0o700 }),
+				),
+			)
+			const entry = this.entries.get(`${worktree.kind}:${worktree.revision}:${worktree.id}`)
+			if (entry) {
+				entry.path = path
+				entry.gitAdminDir = undefined
+				entry.status = "pending"
+				this.manifest.worktrees = [...this.entries.values()]
+				this.manifest.updatedAt = Date.now()
+				await atomicJson(join(this.runDir, MANIFEST), this.manifest)
+			}
+			await gitText(this.repository, ["worktree", "add", "--detach", path, worktree.pinnedSha], {
+				signal: AbortSignal.timeout(CLEANUP_TIMEOUT_MS),
+			})
+			const gitAdminDir = await captureReviewWorktreeGitAdmin(path, AbortSignal.timeout(CLEANUP_TIMEOUT_MS))
+			if (entry) entry.gitAdminDir = gitAdminDir
+			return { ...base, gitAdminDir }
+		})
+		return { worktree: fresh, privateEnv: worktreeEnvironment(fresh) }
 	}
 
 	async leaseReviewer(id: string, options: { signal?: AbortSignal } = {}): Promise<ReviewWorktreeLease> {
 		if (this.cleaned) throw new Error("Reviewer worktrees have already been cleaned up.")
 		if (options.signal?.aborted) throw options.signal.reason ?? new Error("Reviewer worktree lease was cancelled.")
-		await this.getWorktree(id, { kind: "reviewer", revision: "head" })
 		if (this.cleaned) throw new Error("Reviewer worktrees have already been cleaned up.")
 		if (options.signal?.aborted) throw options.signal.reason ?? new Error("Reviewer worktree lease was cancelled.")
 		return new Promise<ReviewWorktreeLease>((resolveLease, reject) => {
@@ -331,6 +647,9 @@ class WorktreePool implements ReviewWorktreePool {
 			}
 			if (options.signal) {
 				waiter.onAbort = () => {
+					if (waiter.settled) return
+					waiter.settled = true
+					options.signal?.removeEventListener("abort", waiter.onAbort ?? (() => {}))
 					const index = this.waiters.indexOf(waiter)
 					if (index >= 0) this.waiters.splice(index, 1)
 					reject(options.signal?.reason ?? new Error("Reviewer worktree lease was cancelled."))
@@ -348,15 +667,24 @@ class WorktreePool implements ReviewWorktreePool {
 			const waiter = this.waiters.shift()
 			if (!waiter) continue
 			if (waiter.signal?.aborted) {
-				waiter.signal.removeEventListener("abort", waiter.onAbort ?? (() => {}))
-				waiter.reject(waiter.signal.reason ?? new Error("Reviewer worktree lease was cancelled."))
+				waiter.onAbort?.()
 				continue
 			}
-			waiter.signal?.removeEventListener("abort", waiter.onAbort ?? (() => {}))
 			this.activeLeases += 1
-			void this.getWorktree(waiter.id).then(
+			void this.getWorktree(waiter.id, { ...(waiter.signal ? { signal: waiter.signal } : {}) }).then(
 				(worktree) => {
+					if (this.cleaned || waiter.settled || waiter.signal?.aborted) {
+						this.activeLeases = Math.max(0, this.activeLeases - 1)
+						if (!waiter.settled) {
+							waiter.settled = true
+							waiter.reject(new Error("Reviewer worktree lease was cleaned up before becoming available."))
+						}
+						this.drainLeases()
+						return
+					}
 					let released = false
+					waiter.settled = true
+					waiter.signal?.removeEventListener("abort", waiter.onAbort ?? (() => {}))
 					waiter.resolve({
 						worktree,
 						release: () => {
@@ -366,10 +694,15 @@ class WorktreePool implements ReviewWorktreePool {
 							this.drainLeases()
 						},
 					})
+					this.drainLeases()
 				},
 				(error) => {
 					this.activeLeases = Math.max(0, this.activeLeases - 1)
-					waiter.reject(error)
+					if (!waiter.settled) {
+						waiter.settled = true
+						waiter.signal?.removeEventListener("abort", waiter.onAbort ?? (() => {}))
+						waiter.reject(error)
+					}
 					this.drainLeases()
 				},
 			)
@@ -383,28 +716,35 @@ class WorktreePool implements ReviewWorktreePool {
 			waiter.signal?.removeEventListener("abort", waiter.onAbort ?? (() => {}))
 			waiter.reject(new Error("Reviewer worktrees were cleaned up before a lease became available."))
 		}
-		const operation = serializeRepository(this.repository, async () => {
-			const failures: unknown[] = []
-			for (const entry of [...this.entries.values()].reverse()) {
-				try {
-					if (await pathExists(entry.path)) {
-						await gitText(this.repository, ["worktree", "remove", "--force", entry.path], {
-							signal: AbortSignal.timeout(CLEANUP_TIMEOUT_MS),
-						})
+		this.preparationAbort.abort(new Error("Reviewer worktree cleanup requested."))
+		const operation = (async () => {
+			await Promise.allSettled([...this.pending.values()])
+			await serializeRepository(this.repository, async () => {
+				const failures: unknown[] = []
+				for (const entry of [...this.entries.values()].reverse()) {
+					try {
+						if (await pathExists(entry.path)) {
+							await gitText(this.repository, ["worktree", "remove", "--force", entry.path], {
+								signal: AbortSignal.timeout(CLEANUP_TIMEOUT_MS),
+							})
+						}
+					} catch (error) {
+						failures.push(error)
 					}
-				} catch (error) {
-					failures.push(error)
 				}
-			}
-			if (failures.length) {
-				this.cleaned = false
-				throw new AggregateError(failures, "Could not remove every reviewer worktree; the snapshot ref remains pinned.")
-			}
-			await removeRunContentsExceptManifest(this.runDir)
-			await gitText(this.repository, ["worktree", "prune"], { signal: AbortSignal.timeout(CLEANUP_TIMEOUT_MS) })
-			await this.releaseTarget()
-			await rm(this.runDir, { recursive: true, force: true })
-		})
+				if (failures.length) {
+					this.cleaned = false
+					throw new AggregateError(
+						failures,
+						"Could not remove every reviewer worktree; the snapshot ref remains pinned.",
+					)
+				}
+				await removeRunContentsExceptManifest(this.runDir)
+				await gitText(this.repository, ["worktree", "prune"], { signal: AbortSignal.timeout(CLEANUP_TIMEOUT_MS) })
+				await this.releaseTarget()
+				await rm(this.runDir, { recursive: true, force: true })
+			})
+		})()
 		this.cleanupPromise = operation.catch((error) => {
 			this.cleanupPromise = undefined
 			throw error
@@ -413,11 +753,50 @@ class WorktreePool implements ReviewWorktreePool {
 	}
 }
 
+function executionEnvironmentBoundary(
+	mode: ReviewExecutionMode,
+	boundary: ReviewNetworkBoundary | undefined,
+): ReviewEnvironmentBoundary {
+	if (mode === "headless") {
+		return {
+			kind: "outer-sandbox",
+			capabilities: { networkOff: false, filesystemConfinement: false, readOnlyMounts: false },
+		}
+	}
+	if (!boundary) {
+		return {
+			kind: "unavailable",
+			capabilities: { networkOff: false, filesystemConfinement: false, readOnlyMounts: false },
+		}
+	}
+	const capabilities =
+		boundary.kind === "unshare-net"
+			? { networkOff: true, filesystemConfinement: false, readOnlyMounts: false }
+			: { networkOff: true, filesystemConfinement: true, readOnlyMounts: true }
+	return {
+		kind: boundary.kind,
+		capabilities: {
+			...capabilities,
+			...(boundary.preparationPidNamespace === undefined
+				? {}
+				: { preparationPidNamespace: boundary.preparationPidNamespace }),
+		},
+	}
+}
+
 export async function createReviewWorktreePool(options: ReviewWorktreeOptions): Promise<ReviewWorktreePool> {
 	let runDir: string | undefined
 	try {
 		if (!Number.isSafeInteger(options.concurrency ?? 1) || (options.concurrency ?? 1) < 1) {
 			throw new Error("Reviewer worktree concurrency must be a positive integer.")
+		}
+		if (
+			options.preparationTimeoutMs !== undefined &&
+			(!Number.isSafeInteger(options.preparationTimeoutMs) ||
+				options.preparationTimeoutMs < 1 ||
+				options.preparationTimeoutMs > REVIEW_ENVIRONMENT_TOTAL_TIMEOUT_MS)
+		) {
+			throw new Error(`Preparation timeout must be from 1 to ${REVIEW_ENVIRONMENT_TOTAL_TIMEOUT_MS} ms.`)
 		}
 		options.signal?.throwIfAborted()
 		const repository = await repositoryRoot(options.target.scope.checkoutPath, options.signal)
@@ -445,15 +824,35 @@ export async function createReviewWorktreePool(options: ReviewWorktreeOptions): 
 			worktrees: [],
 		}
 		await atomicJson(join(runDir, MANIFEST), manifest, true)
-		return new WorktreePool(
+		const environmentPlan = await resolveReviewEnvironmentPlan(
+			options.environment ?? emptyReviewEnvironmentSettings(),
+			repository,
+			options.environmentGaps,
+		)
+		const executionMode = reviewExecutionMode(options.executionPolicy?.mode)
+		const networkBoundary =
+			executionMode === "headless"
+				? undefined
+				: options.executionPolicy?.networkBoundary !== undefined
+					? (options.executionPolicy.networkBoundary ?? undefined)
+					: await detectReviewNetworkBoundary()
+		const pool = new WorktreePool(
 			scope,
 			runDir,
 			repository,
 			options.concurrency ?? 1,
 			options.target.cleanup,
 			manifest,
+			environmentPlan,
+			executionMode,
+			executionEnvironmentBoundary(executionMode, networkBoundary),
+			networkBoundary,
+			options.signal,
+			options.preparationTimeoutMs ?? REVIEW_ENVIRONMENT_TOTAL_TIMEOUT_MS,
 			options.worktreeCrashPoint,
 		)
+		await pool.loadEnvironmentReceipts()
+		return pool
 	} catch (error) {
 		if (runDir) await rm(runDir, { recursive: true, force: true }).catch(() => {})
 		await options.target.cleanup().catch(() => {})

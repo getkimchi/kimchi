@@ -8,6 +8,7 @@ import { gitBytes, gitText } from "../review-targets/git.js"
 import type { ResolvedReviewScope } from "../review-targets/types.js"
 import type { ReviewCheckDefinition } from "./check-config.js"
 import { discoverPackageReviewChecks } from "./check-config.js"
+import { REVIEW_ENVIRONMENT_SCHEMA_VERSION } from "./environment.js"
 import {
 	executeReviewCommand,
 	isDirectInstallCommand,
@@ -15,7 +16,7 @@ import {
 	type ReviewCommandRecord,
 	type ReviewExecutionController,
 } from "./execution.js"
-import type { ReviewRevision, ReviewWorktreePool } from "./types.js"
+import type { ReviewRevision, ReviewWorktree, ReviewWorktreePool } from "./types.js"
 
 export const REVIEW_CHECK_STATE_VERSION = "review-check-state/v1"
 
@@ -41,6 +42,12 @@ export interface ReviewExecutionProfile {
 	toolchain: string
 	dependencyDigest: string
 	network: "offline" | "approved-online" | "sandbox"
+	environment: {
+		schemaVersion: typeof REVIEW_ENVIRONMENT_SCHEMA_VERSION
+		requestedSpecDigest: string
+		receiptDigest: string
+		readiness: "ready" | "degraded" | "unready"
+	}
 }
 
 export interface ReviewCheckResult extends ReviewCommandRecord {
@@ -295,7 +302,7 @@ export class ReviewCheckQueue {
 		}
 	}
 
-	private async key(request: ReviewCheckRequest): Promise<ReviewKey> {
+	private async key(request: ReviewCheckRequest, worktree: ReviewWorktree | undefined): Promise<ReviewKey> {
 		const definition = this.definitions.get(request.id)
 		if (!definition) throw new Error(`Unknown review check ID "${request.id}".`)
 		const revision = request.revision ?? "head"
@@ -310,7 +317,18 @@ export class ReviewCheckQueue {
 			pinnedTree(this.options.scope.checkoutPath, pinnedSha),
 			dependencyDigest(this.options.scope.checkoutPath, pinnedSha, definition.dependencies),
 		])
-		const profile: ReviewExecutionProfile = { toolchain: definition.toolchain, dependencyDigest: digest, network }
+		const environment = worktree?.environment
+		const profile: ReviewExecutionProfile = {
+			toolchain: definition.toolchain,
+			dependencyDigest: digest,
+			network,
+			environment: {
+				schemaVersion: REVIEW_ENVIRONMENT_SCHEMA_VERSION,
+				requestedSpecDigest: environment?.requestedSpecDigest ?? "unavailable",
+				receiptDigest: environment?.receiptDigest ?? "unavailable",
+				readiness: environment?.readiness ?? "unready",
+			},
+		}
 		return {
 			key: JSON.stringify({ pinnedTree: tree, command: definition.command, cwd: definition.cwd, profile }),
 			command: definition.command,
@@ -360,7 +378,13 @@ export class ReviewCheckQueue {
 
 	private async performRequest(request: ReviewCheckRequest): Promise<ReviewCheckResult> {
 		request.signal?.throwIfAborted()
-		const key = await this.key(request)
+		const revision = request.revision ?? "head"
+		// The concrete ready worktree and its persisted receipt are inputs to the
+		// key, and the exact same object is retained through execution below.
+		const worktree = this.wrappingUp
+			? this.options.worktrees.existingWorktree(`routine-${revision}`, { kind: "checks", revision })
+			: await this.options.worktrees.getWorktree(`routine-${revision}`, { kind: "checks", revision })
+		const key = await this.key(request, worktree)
 		const denial = await request.controller.authorizeCommand(
 			key.command,
 			request.controller.executionFor(request.toolCallId) ?? { mode: "review-check-request" },
@@ -369,10 +393,21 @@ export class ReviewCheckQueue {
 		if (denial && !deferredHardBlockReason) {
 			return syntheticResult(key, request, "blocked", denial.reason, this.definitionSource)
 		}
-		const saved = this.saved.get(key.key)
-		if (saved) return this.present(saved, request)
+		if (worktree) {
+			const saved = this.saved.get(key.key)
+			if (saved) return this.present(saved, request)
+		}
+		if (!worktree) {
+			return syntheticResult(
+				key,
+				request,
+				"blocked",
+				"Review wrap-up has no existing ready routine worktree and receipt; no new work was started and no legacy evidence was reused.",
+				this.definitionSource,
+			)
+		}
 		if (request.controller.mode === "local" && request.online && !isDirectInstallCommand(key.command)) {
-			const offline = await this.key({ ...request, online: false })
+			const offline = await this.key({ ...request, online: false }, worktree)
 			let offlineResult = this.saved.get(offline.key)
 			const pending = this.inFlight.get(offline.key)
 			if (!offlineResult && pending) offlineResult = await pending
@@ -406,7 +441,9 @@ export class ReviewCheckQueue {
 		}
 		const existing = this.inFlight.get(key.key)
 		if (existing) return this.present(await existing, request)
-		const execution = this.tail.catch(() => {}).then(() => this.execute(key, request, deferredHardBlockReason))
+		const execution = this.tail
+			.catch(() => {})
+			.then(() => this.execute(key, request, worktree, deferredHardBlockReason))
 		this.inFlight.set(key.key, execution)
 		this.tail = execution.then(
 			() => undefined,
@@ -422,6 +459,7 @@ export class ReviewCheckQueue {
 	private async execute(
 		key: ReviewKey,
 		request: ReviewCheckRequest,
+		worktree: ReviewWorktree,
 		deferredHardBlockReason?: string,
 	): Promise<ReviewCheckResult> {
 		const definition = this.definitions.get(request.id)
@@ -444,10 +482,6 @@ export class ReviewCheckQueue {
 				this.definitionSource,
 			)
 		}
-		const worktree = await this.options.worktrees.getWorktree(`routine-${key.revision}`, {
-			kind: "checks",
-			revision: key.revision,
-		})
 		const record = await (this.options.executeCommand ?? executeReviewCommand)(request.controller, {
 			command: key.command,
 			cwd: resolve(worktree.path, definition.cwd),

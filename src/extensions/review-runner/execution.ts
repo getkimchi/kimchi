@@ -11,7 +11,13 @@ import { isInSandboxCluster } from "../../utils/sandbox.js"
 import { acquireHeadlessCommandSlot } from "./headless-command-limit.js"
 import { reviewInheritedProcessOperations } from "./inherited-process-operations.js"
 import { isDirectInstallCommand } from "./install-command.js"
-import { detectReviewNetworkBoundary, offlineEnvironment, type ReviewNetworkBoundary } from "./network-boundary.js"
+import {
+	applyOfflineGuarantees,
+	detectReviewNetworkBoundary,
+	offlineEnvironment,
+	type ReviewNetworkBoundary,
+} from "./network-boundary.js"
+import { REVIEW_PREPARATION_ID_ENV } from "./preparation-process.js"
 import type { ReviewWorktree } from "./types.js"
 
 export const REVIEW_CHECK_TOOL = "run_review_check"
@@ -108,6 +114,12 @@ export interface ReviewCommandRequest {
 	authorizationAlreadyChecked?: boolean
 	/** A standalone hard block deferred by the precheck; only approval can settle it. */
 	deferredHardBlockReason?: string
+	/** Trusted setup/probe path: never turn an install-like argv into online approval. */
+	offlineOnly?: boolean
+	/** Private PID file used only for preparation descendant cleanup. */
+	preparationPidFile?: string
+	/** Random inherited marker used to find detached preparation descendants. */
+	preparationId?: string
 }
 
 export interface ReviewCommandRecord {
@@ -326,7 +338,10 @@ class ExecutionController implements ReviewExecutionController {
 
 	environment(base: NodeJS.ProcessEnv, toolCallId?: string): NodeJS.ProcessEnv {
 		const withWorktree = { ...base, ...this.worktree.env }
-		return this.networkFor(toolCallId) === "offline" ? offlineEnvironment(withWorktree) : withWorktree
+		if (this.networkFor(toolCallId) !== "offline") return withWorktree
+		return this.worktree.environment
+			? applyOfflineGuarantees({ ...this.worktree.environment.environment })
+			: offlineEnvironment(withWorktree)
 	}
 
 	record(record: ReviewCommandRecord): void {
@@ -452,6 +467,24 @@ function consumeApprovedPreparation(
 	}
 }
 
+function preparationShellCommand(command: string, pidFile: string | undefined): string {
+	if (!pidFile) return command
+	const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`
+	return `/bin/sh -c ${quote(`printf '%s\\n' "$$" > ${quote(pidFile)}; exec ${command}`)}`
+}
+
+function preparationExecutionEnvironment(request: ReviewCommandRequest): NodeJS.ProcessEnv {
+	const environment = request.offlineOnly
+		? applyOfflineGuarantees({ ...request.worktree.env })
+		: request.worktree.environment
+			? applyOfflineGuarantees({ ...request.worktree.environment.environment })
+			: offlineEnvironment({ ...process.env, ...request.worktree.env })
+	if (request.offlineOnly && request.preparationId) {
+		environment[REVIEW_PREPARATION_ID_ENV] = request.preparationId
+	}
+	return environment
+}
+
 /** Resolve authorization, approval and actual containment before every local run. */
 export async function prepareReviewCommand(
 	controller: ReviewExecutionController,
@@ -480,7 +513,7 @@ export async function prepareReviewCommand(
 			approval: "not-requested",
 		}
 	}
-	const directInstall = isDirectInstallCommand(request.command)
+	const directInstall = request.offlineOnly ? false : isDirectInstallCommand(request.command)
 	const needsOnlineApproval = request.online === true || directInstall
 	if (needsOnlineApproval && request.toolCallId) {
 		const consumed = controller.consumeApprovalGrant({
@@ -535,6 +568,14 @@ export async function prepareReviewCommand(
 	}
 	const boundary = await controller.resolveNetworkBoundary()
 	if (!boundary) {
+		if (request.offlineOnly) {
+			return blockedRecord(
+				controller,
+				request,
+				startedAt,
+				"Contained offline preparation is unavailable on this platform; the command was not run.",
+			)
+		}
 		const approval = await controller.requestApproval(
 			{
 				kind: "offline-unavailable",
@@ -563,8 +604,11 @@ export async function prepareReviewCommand(
 	}
 	controller.markOfflineBoundary(request.toolCallId, boundary)
 	return {
-		command: boundary.wrap(request.command, request.worktree),
-		environment: offlineEnvironment({ ...process.env, ...request.worktree.env }),
+		command: preparationShellCommand(
+			boundary.wrap(request.command, request.worktree, { preparation: request.offlineOnly === true }),
+			request.offlineOnly ? request.preparationPidFile : undefined,
+		),
+		environment: preparationExecutionEnvironment(request),
 		network: "offline",
 		networkBoundary: boundary.kind,
 		approval: "not-requested",

@@ -257,6 +257,8 @@ async function makeRunner(options: {
 	signal?: AbortSignal
 	concurrency: number
 	checkDefinitions?: RunReviewPanelOptions["checkDefinitions"]
+	environment?: RunReviewPanelOptions["environment"]
+	environmentValidationGaps?: RunReviewPanelOptions["environmentValidationGaps"]
 	executionPolicy?: ReviewExecutionPolicyOptions
 	rootDir?: string
 	spawnAgent?: ReviewAgentSpawner
@@ -283,6 +285,8 @@ async function makeRunner(options: {
 		signal: options.signal,
 		concurrency: options.concurrency,
 		checkDefinitions: options.checkDefinitions,
+		environment: options.environment,
+		environmentGaps: options.environmentValidationGaps,
 		executionPolicy: options.executionPolicy,
 		rootDir: options.rootDir,
 		spawnAgent,
@@ -423,6 +427,8 @@ export async function runReviewPanel(options: RunReviewPanelOptions): Promise<Re
 		outputDir,
 		concurrency: selection.slotCount,
 		checkDefinitions: options.checkDefinitions,
+		environment: options.environment,
+		environmentValidationGaps: options.environmentValidationGaps,
 		executionPolicy: options.executionPolicy,
 		rootDir: options.rootDir,
 		spawnAgent: options.spawnAgent,
@@ -607,7 +613,7 @@ export async function runReviewPanel(options: RunReviewPanelOptions): Promise<Re
 		})
 		const result = await finalizeWithWriterRescan(store, outputDir, {
 			...verifier,
-			environmentGaps: options.environmentGaps,
+			environmentGaps: () => [...(options.environmentGaps ?? []), ...runner.environmentGaps],
 		})
 		await usage.flush()
 		options.onProgress?.(result.progress)
@@ -664,6 +670,8 @@ export async function wrapUpReviewPanel(options: WrapUpReviewPanelOptions): Prom
 		outputDir,
 		concurrency: 1,
 		checkDefinitions: options.checkDefinitions,
+		environment: options.environment,
+		environmentValidationGaps: options.environmentValidationGaps,
 		executionPolicy: options.executionPolicy,
 		rootDir: options.rootDir,
 		spawnAgent: options.spawnAgent,
@@ -682,7 +690,7 @@ export async function wrapUpReviewPanel(options: WrapUpReviewPanelOptions): Prom
 		})
 		const result = await finalizeWithWriterRescan(store, outputDir, {
 			...verifier,
-			environmentGaps: options.environmentGaps,
+			environmentGaps: () => [...(options.environmentGaps ?? []), ...runner.environmentGaps],
 		})
 		await usage.flush()
 		options.onProgress?.(result.progress)
