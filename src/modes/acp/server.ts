@@ -1420,13 +1420,10 @@ export class KimchiAcpAgent {
 			// In-memory managers migrate entries and regenerate the selected
 			// branch without registering staging paths in Pi's process-wide live
 			// session set or rewriting the source file.
-			const independentEntries = sourceEntries.filter(
-				(entry) => entry.type !== "custom" || entry.customType !== "subagents:record",
-			)
 			// In-memory managers migrate entries and regenerate the selected
 			// branch without registering staging paths in Pi's process-wide live
 			// session set or rewriting the source file.
-			const stagedSource = SessionManager.inMemory(params.cwd, undefined, independentEntries)
+			const stagedSource = SessionManager.inMemory(params.cwd, undefined, sourceEntries)
 			const liveLeafId = source?.session.sessionManager.getLeafId()
 			if (liveLeafId) stagedSource.branch(liveLeafId)
 			const leafId = stagedSource.getLeafId()
@@ -1453,7 +1450,13 @@ export class KimchiAcpAgent {
 				parentId: null,
 				timestamp,
 			}
-			const contents = `${[forkHeader, provenance, ...stagedSource.getEntries()].map((entry) => JSON.stringify(entry)).join("\n")}\n`
+			// Select the full branch first: removing routing records any earlier
+			// can sever parentId links and lose the prompt, tool history, or
+			// selected leaf. Their metadata alone is omitted at serialization.
+			const independentEntries = stagedSource
+				.getEntries()
+				.filter((entry) => entry.type !== "custom" || entry.customType !== "subagents:record")
+			const contents = `${[forkHeader, provenance, ...independentEntries].map((entry) => JSON.stringify(entry)).join("\n")}\n`
 			writeFileSync(forkedPath, contents, { flag: "wx" })
 		} catch (err) {
 			if (forkedPath) rmSync(forkedPath, { force: true })

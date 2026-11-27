@@ -56,12 +56,18 @@ it("does not adopt delegated sessions when forking and reopening", async () => {
 				({ sessionId, update }) => sessionId === fork.sessionId && update.sessionUpdate === "subagent_update",
 			)
 		expect(childUpdates()).toHaveLength(0)
-		expect(logFor(fixture.homeDir, fork.sessionId)).not.toContain('"customType":"subagents:record"')
+		const forkContents = logFor(fixture.homeDir, fork.sessionId)
+		expect(forkContents).toContain(PARENT_REQUEST)
+		expect(forkContents).toContain(CHILD_RESULT)
+		expect(forkContents).not.toContain('"customType":"subagents:record"')
+		const sourceBeforeResume = logFor(fixture.homeDir, sourceId)
 
 		await fixture.conn.request("session/close", { sessionId: fork.sessionId })
 		await fixture.conn.request("session/resume", { sessionId: fork.sessionId, cwd: fixture.workDir, mcpServers: [] })
 
 		expect(childUpdates()).toHaveLength(0)
+		expect(logFor(fixture.homeDir, fork.sessionId)).toContain(PARENT_REQUEST)
+		expect(logFor(fixture.homeDir, sourceId)).toBe(sourceBeforeResume)
 	} finally {
 		await fixture.stop()
 	}

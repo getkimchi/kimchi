@@ -162,7 +162,7 @@ describe("ACP session/fork", () => {
 		const setup = makeHarness({ coldLoader: true })
 		const sourcePath = savedSource(setup.agentDir, setup.cwd, "source-with-child", "source transcript")
 		const manager = SessionManager.open(sourcePath)
-		manager.appendCustomEntry("subagents:record", {
+		const recordId = manager.appendCustomEntry("subagents:record", {
 			id: "child-task",
 			agentId: "Reviewer",
 			sessionId: "child-session",
@@ -172,6 +172,8 @@ describe("ACP session/fork", () => {
 			cwd: "/tmp/child-review",
 			sessionFile: "/tmp/child.jsonl",
 		})
+		// Exercise removal while the subagent routing record is the selected leaf.
+		manager.branch(recordId)
 		const before = readFileSync(sourcePath, "utf8")
 
 		const result = await setup.agent.forkSession({ sessionId: "source-with-child", cwd: setup.cwd, mcpServers: [] })
