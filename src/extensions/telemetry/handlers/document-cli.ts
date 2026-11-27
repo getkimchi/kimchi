@@ -102,7 +102,7 @@ export function emitDocumentCliCompleted(
 		outcome === "nonzero_exit" ? (extractDocumentErrorCode(input.resultText) ?? "unclassified") : undefined
 
 	tm.emit(
-		"document_cli.completed",
+		"document_operation.completed",
 		{
 			document_type: attribution.documentType,
 			operation: attribution.operation,

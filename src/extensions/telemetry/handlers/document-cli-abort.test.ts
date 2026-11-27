@@ -47,7 +47,7 @@ describe("document abort telemetry", () => {
 		})
 		expect(tm.emit).toHaveBeenCalledOnce()
 		expect(tm.emit).toHaveBeenCalledWith(
-			"document_cli.completed",
+			"document_operation.completed",
 			expect.objectContaining({ outcome: "aborted", duration_ms: 4, tool_use_id: "abort-in-flight-command" }),
 			ctx,
 			undefined,
@@ -70,7 +70,7 @@ describe("upstream tool execution end integration", () => {
 			result: { content: [{ type: "text", text: "Command aborted" }], details: {} },
 		})
 		expect(tm.emit).toHaveBeenCalledWith(
-			"document_cli.completed",
+			"document_operation.completed",
 			expect.objectContaining({ outcome: "aborted" }),
 			ctx,
 			undefined,

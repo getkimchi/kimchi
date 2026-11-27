@@ -96,7 +96,7 @@ describe("handlers/tools", () => {
 				command: 'kimchi doc-cli pdf read "/private/report.pdf"',
 				toolCallId: "doc-success",
 			})
-			const documentEvents = events.filter((event) => event.eventName === "document_cli.completed")
+			const documentEvents = events.filter((event) => event.eventName === "document_operation.completed")
 			expect(documentEvents).toHaveLength(1)
 			const documentEvent = documentEvents[0]
 			expect(documentEvent.attrs).toMatchObject({
@@ -134,7 +134,7 @@ describe("handlers/tools", () => {
 				isError: true,
 				resultText: "error [password-protected]: /private/encrypted.pdf\n\nCommand exited with code 2",
 			})
-			const documentEvent = events.find((event) => event.eventName === "document_cli.completed")
+			const documentEvent = events.find((event) => event.eventName === "document_operation.completed")
 			expect(documentEvent?.attrs).toMatchObject({
 				document_type: "pdf",
 				operation: "read",
@@ -154,7 +154,7 @@ describe("handlers/tools", () => {
 				isError: true,
 				resultText: "unknown command failure\n\nCommand exited with code 2",
 			})
-			expect(events.find((event) => event.eventName === "document_cli.completed")?.attrs).toMatchObject({
+			expect(events.find((event) => event.eventName === "document_operation.completed")?.attrs).toMatchObject({
 				document_type: "docx",
 				operation: "create",
 				outcome: "nonzero_exit",
@@ -173,7 +173,7 @@ describe("handlers/tools", () => {
 				isError: true,
 				resultText: `Command timed out after ${seconds} seconds`,
 			})
-			const documentEvent = events.find((event) => event.eventName === "document_cli.completed")
+			const documentEvent = events.find((event) => event.eventName === "document_operation.completed")
 			expect(documentEvent?.attrs).toMatchObject({ document_type: "pptx", operation: "render", outcome: "timeout" })
 			expect(documentEvent?.attrs.error_code).toBeUndefined()
 			expect(documentEvent?.attrs.timeout_seconds).toBeUndefined()
@@ -192,7 +192,7 @@ describe("handlers/tools", () => {
 				isError: true,
 				resultText,
 			})
-			const documentEvent = events.find((event) => event.eventName === "document_cli.completed")
+			const documentEvent = events.find((event) => event.eventName === "document_operation.completed")
 			expect(documentEvent?.attrs.outcome).toBe(outcome)
 			expect(documentEvent?.attrs.error_code).toBeUndefined()
 		})
@@ -204,7 +204,7 @@ describe("handlers/tools", () => {
 				isError: true,
 				resultText: "A user-configured hook rejected this command",
 			})
-			expect(events.find((event) => event.eventName === "document_cli.completed")?.attrs.outcome).toBe(
+			expect(events.find((event) => event.eventName === "document_operation.completed")?.attrs.outcome).toBe(
 				"execution_error",
 			)
 		})
@@ -219,7 +219,7 @@ describe("handlers/tools", () => {
 				isError: true,
 				resultText,
 			})
-			expect(events.find((event) => event.eventName === "document_cli.completed")).toBeUndefined()
+			expect(events.find((event) => event.eventName === "document_operation.completed")).toBeUndefined()
 			expect(events.find((event) => event.eventName === "tool_outcome")).toBeDefined()
 		})
 
@@ -229,7 +229,7 @@ describe("handlers/tools", () => {
 				toolCallId: "doc-fallback",
 				parentToolCallId: "codemode-parent",
 			})
-			const documentEvents = events.filter((event) => event.eventName === "document_cli.completed")
+			const documentEvents = events.filter((event) => event.eventName === "document_operation.completed")
 			expect(documentEvents).toHaveLength(1)
 			expect(documentEvents[0].attrs).toMatchObject({ document_type: "xlsx", operation: "info", outcome: "success" })
 			expect(documentEvents[0].attrs.nested).toBeUndefined()
@@ -244,7 +244,7 @@ describe("handlers/tools", () => {
 
 		it("emits nothing for ordinary bash", async () => {
 			const events = await runDocumentBash({ command: "ls -la", toolCallId: "doc-not-document" })
-			expect(events.find((event) => event.eventName === "document_cli.completed")).toBeUndefined()
+			expect(events.find((event) => event.eventName === "document_operation.completed")).toBeUndefined()
 		})
 	})
 
