@@ -134,6 +134,27 @@ Every update is serialized and written to a mode-0600 temp file followed by
 rename. Stage 3's `routine-checks.json` remains the shared command evidence.
 `reconciliation-request.json` is the immutable verifier input for one digest.
 
+## Saved reviewer sessions
+
+`RunReviewPanelOptions.saveSessions` and `WrapUpReviewPanelOptions.saveSessions`
+are set by `--review-save-sessions`. They are off by default. When enabled,
+`ReviewRunner` passes `sessionFile` and `sessionDir` to the existing agent runner
+so the parent writes normal session JSONL to
+`<outputDir>/sessions/<writer>.jsonl`. Lens writers use their lens IDs and the
+semantic verifier uses `reconciliation` (or another explicit verifier writer).
+Later launches use `<writer>.2.jsonl`, `<writer>.3.jsonl`, and so on, including
+launches after a new runner is created for wrap-up. Existing transcripts are
+never reused or truncated.
+
+The directory is created as `0700`; completed session files are changed to
+`0600`. It sits in the review output directory with the same access as other
+review output. Reviewer children are not pointed at it. Transcripts include
+repository code, command output, and model reasoning, so treat them as sensitive.
+Candidate scans, summary checks, reconciliation requests, finalization, and
+wrap-up use their fixed artifact paths and never read `sessions/` as review
+input. Without the option, no session paths are added and the directory is not
+created.
+
 ## Candidate and final checkpoints
 
 Reviewer files remain `findings/<lens>.jsonl`. Every ingest revalidates writer,

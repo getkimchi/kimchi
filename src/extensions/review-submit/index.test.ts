@@ -33,7 +33,14 @@ const validFinding = {
 	type: "bug" as const,
 }
 
-const REVIEW_FLAG_NAMES = ["review", "review-writer", "review-writer-limit", "review-context-dir", "review-output-dir"]
+const REVIEW_FLAG_NAMES = [
+	"review",
+	"review-writer",
+	"review-writer-limit",
+	"review-context-dir",
+	"review-output-dir",
+	"review-save-sessions",
+]
 
 describe("reviewSubmitExtension", () => {
 	const temporaryDirectories: string[] = []
@@ -68,7 +75,7 @@ describe("reviewSubmitExtension", () => {
 		expect(readdirSync(projectDir)).toEqual([])
 	})
 
-	it("registers all three tools and all five flags when --review is set", () => {
+	it("registers all three tools and all six flags when --review is set", () => {
 		const harness = activeHarness()
 		expect(harness.getActiveToolNames()).toEqual(["submit_finding", "submit_summary", "submit_reply"])
 		expect(vi.mocked(harness.api.registerFlag).mock.calls.map(([name]) => name)).toEqual(REVIEW_FLAG_NAMES)
@@ -78,6 +85,7 @@ describe("reviewSubmitExtension", () => {
 			"string",
 			"string",
 			"string",
+			"boolean",
 		])
 	})
 

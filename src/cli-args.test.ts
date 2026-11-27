@@ -52,6 +52,12 @@ describe("review writer limit parsing", () => {
 	it("preserves a negative equals-form value for structured validation", () => {
 		expect(parseCliArgs(["--review-writer-limit=-1"]).options["review-writer-limit"]).toBe("-1")
 	})
+
+	it("parses saved reviewer sessions as an opt-in boolean", () => {
+		expect(parseCliArgs([]).options["review-save-sessions"]).toBeUndefined()
+		expect(parseCliArgs(["--review-save-sessions"]).options["review-save-sessions"]).toBe(true)
+		expect(parseCliArgs(["--review-save-sessions=false"]).options["review-save-sessions"]).toBe(false)
+	})
 })
 
 describe("getCliModeArg", () => {

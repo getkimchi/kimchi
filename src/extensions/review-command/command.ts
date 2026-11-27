@@ -101,6 +101,10 @@ function reviewCliEnabled(): boolean {
 	return getParsedCliArgs().options.review === true
 }
 
+function saveReviewSessions(): boolean {
+	return getParsedCliArgs().options["review-save-sessions"] === true
+}
+
 function jsonPrintEnabled(): boolean {
 	return isPrintModeEnabled() && getParsedCliArgs().options.mode === "json"
 }
@@ -385,6 +389,7 @@ async function runHeadless(
 				ctx,
 				pi,
 				outputDir: prepared.manifest.output_dir,
+				...(saveReviewSessions() ? { saveSessions: true } : {}),
 				expected: {
 					baseSha: prepared.manifest.base_sha,
 					headSha: prepared.manifest.head_sha,
@@ -417,6 +422,7 @@ async function runHeadless(
 			pi,
 			target: prepared.target,
 			outputDir: prepared.manifest.output_dir,
+			...(saveReviewSessions() ? { saveSessions: true } : {}),
 			...targetRequest.panel,
 			requiredLenses: settings.requiredLenses,
 			checkDefinitions: settings.checkDefinitions,
@@ -493,6 +499,7 @@ async function runLocal(
 				pi,
 				target,
 				outputDir: run.runDir,
+				...(saveReviewSessions() ? { saveSessions: true } : {}),
 				...request.panel,
 				requiredLenses: settings.requiredLenses,
 				checkDefinitions: settings.checkDefinitions,

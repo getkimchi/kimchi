@@ -20,6 +20,7 @@ import {
 	type ReviewExecutionPolicyOptions,
 	reviewExecutionMode,
 } from "./execution.js"
+import { ReviewSessionStore } from "./sessions.js"
 import { REVIEW_CHILD_TOOL_NAMES, registerReviewChildTools } from "./tools.js"
 import type { ReviewWorktree, ReviewWorktreePool } from "./types.js"
 import { createReviewWorktreePool } from "./worktrees.js"
@@ -70,6 +71,7 @@ export interface ReviewRunnerOptions {
 	pi: ExtensionAPI
 	target: ResolvedReviewTarget
 	outputDir: string
+	saveSessions?: boolean
 	concurrency?: number
 	writerLimit?: number
 	rootDir?: string
@@ -100,6 +102,7 @@ export class ReviewRunner {
 		private readonly options: ReviewRunnerOptions,
 		readonly worktrees: ReviewWorktreePool,
 		checkQueue: ReviewCheckQueue,
+		private readonly sessions?: ReviewSessionStore,
 	) {
 		this.checkQueue = checkQueue
 	}
@@ -112,6 +115,7 @@ export class ReviewRunner {
 			if (!Number.isSafeInteger(writerLimit) || writerLimit < 1 || writerLimit > 1000) {
 				throw new Error("Review writer limit must be a decimal integer from 1 to 1000.")
 			}
+			const sessions = options.saveSessions ? await ReviewSessionStore.create(options.outputDir) : undefined
 			poolCreationStarted = true
 			worktrees = await createReviewWorktreePool({
 				target: options.target,
@@ -128,7 +132,7 @@ export class ReviewRunner {
 				definitions: options.checkDefinitions,
 				signal: options.signal,
 			})
-			return new ReviewRunner(options, worktrees, checkQueue)
+			return new ReviewRunner(options, worktrees, checkQueue, sessions)
 		} catch (error) {
 			if (worktrees) await worktrees.cleanup().catch(() => {})
 			else if (!poolCreationStarted) await options.target.cleanup().catch(() => {})
@@ -213,6 +217,7 @@ export class ReviewRunner {
 		kind?: "verifier",
 	): Promise<ReviewAgentResult> {
 		const reconciliationBridge: { value?: SemanticReconciliation } = {}
+		const session = this.sessions ? await this.sessions.allocate(options.id) : undefined
 		const execution = createReviewExecutionController({
 			mode: reviewExecutionMode(this.options.executionPolicy?.mode),
 			worktree,
@@ -232,6 +237,7 @@ export class ReviewRunner {
 		}
 		const spawnOptions: RunOptions = {
 			...options.agent,
+			...(session ?? {}),
 			pi: this.options.pi,
 			cwd: worktree.path,
 			signal,
@@ -254,14 +260,32 @@ export class ReviewRunner {
 				...(kind === "verifier" ? [createReconciliationSubmissionExtension(reconciliationBridge)] : []),
 			],
 		}
-		const result = await (this.options.spawnAgent ?? defaultSpawner)({
-			ctx: this.options.ctx,
-			type: options.type ?? "General-Purpose",
-			prompt: options.prompt,
-			options: spawnOptions,
-		})
+		let outcome: { result: RunResult } | { error: unknown }
+		let privateFailure: { error: unknown } | undefined
+		try {
+			outcome = {
+				result: await (this.options.spawnAgent ?? defaultSpawner)({
+					ctx: this.options.ctx,
+					type: options.type ?? "General-Purpose",
+					prompt: options.prompt,
+					options: spawnOptions,
+				}),
+			}
+		} catch (error) {
+			outcome = { error }
+		} finally {
+			if (session && this.sessions) {
+				try {
+					await this.sessions.makePrivate(session.sessionFile)
+				} catch (error) {
+					privateFailure = { error }
+				}
+			}
+		}
+		if ("error" in outcome) throw outcome.error
+		if (privateFailure) throw privateFailure.error
 		return {
-			...result,
+			...outcome.result,
 			writer: options.id,
 			worktree,
 			execution,

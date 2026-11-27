@@ -254,6 +254,7 @@ async function makeRunner(options: {
 	pi: RunReviewPanelOptions["pi"]
 	target: ResolvedReviewTarget
 	outputDir: string
+	saveSessions?: boolean
 	signal?: AbortSignal
 	concurrency: number
 	checkDefinitions?: RunReviewPanelOptions["checkDefinitions"]
@@ -280,6 +281,7 @@ async function makeRunner(options: {
 		pi: options.pi,
 		target: options.target,
 		outputDir: options.outputDir,
+		...(options.saveSessions ? { saveSessions: true } : {}),
 		signal: options.signal,
 		concurrency: options.concurrency,
 		checkDefinitions: options.checkDefinitions,
@@ -421,6 +423,7 @@ export async function runReviewPanel(options: RunReviewPanelOptions): Promise<Re
 		pi: options.pi,
 		target: options.target,
 		outputDir,
+		saveSessions: options.saveSessions,
 		concurrency: selection.slotCount,
 		checkDefinitions: options.checkDefinitions,
 		executionPolicy: options.executionPolicy,
@@ -662,6 +665,7 @@ export async function wrapUpReviewPanel(options: WrapUpReviewPanelOptions): Prom
 		pi: options.pi,
 		target: resumeTarget(store.state.scope),
 		outputDir,
+		saveSessions: options.saveSessions,
 		concurrency: 1,
 		checkDefinitions: options.checkDefinitions,
 		executionPolicy: options.executionPolicy,

@@ -1,5 +1,14 @@
 import { execFileSync, spawn } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -607,6 +616,122 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(JSON.stringify(requests)).toContain("temporary-bash.test.ts")
 		expect(existsSync(join(repo, "temporary.test.ts"))).toBe(false)
 		expect(existsSync(join(repo, "temporary-bash.test.ts"))).toBe(false)
+	})
+
+	it("saves distinct reviewer sessions and suffixes relaunches only when enabled", async () => {
+		interface SpawnRecord {
+			writer: string
+			sessionFile?: string
+			sessionDir?: string
+		}
+		async function runWithFakeChildren(runOutput: string, saveSessions: boolean) {
+			const spawns: SpawnRecord[] = []
+			let verifierCalls = 0
+			const result = await runReviewPanel(
+				runOptions(createContext({ cwd: repo, hasUI: false }), await target(), {
+					outputDir: runOutput,
+					lenses: ["spec", "standards"],
+					saveSessions,
+					spawnAgent: async ({ options }) => {
+						const writer = options.description?.replace("Review writer ", "") ?? ""
+						spawns.push({ writer, sessionFile: options.sessionFile, sessionDir: options.sessionDir })
+						if (options.sessionFile) {
+							const attempt = spawns.filter((spawn) => spawn.writer === writer).length
+							writeFileSync(options.sessionFile, `${writer}-${attempt}\n`)
+						}
+						if (writer === "reconciliation") {
+							verifierCalls += 1
+							if (verifierCalls === 1) return { ...completedRunResult(), responseText: "{}" }
+							const candidateIds = ["spec-1", "standards-1"]
+							return {
+								...completedRunResult(),
+								responseText: JSON.stringify({
+									schema_version: "review-reconciliation/v1",
+									findings: candidateIds.map((id) => ({
+										id: `finding-${id}`,
+										...panelFinding(SPEC_DESCRIPTION, "Add the missing guard and cover the changed path."),
+										candidate_ids: [id],
+									})),
+									decisions: candidateIds.map((id) => ({
+										candidate_id: id,
+										disposition: "retained",
+										finding: `finding-${id}`,
+										reason: "Independent candidate in the saved-session fixture.",
+									})),
+									threads: [],
+								}),
+							}
+						}
+						await submitFinding(panelFinding(SPEC_DESCRIPTION, "Add the missing guard and cover the changed path."), {
+							writer,
+							contextDir,
+							outputDir: runOutput,
+						})
+						return completedRunResult()
+					},
+				}),
+			)
+			return { result, spawns }
+		}
+
+		const savedOutput = join(sandbox, "saved-review-output")
+		const saved = await runWithFakeChildren(savedOutput, true)
+		expect(saved.result.findings).toHaveLength(2)
+		expect(saved.result.state.reconciliation.status).toBe("reconciled")
+		expect(saved.spawns.map((spawn) => spawn.writer).sort()).toEqual([
+			"reconciliation",
+			"reconciliation",
+			"spec",
+			"standards",
+		])
+		const sessionsDir = join(realpathSync(savedOutput), "sessions")
+		const pathsFor = (writer: string) => saved.spawns.filter((spawn) => spawn.writer === writer)
+		expect(pathsFor("spec")).toEqual([
+			{ writer: "spec", sessionFile: join(sessionsDir, "spec.jsonl"), sessionDir: sessionsDir },
+		])
+		expect(pathsFor("standards")).toEqual([
+			{ writer: "standards", sessionFile: join(sessionsDir, "standards.jsonl"), sessionDir: sessionsDir },
+		])
+		expect(pathsFor("reconciliation").map((spawn) => spawn.sessionFile)).toEqual([
+			join(sessionsDir, "reconciliation.jsonl"),
+			join(sessionsDir, "reconciliation.2.jsonl"),
+		])
+		expect(readFileSync(join(sessionsDir, "reconciliation.jsonl"), "utf8")).toBe("reconciliation-1\n")
+		expect(readFileSync(join(sessionsDir, "reconciliation.2.jsonl"), "utf8")).toBe("reconciliation-2\n")
+
+		writeFileSync(join(sessionsDir, "unrelated.json"), "not review input")
+		const findingsBefore = readFileSync(reviewPanelPaths(savedOutput).findingsPath, "utf8")
+		const summaryBefore = readFileSync(reviewPanelPaths(savedOutput).summaryPath, "utf8")
+		const wrapped = await wrapUpReviewPanel({
+			ctx: createContext({ cwd: repo, hasUI: false }),
+			pi: createExtensionApi().api,
+			outputDir: savedOutput,
+			saveSessions: true,
+			expected: {
+				baseSha: saved.result.state.scope.pinned.baseSha,
+				headSha: saved.result.state.scope.pinned.headSha,
+				checkoutPath: saved.result.state.scope.checkoutPath,
+				contextDir: saved.result.state.contextDir,
+				outputDir: saved.result.state.outputDir,
+			},
+			rootDir: join(sandbox, "saved-session-wrap-worktrees"),
+			checkDefinitions: [],
+			executionPolicy: { mode: "headless" },
+			spawnAgent: async () => {
+				throw new Error("A cached reconciliation must not launch another verifier.")
+			},
+		})
+		expect(wrapped.findings).toEqual(saved.result.findings)
+		expect(wrapped.summary.coverage).toEqual(saved.result.summary.coverage)
+		expect(readFileSync(reviewPanelPaths(savedOutput).findingsPath, "utf8")).toBe(findingsBefore)
+		expect(readFileSync(reviewPanelPaths(savedOutput).summaryPath, "utf8")).toBe(summaryBefore)
+
+		const unsaved = await runWithFakeChildren(join(sandbox, "unsaved-review-output"), false)
+		expect(unsaved.spawns.length).toBeGreaterThan(0)
+		expect(unsaved.spawns.every((spawn) => spawn.sessionFile === undefined && spawn.sessionDir === undefined)).toBe(
+			true,
+		)
+		expect(existsSync(join(unsaved.result.state.outputDir, "sessions"))).toBe(false)
 	})
 
 	it("repairs disposition naming through submit_reconciliation and ends reconciled", async () => {

@@ -1,8 +1,17 @@
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import type { RunResult } from "../agents/manager/agent-runner.js"
@@ -11,6 +20,7 @@ import { resolveReviewTarget } from "../review-targets/resolve.js"
 import type { ExplicitReviewRequest } from "../review-targets/types.js"
 import type { ReviewNetworkBoundary } from "./network-boundary.js"
 import { ReviewRunner } from "./runner.js"
+import { ReviewSessionStore } from "./sessions.js"
 
 // This fixture isolates writer worktrees, not network enforcement. Inject its
 // boundary explicitly so it behaves identically on macOS and restricted CI.
@@ -57,6 +67,7 @@ describe("review runner writer and worktree isolation", () => {
 
 	afterEach(async () => {
 		await runner?.cleanup()
+		vi.restoreAllMocks()
 		rmSync(sandbox, { recursive: true, force: true })
 	})
 
@@ -196,6 +207,45 @@ describe("review runner writer and worktree isolation", () => {
 		await cleanup
 		expect(agentFinished).toBe(true)
 		expect(existsSync(worktreePath)).toBe(false)
+	})
+
+	it("makes failed reviewer sessions private without masking the child error", async () => {
+		const base = git(repo, "rev-parse", "HEAD^")
+		const target = await resolveReviewTarget(
+			parseReviewTargetArgs(["branch", "main", "--base", base]) as ExplicitReviewRequest,
+			{
+				root: repo,
+				contextDir: join(sandbox, "review-context"),
+			},
+		)
+		const childError = new Error("scripted child failure")
+		const makePrivate = ReviewSessionStore.prototype.makePrivate
+		vi.spyOn(ReviewSessionStore.prototype, "makePrivate").mockImplementation(async function (
+			this: ReviewSessionStore,
+			sessionFile,
+		) {
+			await makePrivate.call(this, sessionFile)
+			throw new Error("scripted privatization failure")
+		})
+		let sessionFile = ""
+		runner = await ReviewRunner.create({
+			ctx: createContext({ cwd: repo }),
+			pi: createExtensionApi().api,
+			target,
+			outputDir,
+			saveSessions: true,
+			rootDir: join(sandbox, "worktrees"),
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
+			spawnAgent: async ({ options }): Promise<RunResult> => {
+				sessionFile = options.sessionFile ?? ""
+				writeFileSync(sessionFile, '{"type":"session"}\n')
+				throw childError
+			},
+		})
+
+		await expect(runner.spawnReviewer({ id: "spec", prompt: "spec" })).rejects.toBe(childError)
+		expect(sessionFile).toBe(join(realpathSync(outputDir), "sessions", "spec.jsonl"))
+		if (process.platform !== "win32") expect(statSync(sessionFile).mode & 0o777).toBe(0o600)
 	})
 
 	it("releases the target when runner validation fails before pool creation", async () => {

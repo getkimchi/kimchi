@@ -225,6 +225,11 @@ export const CLI_OPTIONS: Record<string, CliOptionDef> = {
 		placeholder: "<path>",
 		hidden: true,
 	},
+	"review-save-sessions": {
+		type: "boolean",
+		description: "Save reviewer and reconciler sessions under the review output directory",
+		hidden: true,
+	},
 	"permissions-config": {
 		type: "string",
 		description: "Replace the merged permissions config with this file",
@@ -291,6 +296,7 @@ export interface SessionCliArgs {
 		"review-writer-limit"?: string
 		"review-context-dir"?: string
 		"review-output-dir"?: string
+		"review-save-sessions"?: boolean
 		"permissions-config"?: string
 		"bash-process-limit"?: string
 		"mcp-config"?: string
@@ -378,6 +384,7 @@ export const CACHEABLE_OPTION_NAMES = [
 	"review-writer-limit",
 	"review-context-dir",
 	"review-output-dir",
+	"review-save-sessions",
 	"permissions-config",
 	"bash-process-limit",
 	"mcp-config",

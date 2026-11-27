@@ -1,5 +1,5 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { expect, it } from "vitest"
@@ -56,6 +56,7 @@ function runPrint(
 		timeoutMs?: number
 		submitGraceMs?: number
 		worktreeTempDir?: string
+		saveSessions?: boolean
 		cwd?: string
 	} = {},
 ): RunningPrint {
@@ -82,6 +83,7 @@ function runPrint(
 			directories.contextDir,
 			"--review-output-dir",
 			directories.outputDir,
+			...(options.saveSessions ? ["--review-save-sessions"] : []),
 			prompt,
 		],
 		{
@@ -246,6 +248,31 @@ it("dispatches a zero-finding manifest panel with ordered events and ingestible 
 		const resumed = await runPrint(f.homeDir, "/review wrap-up", f.directories, { sessionId }).done
 		expectPanelStartup(resumed)
 		expect(readFileSync(join(f.directories.outputDir, "findings", "final.jsonl"), "utf8")).toBe(finalFindings)
+		expect(existsSync(join(f.directories.outputDir, "sessions"))).toBe(false)
+	} finally {
+		await cleanup(f.tempRoot, f.fake)
+	}
+})
+
+it("saves reviewer and reconciler sessions as private JSONL when enabled", { timeout: 45_000 }, async () => {
+	const f = await fixture({ scripts: reviewResponseScripts({ finding: true }) })
+	try {
+		const result = await runPrint(f.homeDir, `/review --manifest ${f.manifestPath} --lens spec`, f.directories, {
+			saveSessions: true,
+		}).done
+		expectPanelStartup(result)
+		const sessionsDir = join(f.directories.outputDir, "sessions")
+		if (process.platform !== "win32") expect(statSync(sessionsDir).mode & 0o777).toBe(0o700)
+		for (const writer of ["spec", "reconciliation"]) {
+			const path = join(sessionsDir, `${writer}.jsonl`)
+			const entries = readFileSync(path, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as { type?: string })
+			expect(entries[0]?.type).toBe("session")
+			expect(entries.some((entry) => entry.type === "message")).toBe(true)
+			if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600)
+		}
 	} finally {
 		await cleanup(f.tempRoot, f.fake)
 	}

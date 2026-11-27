@@ -118,6 +118,20 @@ kimchi -p --mode json --review --review-writer final \
   '/review --manifest /home/sandbox/review-context/manifest.json'
 ```
 
+Add `--review-save-sessions` to save every lens child session and each
+reconciler/verifier session as standard session JSONL under
+`<outputDir>/sessions/<writer>.jsonl`. A relaunched writer uses a numeric suffix,
+such as `<writer>.2.jsonl`, so earlier transcripts are preserved. Wrap-up also
+honors the flag when it launches a verifier. The same flag works for interactive
+local `/review`, using that run's output directory.
+
+This is off by default. The sessions directory sits in the review output
+directory with the same access as other review output. It is created as `0700`,
+with completed files set to `0600`. Reviewer children are not pointed at it, and
+it is not review input. Transcripts contain repository code, command output, and
+model reasoning, so treat them as sensitive. No sessions directory is created
+without the flag and an output directory.
+
 `--lens`, repeated `--lens`, `--all`, and `--concurrency` compose with
 `--manifest`; local target options do not. Manifest directories must exactly
 match the context/output flag directories and the writer must be `final`.
