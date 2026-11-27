@@ -73,6 +73,17 @@ export default defineConfig({
 			// so vi.mock() can target it without a "missing specifier" error.
 			"@earendil-works/pi-coding-agent/dist/utils/clipboard-image.js": stubPath,
 		},
+		server: {
+			deps: {
+				// The bridge library ships TypeScript source (no JS build), so Vite
+				// must transform it instead of externalizing it like a normal
+				// node_modules package. A RegExp (not a bare string, which is
+				// normalized to a node_modules/ prefix that a linked checkout does
+				// live under) matches the package both as a link: checkout and as a
+				// registry/git install under .pnpm.
+				inline: [/kimchi-bridge/],
+			},
+		},
 		// The protocol's timestamp codec uses Temporal, which Node exposes behind
 		// its harmony flag before it exposes it natively (Bun supplies it directly).
 		execArgv: ["--harmony-temporal"],

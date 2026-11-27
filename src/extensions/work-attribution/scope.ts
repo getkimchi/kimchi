@@ -5,12 +5,11 @@ import { realpath } from "node:fs/promises"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { backendFor, getNote, hasNote, isWorkId, setNote } from "@getkimchi/kimchi-bridge/ledger"
 import { type VerifyApiKeyResponse, verifyApiKey } from "../../api/organizations.js"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { canonicalPlatformApiUrl } from "../../regions.js"
-import { isWorkId } from "../../shared/work-id.js"
-import { backendFor, getNote, hasNote, setNote } from "../pr-cost-reporting/ledger/records.js"
 import { object } from "./summary.js"
 
 export interface WorkAccount {

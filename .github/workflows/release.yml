@@ -51,6 +51,15 @@ jobs:
       - name: Test
         run: pnpm run test
 
+      # One schema implementation: the kimchi-bridge library pin in package.json
+      # must name the same commit as the bridge release the build jobs bundle
+      # via scripts/bundle-bridge.sh. Self-test first so a broken checker fails
+      # as a checker bug, not as a pin finding.
+      - name: Bridge library pin
+        run: |
+          pnpm run check:bridge-pin:self-test
+          pnpm run check:bridge-pin
+
   build:
     needs: [checks]
     strategy:

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -10,12 +10,12 @@ import {
 	SessionManager,
 	type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
+import { backendFor } from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "./__mocks__/model-registry.js"
 import { createWorkScopeSnapshot } from "./__mocks__/work-scope.js"
-import { backendFor } from "./pr-cost-reporting/ledger/records.js"
 import * as health from "./telemetry/pr-cost.js"
 import * as continuation from "./work-attribution/continuation.js"
 import * as supervisor from "./work-attribution/reconcile-supervisor.js"
@@ -33,7 +33,7 @@ import {
 let dir: string
 let captured: scope.WorkScopeSnapshot
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "kimchi-work-input-"))
+	dir = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-work-input-")))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
 	captured = createWorkScopeSnapshot(join(dir, ".git"))
 	vi.spyOn(scope, "captureWorkScope").mockResolvedValue(captured)

@@ -4,21 +4,18 @@ import { readFileSync } from "node:fs"
 import { mkdir, open, readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
 import { setImmediate } from "node:timers/promises"
+import { backendFor, diagnostic, isWorkId } from "@getkimchi/kimchi-bridge/ledger"
+import { accountKey } from "@getkimchi/kimchi-bridge/reconcile"
 import { lock } from "proper-lockfile"
 import { writeFileDurably } from "../../config/json.js"
-import { isWorkId } from "../../shared/work-id.js"
 import { isTelemetryEnabled } from "../../telemetry-policy.js"
 import { trackPRCostMetric } from "../telemetry/pr-cost.js"
 import { isWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import { object, SHA256_HEX } from "../work-attribution/summary.js"
-import { backendFor, diagnostic } from "./ledger/records.js"
 import { machineFingerprint } from "./machine.js"
 import {
-	accountKey,
 	fitSnapshot,
-	MAX_REVISION,
 	type ReportingRepository,
-	type RepositorySnapshot,
 	repositoryKey,
 	revision,
 	SNAPSHOT_LIMITS,
@@ -83,9 +80,6 @@ export const HOLD_EXPIRY_MS = 7 * 24 * 60 * 60_000
 const LEARNED_LIMIT_MS = 7 * 24 * 60 * 60_000
 /** The local queue's size limit; a replacement that would cross it waits instead of blocking every repository. */
 const MAX_STATE_BYTES = 24 * 1024 * 1024
-/** Room for JSON punctuation the per-entry estimate leaves out. */
-const STATE_SIZE_MARGIN = 64 * 1024
-
 export interface PendingRepository {
 	account: WorkAccount
 	repository: ReportingRepository
@@ -574,242 +568,6 @@ export function recordReportingError(agentDir: string, error: string | undefined
 	return update(agentDir, (state) => {
 		if (state.enabled) state.error = error
 	})
-}
-
-/**
- * Replaces a repository's entire inventory. The fsynced rename completes before delivery can begin.
- * Every change replaces the pending snapshot; whether it may skip the upload window is decided here.
- */
-export async function queueSnapshots(
-	agentDir: string,
-	snapshots: RepositorySnapshot[],
-	completeInventory = false,
-	skippedRequests = 0,
-	assertCurrent?: () => void,
-): Promise<ReportingState> {
-	const machine = await machineFingerprint()
-	let largest: { requests: number; bytes: number } | undefined
-	const state = await update(
-		agentDir,
-		(state) => {
-			if (!state.enabled) return
-			if (machine && state.machine && machine !== state.machine)
-				throw new Error("PR reporting snapshots from another machine must drain unchanged")
-			const now = Date.now()
-			// The freeze sweep's own hold release clears heldAt without telling this pass: remember
-			// the expired keys first, so neither sweep re-parks them below with a fresh horizon.
-			const expired = new Set<string>()
-			for (const [key, entry] of Object.entries(state.entries))
-				if (entry.heldAt !== undefined && entry.heldAt <= now - HOLD_EXPIRY_MS) expired.add(key)
-			// Legacy callers retain their queue contract; the current reporter freezes under this same lock.
-			if (assertCurrent) freezeState(agentDir, state, assertCurrent)
-			const invalid = new Set<string>()
-			const current = new Map<string, RepositorySnapshot>()
-			for (const snapshot of snapshots) {
-				const key = `${accountKey(snapshot.account)}:${repositoryKey(snapshot.content.repository)}`
-				try {
-					const next = BigInt(state.entries[key]?.revision ?? "0") + 1n
-					validateSnapshot({
-						schemaVersion: 1,
-						producerId: state.producerId,
-						revision: String(next),
-						generatedAt: new Date().toISOString(),
-						...snapshot.content,
-					})
-					current.set(key, snapshot)
-				} catch {
-					invalid.add(key)
-				}
-			}
-
-			const reported = new Map<string, Set<string>>()
-			for (const snapshot of current.values()) {
-				if (snapshot.incomplete) continue
-				const key = accountKey(snapshot.account)
-				const members = reported.get(key) ?? new Set<string>()
-				for (const requestId of snapshot.observedRequestIds ??
-					snapshot.content.requests.map((request) => request.requestId))
-					if (isWorkId(requestId)) members.add(requestHash(requestId))
-				reported.set(key, members)
-			}
-
-			let held = 0
-			const withdrawals = new Set<string>()
-			const released = new Set<string>()
-			for (const [key, entry] of Object.entries(state.entries)) {
-				if (entry.learned && entry.learned.until <= now) entry.learned = undefined
-				// A hold waiting on evidence that never arrives releases after the horizon: this pass
-				// delivers or settles the entry instead of parking it again with a fresh hold.
-				if (expired.has(key)) {
-					entry.held = undefined
-					entry.heldAt = undefined
-					released.add(key)
-					// The freeze sweep already logged this release when assertCurrent ran it
-					// above; emitting here too would double-count one logical expiry.
-					if (!assertCurrent) diagnostic(agentDir, "hold-expired")
-				}
-				// An acknowledged withdrawal left no claims; rebuilding it would only send it again.
-				if (!current.has(key) && (entry.requestHashes.length || entry.pending || entry.pendingId)) {
-					if (
-						!invalid.has(key) &&
-						entry.requestHashes.every((member) => reported.get(accountKey(entry.account))?.has(member))
-					) {
-						current.set(key, {
-							account: entry.account,
-							content: {
-								repository: entry.repository,
-								pullRequests: [],
-								requests: [],
-								coverage: { observedRequests: 0, unpricedRequests: 0, historyComplete: completeInventory },
-							},
-						})
-						withdrawals.add(key)
-					} else if (!released.has(key) && entry.dead === undefined) {
-						// A settled entry can never deliver from a re-park: skip it so a
-						// dead row with claims does not re-hold every expiry cycle.
-						entry.held = true
-						entry.heldAt ??= now
-						// An invalid replacement is reported as invalid, not also as missing evidence.
-						if (!invalid.has(key)) held++
-					}
-				}
-			}
-
-			const changes: [string, RepositorySnapshot, string, number][] = []
-			for (const [key, snapshot] of current) {
-				const text = JSON.stringify(snapshot.content)
-				const digest = createHash("sha256").update(text).digest("hex")
-				const entry = state.entries[key]
-				if (
-					entry &&
-					!released.has(key) &&
-					(snapshot.incomplete ||
-						entry.requestHashes.some((member) => !reported.get(accountKey(entry.account))?.has(member)))
-				) {
-					entry.held = true
-					entry.heldAt ??= now
-					held++
-					continue
-				}
-				if (entry) {
-					entry.held = undefined
-					entry.heldAt = undefined
-				}
-				if (entry?.pendingDigest === digest || (!entry?.pending && entry?.acceptedDigest === digest)) continue
-				// History that is all outside the upload window has nothing to send and no earlier upload to replace.
-				if (!entry && !snapshot.content.requests.length && !snapshot.content.pullRequests.length) continue
-				changes.push([key, snapshot, digest, text.length])
-			}
-
-			// An explicit correction can move requests to another repository; when one first appears, every
-			// changed repository of that account goes out at once, not only the one that carries the receipt.
-			const corrected = new Set<string>()
-			for (const [key, snapshot] of changes) {
-				const entry = state.entries[key]
-				const seen = new Set([
-					...(entry?.markers ?? []),
-					// A frozen entry carries its markers inline; a not-yet-frozen legacy body still does.
-					...(entry?.pendingMarkers ?? (entry?.pending ? snapshotMarkers(entry.pending) : [])),
-				])
-				if (snapshotMarkers(snapshot.content).some((marker) => marker.startsWith("correction:") && !seen.has(marker)))
-					corrected.add(accountKey(snapshot.account))
-			}
-
-			// Smaller replacements first; one that would push the queue past its size limit waits for space. The snapshot it
-			// would replace stays deliverable: acknowledging queued snapshots is what frees that space.
-			let size = changes.length ? Buffer.byteLength(JSON.stringify(state)) : 0
-			let tooLarge = 0
-			changes.sort((a, b) => a[3] - b[3])
-			for (const [key, snapshot, digest] of changes) {
-				const entry = state.entries[key]
-				const next = BigInt(entry?.revision ?? "0") + 1n
-				if (next > MAX_REVISION) throw new Error("PR reporting revision limit reached")
-				const pending: WireSnapshot = {
-					schemaVersion: 1,
-					producerId: state.producerId,
-					revision: String(next),
-					generatedAt: new Date().toISOString(),
-					...snapshot.content,
-				}
-
-				// Unacknowledged PR states and corrections stay urgent through replacements until the server has them.
-				const acknowledged = new Set(entry?.markers)
-				const urgent =
-					entry?.urgent ||
-					withdrawals.has(key) ||
-					corrected.has(accountKey(snapshot.account)) ||
-					snapshotMarkers(snapshot.content).some((marker) => !acknowledged.has(marker))
-				const replacement: PendingRepository = {
-					...entry,
-					account: snapshot.account,
-					repository: snapshot.content.repository,
-					revision: String(next),
-					requestHashes: [
-						...new Set([
-							...(entry?.requestHashes ?? []),
-							...snapshot.content.requests.map((request) => request.requestId).map(requestHash),
-						]),
-					].sort(),
-					held: undefined,
-					heldAt: undefined,
-					// A fresh capture starts a new lifecycle; a settled refusal never follows it.
-					// Retry bookkeeping follows the same rule: a dead entry's attempts and backoff
-					// belong to the settled body, not the evidence that replaces it. For living
-					// entries, pacing (attempts, retryAt) must carry over — resetting it would
-					// let repeated captures hammer a refusing server with first-attempt delays. The
-					// spaced-404 count is body-specific and always starts fresh.
-					dead: undefined,
-					pendingDigest: digest,
-					// Legacy-writer contract: the body rides inline here and the reporter's freeze
-					// sweep moves it to its note and swaps it for a pendingId reference.
-					pending,
-					pendingId: undefined,
-					pendingMarkers: undefined,
-					urgent: urgent || undefined,
-					trimmed: snapshot.content.coverage.trimmedRequests || undefined,
-					attempts: entry?.dead ? 0 : (entry?.attempts ?? 0),
-					// A fresh body has no 404 history of its own: the deletion the spaced-404 rule
-					// detects is of a specific body, so only pacing carries over.
-					defer404s: undefined,
-					retryAt: entry?.dead ? 0 : (entry?.retryAt ?? 0),
-					lastError: entry?.dead ? undefined : entry?.lastError,
-				}
-
-				const grown =
-					Buffer.byteLength(JSON.stringify({ [key]: replacement })) -
-					(entry ? Buffer.byteLength(JSON.stringify({ [key]: entry })) : 0)
-				if (size + grown > MAX_STATE_BYTES - STATE_SIZE_MARGIN) {
-					tooLarge++
-					continue
-				}
-				size += grown
-				state.entries[key] = replacement
-				largest = {
-					requests: Math.max(largest?.requests ?? 0, pending.requests.length),
-					bytes: Math.max(largest?.bytes ?? 0, Buffer.byteLength(JSON.stringify(pending))),
-				}
-			}
-			state.error =
-				[
-					...(held ? [`PR reporting held ${held} repository snapshot(s) because earlier evidence is missing`] : []),
-					...(invalid.size
-						? [
-								`PR reporting held ${invalid.size} snapshot(s) that are invalid or exceed the upload limits after trimming`,
-							]
-						: []),
-					...(tooLarge
-						? [`PR reporting held ${tooLarge} snapshot(s) until queued reports leave room in the local queue`]
-						: []),
-				].join(". ") || undefined
-			state.skippedRequests = skippedRequests || undefined
-		},
-		assertCurrent,
-	)
-	if (largest) {
-		trackPRCostMetric({ kind: "snapshotRequests", value: largest.requests })
-		trackPRCostMetric({ kind: "snapshotBytes", value: largest.bytes })
-	}
-	return state
 }
 
 function validateAck(sentRevision: string, ack: SnapshotAck): void {

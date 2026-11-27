@@ -9,6 +9,8 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
+import * as ledgerRecords from "@getkimchi/kimchi-bridge/ledger"
+import { setNote } from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type * as Settings from "../../config/settings.js"
 import { readConfigSetting, writeConfigSetting } from "../../config/settings.js"
@@ -18,8 +20,6 @@ import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
-import * as ledgerRecords from "../pr-cost-reporting/ledger/records.js"
-import { setNote } from "../pr-cost-reporting/ledger/records.js"
 import * as prCostTelemetry from "../telemetry/pr-cost.js"
 import {
 	appendWorkRecord,

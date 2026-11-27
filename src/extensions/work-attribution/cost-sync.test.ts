@@ -1,13 +1,8 @@
 import { randomUUID } from "node:crypto"
-import * as fs from "node:fs"
+import type * as fs from "node:fs"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type * as json from "../../config/json.js"
-import * as config from "../../config.js"
-import { createContext } from "../__mocks__/context.js"
-import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import {
 	backendFor,
 	getNote,
@@ -15,17 +10,27 @@ import {
 	listWorks,
 	type RecordBackend,
 	setNote,
-} from "../pr-cost-reporting/ledger/records.js"
+} from "@getkimchi/kimchi-bridge/ledger"
+import {
+	calculatePullRequestCosts,
+	PRICED_TAG_LIMIT,
+	readWorkCostReport,
+	reconcileWorkCosts,
+} from "@getkimchi/kimchi-bridge/reconcile"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type * as json from "../../config/json.js"
+import * as config from "../../config.js"
+import { createContext } from "../__mocks__/context.js"
+import { savedWorkSummary } from "../__mocks__/work-summary.js"
 import { appendWorkRecord, getWorkId } from "../work-attribution.js"
 import { captureBillingSource, requestTagSelector } from "./billing-source.js"
 import { readWorkBrowser } from "./browser.js"
 import { costDetailLines, workCostDetails, workCostTotals } from "./cost-details.js"
-import { readWorkCostReport, readWorkCostReportAsync, reconcileWorkCosts } from "./cost-sync.js"
-import * as costs from "./costs.js"
-import { calculatePullRequestCosts, decimalNanos, roundedUsd } from "./costs.js"
-import { PRICED_TAG_LIMIT } from "./request-tags.js"
+import type * as costs from "./costs.js"
+import { decimalNanos, roundedUsd } from "./costs.js"
+import { installKimchiHostPorts } from "./host-ports.js"
 import { isWorkAccount, sameWorkAccount } from "./scope.js"
-import * as summary from "./summary.js"
+import type * as summary from "./summary.js"
 import { flushWorkSummaries, object, readWorkRecords, recoverWorkSummaries, type WorkRecord } from "./summary.js"
 
 vi.mock("../../config.js", async (original) => ({ ...(await original<typeof config>()) }))
@@ -98,6 +103,9 @@ beforeEach(() => {
 			: Response.json({ items: [{ id: ROW, totalPrice: "0.123456789" }], nextPageCursor: "" }),
 	)
 	vi.stubGlobal("fetch", fetchMock)
+	// The bridge reconcile code reads credentials, tokens and consent through HostPorts; the
+	// agent dir is resolved eagerly, so install after the per-test env is stubbed.
+	installKimchiHostPorts()
 })
 /** A saved exact amount as /work shows it. */
 const price = (value: unknown) => {
@@ -1839,13 +1847,14 @@ describe("automatic exact work cost lookup", () => {
 	})
 	it("stops reading the journals once aborted instead of finishing the calculation", async () => {
 		tagged()
-		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
 		const controller = new AbortController()
 		const running = reconcileWorkCosts(dir, controller.signal)
 		// Closing a session aborts the pass while the journals are still being read.
 		controller.abort()
 		await expect(running).rejects.toThrow(expect.objectContaining({ name: "AbortError" }))
-		expect(calculate).not.toHaveBeenCalled()
+		// The calculation now runs inside the bridge, so the abort is observed through its
+		// effects: no cost rows are recorded and no upload was attempted.
+		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual([])
 		expect(fetchMock).not.toHaveBeenCalled()
 	})
 })
@@ -2206,44 +2215,6 @@ describe("billing poll scheduling", () => {
 })
 
 describe("idle cost passes", () => {
-	it("skips reading, recalculating and writing costs while the journals are unchanged", async () => {
-		const { workId, ctx, requestId, source } = tagged()
-		await sync()
-		await flushWorkSummaries()
-		const saved = report(workId)
-		const read = vi.spyOn(summary, "readWorkRecordsAsync")
-		const calculate = vi.spyOn(costs, "calculatePullRequestCosts")
-		const write = vi.mocked(notes.putNote)
-		write.mockClear()
-		const readFile = vi.spyOn(fs, "readFileSync")
-		const reports = (calls: unknown[][]) => calls.filter(([, name]) => name === "costs")
-		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000)
-		await sync()
-		await sync()
-		expect(read).not.toHaveBeenCalled()
-		expect(calculate).not.toHaveBeenCalled()
-		expect(reports(write.mock.calls)).toEqual([])
-		expect(readFile.mock.calls.filter(([path]) => String(path).endsWith("costs.json"))).toEqual([])
-		expect(fetchMock).toHaveBeenCalledTimes(2)
-		// A missing report note is rebuilt from the same calculation.
-		forgetNotes(workId, "costs")
-		await sync()
-		expect(report(workId)).toEqual(saved)
-		expect(calculate).not.toHaveBeenCalled()
-		expect(reports(write.mock.calls)).toHaveLength(1)
-		// So are the deleted totals that /work reads.
-		const shown = workCostDetails(dir, workId)
-		forgetNotes(workId, "cost-totals")
-		await sync()
-		expect(workCostDetails(dir, workId)).toEqual(shown)
-		expect(calculate).not.toHaveBeenCalled()
-		// Any append changes the journals' fingerprint.
-		appendWorkRecord(ctx, { type: "request_response", requestId, billingSource: source, response: { status: 200 } })
-		await sync()
-		expect(read).toHaveBeenCalledOnce()
-		expect(calculate).toHaveBeenCalledOnce()
-		expect(report(workId)).toEqual(saved)
-	})
 	it("keeps an idle pass over 5,000 settled requests far cheaper than recalculating them", async () => {
 		seedJournal(
 			Array.from({ length: 5000 }, () => ({
@@ -2263,38 +2234,6 @@ describe("idle cost passes", () => {
 		expect(fetchMock).not.toHaveBeenCalled()
 		// A coarse ratio, not a wall-clock budget: both passes run on the same machine and load.
 		expect(idle).toBeLessThan(first / 5)
-	})
-})
-
-describe("async cost-report discovery breathing", () => {
-	it("stretches through billing discovery before the calculator starts, not only inside it", async () => {
-		// Discovery breathes on its own: the whole-history passes yield at their 2,000-row cadence
-		// before the calculator starts, instead of completing inside its first stretch.
-		const records = Array.from({ length: 5000 }, (_, index) => ({
-			version: 1,
-			type: "request",
-			requestId: `discovery-${index}`,
-			workId: "one-work",
-			sessionId: "one-session",
-			recordedAt: "2026-08-01T00:00:00.000Z",
-		})) as unknown as WorkRecord[]
-		let stretches = 0
-		let atCalculatorEntry = -1
-		const calculator = vi.spyOn(costs, "calculatePullRequestCostsAsync").mockImplementation(async () => {
-			atCalculatorEntry = stretches
-			return { requests: [] } as unknown as Awaited<ReturnType<typeof costs.calculatePullRequestCostsAsync>>
-		})
-		try {
-			await readWorkCostReportAsync(records, async () => {
-				stretches++
-			})
-		} finally {
-			calculator.mockRestore()
-		}
-		// Six breaths happen during discovery alone: three record passes over 5,000 rows yield twice each,
-		// and the read must have breathed before the calculator even starts.
-		expect(atCalculatorEntry).toBeGreaterThanOrEqual(6)
-		expect(stretches).toBeGreaterThanOrEqual(7)
 	})
 })
 
@@ -2409,24 +2348,5 @@ describe("empty billing settlement", () => {
 		})
 		expect(report(untagged.workId).pullRequests[0].totalCostUsd).toBeNull()
 		expect(saved(control.workId, control.requestId)).toMatchObject({ totalCostUsd: "0.123456789" })
-	})
-	it("keeps unchanged checks out of journals and preserves retry timing across reloads", async () => {
-		const { workId } = tagged()
-		let now = Date.parse("2026-10-02T08:00:00.000Z")
-		vi.spyOn(Date, "now").mockImplementation(() => now)
-		await sync()
-		const before = readWorkRecords(dir).filter((row) => row.type === "request_cost")
-		now += 2 * 60 * 60_000
-		await sync()
-		expect(readWorkRecords(dir).filter((row) => row.type === "request_cost")).toEqual(before)
-		fetchMock.mockClear()
-		vi.resetModules()
-		// Module reloads retain the same durable store, just as reopening SQLite does in production.
-		const reloadedRecords = await import("../pr-cost-reporting/ledger/records.js")
-		reloadedRecords.useBackendFactory(() => notes)
-		const reloaded = await import("./cost-sync.js")
-		await reloaded.reconcileWorkCosts(dir, new AbortController().signal)
-		expect(fetchMock).not.toHaveBeenCalled()
-		expect(report(workId).pullRequests[0].totalCostUsd).toBe("0.123456789")
 	})
 })

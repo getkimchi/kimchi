@@ -8,7 +8,9 @@ import claudeCodeHooksAdapter from "../claude-code-hook-adapter/index.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { createCommandHookAdapter, parseCommandHookOutput, postCompactTrigger, runCommandHook } from "./adapter.js"
 
-vi.mock("node:child_process", () => ({
+vi.mock("node:child_process", async (original) => ({
+	// The bridge library (scope) binds execFile at import; keep the rest real.
+	...(await original<typeof import("node:child_process")>()),
 	spawn: vi.fn(),
 }))
 

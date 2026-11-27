@@ -1,10 +1,9 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { isWorkId } from "../../shared/work-id.js"
-import { getNote } from "../pr-cost-reporting/ledger/records.js"
+import { getNote, isWorkId } from "@getkimchi/kimchi-bridge/ledger"
+import { PRICED_TAG_LIMIT } from "@getkimchi/kimchi-bridge/reconcile"
 import type { BillingDisplay } from "./billing-evidence.js"
 import { decimalNanos, type PullRequestCost, type RequestCostAllocation, roundedUsd, usd } from "./costs.js"
-import { PRICED_TAG_LIMIT } from "./request-tags.js"
 import { isWorkAccount, sameWorkAccount, type WorkAccount } from "./scope.js"
 import { object } from "./summary.js"
 

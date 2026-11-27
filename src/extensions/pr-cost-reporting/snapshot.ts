@@ -1,6 +1,6 @@
+import { isWorkId } from "@getkimchi/kimchi-bridge/ledger"
+import { plainURL, requestWorkLinks } from "@getkimchi/kimchi-bridge/reconcile"
 import { isIssueKey, MAX_PULL_REQUEST_ISSUE_KEYS } from "../../shared/issue-keys.js"
-import { isWorkId } from "../../shared/work-id.js"
-import { plainURL } from "../../utils/url.js"
 import { providerId, pullRequestAuthor, pullRequestTitle } from "../pull-request-status/provider-records.js"
 import {
 	type PullRequestCost,
@@ -8,7 +8,6 @@ import {
 	type RequestCostAllocation,
 	time,
 } from "../work-attribution/costs.js"
-import { requestWorkLinks } from "../work-attribution/links.js"
 import { isWorkAccount, isWorkScope, sameWorkAccount, type WorkAccount } from "../work-attribution/scope.js"
 import { object, type WorkRecord } from "../work-attribution/summary.js"
 
@@ -121,11 +120,6 @@ export interface SnapshotLimits {
 
 /** The server's per-snapshot limits. A larger inventory is trimmed rather than held. */
 export const SNAPSHOT_LIMITS: SnapshotLimits = { requests: 32_000, pullRequests: 250, bytes: 8 * 1024 * 1024 }
-const UPLOAD_WINDOW_MS = 32 * 24 * 60 * 60 * 1000
-const DETAIL_WINDOW_MS = 90 * 24 * 60 * 60 * 1000
-/** The server stops accepting corrections five minutes before a PR's total becomes final on day 90. */
-const CORRECTION_MARGIN_MS = 5 * 60_000
-const FINISHED_PR_GRACE_MS = 2 * 24 * 60 * 60 * 1000
 const MAX_BILLING_IDS = 8
 export const MAX_REVISION = 9223372036854775807n
 
@@ -135,17 +129,6 @@ export function revision(value: unknown): value is string {
 
 export function repositoryKey(repository: ReportingRepository): string {
 	return JSON.stringify([repository.provider, repository.host, repository.id])
-}
-
-export function accountKey(account: WorkAccount): string {
-	// Deliberately the raw apiUrl, not the canonical form: these keys persist
-	// in state files, and validateEntry recomputes them on load — a canonical
-	// derivation would reject every state file written before the platform API
-	// moved to the region's API origin. Cross-form equality is handled at the
-	// comparison boundaries instead (sameWorkAccount, sameBillingSource, and
-	// the endpoint checks in worker.ts), so legacy-keyed entries stay valid and
-	// deliver; fresh captures simply queue under the current base.
-	return JSON.stringify([account.apiUrl, account.organizationId, account.userId])
 }
 
 /** Decode the persisted identity without changing its raw API URL or matching semantics. */
@@ -648,272 +631,4 @@ export function allocationFor(
 		pullRequestIds: kind === "unlinked" ? [] : [...new Set(pullRequestIds)].sort(),
 		method: attribution.method,
 	}
-}
-
-/** Construct fields individually: local identities, paths, prompts and prices never cross this boundary. */
-export function buildSnapshots(
-	records: WorkRecord[],
-	report: PullRequestCostReport,
-	/** Identities by Git directory; a directory left out has not been looked up successfully yet. */
-	repositories: Map<string, RepositoryIdentity>,
-	costRefreshes = new Map<string, string>(),
-	/** Stricter limits a repository's server rejection taught, by account and repository key. */
-	limits = new Map<string, SnapshotLimits>(),
-): { snapshots: RepositorySnapshot[]; incomplete: boolean; skippedRequests: number } {
-	const groups = new Map<string, RepositorySnapshot>()
-	const issueKeys = new Map<string, { work: Set<string>; branch: Set<string> }>()
-	let incomplete = false
-	let skippedRequests = 0
-	const conflicts = new Set<string>()
-	const cutoff = Date.now() - UPLOAD_WINDOW_MS
-	const repositoryWorks = new Set<string>()
-	for (const row of records)
-		if ((row.type === "request" && isWorkScope(row.scope)) || row.type === "commit") repositoryWorks.add(row.workId)
-	const attributions = requestAttributions(records, report, repositories)
-	const byRequest = new Map(report.requests.map((request) => [request.requestId, request]))
-	const corrections = new Map<string, CorrectionReceipt>()
-	for (const [id, attribution] of attributions) {
-		if (!attribution.correction) continue
-		// Legacy corrections cannot apply when all affected PR details are about to expire.
-		if (
-			attribution.candidates.length &&
-			attribution.candidates.every((pr) => {
-				const finished = finishedAt(pr.pullRequest)
-				return finished !== undefined && Date.now() >= finished + DETAIL_WINDOW_MS - CORRECTION_MARGIN_MS
-			})
-		)
-			continue
-		corrections.set(id, attribution.correction)
-	}
-
-	// Send recent attempts, attempts of open or recently finished PRs and corrections the server can still apply.
-	// Older finished history stays on the server through exact windowed PR IDs, so long-lived works stay small.
-	const recentPulls = new Set(
-		report.pullRequests
-			.filter((pr) => {
-				const finished = finishedAt(pr.pullRequest)
-				return finished === undefined || finished >= cutoff - FINISHED_PR_GRACE_MS
-			})
-			.map((pr) => pr.key),
-	)
-
-	// The server keeps a finished PR's details until day 90; after that only its frozen total remains.
-	const detailed = new Set(
-		report.pullRequests
-			.filter((pr) => {
-				const finished = finishedAt(pr.pullRequest)
-				return finished === undefined || Date.now() < finished + DETAIL_WINDOW_MS
-			})
-			.map((pr) => pr.key),
-	)
-
-	const current = (request: RequestCostAllocation) =>
-		!request.startedAt ||
-		Date.parse(request.startedAt) >= cutoff ||
-		request.pullRequestIds.some((key) => recentPulls.has(key))
-	const included = new Set(
-		report.requests
-			.filter((request) => {
-				const account = request.account
-				const receipt = corrections.get(request.requestId)
-				if (!account) return false
-				if (current(request)) return true
-				return (
-					receipt !== undefined &&
-					report.pullRequests.some((pr) => {
-						if (!pr.account || !sameWorkAccount(pr.account, account) || !request.pullRequestIds.includes(pr.key))
-							return false
-						const finished = finishedAt(pr.pullRequest)
-						return (
-							finished !== undefined &&
-							Date.now() < finished + DETAIL_WINDOW_MS - CORRECTION_MARGIN_MS &&
-							(Date.parse(receipt.recordedAt) >= cutoff ||
-								Date.parse(receipt.recordedAt) >= finished + UPLOAD_WINDOW_MS)
-						)
-					})
-				)
-			})
-			.map((request) => request.requestId),
-	)
-
-	// The server replaces a listed PR's whole inventory. When an included request, such as a post-merge one, names a
-	// finished PR outside the window, send every request of that PR too, or its earlier claims would be withdrawn.
-	const requestsByPull = new Map<string, RequestCostAllocation[]>()
-	for (const request of report.requests)
-		for (const key of request.pullRequestIds) {
-			const requests = requestsByPull.get(key)
-			if (requests) requests.push(request)
-			else requestsByPull.set(key, [request])
-		}
-	const listed = new Set<string>()
-	const pending = report.requests.filter((request) => included.has(request.requestId))
-	for (let index = 0; index < pending.length; index++)
-		for (const key of pending[index].pullRequestIds) {
-			if (recentPulls.has(key) || listed.has(key) || !detailed.has(key)) continue
-			listed.add(key)
-			for (const other of requestsByPull.get(key) ?? [])
-				if (other.account && !included.has(other.requestId)) {
-					included.add(other.requestId)
-					pending.push(other)
-				}
-		}
-	const unpriced = new Set(
-		report.requests.filter((request) => request.priceStatus !== "priced").map((request) => request.requestId),
-	)
-
-	// A verified no-charge attempt is priced at zero and has no billing records to send.
-	const noCharge = new Set(
-		report.requests
-			.filter((request) => request.priceStatus === "priced" && !request.billingRecordIds.length)
-			.map((request) => request.requestId),
-	)
-	for (const attribution of attributions.values()) {
-		const { request } = attribution
-		if (!request.account || !isWorkId(request.requestId) || !request.startedAt) {
-			// Unscoped attempts of repository work that would be sent leave its history incomplete.
-			// Questions asked outside Git and older history never count.
-			if (
-				current(request) &&
-				[...request.workIds, ...(request.linkedWorkIds ?? [])].some((workId) => repositoryWorks.has(workId))
-			) {
-				incomplete = true
-				skippedRequests++
-			}
-			continue
-		}
-
-		const account = request.account
-		const { candidates, destinations, missing, billingAccountVerified } = attribution
-		if (!destinations.length) {
-			// Like unscoped attempts, only requests that would be sent leave the history incomplete.
-			if (missing && current(request)) {
-				incomplete = true
-				skippedRequests++
-			}
-			continue
-		}
-		if (missing) incomplete = true
-		for (const repo of destinations) {
-			const repoKey = repositoryKey(repo)
-			const key = `${accountKey(account)}:${repoKey}`
-			let group = groups.get(key)
-			if (!group) {
-				group = {
-					account,
-					content: {
-						repository: repo,
-						pullRequests: [],
-						requests: [],
-						coverage: { observedRequests: 0, unpricedRequests: 0, historyComplete: true },
-					},
-				}
-				groups.set(key, group)
-			}
-			if (missing) group.incomplete = true
-			const pullRequestIds: string[] = []
-			for (const candidate of candidates) {
-				const pr = candidate.pullRequest
-				// A request naming a PR past its detail window is sent without it: the server already settled that PR,
-				// and its final total no longer changes.
-				if (
-					!pr?.id ||
-					pr.repositoryId !== repo.id ||
-					pr.host !== repo.host ||
-					(pr.provider ?? "github") !== repo.provider ||
-					!detailed.has(candidate.key)
-				)
-					continue
-				const title = pullRequestTitle(pr.title)
-				const author = pullRequestAuthor(pr.author)
-				const metadata = {
-					id: pr.id,
-					number: pr.number,
-					url: pr.url,
-					state: pr.state,
-					...(pr.mergedAt ? { mergedAt: pr.mergedAt } : {}),
-					...(pr.state === "closed" && pr.closedAt ? { closedAt: pr.closedAt } : {}),
-					...(title ? { title } : {}),
-					...(author ? { author } : {}),
-				}
-
-				const existing = group.content.pullRequests.find((other) => other.id === pr.id)
-				if (existing && JSON.stringify(existing) !== JSON.stringify(metadata)) {
-					conflicts.add(key)
-					incomplete = true
-				}
-				if (!existing) group.content.pullRequests.push(metadata)
-				pullRequestIds.push(pr.id)
-				const keys = issueKeys.get(`${key}\n${pr.id}`) ?? { work: new Set<string>(), branch: new Set<string>() }
-				for (const branchKey of pr.branchIssueKeys ?? []) keys.branch.add(branchKey)
-				for (const issueKey of attribution.workIssueKeys) keys.work.add(issueKey)
-				issueKeys.set(`${key}\n${pr.id}`, keys)
-			}
-
-			group.content.requests.push({
-				requestId: request.requestId,
-				billingRecordIds: attribution.billingRecordIds,
-				startedAt: request.startedAt,
-				...(corrections.has(request.requestId) ? { correction: corrections.get(request.requestId) } : {}),
-				allocation: allocationFor(attribution, pullRequestIds),
-			})
-
-			const refreshed = billingAccountVerified ? costRefreshes.get(request.requestId) : undefined
-			if (
-				refreshed &&
-				(!group.content.coverage.lastCostRefreshAt ||
-					Date.parse(refreshed) > Date.parse(group.content.coverage.lastCostRefreshAt))
-			)
-				group.content.coverage.lastCostRefreshAt = refreshed
-		}
-	}
-
-	const isUnpriced = (request: SnapshotRequest) =>
-		unpriced.has(request.requestId) || (!request.billingRecordIds.length && !noCharge.has(request.requestId))
-	const snapshots = [...groups.entries()]
-		.filter(([key]) => !conflicts.has(key))
-		.sort(([a], [b]) => a.localeCompare(b))
-		.map(([key, group]) => {
-			group.observedRequestIds = group.content.requests.map((request) => request.requestId).sort()
-			const retained = group.content.requests.filter((request) => included.has(request.requestId))
-			const pulls = new Set(retained.flatMap((request) => request.allocation.pullRequestIds))
-			// Revocations have no exclusive PR claim, but retain the affected PR's metadata.
-			for (const request of retained)
-				if (request.correction) {
-					const source = byRequest.get(request.requestId)
-					for (const pr of report.pullRequests)
-						if (pr.pullRequest?.id && source?.pullRequestIds.includes(pr.key)) pulls.add(pr.pullRequest.id)
-				}
-			const omitted: string[] = []
-			group.content.requests = retained
-			group.content.pullRequests = group.content.pullRequests.filter((pr) => {
-				const finished = finishedAt(pr)
-				const keep = pulls.has(pr.id) || finished === undefined || finished >= cutoff - FINISHED_PR_GRACE_MS
-				if (!keep && finished !== undefined && Date.now() < finished + DETAIL_WINDOW_MS) omitted.push(pr.id)
-				return keep
-			})
-			if (omitted.length) group.content.windowedPullRequestIds = omitted.sort()
-			for (const pr of group.content.pullRequests) {
-				const keys = issueKeys.get(`${key}\n${pr.id}`)
-				const chosen: PullRequestIssueKey[] = [
-					...[...(keys?.work ?? [])].sort().map((issueKey) => ({ key: issueKey, source: "work" as const })),
-					...[...(keys?.branch ?? [])].sort().map((issueKey) => ({ key: issueKey, source: "branch" as const })),
-				].slice(0, MAX_PULL_REQUEST_ISSUE_KEYS)
-				if (chosen.length) pr.issueKeys = chosen
-			}
-			group.content.coverage.observedRequests = retained.length
-			group.content.coverage.unpricedRequests = retained.filter(isUnpriced).length
-			if (!retained.length) group.content.coverage.lastCostRefreshAt = undefined
-			group.content.requests.sort((a, b) => a.requestId.localeCompare(b.requestId))
-			group.content.pullRequests.sort((a, b) => a.id.localeCompare(b.id))
-			if (incomplete) group.content.coverage.historyComplete = false
-			// A learned limit that corrections alone exceed falls back to the normal limits; a snapshot
-			// that cannot fit even those stays whole and the queue holds it with a visible error.
-			const learned = limits.get(key)
-			const fitted =
-				(learned && fitSnapshot(group.content, learned, isUnpriced)) ||
-				fitSnapshot(group.content, SNAPSHOT_LIMITS, isUnpriced)
-			if (fitted) group.content = fitted.content
-			return group
-		})
-	return { snapshots, incomplete, skippedRequests }
 }

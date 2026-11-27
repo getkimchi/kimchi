@@ -1,5 +1,5 @@
+import { prepareBillingTag } from "@getkimchi/kimchi-bridge/reconcile"
 import { describe, expect, it } from "vitest"
-import { prepareBillingTag } from "./request-tags.js"
 
 const ID = "11111111-2222-4333-8444-555555555555"
 const TAG = `kimchi-request:${ID}`

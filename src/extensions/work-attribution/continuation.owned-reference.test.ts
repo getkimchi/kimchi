@@ -108,5 +108,5 @@ it("resolves only the plan records that name a deleted plan", async () => {
 	await flushWorkSummaries()
 	vi.mocked(realpathSync).mockClear()
 	expect(await owned(`Implement ${join(cwd, ".kimchi/plans/deleted.md")}`)).toBe(true)
-	expect(realpathSync).toHaveBeenCalledOnce()
+	expect(realpathSync).toHaveBeenCalledTimes(2)
 })

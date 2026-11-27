@@ -6,9 +6,12 @@ import {
 	githubAPI,
 	githubGraphQL,
 	pages,
+	pullRequest,
+	type Repository,
+	repositoryPath,
 	requestJSON,
-} from "../pull-request-status/provider-api.js"
-import { pullRequest, type Repository, repositoryPath, SHA } from "../pull-request-status/provider-records.js"
+	SHA,
+} from "@getkimchi/kimchi-bridge/reconcile"
 import { object } from "../work-attribution/summary.js"
 import type { PRCheck, PRFeedback, PRSnapshot } from "./types.js"
 

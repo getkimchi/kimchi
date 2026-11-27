@@ -9,7 +9,7 @@
 import { realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, isAbsolute, join, relative, resolve } from "node:path"
-import { command } from "./provider-api.js"
+import { command } from "@getkimchi/kimchi-bridge/reconcile"
 
 /** Resolve a shell word to an absolute path, or undefined when it cannot be a plain directory. */
 function resolveDirectory(token: string, baseCwd: string): string | undefined {

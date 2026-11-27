@@ -260,9 +260,12 @@ export const IGNORED_ENV_VARS: string[] = [
 	"KIMCHI_E2E_COMPLETION_REMINDER_MS",
 	"KIMCHI_E2E_BASH_HANDOFF_SECONDS",
 	"KIMCHI_E2E_STATIC_TODO_SPINNER",
-	"KIMCHI_E2E_COST_REPORT_REFRESH_MS",
 	"KIMCHI_E2E_RECONCILIATION_INTERVAL_MS",
 	"KIMCHI_E2E_FIRST_TICK_DELAY_MS",
+	// Read by the kimchi-bridge library through the HostPorts e2eSeam port
+	// (see BRIDGE_E2E_SEAMS in src/extensions/work-attribution/host-ports.ts).
+	"KIMCHI_E2E_COST_REPORT_REFRESH_MS",
+
 	// TUI-E2E seams read via readE2eSeam (src/extensions/remote-run, permissions)
 	"KIMCHI_E2E_FAKE_SANDBOX_GIT",
 	"KIMCHI_E2E_FAKE_REMOTE_COMPLETION",

@@ -1,5 +1,5 @@
+import type * as Records from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, beforeEach, vi } from "vitest"
-import type * as Records from "../../src/extensions/pr-cost-reporting/ledger/records.js"
 
 const ledger = vi.hoisted(() => ({
 	reset: undefined as (() => void) | undefined,
@@ -9,9 +9,9 @@ const ledger = vi.hoisted(() => ({
 // Only initialize when a test actually imports the ledger. Unrelated suites may use
 // partial SDK/filesystem mocks that cannot load the ledger's dependency graph.
 // Keep exports and state across vi.resetModules(); real Bun subprocesses are unaffected.
-vi.mock("../../src/extensions/pr-cost-reporting/ledger/records.js", async (importOriginal) => {
+vi.mock("@getkimchi/kimchi-bridge/ledger", async (importOriginal) => {
 	const records = await importOriginal<typeof Records>()
-	const { createMemoryRecords } = await import("../../src/extensions/pr-cost-reporting/ledger/memory-records.js")
+	const { createMemoryRecords } = await import("@getkimchi/kimchi-bridge/ledger")
 	ledger.reset = () => {
 		records.closeBackends()
 		records.useBackendFactory(() => createMemoryRecords())

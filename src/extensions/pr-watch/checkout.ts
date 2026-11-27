@@ -8,10 +8,10 @@ import {
 	getAgentDir,
 	ProjectTrustStore,
 } from "@earendil-works/pi-coding-agent"
+import { command } from "@getkimchi/kimchi-bridge/reconcile"
 import { lock } from "proper-lockfile"
 import { quote } from "shell-quote"
 import { resolvePreMainProjectTrust } from "../../project-trust.js"
-import { command } from "../pull-request-status/provider-api.js"
 import { readPRSource } from "./providers.js"
 import type { PRSnapshot } from "./types.js"
 

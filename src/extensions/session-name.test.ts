@@ -5,11 +5,11 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { backendFor } from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { buildSkillCommandPrompt } from "../modes/acp/skill-commands.js"
 import { createContext } from "./__mocks__/context.js"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
-import { backendFor } from "./pr-cost-reporting/ledger/records.js"
 import sessionNameExtension, {
 	deterministicFallback,
 	extractFirstUserMessage,

@@ -22,9 +22,9 @@ import { createHash } from "node:crypto"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
+import { isWorkId } from "@getkimchi/kimchi-bridge/ledger"
+import { debugWorkAttribution } from "@getkimchi/kimchi-bridge/reconcile"
 import { writeFileAtomic } from "../../config/json.js"
-import { debugWorkAttribution } from "../../extensions/work-attribution/diagnostics.js"
-import { isWorkId } from "../work-id.js"
 
 /** Canonical directory (relative to the project cwd) for plan markdown files. */
 export const PLAN_DIR = ".kimchi/plans"

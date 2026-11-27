@@ -1,28 +1,52 @@
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent"
 import { Text } from "@earendil-works/pi-tui"
-import { IS_ACP_MODE } from "../../modes/acp/state.js"
-import {
-	requestWorkReconciliation,
-	subscribeReportingReconciliation,
-} from "../work-attribution/reconcile-supervisor.js"
-import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
-import { uploadSkipReason } from "./automation.js"
-import { readOutboxStatus } from "./ledger/outbox.js"
+import { readOutboxStatus } from "@getkimchi/kimchi-bridge/ledger"
 import {
 	dueLimitNotices,
 	readReportingState,
 	setReportingEnabled,
 	takeLimitNotices,
 	takeReportingNotice,
-} from "./queue.js"
+} from "@getkimchi/kimchi-bridge/reconcile"
+import { initializePrReportingConsent, readPrReportingConsent, writePrReportingConsent } from "../../config.js"
+import { IS_ACP_MODE } from "../../modes/acp/state.js"
+import { isTelemetryEnabled } from "../../telemetry-policy.js"
+import {
+	requestWorkReconciliation,
+	subscribeReportingReconciliation,
+} from "../work-attribution/reconcile-supervisor.js"
+import { WORK_CHANGED_EVENT, WORK_STATE_REQUEST_EVENT, type WorkStateRequest } from "../work-attribution.js"
+import { uploadSkipReason } from "./automation.js"
 import { limitNoticeTexts, statusText } from "./status.js"
-import { reconcileReporting } from "./worker.js"
 
 const ARGUMENT_COMPLETIONS = [
 	{ value: "on", label: "on", description: "Report PR costs to your account" },
 	{ value: "off", label: "off", description: "Pause reporting and retain pending uploads" },
 	{ value: "status", label: "status", description: "Show the setting, queued reports and problems" },
 ]
+
+/**
+ * Seed the config-owned consent from the legacy state.json mirror. Concurrent sessions race
+ * the seed from the same source file and write equivalent values, so the last write wins
+ * safely. The initializer checks the key again at write time so a competing explicit
+ * choice is never replaced by a legacy default.
+ */
+async function migrateReportingConsent(): Promise<void> {
+	if (readPrReportingConsent() !== undefined) return
+	try {
+		const state = await readReportingState(getAgentDir())
+		if (readPrReportingConsent() !== undefined) return
+		// followsTelemetry wins over the derived enabled bit: a default queue reads
+		// {enabled:false, followsTelemetry:true} while telemetry is off, and that inherited
+		// policy must not become an explicit opt-out that telemetry cannot revive.
+		initializePrReportingConsent(state.followsTelemetry ? "follow-telemetry" : state.enabled === false ? "off" : "on")
+	} catch (error) {
+		// Migration must never block startup, including an unwritable config: log and
+		// leave the key absent, so /pr-reporting status keeps showing the legacy value
+		// until the user chooses.
+		console.error("kimchi: could not migrate PR reporting consent:", error instanceof Error ? error.message : error)
+	}
+}
 
 export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	// A custom entry preserves other startup notices and stays out of model context.
@@ -37,6 +61,8 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	let activeKey = ""
 	let stop: (() => Promise<void>) | undefined
 	let draining = Promise.resolve()
+	/** Runs once per process; the config key it seeds is the migration's completion mark. */
+	let consentMigration: Promise<void> | undefined
 
 	async function reportingEnabled(): Promise<boolean> {
 		try {
@@ -74,9 +100,7 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 		// Sessions that never upload (CI, print or JSON mode, benchmarks) skip the pass; the next interactive
 		// session builds the same reports from the same journals.
 		if (request.tracking && request.current && !skipReason) {
-			stop ??= subscribeReportingReconciliation(async (agentDir, signal, assertLease) => {
-				if (context) await reconcileReporting(agentDir, context.cwd, signal, assertLease)
-			})
+			stop ??= subscribeReportingReconciliation(() => context?.cwd)
 		} else if (stop) {
 			draining = Promise.all([draining, stop()]).then(() => {})
 			stop = undefined
@@ -85,6 +109,8 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 	pi.events.on(WORK_CHANGED_EVENT, () => synchronize())
 
 	pi.on("session_start", async (_event, ctx) => {
+		consentMigration ??= migrateReportingConsent()
+		await consentMigration
 		started = true
 		skipReason = uploadSkipReason(ctx.mode)
 		synchronize(ctx)
@@ -118,6 +144,9 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 			}
 			try {
 				if (command === "on") {
+					// The config-owned choice is written first: even when the legacy state write
+					// fails, the explicit opt-in is durable and reporting cannot come back on.
+					writePrReportingConsent("on")
 					await setReportingEnabled(getAgentDir(), true)
 					if (started && stop) requestWorkReconciliation()
 					ctx.ui.notify(
@@ -125,17 +154,23 @@ export default function prCostReportingExtension(pi: ExtensionAPI): void {
 						"info",
 					)
 				} else if (command === "off") {
+					// Same ordering as "on": the opt-out must survive a failed legacy write.
+					writePrReportingConsent("off")
 					await setReportingEnabled(getAgentDir(), false)
 					ctx.ui.notify(
 						"PR reporting off. Pending uploads are paused and retained locally. Previously accepted reports remain on the server.",
 						"info",
 					)
 				} else {
+					const consent = readPrReportingConsent()
 					const status = statusText(
 						await readReportingState(getAgentDir()),
 						uploadSkipReason(ctx.mode),
 						Date.now(),
 						readOutboxStatus(getAgentDir()),
+						// The config key wins once it exists; before that the legacy state.json
+						// value is the only recorded choice.
+						consent && { value: consent, telemetryEnabled: isTelemetryEnabled() },
 					)
 					ctx.ui.notify(status.text, status.warning ? "warning" : "info")
 				}

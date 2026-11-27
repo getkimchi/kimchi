@@ -1,5 +1,5 @@
+import { plainURL } from "@getkimchi/kimchi-bridge/reconcile"
 import { describe, expect, it } from "vitest"
-import { plainURL } from "./url.js"
 
 describe("plainURL", () => {
 	it("accepts a plain HTTPS URL", () => {

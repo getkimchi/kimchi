@@ -19,7 +19,7 @@
 
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { type StatPoller, startStatPoller } from "../../shared/stat-poller.js"
+import { type StatPoller, startStatPoller } from "@getkimchi/kimchi-bridge/reconcile"
 
 /** Caller-supplied emit function (matches `SessionContext.emit`'s shape). */
 export type EmitFn = (event: string, properties: Record<string, string | number | boolean>) => void

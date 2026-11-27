@@ -5,8 +5,8 @@ import * as fileSystem from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { backendFor, capture } from "@getkimchi/kimchi-bridge/ledger"
 import { afterEach, expect, it, vi } from "vitest"
-import { backendFor, capture } from "../pr-cost-reporting/ledger/records.js"
 import { pinWorkContinuation, readContinuationHistory } from "./links.js"
 import {
 	flushWorkSummaries,
@@ -24,7 +24,7 @@ const WORK = "11111111-1111-4111-8111-111111111111"
 const directories: string[] = []
 
 function journal(lines: unknown[]) {
-	const agentDir = mkdtempSync(join(tmpdir(), "kimchi-history-reader-"))
+	const agentDir = fs.realpathSync(mkdtempSync(join(tmpdir(), "kimchi-history-reader-")))
 	directories.push(agentDir)
 	const directory = join(agentDir, "work-attribution")
 	mkdirSync(directory)
@@ -297,7 +297,7 @@ it.each([
 	"known-async-read-regressions",
 	"known-async-stored-read-regressions",
 ])("%s cancels inside native SQLite reading and preserves same-connection and reopened history", (command) => {
-	const agentDir = mkdtempSync(join(tmpdir(), "kimchi-native-async-reader-"))
+	const agentDir = fs.realpathSync(mkdtempSync(join(tmpdir(), "kimchi-native-async-reader-")))
 	directories.push(agentDir)
 	const driver = fileURLToPath(new URL("../../../tests/e2e/tui/support/ledger-driver.ts", import.meta.url))
 	const result = JSON.parse(

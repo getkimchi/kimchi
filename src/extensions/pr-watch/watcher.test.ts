@@ -1,10 +1,10 @@
+import type { WorkPullRequest } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resolvePreMainProjectTrust } from "../../project-trust.js"
 import { createContext, createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
 import { lookupBranchPullRequest } from "../pull-request-status/branch-status.js"
-import type { WorkPullRequest } from "../pull-request-status/pull-requests.js"
 import {
 	acquirePRLease,
 	checkoutProblem,

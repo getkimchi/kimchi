@@ -1,14 +1,18 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { debugWorkAttribution } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
-import { debugWorkAttribution } from "./diagnostics.js"
+import { installKimchiHostPorts } from "./host-ports.js"
 
 let directory: string
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "kimchi-attribution-diagnostics-"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", directory)
 	vi.stubEnv("NODE_DEBUG", "")
+	// The bridge's diagnostics write under HostPorts.agentDir; install after the env is
+	// stubbed so the logs directory resolves to this test's agent dir.
+	installKimchiHostPorts()
 })
 afterEach(() => {
 	vi.restoreAllMocks()

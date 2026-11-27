@@ -2,18 +2,14 @@ import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { calculatePullRequestCosts, reconcileWorkContinuations } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createContext } from "../__mocks__/context.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { appendWorkRecord, getWorkId, recordProviderRequest, workLedgerPath } from "../work-attribution.js"
-import { calculatePullRequestCosts } from "./costs.js"
-import {
-	confirmWorkContinuation,
-	correctWorkLink,
-	readContinuationHistory,
-	reconcileWorkContinuations,
-} from "./links.js"
+import { installKimchiHostPorts } from "./host-ports.js"
+import { confirmWorkContinuation, correctWorkLink, readContinuationHistory } from "./links.js"
 import * as scope from "./scope.js"
 import { flushWorkSummaries, readWorkRecords } from "./summary.js"
 
@@ -23,6 +19,8 @@ beforeEach(() => {
 	mkdirSync(join(dir, "work-attribution"))
 	vi.stubEnv("PI_CODING_AGENT_DIR", dir)
 	vi.spyOn(scope, "captureWorkScope").mockResolvedValue(createWorkScopeSnapshot(join(dir, ".git")))
+	// The bridge reconcile code reads scopes through HostPorts; install after the per-test agent dir is stubbed.
+	installKimchiHostPorts()
 })
 afterEach(async () => {
 	await flushWorkSummaries()

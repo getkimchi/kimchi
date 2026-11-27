@@ -22,14 +22,13 @@ import type {
 	Theme,
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent"
+import { COST_PER_PR_RESOURCE_ID, GATEWAY_TAG_LIMIT, PRICED_TAG_LIMIT } from "@getkimchi/kimchi-bridge/reconcile"
 import { isValidTag, parseTag, resolveDefaultTags, type TagTier } from "../config/tags.js"
 import { CODEX_PROVIDER_ID } from "../kimchi-provider.js"
 import { isResourceEnabled } from "../resources/store.js"
 import { getEffectiveModel } from "./auto-model/state.js"
 import { getPermissionMode } from "./permissions/mode-controller.js"
 import { isStaleCtxError } from "./stale-ctx.js"
-import { GATEWAY_TAG_LIMIT, PRICED_TAG_LIMIT } from "./work-attribution/request-tags.js"
-import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 

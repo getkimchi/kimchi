@@ -1,4 +1,4 @@
-import { isWorkId } from "../../shared/work-id.js"
+import { isWorkId } from "@getkimchi/kimchi-bridge/ledger"
 import { BEFORE_PAGE_TIMEOUT_MESSAGE } from "./billing-api.js"
 import {
 	type BillingSelector,

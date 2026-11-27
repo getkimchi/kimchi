@@ -22,29 +22,37 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "@earendil-works/pi-coding-agent"
+import * as ledger from "@getkimchi/kimchi-bridge/ledger"
+import {
+	closeBackends,
+	createMemoryRecords,
+	getNote,
+	importJournalSlice,
+	setNote,
+	useBackendFactory,
+} from "@getkimchi/kimchi-bridge/ledger"
+import * as diagnostics from "@getkimchi/kimchi-bridge/reconcile"
+import {
+	knownTransitionRepositories,
+	reconcileRepositoryTransitions,
+	type SharedTypeReads,
+} from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
-import { importJournalSlice } from "../pr-cost-reporting/ledger/import.js"
-import { createMemoryRecords } from "../pr-cost-reporting/ledger/memory-records.js"
-import * as ledger from "../pr-cost-reporting/ledger/records.js"
-import { closeBackends, getNote, setNote, useBackendFactory } from "../pr-cost-reporting/ledger/records.js"
 import toolRenderingExtension from "../tool-rendering.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"
-import * as diagnostics from "./diagnostics.js"
 import {
 	createTrackedEditTool,
 	createTrackedWriteTool,
 	type FileState,
-	knownTransitionRepositories,
 	readAttributedFileState,
 	readAttributedFileStates,
 	reconcileFileTransitions,
-	reconcileRepositoryTransitions,
-	type SharedTypeReads,
 } from "./file-transitions.js"
+import { installKimchiHostPorts } from "./host-ports.js"
 import { flushWorkSummaries, readWorkRecords, type WorkRecord } from "./summary.js"
 
 vi.mock("node:child_process", { spy: true })
@@ -147,6 +155,8 @@ beforeEach(() => {
 	git("init", "-q")
 	git("config", "user.name", "Test")
 	git("config", "user.email", "test@example.test")
+	// The bridge reconcile code reads transitions through HostPorts; install after the per-test agent dir is stubbed.
+	installKimchiHostPorts()
 })
 afterEach(async () => {
 	for (const shutdown of shutdowns.splice(0)) await shutdown()
@@ -442,23 +452,16 @@ describe("manual commit reconciliation", () => {
 		const id = String(mutation.historyBoundaryId)
 		const saved = getNote(agentDir, "ref-tips", id)
 		if (saved === undefined) throw new Error("Expected a saved history boundary")
-		const readNote = ledger.getNote
-		const missing =
-			damage === "missing"
-				? vi
-						.spyOn(ledger, "getNote")
-						.mockImplementation((dir, workId, name) =>
-							workId === "ref-tips" && name === id ? undefined : readNote(dir, workId, name),
-						)
-				: undefined
-		if (damage === "truncated") setNote(agentDir, "ref-tips", id, '{"version":1,"refTips":[')
+		// The bridge reads the note through its own import binding, so damage it in the
+		// backend itself rather than spying on this module's view of getNote.
+		if (damage === "missing") ledger.backendFor(agentDir).deleteNote("ref-tips", id)
+		else setNote(agentDir, "ref-tips", id, '{"version":1,"refTips":[')
 		git("stash", "push", "-q")
 		git("stash", "pop", "-q")
 		const sha = commit()
 		vi.spyOn(console, "warn").mockImplementation(() => {})
 		await reconcileFileTransitions(context("damaged"))
 		expect(contributions()).toEqual([])
-		missing?.mockRestore()
 		setNote(agentDir, "ref-tips", id, saved)
 		await reconcileFileTransitions(context("repaired"))
 		expect(contributions()).toEqual([expect.objectContaining({ sha })])

@@ -9,6 +9,7 @@ import type {
 	ToolCallEvent,
 	ToolInfo,
 } from "@earendil-works/pi-coding-agent"
+import { COST_PER_PR_RESOURCE_ID } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { populateCliArgs } from "../../cli-args.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
@@ -51,7 +52,6 @@ import { runCloudAgent } from "../remote-run/runner.js"
 import { createReviewExecutionController } from "../review-runner/execution.js"
 import { STALE_CTX_MESSAGE_PREFIX } from "../stale-ctx.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
-import { COST_PER_PR_RESOURCE_ID } from "../work-attribution/resource.js"
 import { flushWorkSummaries, readWorkRecords } from "../work-attribution/summary.js"
 import { createWorkAttributionExtension, getWorkId, setWorkId } from "../work-attribution.js"
 import { classifyToolCall } from "./classifier.js"

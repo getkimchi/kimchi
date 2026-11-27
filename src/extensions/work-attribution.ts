@@ -13,16 +13,16 @@ import {
 	type InputEvent,
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent"
+import { capture, isWorkId, ledgerHasWorkOutput, ledgerSessionInfo } from "@getkimchi/kimchi-bridge/ledger"
+import { COST_PER_PR_RESOURCE_ID, debugWorkAttribution, prepareBillingTag } from "@getkimchi/kimchi-bridge/reconcile"
 import { writeConfigSetting } from "../config/settings.js"
 import type { ModelRequestMetadata } from "../http/instrument-fetch.js"
 import { isResourceEnabled } from "../resources/store.js"
 import { isDefaultToolEnabled } from "../settings-watcher.js"
 import { readPlanWorkId, savePlanMarkdown, UNRETAINED_PLAN_NOTICE } from "../shared/planning/plan-markdown.js"
-import { isWorkId } from "../shared/work-id.js"
 import { notifyUser } from "../utils/notify-user.js"
 import { getVersion } from "../utils.js"
 import { derefToolArgsForExecution } from "./pii-redaction/vault.js"
-import { capture, ledgerHasWorkOutput, ledgerSessionInfo } from "./pr-cost-reporting/ledger/records.js"
 import { isHarnessSteer } from "./steer-marker.js"
 import { trackPRCostMetric } from "./telemetry/pr-cost.js"
 import { type BillingSource, captureBillingSource, requestTagSelector } from "./work-attribution/billing-source.js"
@@ -31,7 +31,6 @@ import { WorkBrowserPanel } from "./work-attribution/browser-panel.js"
 import { createCommitTrackingBashTool } from "./work-attribution/commits.js"
 import { findWorkContinuation, hasWorkReference, type WorkContinuation } from "./work-attribution/continuation.js"
 import { workCostDetails } from "./work-attribution/cost-details.js"
-import { debugWorkAttribution } from "./work-attribution/diagnostics.js"
 import { createTrackedEditTool, createTrackedWriteTool } from "./work-attribution/file-transitions.js"
 import { readWorkIssue, type WorkIssueBinding, workIssueCommand, workIssueLines } from "./work-attribution/issues.js"
 import {
@@ -41,8 +40,6 @@ import {
 	readContinuationHistory,
 } from "./work-attribution/links.js"
 import { subscribeFileReconciliation } from "./work-attribution/reconcile-supervisor.js"
-import { prepareBillingTag } from "./work-attribution/request-tags.js"
-import { COST_PER_PR_RESOURCE_ID } from "./work-attribution/resource.js"
 import {
 	captureWorkScope,
 	readWorkScope,

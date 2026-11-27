@@ -13,19 +13,20 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { BeforeProviderHeadersEvent, InputEvent } from "@earendil-works/pi-coding-agent"
+import * as ledger from "@getkimchi/kimchi-bridge/ledger"
+import { calculatePullRequestCosts, reconcileWorkContinuations } from "@getkimchi/kimchi-bridge/reconcile"
 import { afterEach, expect, it, vi } from "vitest"
 import { savePlanMarkdown } from "../../shared/planning/plan-markdown.js"
 import { createToolContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createWorkScopeSnapshot } from "../__mocks__/work-scope.js"
 import { savedWorkSummary } from "../__mocks__/work-summary.js"
-import * as ledger from "../pr-cost-reporting/ledger/records.js"
 import { appendWorkRecord, createWorkAttributionExtension, getWorkId, getWorkSegment } from "../work-attribution.js"
 import { createCommitTrackingBashTool } from "./commits.js"
 import { findWorkContinuation } from "./continuation.js"
-import { calculatePullRequestCosts } from "./costs.js"
 import { createTrackedWriteTool } from "./file-transitions.js"
-import { correctWorkLink, reconcileWorkContinuations } from "./links.js"
+import { installKimchiHostPorts } from "./host-ports.js"
+import { correctWorkLink } from "./links.js"
 import * as scope from "./scope.js"
 import * as summary from "./summary.js"
 import { flushWorkSummaries, readWorkRecords, recoverWorkSummaries, type WorkRecord } from "./summary.js"
@@ -43,6 +44,8 @@ async function planningRepository() {
 	const cwd = join(root, "repo")
 	mkdirSync(cwd)
 	vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"))
+	// The bridge reconcile code reads scopes through HostPorts; install after the per-test agent dir is stubbed.
+	installKimchiHostPorts()
 	const captured = createWorkScopeSnapshot(join(cwd, ".git"))
 	vi.spyOn(scope, "captureWorkScope").mockResolvedValue(captured)
 	vi.spyOn(scope, "readWorkScope").mockReturnValue(captured.scope)

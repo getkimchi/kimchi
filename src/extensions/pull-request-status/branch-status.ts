@@ -1,9 +1,18 @@
 /** The checked-out branch and its PR or MR, independent of recorded-work associations. */
 
-import { object } from "../work-attribution/summary.js"
-import { api, command, pages, repositoryIdentity, requestJSON } from "./provider-api.js"
-import { LookupError, label, pullRequest } from "./provider-records.js"
-import { PASS_BUDGET_MS, type WorkPullRequest } from "./pull-requests.js"
+import {
+	api,
+	command,
+	LookupError,
+	label,
+	object,
+	PASS_BUDGET_MS,
+	pages,
+	pullRequest,
+	repositoryIdentity,
+	requestJSON,
+	type WorkPullRequest,
+} from "@getkimchi/kimchi-bridge/reconcile"
 
 export interface BranchPullRequest {
 	branch: string

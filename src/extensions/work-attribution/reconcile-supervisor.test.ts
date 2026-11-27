@@ -1,12 +1,10 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { ContinuationProgress, PassInput, PassRun, ReconcileChannel } from "@getkimchi/kimchi-bridge/reconcile"
+import { readWorkPullRequestUpdates, runReconciliationPass } from "@getkimchi/kimchi-bridge/reconcile"
 import * as locks from "proper-lockfile"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import * as pullRequests from "../pull-request-status/pull-requests.js"
-import * as costs from "./cost-sync.js"
-import * as transitions from "./file-transitions.js"
-import * as continuations from "./links.js"
 import {
 	RECONCILIATION_INTERVAL_MS,
 	requestWorkReconciliation,
@@ -18,17 +16,52 @@ import {
 	subscribeReportingReconciliation,
 } from "./reconcile-supervisor.js"
 
-vi.mock("proper-lockfile", async (original) => ({ ...(await original<typeof locks>()) }))
-vi.mock("./file-transitions.js", () => ({
-	knownTransitionRepositories: vi.fn(),
-	reconcileRepositoryTransitions: vi.fn(),
-}))
-vi.mock("../pull-request-status/pull-requests.js", () => ({
-	reconcileWorkPullRequests: vi.fn(),
+/**
+ * The channel order, budgets and lease semantics live in the bridge pass
+ * (kimchi-bridge test/reconcile — "the pass equals the supervisor's scan() end
+ * state"). This suite pins what stayed in Kimchi: the timer, the first-tick
+ * delay, the cross-process lease, the subscriber registry and per-channel
+ * cancellation, and the PassInput the supervisor hands the pass (enabled
+ * channels, the reporting session's cwd, the nextRepository rotation and the
+ * cross-pass continuation progress).
+ */
+vi.mock("@getkimchi/kimchi-bridge/reconcile", async (original) => ({
+	...(await original<typeof import("@getkimchi/kimchi-bridge/reconcile")>()),
+	debugWorkAttribution: vi.fn(),
 	readWorkPullRequestUpdates: vi.fn(),
+	runReconciliationPass: vi.fn(),
+	setDefaultHostPorts: vi.fn(),
 }))
-vi.mock("./cost-sync.js", () => ({ reconcileWorkCosts: vi.fn() }))
-vi.mock("./links.js", () => ({ reconcileWorkContinuations: vi.fn() }))
+vi.mock("proper-lockfile", async (original) => ({ ...(await original<typeof locks>()) }))
+
+const mockedReadUpdates = vi.mocked(readWorkPullRequestUpdates)
+const mockedRunPass = vi.mocked(runReconciliationPass)
+
+/** Every PassInput the supervisor handed the (mocked) pass, in pass order. */
+const passInputs: PassInput[] = []
+/** The fake pass's result; tests steer rotation and progress threading through it. */
+let passResult: PassRun
+/** Per-test pass body: gates and channel aborts live here, not in the supervisor. */
+let passBody: ((input: PassInput, io: { signal: AbortSignal; assertLease: () => void }) => Promise<void>) | undefined
+/** First-error injection: one failing pass, then healthy passes again. */
+let passError: unknown
+
+function okChannels(): Record<ReconcileChannel, { outcome: "ok" }> {
+	return {
+		files: { outcome: "ok" },
+		"pull-requests": { outcome: "ok" },
+		costs: { outcome: "ok" },
+		continuations: { outcome: "ok" },
+		reporting: { outcome: "ok" },
+	}
+}
+
+/** Resolves when signal aborts. */
+function aborted(signal: AbortSignal): Promise<void> {
+	return signal.aborted
+		? Promise.resolve()
+		: new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+}
 
 let directory: string
 /**
@@ -36,7 +69,7 @@ let directory: string
  * `proper-lockfile` lock and runs async work, which a loaded CI runner can outlast — the
  * "stops only PR network work" case failed that way (spy called 2 times, expected 4).
  */
-const RECONCILIATION_WAIT_TIMEOUT_MS = 10_000
+const _RECONCILIATION_WAIT_TIMEOUT_MS = 10_000
 const stops: (() => Promise<void>)[] = []
 function subscribe() {
 	const stop = subscribeFileReconciliation()
@@ -65,12 +98,21 @@ beforeEach(() => {
 	// Existing behaviour tests subscribe and expect a pass immediately.
 	vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "0")
 	vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
-	vi.spyOn(transitions, "knownTransitionRepositories").mockReset().mockResolvedValue(["/repository-a", "/repository-b"])
-	vi.spyOn(transitions, "reconcileRepositoryTransitions").mockReset().mockResolvedValue()
-	vi.mocked(pullRequests.reconcileWorkPullRequests).mockReset().mockResolvedValue()
-	vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReset().mockReturnValue([])
-	vi.mocked(costs.reconcileWorkCosts).mockReset().mockResolvedValue()
-	vi.mocked(continuations.reconcileWorkContinuations).mockReset().mockResolvedValue()
+	passInputs.length = 0
+	passBody = undefined
+	passError = undefined
+	passResult = { channels: okChannels(), progress: {} }
+	mockedReadUpdates.mockReset().mockReturnValue([])
+	mockedRunPass.mockReset().mockImplementation(async (input, _host, io) => {
+		passInputs.push(input)
+		if (passBody) await passBody(input, io)
+		if (passError) {
+			const error = passError
+			passError = undefined
+			throw error
+		}
+		return passResult
+	})
 })
 afterEach(async () => {
 	for (const stop of stops.splice(0)) await stop()
@@ -133,49 +175,45 @@ describe("KIMCHI_E2E_FIRST_TICK_DELAY_MS seam", () => {
 
 	it("defers the first pass until the delay elapses (real short delay; interval stays faked)", async () => {
 		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "100")
-		const report = vi.fn(async () => {})
-		stops.push(subscribeReportingReconciliation(report))
+		stops.push(subscribeReportingReconciliation(() => "/session-cwd"))
 		await Promise.resolve()
-		expect(report).not.toHaveBeenCalled()
-		await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
+		expect(mockedRunPass).not.toHaveBeenCalled()
+		await vi.waitFor(() => expect(mockedRunPass).toHaveBeenCalledOnce())
 	})
 
 	it("an explicit request inside the window runs the pass once without a duplicate first tick", async () => {
 		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "100")
-		const report = vi.fn(async () => {})
-		stops.push(subscribeReportingReconciliation(report))
+		stops.push(subscribeReportingReconciliation(() => "/session-cwd"))
 		requestWorkReconciliation()
-		await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
+		await vi.waitFor(() => expect(mockedRunPass).toHaveBeenCalledOnce())
 		// Well past the window: the delayed first tick must not re-run a pass.
 		await new Promise((resolve) => setTimeout(resolve, 250))
-		expect(report).toHaveBeenCalledOnce()
+		expect(mockedRunPass).toHaveBeenCalledOnce()
 	})
 
 	it("a subscriber joining after the window's first pass ticks a fresh pass, not the interval", async () => {
 		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "100")
-		const report = vi.fn(async () => {})
-		stops.push(subscribeReportingReconciliation(report))
+		stops.push(subscribeReportingReconciliation(() => "/session-cwd"))
 		// An explicit request runs the window's first pass while the delayed tick is pending.
 		requestWorkReconciliation()
-		await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
+		await vi.waitFor(() => expect(mockedRunPass).toHaveBeenCalledOnce())
 		// Let that pass finish before a second view mounts.
 		await passFinished()
 		// The joiner ticks at once — the startup window is over in substance once a pass has run —
 		// and the fresh pass serves the reporting channel again instead of waiting for the interval.
 		stops.push(subscribeCostReconciliation())
-		await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(2))
+		await vi.waitFor(() => expect(mockedRunPass).toHaveBeenCalledTimes(2))
 		// The cleared delayed tick never adds a third pass.
 		await new Promise((resolve) => setTimeout(resolve, 250))
-		expect(report).toHaveBeenCalledTimes(2)
+		expect(mockedRunPass).toHaveBeenCalledTimes(2)
 	})
 
 	it("unsubscribing the last subscriber before the delay cancels the first pass", async () => {
 		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "100")
-		const report = vi.fn(async () => {})
-		const stop = subscribeReportingReconciliation(report)
+		const stop = subscribeReportingReconciliation(() => "/session-cwd")
 		await stop()
 		await new Promise((resolve) => setTimeout(resolve, 250))
-		expect(report).not.toHaveBeenCalled()
+		expect(mockedRunPass).not.toHaveBeenCalled()
 	})
 
 	it("a subscriber joining inside the window drains durable updates without kicking off the scan", async () => {
@@ -183,7 +221,7 @@ describe("KIMCHI_E2E_FIRST_TICK_DELAY_MS seam", () => {
 		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "60000")
 		const first = vi.fn()
 		const second = vi.fn()
-		vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([
+		mockedReadUpdates.mockReturnValue([
 			{
 				workId: "11111111-1111-4111-8111-111111111111",
 				sessionId: "session-1",
@@ -196,25 +234,31 @@ describe("KIMCHI_E2E_FIRST_TICK_DELAY_MS seam", () => {
 		])
 		stops.push(subscribePullRequestReconciliation({ onPullRequest: first }))
 		await new Promise((resolve) => setTimeout(resolve, 20))
-		expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
+		expect(mockedRunPass).not.toHaveBeenCalled()
 		expect(first).toHaveBeenCalledOnce()
 		// Joining mid-window: still no scan, but the durable drain broadcasts to
 		// every current subscriber — the first hears the update again.
 		stops.push(subscribePullRequestReconciliation({ onPullRequest: second }))
 		await Promise.resolve()
-		expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
+		expect(mockedRunPass).not.toHaveBeenCalled()
 		expect(second).toHaveBeenCalledOnce()
 		expect(first).toHaveBeenCalledTimes(2)
 	})
 
 	it("a subscriber joining after the window still gets an immediate tick", async () => {
 		vi.stubEnv("KIMCHI_E2E_FIRST_TICK_DELAY_MS", "60")
-		const report = vi.fn(async () => {})
-		stops.push(subscribeReportingReconciliation(report))
+		const report = vi.fn(() => "/session-cwd")
+		stops.push(
+			subscribeReportingReconciliation(() => {
+				report()
+				return "/session-cwd"
+			}),
+		)
 		// Wait for the pass, not a fixed time: after a stall the test timer can
 		// run before the pass's first disk call has finished.
 		await vi.waitFor(() => expect(report).toHaveBeenCalled(), { timeout: 4_000 })
 		await passFinished()
+		expect(mockedRunPass).toHaveBeenCalled()
 		vi.clearAllMocks()
 		stops.push(subscribeReportingReconciliation(report))
 		await vi.waitFor(() => expect(report).toHaveBeenCalled(), { timeout: 4_000 })
@@ -229,107 +273,211 @@ describe("shared file reconciliation", () => {
 		})
 		let active = 0
 		let maximum = 0
-		const report = vi.fn(async () => {
+		passBody = async () => {
 			maximum = Math.max(maximum, ++active)
 			await gate
 			active--
-		})
-		stops.push(subscribeReportingReconciliation(report))
+		}
+		stops.push(subscribeReportingReconciliation(() => "/session-cwd"))
 		try {
-			await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
+			await vi.waitFor(() => expect(mockedRunPass).toHaveBeenCalledOnce())
 			requestWorkReconciliation()
 			requestWorkReconciliation()
 			requestWorkReconciliation()
-			expect(report).toHaveBeenCalledOnce()
+			expect(mockedRunPass).toHaveBeenCalledOnce()
 			finish()
-			await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(2))
+			await vi.waitFor(() => expect(mockedRunPass).toHaveBeenCalledTimes(2))
 			expect(maximum).toBe(1)
 		} finally {
 			finish()
 		}
 	})
 	it("discards a requested refresh when the last subscriber shuts down", async () => {
-		const report = vi.fn(async (_directory: string, signal: AbortSignal) => {
-			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
-		})
-		const stop = subscribeReportingReconciliation(report)
+		passBody = async (_input, io) => {
+			await aborted(io.signal)
+		}
+		const stop = subscribeReportingReconciliation(() => "/session-cwd")
 		stops.push(stop)
-		await vi.waitFor(() => expect(report).toHaveBeenCalledOnce())
+		await vi.waitFor(() => expect(mockedRunPass).toHaveBeenCalledOnce())
 		requestWorkReconciliation()
 		await stop()
 		requestWorkReconciliation()
-		expect(report).toHaveBeenCalledOnce()
+		expect(mockedRunPass).toHaveBeenCalledOnce()
 		expect(vi.getTimerCount()).toBe(0)
 	})
-	it("runs optional reporting after costs and historical repair and cancels only that subscription", async () => {
-		const order: string[] = []
-		vi.mocked(costs.reconcileWorkCosts).mockImplementation(async () => {
-			order.push("costs")
-		})
-		vi.mocked(continuations.reconcileWorkContinuations).mockImplementation(async () => {
-			order.push("history")
-		})
+	it("enables exactly the subscribed channels and reads the reporting cwd fresh every pass", async () => {
+		let cwd: string | undefined = "/first-cwd"
 		subscribe()
 		stops.push(subscribeCostReconciliation())
+		const stopReporting = subscribeReportingReconciliation(() => cwd)
+		stops.push(stopReporting)
+		await vi.waitFor(() => expect(passInputs.length).toBe(1))
+		expect(passInputs[0].files).toBe(true)
+		expect(passInputs[0].costs).toEqual({ signal: expect.any(AbortSignal) })
+		expect(passInputs[0].pullRequests).toBeUndefined()
+		expect(passInputs[0].reporting).toEqual({ cwd: "/first-cwd", signal: expect.any(AbortSignal) })
+		// The old onReport closure read its captured context at every pass; the
+		// cwd getter is read fresh at every pass the same way.
+		cwd = "/second-cwd"
+		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
+		await vi.waitFor(() => expect(passInputs.length).toBe(2))
+		expect(passInputs[1].reporting).toEqual({ cwd: "/second-cwd", signal: expect.any(AbortSignal) })
+		// A reporting subscriber leaving without its cwd stops the channel entirely.
+		cwd = undefined
+		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
+		await vi.waitFor(() => expect(passInputs.length).toBe(3))
+		expect(passInputs[2].reporting).toBeUndefined()
+		expect(passInputs[2].files).toBe(true)
+	})
+	it("aborts only the reporting subscription's channel and keeps the supervisor running", async () => {
+		subscribe()
 		let reportSignal: AbortSignal | undefined
-		const stop = subscribeReportingReconciliation(async (_directory, signal, assertLease) => {
-			assertLease()
-			order.push("reporting")
-			reportSignal = signal
-			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
-		})
+		passBody = async (input) => {
+			if (input.reporting?.signal) {
+				reportSignal = input.reporting.signal
+				await aborted(input.reporting.signal)
+			}
+		}
+		const stop = subscribeReportingReconciliation(() => "/session-cwd")
 		stops.push(stop)
-		await vi.waitFor(() => expect(order).toEqual(["costs", "history", "reporting"]))
+		await vi.waitFor(() => expect(reportSignal).toBeDefined())
 		await stop()
 		expect(reportSignal?.aborted).toBe(true)
 		expect(vi.getTimerCount()).toBe(1)
 	})
-	it("runs PR and cost work before a failed historical repair and retries without a PR warning", async () => {
-		const order: string[] = []
+	it("keeps a partial stop pending until the cancelled channel's pass has drained", async () => {
+		let finish!: () => void
+		const gate = new Promise<void>((resolve) => {
+			finish = resolve
+		})
+		let costSignal: AbortSignal | undefined
+		passBody = async (input) => {
+			if (input.costs && typeof input.costs === "object" && input.costs.signal) {
+				costSignal = input.costs.signal
+				await gate
+				// Drain after the abort: the cancelled channel's body is still running.
+				expect(input.costs.signal.aborted).toBe(true)
+			}
+		}
+		subscribe()
+		const stopCost = subscribeCostReconciliation()
+		try {
+			await vi.waitFor(() => expect(costSignal).toBeDefined())
+			let stopped = false
+			const draining = stopCost().then(() => {
+				stopped = true
+			})
+			await vi.waitFor(() => expect(costSignal?.aborted).toBe(true))
+			// A buggy stop() that skips the drain settles within a few microtasks;
+			// settle those before asserting the stop is still pending.
+			await new Promise((resolve) => setTimeout(resolve, 10))
+			expect(stopped).toBe(false)
+			finish()
+			await draining
+			expect(stopped).toBe(true)
+		} finally {
+			finish()
+			await stopCost()
+		}
+	})
+	it("requeues the reporting channel when a reporting session leaves mid-pass", async () => {
+		let reportingCwd: string | undefined
+		passBody = async (input) => {
+			if (input.reporting?.signal) {
+				reportingCwd = input.reporting.cwd
+				await aborted(input.reporting.signal)
+			}
+		}
+		subscribe()
+		const stopA = subscribeReportingReconciliation(() => "/a-cwd")
+		const stopB = subscribeReportingReconciliation(() => "/b-cwd")
+		try {
+			await vi.waitFor(() => expect(passInputs.length).toBe(1))
+			expect(passInputs[0].reporting?.cwd).toBe("/a-cwd")
+			// A leaves while its pass is still in flight and B remains subscribed: the
+			// in-flight pass must stop delivering with A's cwd, and the requeued pass
+			// resolves B's cwd — the old scan() selected onReport just before the
+			// reporting channel ran.
+			await stopA()
+			expect(reportingCwd).toBe("/a-cwd")
+			await vi.waitFor(() => expect(passInputs.length).toBe(2))
+			expect(passInputs[1].reporting?.cwd).toBe("/b-cwd")
+		} finally {
+			await stopA()
+			await stopB()
+		}
+	})
+	it("requeues a pass for a reporting session that joins mid-pass", async () => {
+		let finishFirst!: () => void
+		const gate = new Promise<void>((resolve) => {
+			finishFirst = resolve
+		})
+		passBody = async () => {
+			await gate
+		}
+		subscribe()
+		try {
+			await vi.waitFor(() => expect(passInputs.length).toBe(1))
+			expect(passInputs[0].reporting).toBeUndefined()
+			// A reporting session joining mid-pass is not in the frozen snapshot: the
+			// next pass must deliver for it instead of waiting a whole interval.
+			const stopB = subscribeReportingReconciliation(() => "/b-cwd")
+			try {
+				finishFirst()
+				await vi.waitFor(() => expect(passInputs.length).toBe(2))
+				expect(passInputs[1].reporting?.cwd).toBe("/b-cwd")
+			} finally {
+				await stopB()
+			}
+		} finally {
+			finishFirst()
+		}
+	})
+	it("routes pull-request channel errors to the PR subscribers only", async () => {
 		const onError = vi.fn()
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-		vi.mocked(pullRequests.reconcileWorkPullRequests).mockImplementation(async () => {
-			order.push("pr")
-		})
-		vi.mocked(costs.reconcileWorkCosts).mockImplementation(async () => {
-			order.push("cost")
-		})
-		vi.mocked(continuations.reconcileWorkContinuations).mockImplementation(async () => {
-			order.push("history")
-			throw new Error("Unreadable historical ledger")
-		})
+		const lookupError = new Error("PR lookup unavailable")
+		subscribe()
+		stops.push(subscribePullRequestReconciliation({ onPullRequest: () => {}, onError }))
+		await vi.waitFor(() => expect(passInputs.length).toBe(1))
+		// The pass calls the channel's onError; the supervisor forwards it to the
+		// PR subscribers (the old reportError owner routing).
+		await passInputs[0].pullRequests?.onError?.(lookupError)
+		expect(onError).toHaveBeenCalledExactlyOnceWith(lookupError)
+		expect(warn).not.toHaveBeenCalled()
+	})
+	it("retries a failed pass on the next interval without console warnings", async () => {
+		const onError = vi.fn()
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		passError = new Error("Could not save cost report")
 		subscribe()
 		stops.push(subscribePullRequestReconciliation({ onPullRequest: () => {}, onError }))
 		stops.push(subscribeCostReconciliation())
-		await vi.waitFor(() => expect(order).toEqual(["pr", "cost", "history"]))
+		await vi.waitFor(() => expect(passInputs.length).toBe(1))
 		await vi.waitFor(async () => {
 			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
 			await release()
 		})
-		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(order).toEqual(["pr", "cost", "history", "pr", "cost", "history"]))
 		expect(onError).not.toHaveBeenCalled()
 		expect(warn).not.toHaveBeenCalled()
+		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
+		await vi.waitFor(() => expect(passInputs.length).toBe(2))
 	})
-
-	it("gives historical repair a fresh budget after local Git uses its budget", async () => {
-		let now = 0
-		vi.spyOn(Date, "now").mockImplementation(() => now)
-		vi.mocked(transitions.reconcileRepositoryTransitions).mockImplementation(async (_repository, _signal, budget) => {
-			now += 4000
-			budget?.()
-		})
-		const published = vi.fn()
-		vi.mocked(continuations.reconcileWorkContinuations).mockImplementation(async (_directory, signal, assertLease) => {
-			signal.throwIfAborted()
-			assertLease()
-			published()
-		})
+	it("threads the pass result's rotation and continuation progress into the next pass", async () => {
+		const progress: ContinuationProgress = { nextContinuation: "journal-a" }
+		passResult = { nextRepository: "/repository-b", channels: okChannels(), progress }
 		subscribe()
-		await vi.waitFor(() => expect(published).toHaveBeenCalledOnce())
+		await vi.waitFor(() => expect(passInputs.length).toBe(1))
+		expect(passInputs[0].nextRepository).toBeUndefined()
+		expect(passInputs[0].progress).toBeUndefined()
+		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
+		await vi.waitFor(() => expect(passInputs.length).toBe(2))
+		// The supervisor persisted the returned rotation and progress and handed
+		// them back — the old owner.nextRepository / owner-as-ContinuationProgress.
+		expect(passInputs[1].nextRepository).toBe("/repository-b")
+		expect(passInputs[1].progress).toBe(progress)
 	})
-
-	it("passes lease loss to a historical repair before it can publish", async () => {
+	it("passes lease loss into the pass and prevents work after the compromise", async () => {
 		let compromised: locks.LockOptions["onCompromised"]
 		vi.spyOn(locks, "lock").mockImplementation(async (_path, options) => {
 			compromised = options?.onCompromised
@@ -339,147 +487,77 @@ describe("shared file reconciliation", () => {
 		const gate = new Promise<void>((resolve) => {
 			finish = resolve
 		})
-		let active: AbortSignal | undefined
+		let assertLease: (() => void) | undefined
 		const published = vi.fn()
-		vi.mocked(continuations.reconcileWorkContinuations).mockImplementation(async (_directory, signal, assertLease) => {
-			active = signal
+		passBody = async (_input, io) => {
+			assertLease = io.assertLease
 			await gate
-			assertLease()
+			io.assertLease()
 			published()
-		})
+		}
 		const stop = subscribe()
 		try {
-			await vi.waitFor(() => expect(active).toBeDefined())
+			await vi.waitFor(() => expect(assertLease).toBeDefined())
 			compromised?.(Object.assign(new Error("Lease lost"), { code: "ECOMPROMISED" }))
 			finish()
 			await stop()
-			expect(active?.aborted).toBe(true)
 			expect(published).not.toHaveBeenCalled()
 		} finally {
 			finish()
 		}
 	})
-
-	it("keeps billing write failures out of PR warnings and retries billing on the next pass", async () => {
-		const onError = vi.fn()
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-		vi.mocked(costs.reconcileWorkCosts).mockRejectedValueOnce(new Error("Could not save cost report"))
-		stops.push(subscribePullRequestReconciliation({ onPullRequest: () => {}, onError }))
-		stops.push(subscribeCostReconciliation())
-		await vi.waitFor(() => expect(costs.reconcileWorkCosts).toHaveBeenCalledOnce())
-		await vi.waitFor(async () => {
-			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
-			await release()
-		})
-		expect(onError).not.toHaveBeenCalled()
-		expect(warn).not.toHaveBeenCalled()
-		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(costs.reconcileWorkCosts).toHaveBeenCalledTimes(2))
-		expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledTimes(2)
-	})
-
-	it("keeps local Git failures out of PR warnings while reporting a failed PR lookup", async () => {
-		const onError = vi.fn()
-		const lookupError = new Error("PR lookup unavailable")
-		vi.mocked(transitions.reconcileRepositoryTransitions).mockRejectedValueOnce(new Error("Git timed out"))
-		vi.mocked(pullRequests.reconcileWorkPullRequests).mockRejectedValueOnce(lookupError)
-		subscribe()
-		stops.push(subscribePullRequestReconciliation({ onPullRequest: () => {}, onError }))
-		await vi.waitFor(() => expect(onError).toHaveBeenCalledExactlyOnceWith(lookupError))
-		expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2)
-	})
-
-	it("keeps a failed repository off the console, scans its sibling and retries on the next pass", async () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-		const error = Object.assign(new Error("Git timed out"), { code: null, killed: true, signal: "SIGTERM" })
-		vi.mocked(transitions.reconcileRepositoryTransitions).mockRejectedValueOnce(error)
-		subscribe()
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
-		await vi.waitFor(async () => {
-			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
-			await release()
-		})
-		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
-		expect(vi.mocked(transitions.reconcileRepositoryTransitions).mock.calls.map(([repository]) => repository)).toEqual([
-			"/repository-a",
-			"/repository-b",
-			"/repository-a",
-			"/repository-b",
-		])
-		expect(warn).not.toHaveBeenCalled()
-	})
-
-	it("keeps a discovery failure off the console and retries on the next pass", async () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-		vi.mocked(transitions.knownTransitionRepositories).mockRejectedValueOnce(new Error("Cannot read journals"))
-		subscribe()
-		await vi.waitFor(() => expect(transitions.knownTransitionRepositories).toHaveBeenCalledTimes(1))
-		await vi.waitFor(async () => {
-			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
-			await release()
-		})
-		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
-		expect(warn).not.toHaveBeenCalled()
-	})
-
 	it("uses the same worker for costs and aborts only cost work when its subscriber leaves", async () => {
-		let active: AbortSignal | undefined
-		vi.mocked(costs.reconcileWorkCosts).mockImplementation(async (_directory, signal) => {
-			active = signal
-			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
-		})
+		let costSignal: AbortSignal | undefined
+		passBody = async (input) => {
+			if (input.costs && typeof input.costs === "object" && input.costs.signal) {
+				costSignal = input.costs.signal
+				await aborted(input.costs.signal)
+			}
+		}
 		subscribe()
 		const stop = subscribeCostReconciliation()
 		stops.push(stop)
-		await vi.waitFor(() => expect(active).toBeDefined())
+		await vi.waitFor(() => expect(costSignal).toBeDefined())
 		await stop()
-		expect(active?.aborted).toBe(true)
+		expect(costSignal?.aborted).toBe(true)
 		await vi.waitFor(async () => {
 			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
 			await release()
 		})
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
-		expect(costs.reconcileWorkCosts).toHaveBeenCalledOnce()
+		await vi.waitFor(() => expect(passInputs.length).toBe(2))
+		// The cost channel left with its subscriber; files reconciliation continues.
+		expect(passInputs[1].costs).toBeUndefined()
+		expect(passInputs[1].files).toBe(true)
 	})
-	it("does not read PR records or call GitHub when only file reconciliation is enabled", async () => {
+	it("does not read PR records or enable the PR channel when only file reconciliation is subscribed", async () => {
 		subscribe()
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
-		expect(pullRequests.readWorkPullRequestUpdates).not.toHaveBeenCalled()
-		expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
+		await vi.waitFor(() => expect(passInputs.length).toBe(1))
+		expect(passInputs[0].pullRequests).toBeUndefined()
+		expect(mockedReadUpdates).not.toHaveBeenCalled()
 	})
 	it("stops only PR network work while local reconciliation remains subscribed", async () => {
-		let active: AbortSignal | undefined
-		vi.mocked(pullRequests.reconcileWorkPullRequests).mockImplementation(async (_directory, signal) => {
-			active = signal
-			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
-		})
+		let prSignal: AbortSignal | undefined
+		passBody = async (input) => {
+			if (input.pullRequests?.signal) {
+				prSignal = input.pullRequests.signal
+				await aborted(input.pullRequests.signal)
+			}
+		}
 		subscribe()
 		const stopPr = subscribePr()
-		await vi.waitFor(() => expect(active).toBeDefined())
+		await vi.waitFor(() => expect(prSignal).toBeDefined())
 		await stopPr()
-		expect(active?.aborted).toBe(true)
+		expect(prSignal?.aborted).toBe(true)
 		await vi.waitFor(async () => {
 			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
 			await release()
 		})
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
-		expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledOnce()
+		await vi.waitFor(() => expect(passInputs.length).toBe(2))
+		// The PR channel left with its subscriber; file reconciliation keeps running.
+		expect(passInputs[1].pullRequests).toBeUndefined()
+		expect(passInputs[1].files).toBe(true)
 	})
 	it("shows another process's saved results while that process owns the lookup lease", async () => {
 		const path = join(directory, "work-attribution")
@@ -495,78 +573,72 @@ describe("shared file reconciliation", () => {
 			pullRequests: [],
 			prLookup: { status: "pending" as const, checkedAt: new Date().toISOString() },
 		}
-		vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([update])
+		mockedReadUpdates.mockReturnValue([update])
 		const onPullRequest = vi.fn()
 		const stop = subscribePullRequestReconciliation({ onPullRequest })
 		stops.push(stop)
 		try {
 			await vi.waitFor(() => expect(onPullRequest).toHaveBeenCalledWith(update))
-			expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
-			expect(transitions.reconcileRepositoryTransitions).not.toHaveBeenCalled()
+			expect(mockedRunPass).not.toHaveBeenCalled()
 			const failed = {
 				...update,
 				prLookup: { status: "error" as const, checkedAt: new Date().toISOString(), error: "Run gh auth login" },
 			}
-			vi.mocked(pullRequests.readWorkPullRequestUpdates).mockReturnValue([failed])
+			mockedReadUpdates.mockReturnValue([failed])
 			await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
 			await vi.waitFor(() => expect(onPullRequest).toHaveBeenLastCalledWith(failed))
-			expect(pullRequests.reconcileWorkPullRequests).not.toHaveBeenCalled()
+			expect(mockedRunPass).not.toHaveBeenCalled()
 		} finally {
 			await stop()
 			await release()
 		}
 	})
 
-	it("discovers Bash-only commits even when there are no file-transition repositories", async () => {
-		vi.mocked(transitions.knownTransitionRepositories).mockResolvedValue([])
+	it("enables the PR channel without file subscribers (Bash-only commits)", async () => {
 		subscribePr()
-		await vi.waitFor(() => expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledTimes(1))
-		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledTimes(2))
+		await vi.waitFor(() => expect(passInputs.length).toBe(1))
+		expect(passInputs[0].pullRequests).toEqual({
+			onUpdate: expect.any(Function),
+			onError: expect.any(Function),
+			signal: expect.any(AbortSignal),
+		})
+		expect(passInputs[0].files).toBeUndefined()
 	})
 
 	it("aborts and drains the GitHub lookup when its owner shuts down", async () => {
-		let active: AbortSignal | undefined
-		vi.mocked(pullRequests.reconcileWorkPullRequests).mockImplementation(async (_directory, signal) => {
-			active = signal
-			await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
-		})
+		let prSignal: AbortSignal | undefined
+		passBody = async (input) => {
+			if (input.pullRequests?.signal) {
+				prSignal = input.pullRequests.signal
+				await aborted(input.pullRequests.signal)
+			}
+		}
 		const stop = subscribePr()
-		await vi.waitFor(() => expect(active).toBeDefined())
+		await vi.waitFor(() => expect(prSignal).toBeDefined())
 		await stop()
-		expect(active?.aborted).toBe(true)
+		expect(prSignal?.aborted).toBe(true)
 	})
 	it("starts a new scan when another top-level session subscribes after the owner became idle", async () => {
 		subscribe()
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
+		await vi.waitFor(() => expect(passInputs.length).toBe(1))
 		await vi.waitFor(async () => {
 			const release = await locks.lock(join(directory, "work-attribution"), { retries: 0 })
 			await release()
 		})
 		subscribe()
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
-		expect(transitions.knownTransitionRepositories).toHaveBeenCalledTimes(2)
+		await vi.waitFor(() => expect(passInputs.length).toBe(2))
 	})
 
 	it("uses one owner for startup and periodic scans and releases it after the last subscriber", async () => {
 		const first = subscribe()
 		const second = subscribe()
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
-		expect(transitions.knownTransitionRepositories).toHaveBeenCalledTimes(1)
+		await vi.waitFor(() => expect(passInputs.length).toBe(1))
 		await first()
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
+		await vi.waitFor(() => expect(passInputs.length).toBe(2))
 		await second()
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(4)
+		expect(passInputs.length).toBe(2)
 		expect(vi.getTimerCount()).toBe(0)
 	})
 
@@ -575,25 +647,25 @@ describe("shared file reconciliation", () => {
 		const gate = new Promise<void>((resolve) => {
 			finish = resolve
 		})
-		let active: AbortSignal | undefined
-		vi.mocked(transitions.reconcileRepositoryTransitions).mockImplementation(async (_repository, signal) => {
-			active = signal
+		let passSignal: AbortSignal | undefined
+		passBody = async (_input, io) => {
+			passSignal = io.signal
 			await gate
-		})
+		}
 		const first = subscribe()
 		const last = subscribe()
 		try {
-			await vi.waitFor(() => expect(active).toBeDefined())
+			await vi.waitFor(() => expect(passSignal).toBeDefined())
 			await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS * 2)
-			expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(1)
+			expect(passInputs.length).toBe(1)
 			await first()
-			expect(active?.aborted).toBe(false)
+			expect(passSignal?.aborted).toBe(false)
 			let stopped = false
 			const drained = last().then(() => {
 				stopped = true
 			})
 			await Promise.resolve()
-			expect(active?.aborted).toBe(true)
+			expect(passSignal?.aborted).toBe(true)
 			expect(stopped).toBe(false)
 			finish()
 			await drained
@@ -612,40 +684,12 @@ describe("shared file reconciliation", () => {
 		try {
 			await vi.waitFor(() => expect(attempt).toHaveBeenCalledTimes(1))
 			await vi.waitFor(() => expect(attempt.mock.results[0].value).rejects.toMatchObject({ code: "ELOCKED" }))
-			expect(transitions.reconcileRepositoryTransitions).not.toHaveBeenCalled()
+			expect(passInputs.length).toBe(0)
 		} finally {
 			await release()
 		}
 		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(2), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
-	})
-
-	it("moves a slow repository behind the other repositories on the next bounded pass", async () => {
-		let now = 0
-		vi.spyOn(Date, "now").mockImplementation(() => now)
-		vi.mocked(transitions.reconcileRepositoryTransitions).mockImplementation(
-			async (repository, _signal, checkBudget) => {
-				if (repository === "/repository-a") now += 4000
-				checkBudget?.()
-			},
-		)
-		subscribe()
-		subscribePr()
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(1), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
-		await vi.waitFor(() => expect(pullRequests.reconcileWorkPullRequests).toHaveBeenCalledTimes(1))
-		await vi.advanceTimersByTimeAsync(RECONCILIATION_INTERVAL_MS)
-		await vi.waitFor(() => expect(transitions.reconcileRepositoryTransitions).toHaveBeenCalledTimes(3), {
-			timeout: RECONCILIATION_WAIT_TIMEOUT_MS,
-		})
-		expect(vi.mocked(transitions.reconcileRepositoryTransitions).mock.calls.map(([repository]) => repository)).toEqual([
-			"/repository-a",
-			"/repository-b",
-			"/repository-a",
-		])
+		await vi.waitFor(() => expect(passInputs.length).toBe(1))
 	})
 
 	it("cancels and prevents publication if the cross-process lease is lost", async () => {
@@ -660,20 +704,18 @@ describe("shared file reconciliation", () => {
 		const gate = new Promise<void>((resolve) => {
 			finish = resolve
 		})
-		let active: AbortSignal | undefined
-		vi.mocked(transitions.reconcileRepositoryTransitions).mockImplementation(
-			async (_repository, signal, _budget, assertLease) => {
-				active = signal
-				await gate
-				assertLease?.()
-				published()
-			},
-		)
+		let passSignal: AbortSignal | undefined
+		passBody = async (_input, io) => {
+			passSignal = io.signal
+			await gate
+			io.assertLease()
+			published()
+		}
 		const stop = subscribe()
 		try {
-			await vi.waitFor(() => expect(active).toBeDefined())
+			await vi.waitFor(() => expect(passSignal).toBeDefined())
 			compromised?.(Object.assign(new Error("lease stolen"), { code: "ECOMPROMISED" }))
-			expect(active?.aborted).toBe(true)
+			expect(passSignal?.aborted).toBe(true)
 			finish()
 			await stop()
 			expect(published).not.toHaveBeenCalled()

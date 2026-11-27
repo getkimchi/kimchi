@@ -1,8 +1,19 @@
-import { isWorkId } from "../../shared/work-id.js"
+/**
+ * Native usage-observation extraction retained for Kimchi's local common-events
+ * construction (pr-cost-reporting/events.ts) and its e2e driver: the pinned
+ * bridge barrel exports USAGE_SCHEMAS but not nativeObservations, and the
+ * bridge's own copy is internal to it (the same boundary as machine.ts).
+ * USAGE_SCHEMAS itself is the bridge's single implementation, re-exported.
+ */
+
+import { USAGE_SCHEMAS } from "@getkimchi/kimchi-bridge/reconcile"
+
+export { USAGE_SCHEMAS }
+
+import type { StoredRecord } from "@getkimchi/kimchi-bridge/ledger"
+import { isWorkId, type RawUsage, timeNanos, validateAccountingRaw } from "@getkimchi/kimchi-bridge/ledger"
 import { isWorkScope, sameWorkScope, type WorkScope } from "../work-attribution/scope.js"
 import { object, type WorkRecord } from "../work-attribution/summary.js"
-import type { StoredRecord } from "./ledger/records.js"
-import { type RawUsage, timeNanos, validateAccountingRaw } from "./protocol.js"
 
 export interface NativeObservation {
 	requestId: string
@@ -37,15 +48,6 @@ export interface UnresolvedNativeObservation {
 	recordHashes: string[]
 	reason: string
 }
-
-/** The common usage schema of each pi-ai API; capture labels native usage with it. */
-export const USAGE_SCHEMAS = new Map([
-	["anthropic-messages", "anthropic-messages-v1"],
-	["openai-completions", "openai-chat-completions-v1"],
-	["openai-responses", "openai-responses-v1"],
-	["azure-openai-responses", "openai-responses-v1"],
-	["openai-codex-responses", "openai-responses-v1"],
-])
 
 function instant(value: unknown): bigint | undefined {
 	if (typeof value !== "string" || value[4] !== "-" || value.startsWith("0000")) return
