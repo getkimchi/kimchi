@@ -210,9 +210,9 @@ that candidate input and its evaluated thread history. A later wrap-up with the
 same candidate input and unchanged thread history reuses that fallback instead
 of retrying the verifier: published IDs remain stable, non-exact duplicates stay
 unmerged, and no thread replies are produced for that input. Every fallback
-publication deterministically rebuilds records and complete provenance from the
-saved candidates before capping, so rerunning wrap-up after a crash between the
-findings and panel-state writes converges to a consistent result.
+publication deterministically ranks and packs the saved candidates with capped
+priorities, rebuilding records and complete provenance together. Rerunning wrap-up
+after a crash between the findings and panel-state writes converges to a consistent result.
 
 `summary/final.json` remains `review-summary/v1` with optional structured
 `coverage`, including capped-priority counts, and is written last. When its logical content is unchanged, the

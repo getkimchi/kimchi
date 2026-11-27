@@ -285,7 +285,10 @@ export function capFinalReviewFindings(packed: PackedReviewFindings): PackedRevi
 
 /** Exact-duplicate fallback. The source ID set is stable and semantic fields are
  * never merged merely because anchors or descriptions look similar. */
-export function buildFallbackCheckpoint(candidates: readonly ReviewPanelCandidate[]): PackedReviewFindings {
+function packFallback(
+	candidates: readonly ReviewPanelCandidate[],
+	priorityPolicy: "submitted" | "capped",
+): PackedReviewFindings {
 	const groups = new Map<string, FindingGroup>()
 	for (const candidate of orderedCandidates(candidates)) {
 		const key = exactKey(candidate)
@@ -295,11 +298,29 @@ export function buildFallbackCheckpoint(candidates: readonly ReviewPanelCandidat
 			const { path, line, title, description, explanation, suggestion, priority, type } = candidate.finding
 			groups.set(key, {
 				candidates: [candidate],
-				finding: { id: key, path, line, title, description, explanation, suggestion, priority, type },
+				finding: {
+					id: key,
+					path,
+					line,
+					title,
+					description,
+					explanation,
+					suggestion,
+					priority: priorityPolicy === "capped" ? capReviewFindingPriority(priority, type) : priority,
+					type,
+				},
 			})
 		}
 	}
 	return packGroups([...groups.values()])
+}
+
+export function buildFallbackCheckpoint(candidates: readonly ReviewPanelCandidate[]): PackedReviewFindings {
+	return packFallback(candidates, "submitted")
+}
+
+export function buildFinalFallback(candidates: readonly ReviewPanelCandidate[]): PackedReviewFindings {
+	return packFallback(candidates, "capped")
 }
 
 export function buildReconciledCheckpoint(

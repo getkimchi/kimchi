@@ -1,25 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import { REVIEW_FINDING_PRIORITIES, REVIEW_FINDING_TYPES } from "../review-submit/store.js"
 import { REVIEW_RECONCILIATION_VERSION, type SemanticReconciliation } from "./types.js"
 
 export const REVIEW_RECONCILIATION_TOOL = "submit_reconciliation"
 
-const priority = Type.Union([
-	Type.Literal("P0"),
-	Type.Literal("P1"),
-	Type.Literal("P2"),
-	Type.Literal("P3"),
-	Type.Literal("P4"),
-])
-const findingType = Type.Union([
-	Type.Literal("bug"),
-	Type.Literal("security"),
-	Type.Literal("reliability"),
-	Type.Literal("performance"),
-	Type.Literal("convention"),
-	Type.Literal("test-gap"),
-	Type.Literal("docs"),
-])
+const priority = Type.Union(REVIEW_FINDING_PRIORITIES.map((value) => Type.Literal(value)))
+const findingType = Type.Union(REVIEW_FINDING_TYPES.map((value) => Type.Literal(value)))
 const verdict = Type.Union([
 	Type.Literal("fixed"),
 	Type.Literal("not_fixed"),
