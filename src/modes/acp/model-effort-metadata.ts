@@ -1,4 +1,4 @@
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai"
+import type { Api, Model, ModelThinkingLevel as ModelEffortLevel } from "@earendil-works/pi-ai"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import type { readModelEffortDefaults } from "../../config.js"
 import { isAutoRoutedModel } from "../../extensions/auto-model/constants.js"
@@ -12,8 +12,8 @@ export type ModelEffortAvailability = "multiple" | "fixed" | "provider-controlle
 
 export interface ModelEffortMetadata {
 	availability: ModelEffortAvailability
-	levels?: ModelThinkingLevel[]
-	currentValue: ModelThinkingLevel | null
+	levels?: ModelEffortLevel[]
+	currentValue: ModelEffortLevel | null
 	/** Distinguishes built-in Auto, with dynamic route resolution and
 	 * attribution, from another managed virtual row. Both are `routed`, but a
 	 * boolean would erase Auto's existing client-visible semantics. */
@@ -40,7 +40,7 @@ export function configuredModelDescription(model: Model<Api>): string | undefine
 
 export interface ModelEffortMetadataContext {
 	effortDefaults: ReturnType<typeof readModelEffortDefaults>
-	effortByModel: ReadonlyMap<string, ModelThinkingLevel>
+	effortByModel: ReadonlyMap<string, ModelEffortLevel>
 	currentModel: AgentSession["model"]
 	currentThinkingLevel: AgentSession["thinkingLevel"]
 	settingsManager: AgentSession["settingsManager"]
