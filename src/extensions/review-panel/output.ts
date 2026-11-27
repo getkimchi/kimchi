@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import { lstat, open, readFile, rename, rm } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
+import { lock } from "proper-lockfile"
 import { checkReviewDirectory } from "../review-submit/directory-safety.js"
 import {
 	capReviewFindingPriority,
@@ -37,8 +38,7 @@ async function checkedParent(path: string): Promise<void> {
 	if (checked.kind !== "ready") throw new Error(`Review output directory ${dirname(path)} is unavailable or unsafe.`)
 }
 
-export async function atomicWriteReviewFile(path: string, contents: string): Promise<void> {
-	await checkedParent(path)
+async function atomicWriteReviewFileUnlocked(path: string, contents: string): Promise<void> {
 	const temporaryPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`)
 	let handle: Awaited<ReturnType<typeof open>> | undefined
 	try {
@@ -54,8 +54,75 @@ export async function atomicWriteReviewFile(path: string, contents: string): Pro
 	}
 }
 
+export class ReviewFileLockError extends Error {
+	readonly code = "ECOMPROMISED"
+
+	constructor(cause: Error) {
+		super("Review output lock was compromised; the atomic write outcome is uncertain and must be re-read.", { cause })
+		this.name = "ReviewFileLockError"
+	}
+}
+
+async function withReviewFileLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+	await checkedParent(path)
+	let compromised: Error | undefined
+	const release = await lock(dirname(path), {
+		realpath: false,
+		// Keep ordinary multi-second event-loop stalls below the stale threshold;
+		// retries still exceed it so immediate recovery from a crash succeeds.
+		stale: 10_000,
+		update: 5000,
+		retries: { retries: 220, factor: 1, minTimeout: 50, maxTimeout: 50 },
+		onCompromised: (error) => {
+			compromised = error
+		},
+	})
+	try {
+		const result = await operation()
+		// The unique temporary file is fully written and synced before one atomic
+		// rename, so compromise cannot leave partial contents at the target. The
+		// rename may, however, already have happened: report uncertain outcome.
+		if (compromised) throw new ReviewFileLockError(compromised)
+		return result
+	} finally {
+		if (!compromised) await release()
+	}
+}
+
+export async function atomicWriteReviewFile(path: string, contents: string): Promise<void> {
+	await withReviewFileLock(path, () => atomicWriteReviewFileUnlocked(path, contents))
+}
+
 export async function writeReviewJson(path: string, value: unknown): Promise<void> {
 	await atomicWriteReviewFile(path, `${JSON.stringify(value, null, 2)}\n`)
+}
+
+/** Replace JSON only after merging the version currently on disk. Reads and
+ * updates share the same output-directory lock as panel state publication. */
+export async function updateReviewJson(path: string, update: (current: unknown) => unknown): Promise<void> {
+	await withReviewFileLock(path, async () => {
+		let current: unknown
+		try {
+			current = JSON.parse(await readFile(path, "utf8"))
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+		}
+		await atomicWriteReviewFileUnlocked(path, `${JSON.stringify(update(current), null, 2)}\n`)
+	})
+}
+
+export function reviewStateArray(current: unknown, schemaVersion: string, field: string): unknown[] {
+	if (current === undefined) return []
+	if (
+		current === null ||
+		typeof current !== "object" ||
+		Array.isArray(current) ||
+		(current as { schema_version?: unknown }).schema_version !== schemaVersion ||
+		!Array.isArray((current as Record<string, unknown>)[field])
+	) {
+		throw new Error(`Review state has an unsupported schema or missing ${field} array.`)
+	}
+	return (current as Record<string, unknown>)[field] as unknown[]
 }
 
 export function serializeFinalFindings(records: readonly ReviewFindingRecord[]): string {

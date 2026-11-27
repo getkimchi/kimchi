@@ -1,12 +1,16 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import type { ExtensionAPI, SettingsManager } from "@earendil-works/pi-coding-agent"
 import type { RequiredReviewLens, ReviewLensId } from "../review-panel/lenses.js"
 import { assertReviewLensId } from "../review-panel/lenses.js"
+import type { ReviewEnvironmentGap, ReviewEnvironmentSettings } from "../review-runner/environment.js"
+import { emptyReviewEnvironmentSettings, parseTrustedReviewEnvironment } from "../review-runner/environment.js"
 import type { ReviewCheckDefinition } from "../review-runner/index.js"
 import { ReviewTargetError } from "../review-targets/types.js"
 
 export interface TrustedReviewSettings {
 	requiredLenses: RequiredReviewLens[]
 	checkDefinitions: ReviewCheckDefinition[]
+	environment: ReviewEnvironmentSettings
+	environmentGaps: ReviewEnvironmentGap[]
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -81,15 +85,59 @@ function parseRequiredLenses(value: unknown): RequiredReviewLens[] {
 	})
 }
 
-/** Read only Pi's already merged, trust-gated invoking-session settings. Unknown
- * custom keys are preserved by Pi's schema; no reviewed-tree file is read here. */
-export function readTrustedReviewSettings(pi: ExtensionAPI): TrustedReviewSettings {
+/** Check/required-lens compatibility stays on Pi's effective settings. Environment
+ * preparation is different: only the real manager's global scope may grant host
+ * paths and offline setup commands; reviewed-project environment is ignored. */
+export type ReviewSettingsManager = Pick<SettingsManager, "getGlobalSettings" | "getProjectSettings">
+
+function environmentFromGlobal(
+	review: unknown,
+	projectReview: unknown,
+): { settings: ReviewEnvironmentSettings; gaps: ReviewEnvironmentGap[] } {
+	const gaps: ReviewEnvironmentGap[] = []
+	if (object(projectReview) && projectReview.environment !== undefined) {
+		gaps.push({
+			kind: "project_environment_ignored",
+			name: "review.environment",
+			note: "Project-level review.environment was ignored; host caches and preparation must be configured in user-level settings.",
+		})
+	}
+	if (review === undefined) return { settings: emptyReviewEnvironmentSettings(), gaps }
+	if (!object(review)) {
+		gaps.push({
+			kind: "invalid_environment_settings",
+			name: "review.environment",
+			note: "Global review settings are not an object; using isolated review environments.",
+		})
+		return { settings: emptyReviewEnvironmentSettings(), gaps }
+	}
+	const environment = parseTrustedReviewEnvironment(review.environment)
+	return { settings: environment.settings, gaps: [...gaps, ...environment.gaps] }
+}
+
+export function readTrustedReviewSettings(
+	pi: ExtensionAPI,
+	settingsManager: ReviewSettingsManager,
+): TrustedReviewSettings {
 	const settings = pi.getSettings() as unknown as Record<string, unknown>
 	const review = settings.review
-	if (review === undefined) return { requiredLenses: [], checkDefinitions: [] }
+	const environment = environmentFromGlobal(
+		(settingsManager.getGlobalSettings() as unknown as Record<string, unknown>).review,
+		(settingsManager.getProjectSettings() as unknown as Record<string, unknown>).review,
+	)
+	if (review === undefined) {
+		return {
+			requiredLenses: [],
+			checkDefinitions: [],
+			environment: environment.settings,
+			environmentGaps: environment.gaps,
+		}
+	}
 	if (!object(review)) throw invalid("review settings must be an object.")
 	return {
 		requiredLenses: parseRequiredLenses(review.requiredLenses),
 		checkDefinitions: parseChecks(review.checks),
+		environment: environment.settings,
+		environmentGaps: environment.gaps,
 	}
 }

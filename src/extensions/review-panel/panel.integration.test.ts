@@ -550,6 +550,26 @@ describe("review panel with the real runner and scripted model", { timeout: 60_0
 		expect(usageWriters).toEqual(new Set(["spec", "standards", "operational", "adversarial", "reconciliation"]))
 	})
 
+	it("projects actual receipt notes and merges typed environment gaps into the final summary", async () => {
+		const { ctx, requests } = await scriptedContext(defaultScript)
+		const result = await runReviewPanel(
+			runOptions(ctx, await target(), {
+				lenses: ["spec"],
+				environmentValidationGaps: [
+					{ kind: "environment_unsupported", name: "fixture", note: "Read-only cache attestation is unavailable." },
+				],
+			}),
+		)
+		expect(JSON.stringify(requests)).toContain("REVIEW ENVIRONMENT (actual prepared receipt)")
+		expect(JSON.stringify(requests)).toContain("Read-only cache attestation is unavailable.")
+		expect(result.summary.environment_gaps).toContainEqual({
+			kind: "environment_unsupported",
+			name: "fixture",
+			note: "Read-only cache attestation is unavailable.",
+		})
+		expect(result.findings.every((finding) => finding.schema_version === "review-finding/v1")).toBe(true)
+	})
+
 	it("wraps up with expected identity through symlink aliases", async () => {
 		const { ctx } = await scriptedContext(defaultScript)
 		const initial = await runReviewPanel(runOptions(ctx, await target(), { lenses: ["spec"] }))

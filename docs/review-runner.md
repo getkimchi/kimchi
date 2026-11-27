@@ -122,7 +122,13 @@ substrings, and other lifecycle implications never set `builds`.
 ## Shared routine check behavior
 
 `run_review_check({ id, revision?, online? })` requests a routine check. The
-queue executes requested commands in order in its dedicated pinned worktree.
+queue acquires the designated ready worktree **before** computing its evidence
+key, then executes in that same worktree. It does not rescan caches per key
+computation. Legacy saved results without environment evidence never match a
+new key. During wrap-up, an absent existing ready worktree/receipt means
+saved-only/no-new-work rather than constructing an approximate key.
+
+The queue executes requested commands in order in its dedicated pinned worktree.
 Concurrent identical requests join one command; completed results, including
 failures and cancelled/blocked runs, are reused without automatic retry.
 
@@ -136,7 +142,9 @@ Result keys contain:
 - pinned Git tree (base and head differ);
 - command and repository-relative cwd;
 - toolchain and pinned dependency-input digest;
-- offline, approved-online, or sandbox execution profile.
+- offline, approved-online, or sandbox execution profile;
+- the concrete worktree's environment schema version, requested-spec digest,
+  receipt digest, and readiness.
 
 An approved online retry or dependency/toolchain change produces a new key.
 Saved evidence includes command/cwd/worktree, exit code, elapsed milliseconds,
@@ -155,6 +163,269 @@ accepted and immediately before a queued entry creates its worktree.
 `run_review_command` handles focused reviewer-authored tests and private
 base-revision comparisons. A head-revision command matching a routine definition
 is redirected to the shared queue instead.
+
+## Trusted prepared review environments
+
+An empty or absent `review.environment` preserves the historical behavior:
+every checkout has a private HOME, scratch, build, and cache environment and no
+shared dependency cache. Environment settings are read through the real
+`SettingsManager.getGlobalSettings()` accessor only. A project
+`review.environment` is ignored and records `project_environment_ignored`; it
+cannot select host caches/toolchains or preparation commands. No environment is
+loaded from the reviewed checkout or its manifests/lockfiles. The generic
+engine in `review-runner/environment.ts` has no language/package-manager
+detection and no review-panel imports, so other coordinators can reuse it.
+
+**Compatibility boundary:** `review.requiredLenses` and `review.checks` retain
+their older global+project effective-settings behavior. Project-level routine
+check commands therefore remain a separate trust exposure and may execute
+under the existing routine-check authorization/network/filesystem boundary;
+only the new environment preparation capability is global-only. This amendment
+does not change their selection or command semantics.
+
+The smallest static profile shape is:
+
+```jsonc
+{
+  "review": {
+    "environment": {
+      "caches": [
+        {
+          "id": "shared-artifacts",
+          "path": "/canonical/existing/cache-directory",
+          "description": "Prepopulated, non-secret build inputs"
+        }
+      ],
+      "toolchains": [
+        { "id": "pinned-tools", "bin": ["/canonical/existing/tool/bin"] }
+      ],
+      "profiles": {
+        "default": {
+          "readOnlyCaches": ["shared-artifacts"],
+          "privateDirs": [
+            { "id": "writable", "root": "cache", "path": "writable" }
+          ],
+          "env": {
+            "ARTIFACT_ROOT": "${cache:shared-artifacts}",
+            "WRITABLE_ROOT": "${private:writable}",
+            "CHECKOUT_ROOT": "${worktree}",
+            "TEMP_ROOT": "${scratch}",
+            "CUSTOM_MODE": "strict"
+          },
+          "toolchain": "pinned-tools",
+          "setup": [
+            {
+              "argv": ["tool", "prepare", "--offline"],
+              "cwd": ".",
+              "timeoutMs": 120000,
+              "required": false
+            }
+          ],
+          "probes": [
+            {
+              "id": "artifacts-usable",
+              "argv": ["tool", "check", "--offline"],
+              "cwd": ".",
+              "timeoutMs": 30000,
+              "required": true
+            }
+          ]
+        },
+        "repositories": {
+          "/canonical/absolute/repository/root": {
+            "readOnlyCaches": [],
+            "privateDirs": [],
+            "env": {},
+            "setup": [],
+            "probes": []
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+An exact canonical repository-root profile **replaces** the default for that
+repository; profiles are not merged. Omit `default` when only selected
+repositories should have a profile. Catalog/spec IDs, commands, unknown keys,
+and sizes are validated strictly. Cache/toolchain directories must exist and
+are canonicalized; a final symbolic-link component is rejected. Caches cannot
+overlap the source checkout, common Git directory, context/output/run trees,
+any concrete worktree, or any private root. Private paths are children of the
+chosen `cache`, `build`, or `scratch` root, created mode 0700 without symlink
+traversal.
+
+Only `${cache:id}`, `${private:id}`, `${worktree}`, and `${scratch}` substitutions
+exist. `PATH` cannot be assigned in `env`; trusted toolchain directories precede
+the existing sanitized PATH. Parent-environment interpolation is unsupported.
+Setup uses argv arrays, not shell source, and cannot obtain online-install
+approval. Its concrete cwd is canonicalized immediately before execution; every
+component must be a real directory inside the canonical worktree, never a
+symlink or an escape. Per-command timeout is capped at 120 seconds for setup
+and 30 seconds for probes, with bounded last-8-KiB output. `required` defaults
+to `true`.
+Environment assembly is safe isolated defaults, then profile values, then
+mandatory offline/no-prompt guarantees. Credential-like names/values (API or
+access/private keys, tokens/sessions/cookies/PATs, userinfo-bearing URLs, and
+similar inputs) are rejected with typed gaps rather than silently retained.
+Original sensitive values are not persisted in requested/effective specs,
+receipt environments, digests, or `state/environments.json`. The same value and
+aggregate byte limits are enforced again after substitution.
+
+Every reviewer head, focused base comparison, base/head routine-check, and
+reconciliation-verifier worktree receives the selected spec. Distinct worktrees
+prepare concurrently because only Git registration and manifest transitions
+serialize; reviewer preparation observes the existing lease concurrency.
+Setup/probes also have a combined 300-second overall limit per worktree, run
+before the agent's investigation duration without spending
+reconciliation/summary reserve, and use the later commands' boundary. Individual
+lease/verifier abort signals reach preparation as well as the agent. Cleanup
+aborts and awaits pending preparation.
+
+Preparation execution explicitly cleans up the whole descendant tree. Linux
+preparation uses `bwrap --unshare-pid --die-with-parent` when supported. That
+support is probed separately from ordinary bwrap, so a PID-namespace failure
+does not remove bwrap from lens/check execution. Namespace-less preparation
+keeps the best available boundary, uses the portable cleanup below, and records
+a `preparation_containment` gap. On
+both macOS and Linux, every setup/probe process also inherits a unique random
+preparation marker. While the root is alive, PID-file-rooted `ps` polling
+retains observed descendants even if they later reparent; after it exits, a
+separate `ps eww` scan finds surviving marked processes independently of their
+process group or session. Cleanup applies TERM, then KILL, verifies that no
+tracked live process remains, and treats inspection or containment failure as
+a `preparation_containment` gap with an isolated fallback rather than silent
+success. Unverified platforms use the same failure path. (Ordinary reviewer
+`run_review_command` still has the older process-group-only cancellation
+semantics; this is pre-existing and not broadened here.)
+
+A worktree is not `ready` until its actual receipt is atomically persisted in
+mode-0600 `state/environments.json`. Any failed/aborted preparation discards
+the entire worktree and creates a fresh tracked-only checkout at a different
+unique path. A failed optional step returns that fresh worktree as `degraded`;
+a required failure persists `unready` and prevents launch. There is no in-place
+reset or reuse of a directory a surviving writer could touch. Pending fallback
+paths use the existing pending-manifest/crash-recovery protocol.
+
+Receipts contain requested/effective specs, resolved cache/toolchain identity,
+private logical IDs, non-secret env values, bounded setup/probe records,
+boundary capabilities, readiness, typed gaps, and non-hermetic shared inputs.
+Digests omit timestamps, elapsed times, raw output, and random private/worktree
+paths. Shared caches/toolchains remain mutable non-hermetic inputs, not
+snapshots or behavioral proof. When a profile applies or gaps exist, each
+reviewer/verifier prompt gets a bounded actual-receipt note and an instruction
+not to hand-link/download dependencies or use unrelated caches; missing tools
+belong in environment gaps. With no profile and no gaps, prompts are
+byte-identical to the pre-environment implementation while receipts still
+persist. Environment and agent state updates use the review output directory's
+shared `proper-lockfile` lock plus atomic rename, and merge existing records
+instead of deleting earlier pools' evidence.
+
+### Platform guarantees for selected caches
+
+- **macOS `sandbox-exec`:** selected caches get no write allow. An explicit
+  cache-subpath write deny follows every private allow, including Git admin.
+- **Linux `bwrap`:** each cache is mounted with `--ro-bind` at its canonical
+  path after private writable binds, retaining `--unshare-net`. Preparation
+  additionally uses `--unshare-pid --die-with-parent` when the probe confirms
+  support, so all setup descendants die with the sandbox init process.
+- **Linux `unshare-net`:** no read-only cache or contained setup/probe is
+  exposed. The receipt has `environment_unsupported`; only weaker
+  network-only/private-env behavior remains.
+- **Headless/outer sandbox:** absent explicit network/filesystem/read-only
+  attestation, caches are not exposed and setup/probes get typed gaps.
+  `sandbox` is not relabelled `offline` or `read-only`.
+
+Network denial includes loopback. Loopback-dependent tests fail as environment
+limitations, not as a reason to weaken the boundary.
+
+### Worked Go example (configuration, not an adapter)
+
+Given trusted `go-modules` and `go-host` catalog entries, this profile exposes
+only the module cache. Build cache and temp output stay private:
+
+```jsonc
+{
+  "readOnlyCaches": ["go-modules"],
+  "privateDirs": [
+    { "id": "go-build", "root": "cache", "path": "go-build" },
+    { "id": "go-tmp", "root": "scratch", "path": "go" }
+  ],
+  "env": {
+    "GOMODCACHE": "${cache:go-modules}",
+    "GOCACHE": "${private:go-build}",
+    "GOTMPDIR": "${private:go-tmp}",
+    "GOTOOLCHAIN": "auto",
+    "GOPROXY": "off",
+    "GOFLAGS": "-mod=readonly",
+    "GOENV": "off",
+    "GOWORK": "off"
+  },
+  "toolchain": "go-host",
+  "setup": [],
+  "probes": [
+    {
+      "id": "go-offline-test",
+      "argv": ["go", "test", "./..."],
+      "cwd": ".",
+      "timeoutMs": 30000,
+      "required": true
+    }
+  ]
+}
+```
+
+`GOTOOLCHAIN=auto` can select an already cached newer toolchain while network
+access remains denied. The tested configuration needs private writable
+`GOCACHE`; a read-only shared user build cache is not equivalent.
+
+### Worked pnpm example (configuration, not an adapter)
+
+Use the project-pinned pnpm 10.8.1 executable through trusted toolchain PATH
+and expose its real store whose effective path ends in `v10`. Include required
+lifecycle-script executables, such as Bun, in trusted `bin` dirs.
+
+```jsonc
+{
+  "readOnlyCaches": ["pnpm-v10"],
+  "privateDirs": [
+    { "id": "corepack", "root": "cache", "path": "corepack" }
+  ],
+  "env": {
+    "PNPM_STORE_PATH": "${cache:pnpm-v10}",
+    "COREPACK_HOME": "${private:corepack}",
+    "CI": "1"
+  },
+  "toolchain": "node-and-pnpm-10_8_1",
+  "setup": [
+    {
+      "argv": ["pnpm", "install", "--offline", "--frozen-lockfile"],
+      "cwd": ".",
+      "timeoutMs": 120000,
+      "required": true
+    }
+  ],
+  "probes": [
+    {
+      "id": "focused-vitest",
+      "argv": ["pnpm", "exec", "vitest", "run", "src/components/logo.test.ts"],
+      "cwd": ".",
+      "timeoutMs": 30000,
+      "required": true
+    }
+  ]
+}
+```
+
+Another store version, an automatic global pnpm switch, or a path without its
+version-directory basename is unproven until its probe passes. Offline install
+cannot fetch missing packages.
+
+Cache proposals/approval UI are **out of scope for this PR**. So are an
+orchestrator, ignored-file copying, manifest/package-manager cache inference,
+and Ferment v2 migration. Headless outer-capability attestation and proposal
+UI are follow-up work.
 
 ## Local execution: contained offline by default
 
@@ -303,8 +574,9 @@ and are not a general process sandbox; ordinary local permissions and the OS
 network boundary provide the execution controls.
 
 The pool writes a `review-worktrees/v1` manifest. A pending entry is persisted
-**before** `git worktree add`; ready state follows only after registration and a
-second manifest update. Recovery merges that manifest with Git-owned
+**before** `git worktree add`; ready state follows only after registration,
+environment setup/probes, and the second manifest update that follows durable
+receipt persistence. Recovery merges that manifest with Git-owned
 registrations under the run directory, handles both interruption points, then:
 
 1. removes owned worktrees;

@@ -1,5 +1,6 @@
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionCommandContext, SessionManager } from "@earendil-works/pi-coding-agent"
+import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent"
 import { truncateToWidth } from "@earendil-works/pi-tui"
 import { parse as parseShell } from "shell-quote"
 import { getParsedCliArgs } from "../../cli-args.js"
@@ -378,7 +379,7 @@ async function runHeadless(
 			if (!tools.has(required))
 				throw new ReviewTargetError("missing_submit_tool", `Review startup is missing ${required}.`)
 		}
-		const settings = deps.readSettings(pi)
+		const settings = deps.readSettings(pi, SettingsManager.create(ctx.cwd, getAgentDir()))
 		report.scope(prepared.target)
 		if (wrapUp) {
 			const result = await deps.wrapUp({
@@ -394,6 +395,7 @@ async function runHeadless(
 				},
 				...settings,
 				checkDefinitions: settings.checkDefinitions,
+				environmentValidationGaps: settings.environmentGaps,
 				environmentGaps: headlessEnvironmentGaps(),
 				deadline: prepared.deadlineMs,
 				executionPolicy: { mode: "headless" },
@@ -420,6 +422,8 @@ async function runHeadless(
 			...targetRequest.panel,
 			requiredLenses: settings.requiredLenses,
 			checkDefinitions: settings.checkDefinitions,
+			environment: settings.environment,
+			environmentValidationGaps: settings.environmentGaps,
 			environmentGaps: headlessEnvironmentGaps(),
 			deadline: prepared.deadlineMs,
 			executionPolicy: { mode: "headless" },
@@ -467,7 +471,7 @@ async function runLocal(
 		// Bare pickers own Esc themselves; begin review cancellation once the
 		// picker is gone and before target snapshots or lock acquisition.
 		pending.captureInput()
-		const settings = deps.readSettings(pi)
+		const settings = deps.readSettings(pi, SettingsManager.create(ctx.cwd, getAgentDir()))
 		const directories = cliDirectories(ctx)
 		const target = await deps.resolveTarget(request, {
 			root: ctx.cwd,
@@ -496,6 +500,8 @@ async function runLocal(
 				...request.panel,
 				requiredLenses: settings.requiredLenses,
 				checkDefinitions: settings.checkDefinitions,
+				environment: settings.environment,
+				environmentValidationGaps: settings.environmentGaps,
 				signal: operation.signal,
 				submitGraceMs: 1_000,
 				onProgress: report.progress,

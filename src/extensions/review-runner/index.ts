@@ -1,3 +1,5 @@
+export type { ReviewAgentRunMetric, ReviewModelUsage } from "./agent-metrics.js"
+export { REVIEW_AGENTS_STATE_VERSION } from "./agent-metrics.js"
 export type { ReviewCheckDefinition } from "./check-config.js"
 export { discoverPackageReviewChecks } from "./check-config.js"
 export type {
@@ -7,6 +9,26 @@ export type {
 	ReviewExecutionProfile,
 } from "./checks.js"
 export { REVIEW_CHECK_STATE_VERSION, ReviewCheckQueue } from "./checks.js"
+export type {
+	PrepareReviewEnvironmentOptions,
+	ReviewCacheCatalogEntry,
+	ReviewEnvironmentBoundary,
+	ReviewEnvironmentCommand,
+	ReviewEnvironmentGap,
+	ReviewEnvironmentPlan,
+	ReviewEnvironmentReceipt,
+	ReviewEnvironmentSettings,
+	ReviewEnvironmentSpec,
+	ReviewToolchainCatalogEntry,
+} from "./environment.js"
+export {
+	emptyReviewEnvironmentSpec,
+	prepareReviewEnvironment,
+	REVIEW_ENVIRONMENT_SCHEMA_VERSION,
+	REVIEW_ENVIRONMENTS_STATE_VERSION,
+	resolveReviewEnvironmentPlan,
+	reviewEnvironmentPromptNote,
+} from "./environment.js"
 export type {
 	ReviewApprovalKind,
 	ReviewApprovalPresentation,

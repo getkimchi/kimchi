@@ -402,7 +402,21 @@ console.log("ignored-stdio grandchild passed")`,
 		const detected = await REVIEW_NETWORK_BOUNDARY_TESTING.detectLinuxBoundary(probe)
 
 		expect(detected?.kind).toBe("bwrap")
-		expect(probe.mock.calls.map(([command]) => command)).toEqual(["bwrap"])
+		expect(detected?.wrap("node --version", worktree)).not.toContain("--unshare-pid")
+		expect(detected?.wrap("node --version", worktree, { preparation: true })).toContain("--unshare-pid")
+		expect(probe.mock.calls.map(([command]) => command)).toEqual(["bwrap", "bwrap"])
+	})
+
+	it("keeps ordinary bwrap when only its PID namespace probe fails", async () => {
+		const probe = vi.fn(async (_command: string, args: readonly string[]) => !args.includes("--unshare-pid"))
+		const detected = await REVIEW_NETWORK_BOUNDARY_TESTING.detectLinuxBoundary(probe)
+
+		expect(detected?.kind).toBe("bwrap")
+		const ordinary = detected?.wrap("node --version", worktree)
+		expect(ordinary).toContain("bwrap")
+		expect(ordinary).not.toContain("--unshare-pid")
+		expect(detected?.wrap("node --version", worktree, { preparation: true })).toBe(ordinary)
+		expect(probe.mock.calls.map(([command]) => command)).toEqual(["bwrap", "bwrap"])
 	})
 
 	it("falls back to unshare-net and records its boundary name", async () => {

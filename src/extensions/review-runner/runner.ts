@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
+import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -6,6 +8,7 @@ import { type RunOptions, type RunResult, runAgent, type ToolActivity } from "..
 import { prepareAgentSessionFile } from "../agents/manager/session-file.js"
 import type { LifetimeUsage } from "../agents/manager/usage.js"
 import type { SubagentType, ThinkingLevel } from "../agents/personas/types.js"
+import { reviewStateArray, updateReviewJson } from "../review-panel/output.js"
 import {
 	createReconciliationSubmissionExtension,
 	REVIEW_RECONCILIATION_TOOL,
@@ -14,8 +17,17 @@ import type { SemanticReconciliation } from "../review-panel/types.js"
 import { createReviewSubmitExtension } from "../review-submit/index.js"
 import { DEFAULT_WRITER_LIMIT } from "../review-submit/store.js"
 import type { ResolvedReviewTarget } from "../review-targets/types.js"
+import {
+	createReviewAgentMetric,
+	isReviewAgentSubmission,
+	REVIEW_AGENTS_STATE_VERSION,
+	type ReviewAgentRunMetric,
+	reviewAgentAttemptKey,
+} from "./agent-metrics.js"
 import type { ReviewCheckDefinition } from "./check-config.js"
 import { ReviewCheckQueue } from "./checks.js"
+import type { ReviewEnvironmentGap, ReviewEnvironmentSettings } from "./environment.js"
+import { reviewEnvironmentPromptNote } from "./environment.js"
 import {
 	createReviewExecutionController,
 	type ReviewExecutionController,
@@ -58,6 +70,8 @@ export interface ReviewAgentResult extends RunResult {
 	execution: ReviewExecutionController
 	/** Structured output when a verifier uses submit_reconciliation. */
 	reconciliation?: SemanticReconciliation
+	sessionFile?: string
+	metric: ReviewAgentRunMetric
 }
 
 export type ReviewAgentSpawner = (request: {
@@ -77,6 +91,8 @@ export interface ReviewRunnerOptions {
 	rootDir?: string
 	checkStatePath?: string
 	checkDefinitions?: ReviewCheckDefinition[]
+	environment?: ReviewEnvironmentSettings
+	environmentGaps?: readonly ReviewEnvironmentGap[]
 	/** Trusted coordinator policy. Unset mode uses only isInSandboxCluster(), never print mode. */
 	executionPolicy?: ReviewExecutionPolicyOptions
 	signal?: AbortSignal
@@ -93,8 +109,12 @@ const defaultSpawner: ReviewAgentSpawner = ({ ctx, type, prompt, options }) => r
 
 export class ReviewRunner {
 	readonly checkQueue: ReviewCheckQueue
+	private readonly runId = randomUUID()
 	private readonly active = new Map<string, AbortController>()
 	private readonly activeRuns = new Map<string, Promise<ReviewAgentResult>>()
+	private readonly metrics: ReviewAgentRunMetric[] = []
+	private metricTail: Promise<void> = Promise.resolve()
+	private metricSequence = 0
 	private cleanupPromise?: Promise<void>
 	private cleaned = false
 
@@ -120,6 +140,9 @@ export class ReviewRunner {
 				rootDir: options.rootDir,
 				outputDir: options.outputDir,
 				concurrency: options.concurrency,
+				environment: options.environment,
+				environmentGaps: options.environmentGaps,
+				executionPolicy: options.executionPolicy,
 				signal: options.signal,
 			})
 			const checkQueue = await ReviewCheckQueue.create({
@@ -130,7 +153,9 @@ export class ReviewRunner {
 				definitions: options.checkDefinitions,
 				signal: options.signal,
 			})
-			return new ReviewRunner(options, worktrees, checkQueue)
+			const runner = new ReviewRunner(options, worktrees, checkQueue)
+			await runner.loadAgentMetrics()
+			return runner
 		} catch (error) {
 			if (worktrees) await worktrees.cleanup().catch(() => {})
 			else if (!poolCreationStarted) await options.target.cleanup().catch(() => {})
@@ -140,6 +165,50 @@ export class ReviewRunner {
 
 	get activeReviewers(): readonly string[] {
 		return [...this.active.keys()]
+	}
+
+	get environmentGaps(): readonly ReviewEnvironmentGap[] {
+		return this.worktrees.environmentGaps
+	}
+
+	get agentMetrics(): readonly ReviewAgentRunMetric[] {
+		return this.metrics
+	}
+
+	private agentsPath(): string {
+		return resolve(this.options.outputDir, "state", "agents.json")
+	}
+
+	private async loadAgentMetrics(): Promise<void> {
+		let current: unknown
+		try {
+			current = JSON.parse(await readFile(this.agentsPath(), "utf8"))
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+		}
+		this.metrics.push(...(reviewStateArray(current, REVIEW_AGENTS_STATE_VERSION, "agents") as ReviewAgentRunMetric[]))
+	}
+
+	private async persistMetric(metric: ReviewAgentRunMetric): Promise<void> {
+		this.metrics.push(metric)
+		const operation = this.metricTail
+			.catch(() => {})
+			.then(() =>
+				updateReviewJson(this.agentsPath(), (current) => {
+					const merged = new Map<string, ReviewAgentRunMetric>()
+					for (const previous of reviewStateArray(current, REVIEW_AGENTS_STATE_VERSION, "agents")) {
+						const existing = previous as ReviewAgentRunMetric
+						merged.set(reviewAgentAttemptKey(existing), existing)
+					}
+					for (const currentMetric of this.metrics) merged.set(reviewAgentAttemptKey(currentMetric), currentMetric)
+					return {
+						schema_version: REVIEW_AGENTS_STATE_VERSION,
+						agents: [...merged.values()],
+					}
+				}),
+			)
+		this.metricTail = operation
+		return operation
 	}
 
 	cancelReviewer(id: string, reason?: unknown): boolean {
@@ -192,7 +261,11 @@ export class ReviewRunner {
 		this.active.set(options.id, controller)
 		const signal = combinedSignal(this.options.signal, options.signal, controller.signal)
 		try {
-			const worktree = await this.worktrees.getWorktree(options.id, { kind, revision: "head" })
+			const worktree = await this.worktrees.getWorktree(options.id, {
+				kind,
+				revision: "head",
+				...(signal ? { signal } : {}),
+			})
 			const run = this.spawnInWorktree(options, worktree, signal, "verifier")
 			this.activeRuns.set(options.id, run)
 			return await run
@@ -215,6 +288,8 @@ export class ReviewRunner {
 		kind?: "verifier",
 	): Promise<ReviewAgentResult> {
 		const reconciliationBridge: { value?: SemanticReconciliation } = {}
+		const startedAt = Date.now()
+		let firstSubmittedAt: number | undefined
 		let sessionFile: string | undefined
 		let sessionDir: string | undefined
 		try {
@@ -250,6 +325,10 @@ export class ReviewRunner {
 		}
 		const spawnOptions: RunOptions = {
 			...options.agent,
+			onToolActivity: (activity) => {
+				if (firstSubmittedAt === undefined && isReviewAgentSubmission(activity)) firstSubmittedAt = Date.now()
+				options.agent?.onToolActivity?.(activity)
+			},
 			...(sessionFile ? { sessionFile, sessionDir } : {}),
 			pi: this.options.pi,
 			cwd: worktree.path,
@@ -273,18 +352,55 @@ export class ReviewRunner {
 				...(kind === "verifier" ? [createReconciliationSubmissionExtension(reconciliationBridge)] : []),
 			],
 		}
-		const result = await (this.options.spawnAgent ?? defaultSpawner)({
-			ctx: this.options.ctx,
-			type: options.type ?? "General-Purpose",
-			prompt: options.prompt,
-			options: spawnOptions,
-		})
-		return {
-			...result,
-			writer: options.id,
-			worktree,
-			execution,
-			...(reconciliationBridge.value === undefined ? {} : { reconciliation: reconciliationBridge.value }),
+		const prompt =
+			worktree.environment && (worktree.environment.profileApplied || worktree.environment.gaps.length > 0)
+				? `${options.prompt}\n\n${reviewEnvironmentPromptNote(worktree.environment)}`
+				: options.prompt
+		try {
+			const result = await (this.options.spawnAgent ?? defaultSpawner)({
+				ctx: this.options.ctx,
+				type: options.type ?? "General-Purpose",
+				prompt,
+				options: spawnOptions,
+			})
+			const metric = createReviewAgentMetric({
+				runId: this.runId,
+				sequence: ++this.metricSequence,
+				writer: options.id,
+				...(kind ? { kind } : {}),
+				worktree,
+				...(sessionFile ? { sessionFile } : {}),
+				startedAt,
+				endedAt: Date.now(),
+				...(firstSubmittedAt === undefined ? {} : { firstSubmittedAt }),
+				result,
+			})
+			await this.persistMetric(metric)
+			return {
+				...result,
+				writer: options.id,
+				worktree,
+				execution,
+				...(sessionFile ? { sessionFile } : {}),
+				metric,
+				...(reconciliationBridge.value === undefined ? {} : { reconciliation: reconciliationBridge.value }),
+			}
+		} catch (error) {
+			await this.persistMetric(
+				createReviewAgentMetric({
+					runId: this.runId,
+					sequence: ++this.metricSequence,
+					writer: options.id,
+					...(kind ? { kind } : {}),
+					worktree,
+					...(sessionFile ? { sessionFile } : {}),
+					startedAt,
+					endedAt: Date.now(),
+					...(firstSubmittedAt === undefined ? {} : { firstSubmittedAt }),
+					error,
+				}),
+			)
+			throw error
 		}
 	}
 

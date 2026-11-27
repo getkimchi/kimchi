@@ -43,7 +43,7 @@ async function branchTarget(root: string, contextDir: string) {
 }
 
 function completedRun(responseText: string): RunResult {
-	return { responseText, session: {} as RunResult["session"], aborted: false, steered: false }
+	return { responseText, session: { messages: [] } as unknown as RunResult["session"], aborted: false, steered: false }
 }
 
 describe("review runner writer and worktree isolation", () => {
@@ -99,7 +99,7 @@ describe("review runner writer and worktree isolation", () => {
 			concurrency: 2,
 			executionPolicy: { mode: "local", networkBoundary: testBoundary },
 			spawnAgent: async ({ prompt, options }): Promise<RunResult> => {
-				const writer = prompt
+				const writer = options.description?.replace("Review writer ", "") ?? prompt
 				spawns.push({
 					cwd: options.cwd,
 					isolated: options.isolated,
@@ -135,7 +135,7 @@ describe("review runner writer and worktree isolation", () => {
 					contexts,
 				)
 				expect(submitted.details).toMatchObject({ accepted: true })
-				return { responseText: writer, session: {} as RunResult["session"], aborted: false, steered: false }
+				return completedRun(writer)
 			},
 		})
 		const [one, two] = await Promise.all([
@@ -334,6 +334,139 @@ describe("review runner writer and worktree isolation", () => {
 		expect(received).not.toHaveProperty("sessionDir")
 		expect(warning).toHaveBeenCalledOnce()
 		expect(warning).toHaveBeenCalledWith(expect.stringContaining("Continuing without a persisted transcript"))
+	})
+
+	it("projects receipt notes and persists per-lens and verifier metrics", async () => {
+		const target = await branchTarget(repo, join(sandbox, "review-context"))
+		const parentSessionDir = join(sandbox, "metric-sessions")
+		const parentSessionFile = join(parentSessionDir, "parent.jsonl")
+		mkdirSync(parentSessionDir)
+		writeFileSync(
+			parentSessionFile,
+			`${JSON.stringify({
+				type: "session",
+				version: CURRENT_SESSION_VERSION,
+				id: "01928374-5565-7abc-8def-123456789abc",
+				timestamp: "2026-05-12T10:20:30.400Z",
+				cwd: repo,
+			})}\n`,
+		)
+		const sharedCache = join(sandbox, "shared-cache")
+		mkdirSync(sharedCache)
+		const prompts: string[] = []
+		runner = await ReviewRunner.create({
+			ctx: createContext({
+				cwd: repo,
+				sessionManager: { getSessionDir: () => parentSessionDir, getSessionFile: () => parentSessionFile },
+			}),
+			pi: createExtensionApi().api,
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees"),
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
+			environment: {
+				caches: [{ id: "shared", path: sharedCache }],
+				toolchains: [],
+				profiles: {
+					default: {
+						readOnlyCaches: ["shared"],
+						privateDirs: [],
+						env: { FIXTURE_CACHE: "${cache:shared}" },
+						setup: [],
+						probes: [],
+					},
+					repositories: {},
+				},
+			},
+			spawnAgent: async ({ prompt, options }): Promise<RunResult> => {
+				prompts.push(prompt)
+				options.onToolActivity?.({ toolName: "submit_summary", status: "completed" })
+				return {
+					...completedRun("done"),
+					session: {
+						messages: [
+							{
+								role: "assistant",
+								provider: "fixture-provider",
+								model: "fixture-model",
+								usage: { input: 10, output: 5, cacheRead: 3, cacheWrite: 2 },
+								stopReason: "stop",
+							},
+						],
+					} as unknown as RunResult["session"],
+					turnsUsed: 4,
+					maxTurns: 9,
+				}
+			},
+		})
+		await runner.spawnReviewer({ id: "spec", prompt: "Lens prompt" })
+		await runner.spawnVerifier({ id: "reconciliation", prompt: "Verifier prompt" })
+		expect(prompts).toHaveLength(2)
+		for (const prompt of prompts) {
+			expect(prompt).toContain("REVIEW ENVIRONMENT (actual prepared receipt)")
+			expect(prompt).toContain(sharedCache)
+			expect(prompt).toContain("Do not hand-link or download dependencies")
+		}
+		const persisted = JSON.parse(readFileSync(join(outputDir, "state", "agents.json"), "utf8"))
+		expect(persisted.schema_version).toBe("review-agents/v1")
+		expect(persisted.agents).toHaveLength(2)
+		expect(persisted.agents.map((agent: { role: string }) => agent.role)).toEqual(["lens", "verifier"])
+		for (const metric of persisted.agents) {
+			expect(metric.sessionFile).toContain(parentSessionDir)
+			expect(existsSync(metric.sessionFile)).toBe(true)
+			expect(Date.parse(metric.startedAt)).toBeLessThanOrEqual(Date.parse(metric.endedAt))
+			expect(metric.durationMs).toBeGreaterThanOrEqual(0)
+			expect(metric.durationSeconds).toBe(metric.durationMs / 1000)
+			expect(metric.turnsUsed).toBe(4)
+			expect(metric.maxTurns).toBe(9)
+			expect(metric.aborted).toBe(false)
+			expect(metric.stopReason).toBe("stop")
+			expect(metric.firstSubmittedAt).toBeDefined()
+			expect(metric.models).toEqual([
+				{
+					provider: "fixture-provider",
+					model: "fixture-model",
+					usage: { input: 10, output: 5, cacheRead: 3, cacheWrite: 2 },
+				},
+			])
+		}
+	})
+
+	it("keeps no-config prompts byte-identical and merges metrics across runners", async () => {
+		const target = await branchTarget(repo, join(sandbox, "review-context"))
+		const exactPrompt = "Exact prompt bytes\nwith untyped suffix <tag> and unicode ✓"
+		let receivedPrompt = ""
+		runner = await ReviewRunner.create({
+			ctx: createContext({ cwd: repo }),
+			pi: createExtensionApi().api,
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees"),
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
+			spawnAgent: async ({ prompt }) => {
+				receivedPrompt = prompt
+				return completedRun("done")
+			},
+		})
+		await runner.spawnReviewer({ id: "spec", prompt: exactPrompt })
+		expect(receivedPrompt).toBe(exactPrompt)
+		await runner.cleanup()
+
+		runner = await ReviewRunner.create({
+			ctx: createContext({ cwd: repo }),
+			pi: createExtensionApi().api,
+			target,
+			outputDir,
+			rootDir: join(sandbox, "worktrees-resume"),
+			executionPolicy: { mode: "local", networkBoundary: testBoundary },
+			spawnAgent: async () => completedRun("done"),
+		})
+		expect(runner.agentMetrics.map((metric) => metric.writer)).toEqual(["spec"])
+		await runner.spawnVerifier({ id: "reconciliation", prompt: "verifier" })
+		const agents = JSON.parse(readFileSync(join(outputDir, "state", "agents.json"), "utf8"))
+		expect(agents.agents).toHaveLength(2)
+		expect(agents.agents.map((metric: { writer: string }) => metric.writer)).toEqual(["spec", "reconciliation"])
+		expect(new Set(agents.agents.map((metric: { runId: string }) => metric.runId)).size).toBe(2)
 	})
 
 	it("rejects duplicate writer runs and finishes cancellation before worktree cleanup", async () => {
