@@ -1419,6 +1419,7 @@ export class KimchiAcpAgent {
 				cwd: params.cwd,
 				sessionDir,
 				sourceId: params.sessionId,
+				sourcePath,
 			})
 			sessionId = fork.sessionId
 			forkedPath = fork.path

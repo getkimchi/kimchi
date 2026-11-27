@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from "node:fs"
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { FileEntry, SessionHeader } from "@earendil-works/pi-coding-agent"
 import { CURRENT_SESSION_VERSION, parseSessionEntries, SessionManager } from "@earendil-works/pi-coding-agent"
@@ -93,6 +93,8 @@ type PersistAcpForkInput = {
 	cwd: string
 	sessionDir: string
 	sourceId: string
+	/** The exact source path validated by the caller, never rediscovered here. */
+	sourcePath: string
 }
 
 function durableEntries(source: AcpForkSource, sourcePath: string): FileEntry[] {
@@ -128,16 +130,13 @@ function durableEntries(source: AcpForkSource, sourcePath: string): FileEntry[] 
  * Parent lineage is retained, while child associations become inert metadata
  * with their original structural IDs and parent links intact.
  */
-export function persistAcpFork({ source, cwd, sessionDir, sourceId }: PersistAcpForkInput): {
+export function persistAcpFork({ source, cwd, sessionDir, sourceId, sourcePath }: PersistAcpForkInput): {
 	sessionId: string
 	path: string
 } {
-	const resolvedSourcePath =
-		source?.sessionFile ?? source?.sessionManager.getSessionFile() ?? resolveSessionPathById(sessionDir, sourceId)
-	if (!resolvedSourcePath) throw new Error(`unknown or unsaved source session ${sourceId}`)
 	const sourceEntries = source
-		? durableEntries(source, resolvedSourcePath)
-		: parseSessionEntries(readFileSync(resolvedSourcePath, "utf-8"))
+		? durableEntries(source, sourcePath)
+		: parseSessionEntries(readFileSync(sourcePath, "utf-8"))
 
 	// In-memory managers migrate entries and regenerate the selected branch
 	// without registering staging paths in Pi's process-wide live-session set
@@ -147,7 +146,7 @@ export function persistAcpFork({ source, cwd, sessionDir, sourceId }: PersistAcp
 	if (liveLeafId) stagedSource.branch(liveLeafId)
 	const leafId = stagedSource.getLeafId()
 	if (leafId) stagedSource.createBranchedSession(leafId)
-	else stagedSource.newSession({ parentSession: resolvedSourcePath })
+	else stagedSource.newSession({ parentSession: sourcePath })
 
 	const sessionId = stagedSource.getSessionId()
 	const timestamp = new Date().toISOString()
@@ -157,7 +156,7 @@ export function persistAcpFork({ source, cwd, sessionDir, sourceId }: PersistAcp
 		id: sessionId,
 		timestamp,
 		cwd,
-		parentSession: resolvedSourcePath,
+		parentSession: sourcePath,
 	}
 	mkdirSync(sessionDir, { recursive: true })
 	const path = join(sessionDir, `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`)
@@ -177,6 +176,16 @@ export function persistAcpFork({ source, cwd, sessionDir, sourceId }: PersistAcp
 				: entry,
 		)
 	const contents = `${[forkHeader, provenance, ...independentEntries].map((entry) => JSON.stringify(entry)).join("\n")}\n`
-	writeFileSync(path, contents, { flag: "wx" })
+	const fd = openSync(path, "wx")
+	try {
+		try {
+			writeFileSync(fd, contents, "utf8")
+		} finally {
+			closeSync(fd)
+		}
+	} catch (error) {
+		rmSync(path, { force: true })
+		throw error
+	}
 	return { sessionId, path }
 }

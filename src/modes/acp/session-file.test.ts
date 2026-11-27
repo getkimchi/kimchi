@@ -1,8 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
 	encodeCwdDir,
 	hasAcpForkProvenance,
@@ -11,8 +11,15 @@ import {
 	resolveSessionPathById,
 } from "./session-file.js"
 
+vi.mock("node:fs", async (importActual) => {
+	const actual = await importActual<typeof import("node:fs")>()
+	return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) }
+})
+const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs")
+
 const directories: string[] = []
 afterEach(() => {
+	vi.mocked(writeFileSync).mockReset().mockImplementation(actualFs.writeFileSync)
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
 })
 
@@ -39,7 +46,10 @@ describe("session file discovery and provenance", () => {
 		const path = join(directory, "fork.jsonl")
 		writeFileSync(path, `${JSON.stringify(header)}\n${JSON.stringify(marker)}\n`)
 		expect(hasAcpForkProvenance(path)).toBe(true)
-		writeFileSync(path, `${JSON.stringify(header)}\n`)
+		writeFileSync(
+			path,
+			`${JSON.stringify(header)}\n${JSON.stringify({ type: "custom", customType: "other" })}\n${JSON.stringify(marker)}\n`,
+		)
 		expect(hasAcpForkProvenance(path)).toBe(false)
 	})
 })
@@ -69,6 +79,7 @@ describe("persistAcpFork", () => {
 			cwd: directory,
 			sessionDir: directory,
 			sourceId: "source",
+			sourcePath: path,
 		})
 
 		const contents = readFileSync(result.path, "utf-8")
@@ -80,14 +91,81 @@ describe("persistAcpFork", () => {
 		expect(contents).toContain('"customType":"kimchi:acp-fork-subagent-metadata"')
 		expect(contents).not.toContain('"customType":"subagents:record"')
 		expect(contents).toContain(`"id":"${selectedId}"`)
+		const originalRecord = before
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as { customType?: string; id: string; parentId: string | null; data: unknown })
+			.find((entry) => entry.customType === "subagents:record")
+		const copiedRecord = contents
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line) as { customType?: string; id: string; parentId: string | null; data: unknown })
+			.find((entry) => entry.customType === "kimchi:acp-fork-subagent-metadata")
+		expect(copiedRecord).toEqual({
+			...originalRecord,
+			id: selectedId,
+			customType: "kimchi:acp-fork-subagent-metadata",
+			data: {},
+		})
 		expect(readFileSync(path, "utf-8")).toBe(before)
 	})
 
-	it("rejects a source that is not persisted", () => {
-		const directory = mkdtempSync(join(tmpdir(), "kimchi-file-missing-"))
-		expect(() => persistAcpFork({ cwd: directory, sessionDir: directory, sourceId: "missing" })).toThrow(
-			"unknown or unsaved source session missing",
+	it("uses the caller's validated source path instead of rediscovering it", () => {
+		const directory = mkdtempSync(join(tmpdir(), "kimchi-file-race-"))
+		directories.push(directory)
+		const source = SessionManager.create(directory, directory, { id: "source" })
+		source.appendMessage({ role: "user", content: [{ type: "text", text: "validated source" }], timestamp: 1 })
+		const sourcePath = source.getSessionFile()
+		if (!sourcePath) throw new Error("expected source path")
+		const competingPath = join(directory, "0000_source.jsonl")
+		const competingHeader = {
+			type: "session",
+			version: 3,
+			id: "competing",
+			cwd: directory,
+			timestamp: new Date().toISOString(),
+		}
+		writeFileSync(
+			competingPath,
+			`${JSON.stringify(competingHeader)}\n${JSON.stringify({ type: "custom", id: "competing-entry", customType: "unvalidated" })}\n`,
 		)
-		rmSync(directory, { recursive: true, force: true })
+		expect(resolveSessionPathById(directory, "source")).toBe(competingPath)
+
+		const result = persistAcpFork({ cwd: directory, sessionDir: directory, sourceId: "source", sourcePath })
+		expect(readFileSync(result.path, "utf-8")).toContain("validated source")
+		expect(readFileSync(result.path, "utf-8")).not.toContain("unvalidated")
+		expect(readSessionHeader(result.path)?.parentSession).toBe(sourcePath)
+	})
+
+	it("removes a partially written fork while preserving the write error", () => {
+		const directory = mkdtempSync(join(tmpdir(), "kimchi-file-write-failure-"))
+		directories.push(directory)
+		const source = SessionManager.create(directory, directory, { id: "source" })
+		source.appendMessage({ role: "user", content: [{ type: "text", text: "source transcript" }], timestamp: 1 })
+		const sourcePath = source.getSessionFile()
+		if (!sourcePath) throw new Error("expected source path")
+		const before = readdirSync(directory)
+		vi.mocked(writeFileSync).mockImplementationOnce((file) => {
+			if (typeof file === "number") actualFs.writeFileSync(file, "partial fork")
+			throw new Error("simulated disk full")
+		})
+
+		expect(() => persistAcpFork({ cwd: directory, sessionDir: directory, sourceId: "source", sourcePath })).toThrow(
+			"simulated disk full",
+		)
+		expect(readdirSync(directory)).toEqual(before)
+	})
+
+	it("rejects a missing validated source file", () => {
+		const directory = mkdtempSync(join(tmpdir(), "kimchi-file-missing-"))
+		directories.push(directory)
+		expect(() =>
+			persistAcpFork({
+				cwd: directory,
+				sessionDir: directory,
+				sourceId: "missing",
+				sourcePath: join(directory, "missing.jsonl"),
+			}),
+		).toThrow(/ENOENT/)
 	})
 })
