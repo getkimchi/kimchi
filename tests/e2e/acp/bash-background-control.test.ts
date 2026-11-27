@@ -2,6 +2,7 @@ import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { SessionUpdate } from "@agentclientprotocol/sdk/unstable"
 import { expect, it } from "vitest"
+import { latestAgentChatRequest } from "../tui/support/fake-openai-server.js"
 import { STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt, waitForSessionUpdate } from "./support/scenarios.js"
 
@@ -51,9 +52,14 @@ it(
 				await fixture.conn.request(STEER_METHOD, { sessionId, prompt: "Inspect just the command before continuing" }),
 			).toMatchObject({ status: "injected" })
 			expect((await pending).stopReason).toBe("end_turn")
+			// Auxiliary requests and the idle exit wake can arrive after the prompt;
+			// only the main-agent history is guaranteed to contain the inspection.
 			const messages =
-				(fixture.fake.requests.at(-1)?.body as { messages?: Array<Record<string, unknown>> } | undefined)?.messages ??
-				[]
+				(
+					latestAgentChatRequest(fixture.fake.requests)?.body as
+						| { messages?: Array<Record<string, unknown>> }
+						| undefined
+				)?.messages ?? []
 			const inspection = messages.find((message) => message.role === "tool" && message.tool_call_id === "inspect")
 			expect(String(inspection?.content)).toContain("not yet acknowledged")
 			expect(String(inspection?.content)).not.toContain("Unknown handle")
@@ -202,7 +208,7 @@ it(
 			)
 			expect(JSON.stringify(requests[2]?.body)).toContain("independent file contents")
 			expect(JSON.stringify(requests[3]?.body)).toContain("Wait checkpoint: requested 1s")
-			expect(JSON.stringify(requests.at(-1)?.body)).toContain("stopped on request")
+			expect(JSON.stringify(latestAgentChatRequest(fixture.fake.requests)?.body)).toContain("stopped on request")
 			expect(fixture.client.agentTextBySession().get(sessionId)).toContain("Independent work completed")
 		} finally {
 			await fixture.stop()
@@ -400,8 +406,11 @@ it(
 			// Isolate each tool result from the FINAL request's history by
 			// tool_call_id (earlier requests repeat the same messages).
 			const lastMessages =
-				(fixture.fake.requests.at(-1)?.body as { messages?: Array<Record<string, unknown>> } | undefined)?.messages ??
-				[]
+				(
+					latestAgentChatRequest(fixture.fake.requests)?.body as
+						| { messages?: Array<Record<string, unknown>> }
+						| undefined
+				)?.messages ?? []
 			const toolText = (id: string): string => {
 				const message = lastMessages.find((m) => m.role === "tool" && m.tool_call_id === id)
 				return typeof message?.content === "string" ? message.content : JSON.stringify(message?.content ?? "")
