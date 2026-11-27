@@ -123,6 +123,23 @@ describe("runTerminal", () => {
 		expect(process.env.KIMCHI_API_KEY).toBeUndefined()
 	})
 
+	it("passes the SSO organization to SSH so the proxy looks up the workspace in the picked org", async () => {
+		const { ctx } = makeCtx({ credentials: { token: "sso-tok", organizationId: "org-picked" } })
+		const runChild = vi.fn().mockResolvedValue(0)
+		await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
+		expect(runChild.mock.calls[0][0].env).toMatchObject({
+			KIMCHI_API_KEY: "sso-tok",
+			KIMCHI_ORGANIZATION_ID: "org-picked",
+		})
+	})
+
+	it("sends no organization to SSH for an API key", async () => {
+		const { ctx } = makeCtx()
+		const runChild = vi.fn().mockResolvedValue(0)
+		await runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild })
+		expect(runChild.mock.calls[0][0].env.KIMCHI_ORGANIZATION_ID).toBeUndefined()
+	})
+
 	it("builds the expected ssh argv and env, returning on exit 0", async () => {
 		const { ctx } = makeCtx()
 		const runChild = vi.fn().mockResolvedValue(0)
@@ -242,6 +259,9 @@ describe("runTerminal", () => {
 			runTerminal("33333333-3333-4333-8333-333333333333", ctx, { _runChildWithTTYHandoff: runChild }),
 		).rejects.toBeInstanceOf(TeleportRefusal)
 		expect(authMock).not.toHaveBeenCalled()
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/API key/), "error")
+		expect(ui.notify).toHaveBeenCalledWith(
+			"No credentials configured. Run `kimchi` and sign in (API key or SSO).",
+			"error",
+		)
 	})
 })

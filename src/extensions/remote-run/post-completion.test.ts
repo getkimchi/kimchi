@@ -358,6 +358,7 @@ describe("handleRemoteCompletion", () => {
 					remotePath: "/home/sandbox/kimchi-acp-a1b2c3d4/",
 					direction: "down",
 					remoteHost: "worker.example.com",
+					credentials: expect.objectContaining({ token: "fake-key" }),
 					deleteExtraneous: false,
 					excludeFilters: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],
 				}),
@@ -604,7 +605,13 @@ describe("handleRemoteFailure", () => {
 
 describe("handleRemoteCompletion — PR intent", () => {
 	const tmp = mkdtempSync(join(osTmpdir(), "pr-completion-test-"))
-	const CONNECTION = { host: "worker.example.com", remoteUser: "sandbox", authToken: "tok", cwd: "/home/sandbox/acp-x" }
+	const CONNECTION = {
+		host: "worker.example.com",
+		remoteUser: "sandbox",
+		authToken: "tok",
+		cwd: "/home/sandbox/acp-x",
+		credentials: { token: "fake-key" },
+	}
 	const GIT = { branch: "kimchi/fix-login", baseBranch: "main", baseSha: "a".repeat(40), dirtyFiles: [] as string[] }
 	const REMOTE: RemoteSessionMeta = {
 		workspaceId: "ws-1",
@@ -1631,7 +1638,6 @@ describe("handleRemoteCompletion — PR intent", () => {
 				connection: CONNECTION,
 				branch: "kimchi/fix-login",
 				localRepo: ctx.cwd,
-				apiKey: "fake-key",
 			}),
 		)
 		// Fallback push succeeded → local pull (default mock) → terminal.

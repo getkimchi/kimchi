@@ -50,16 +50,16 @@ var buildWSURL = func(sandboxURL string, port int) string {
 	return "wss://" + sandboxURL + ":" + strconv.Itoa(port) + "/ssh"
 }
 
-func resolveTunnelCredentials(ctx context.Context, sessionIDOrSandboxURL, apiKey, endpoint string, port int) (*tunnelCreds, error) {
-	orgID, err := cast.VerifyAPIKey(ctx, apiKey, endpoint)
+func resolveTunnelCredentials(ctx context.Context, sessionIDOrSandboxURL string, creds cast.Credentials, endpoint string, port int) (*tunnelCreds, error) {
+	orgID, err := cast.VerifyCredentials(ctx, creds, endpoint)
 	if err != nil {
 		return nil, err
 	}
-	sessionID, sandboxURL, err := cast.ResolveWorkspaceID(ctx, orgID, sessionIDOrSandboxURL, apiKey, endpoint)
+	sessionID, sandboxURL, err := cast.ResolveWorkspaceID(ctx, orgID, sessionIDOrSandboxURL, creds, endpoint)
 	if err != nil {
 		return nil, err
 	}
-	token, err := cast.ExchangeWorkspaceToken(ctx, apiKey, sessionID, endpoint)
+	token, err := cast.ExchangeWorkspaceToken(ctx, creds, sessionID, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -159,16 +159,16 @@ func runBinaryBridgeIO(ctx context.Context, wsURL, token string, stdin io.Reader
 
 // ─── Connect helpers ──────────────────────────────────────────────────────────
 
-func proxyConnect(ctx context.Context, arg, apiKey, endpoint string, port int) error {
-	return proxyConnectIO(ctx, arg, apiKey, endpoint, port, os.Stdin, os.Stdout)
+func proxyConnect(ctx context.Context, arg string, creds cast.Credentials, endpoint string, port int) error {
+	return proxyConnectIO(ctx, arg, creds, endpoint, port, os.Stdin, os.Stdout)
 }
 
-func proxyConnectIO(ctx context.Context, sessionIDOrSandboxURL, apiKey, endpoint string, port int, stdin io.Reader, stdout io.Writer) error {
-	creds, err := resolveTunnelCredentials(ctx, sessionIDOrSandboxURL, apiKey, endpoint, port)
+func proxyConnectIO(ctx context.Context, sessionIDOrSandboxURL string, creds cast.Credentials, endpoint string, port int, stdin io.Reader, stdout io.Writer) error {
+	tunnel, err := resolveTunnelCredentials(ctx, sessionIDOrSandboxURL, creds, endpoint, port)
 	if err != nil {
 		return err
 	}
-	return runBinaryBridgeIO(ctx, creds.wsURL, creds.token, stdin, stdout)
+	return runBinaryBridgeIO(ctx, tunnel.wsURL, tunnel.token, stdin, stdout)
 }
 
 // ─── Cobra commands ───────────────────────────────────────────────────────────
@@ -179,7 +179,8 @@ func NewSSHProxyCmd() *cobra.Command {
 		Short: "SSH ProxyCommand bridge to a Kimchi remote sandbox",
 		Long: `Acts as an SSH ProxyCommand bridge to a Kimchi remote sandbox.
 
-Requires $KIMCHI_API_KEY to be set.
+Requires $KIMCHI_API_KEY to be set (an API key or an SSO token).
+Set $KIMCHI_ORGANIZATION_ID to act in a specific SSO organization.
 Override the API endpoint with $KIMCHI_REMOTE_ENDPOINT.
 
 Example ~/.ssh/config entry:
@@ -192,7 +193,7 @@ Example ~/.ssh/config entry:
 			if err != nil {
 				return err
 			}
-			apiKey, err := cast.ReadAPIKey()
+			creds, err := cast.ReadCredentials()
 			if err != nil {
 				return err
 			}
@@ -200,7 +201,7 @@ Example ~/.ssh/config entry:
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer cancel()
 
-			if err := proxyConnect(ctx, args[0], apiKey, cast.ResolveEndpoint(), port); err != nil {
+			if err := proxyConnect(ctx, args[0], creds, cast.ResolveEndpoint(), port); err != nil {
 				return fmt.Errorf("ssh-proxy: %w", err)
 			}
 			return nil

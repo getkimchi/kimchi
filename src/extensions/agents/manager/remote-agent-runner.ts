@@ -988,6 +988,7 @@ export async function runRemoteAgent(
 				remotePath: cwd,
 				remoteHost: creds.host,
 				authToken: creds.connectToken,
+				credentials,
 				freshClone: session.freshClone ?? false,
 				signal,
 			})

@@ -1,5 +1,5 @@
 // Package cast provides API client helpers for talking to the Kimchi/CAST AI
-// remote-session backend: key verification, session resolution, and token
+// remote-session backend: credential verification, session resolution, and token
 // exchange.
 package cast
 
@@ -38,14 +38,31 @@ type RemoteNetworkError struct {
 
 func (e *RemoteNetworkError) Error() string { return e.Msg }
 
+// ─── Credentials ──────────────────────────────────────────────────────────────
+
+// organizationHeader must match GATEWAY_ORGANIZATION_HEADER in
+// src/auth/gateway-credentials.ts.
+const organizationHeader = "X-CastAi-Organization-Id"
+
+// Credentials is a bearer token plus the SSO organization it acts in. An SSO
+// token without the organization header resolves to the user's default
+// organization, so workspace lookups in any other organization miss.
+type Credentials struct {
+	Token          string
+	OrganizationID string
+}
+
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
-func doRequest(ctx context.Context, method, u, apiKey string, body io.Reader) (*http.Response, error) {
+func doRequest(ctx context.Context, method, u string, creds Credentials, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Api-Key", apiKey)
+	req.Header.Set("Authorization", "Bearer "+creds.Token)
+	if creds.OrganizationID != "" {
+		req.Header.Set(organizationHeader, creds.OrganizationID)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -64,12 +81,12 @@ func checkResponse(resp *http.Response, endpoint string) error {
 	switch resp.StatusCode {
 	case 401:
 		return &RemoteAuthError{
-			Msg:    fmt.Sprintf("Invalid API key - run 'kimchi setup' to authenticate: %s", endpoint),
+			Msg:    fmt.Sprintf("Invalid credentials (API key or SSO token). Run `kimchi` and sign in again: %s", endpoint),
 			Status: 401,
 		}
 	case 403:
 		return &RemoteAuthError{
-			Msg:    fmt.Sprintf("Forbidden - your API key does not have permission to use remote workspaces. %s", endpoint),
+			Msg:    fmt.Sprintf("Forbidden: your credentials do not have permission to use remote workspaces. %s", endpoint),
 			Status: 403,
 		}
 	case 404:
@@ -100,7 +117,7 @@ type listWorkspacesPage struct {
 	NextPageCursor string          `json:"nextPageCursor"`
 }
 
-func findWorkspaceIDByURI(ctx context.Context, orgID, sandboxURL, apiKey, endpoint string) (string, error) {
+func findWorkspaceIDByURI(ctx context.Context, orgID, sandboxURL string, creds Credentials, endpoint string) (string, error) {
 	// fetchPage fetches one page of workspace and returns the items and next cursor.
 	// Returns (nil, "", err) on failure.
 	fetchPage := func(cursor string) ([]workspaceItem, string, error) {
@@ -113,7 +130,7 @@ func findWorkspaceIDByURI(ctx context.Context, orgID, sandboxURL, apiKey, endpoi
 
 		reqCtx, cancel := context.WithTimeout(ctx, httpTimeout)
 		defer cancel()
-		resp, err := doRequest(reqCtx, http.MethodGet, u, apiKey, nil)
+		resp, err := doRequest(reqCtx, http.MethodGet, u, creds, nil)
 		if err != nil {
 			return nil, "", err
 		}
@@ -126,12 +143,12 @@ func findWorkspaceIDByURI(ctx context.Context, orgID, sandboxURL, apiKey, endpoi
 			switch resp.StatusCode {
 			case 401:
 				return nil, "", &RemoteAuthError{
-					Msg:    fmt.Sprintf("Invalid API key - run 'kimchi setup' to authenticate: %s", endpoint),
+					Msg:    fmt.Sprintf("Invalid credentials (API key or SSO token). Run `kimchi` and sign in again: %s", endpoint),
 					Status: 401,
 				}
 			case 403:
 				return nil, "", &RemoteAuthError{
-					Msg:    fmt.Sprintf("Forbidden - your API key does not have permission to list workspaces. %s", endpoint),
+					Msg:    fmt.Sprintf("Forbidden: your credentials do not have permission to list workspaces. %s", endpoint),
 					Status: 403,
 				}
 			default:
@@ -173,12 +190,12 @@ func findWorkspaceIDByURI(ctx context.Context, orgID, sandboxURL, apiKey, endpoi
 	}
 }
 
-func fetchWorkspaceByID(ctx context.Context, orgID, workspaceID, apiKey, endpoint string) (string, error) {
+func fetchWorkspaceByID(ctx context.Context, orgID, workspaceID string, creds Credentials, endpoint string) (string, error) {
 	u := fmt.Sprintf("%s/ai-optimizer/v1beta/organizations/%s/workspaces/%s",
 		endpoint, url.PathEscape(orgID), url.PathEscape(workspaceID))
 	reqCtx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()
-	resp, err := doRequest(reqCtx, http.MethodGet, u, apiKey, nil)
+	resp, err := doRequest(reqCtx, http.MethodGet, u, creds, nil)
 	if err != nil {
 		return "", err
 	}
@@ -198,18 +215,21 @@ func fetchWorkspaceByID(ctx context.Context, orgID, workspaceID, apiKey, endpoin
 	return data.URI, nil
 }
 
-// ─── Config / API key ────────────────────────────────────────────────────────
+// ─── Config / credentials ────────────────────────────────────────────────────────
 
 // DefaultEndpoint is the US region's API origin. The tool is region-unaware —
 // other regions are reached via KIMCHI_REMOTE_ENDPOINT (see ResolveEndpoint).
 const DefaultEndpoint = "https://api.cast.ai"
 
-// ReadAPIKey returns the Kimchi API key from the environment.
-func ReadAPIKey() (string, error) {
-	if k := os.Getenv("KIMCHI_API_KEY"); k != "" {
-		return k, nil
+// ReadCredentials returns the bearer (KIMCHI_API_KEY: an API key or an SSO
+// token) and the optional SSO organization (KIMCHI_ORGANIZATION_ID) from the
+// environment.
+func ReadCredentials() (Credentials, error) {
+	k := os.Getenv("KIMCHI_API_KEY")
+	if k == "" {
+		return Credentials{}, errors.New("KIMCHI_API_KEY environment variable is not set")
 	}
-	return "", errors.New("KIMCHI_API_KEY environment variable is not set")
+	return Credentials{Token: k, OrganizationID: os.Getenv("KIMCHI_ORGANIZATION_ID")}, nil
 }
 
 // ResolveEndpoint returns the API endpoint, falling back to DefaultEndpoint.
@@ -222,13 +242,13 @@ func ResolveEndpoint() string {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-// VerifyAPIKey validates the given API key against the endpoint and returns
-// the organisation ID associated with it.
-func VerifyAPIKey(ctx context.Context, apiKey, endpoint string) (string, error) {
+// VerifyCredentials validates the credentials against the endpoint and returns the
+// organisation ID they act in.
+func VerifyCredentials(ctx context.Context, creds Credentials, endpoint string) (string, error) {
 	u := endpoint + "/ai-optimizer/v1beta/workspace-tokens:verifyKey"
 	reqCtx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()
-	resp, err := doRequest(reqCtx, http.MethodPost, u, apiKey, nil)
+	resp, err := doRequest(reqCtx, http.MethodPost, u, creds, nil)
 	if err != nil {
 		return "", err
 	}
@@ -253,22 +273,22 @@ func VerifyAPIKey(ctx context.Context, apiKey, endpoint string) (string, error) 
 // If arg contains a '.', it is treated as a sandbox URL and the workspace list
 // is searched to find the matching ID. Otherwise arg is treated directly as a
 // workspace ID and the workspace is fetched by ID to obtain its URI.
-func ResolveWorkspaceID(ctx context.Context, orgID, workspaceIDOrSandboxURL, apiKey, endpoint string) (workspaceID, sandboxURL string, err error) {
+func ResolveWorkspaceID(ctx context.Context, orgID, workspaceIDOrSandboxURL string, creds Credentials, endpoint string) (workspaceID, sandboxURL string, err error) {
 	if strings.Contains(workspaceIDOrSandboxURL, ".") {
-		id, err := findWorkspaceIDByURI(ctx, orgID, workspaceIDOrSandboxURL, apiKey, endpoint)
+		id, err := findWorkspaceIDByURI(ctx, orgID, workspaceIDOrSandboxURL, creds, endpoint)
 		return id, workspaceIDOrSandboxURL, err
 	}
-	uri, err := fetchWorkspaceByID(ctx, orgID, workspaceIDOrSandboxURL, apiKey, endpoint)
+	uri, err := fetchWorkspaceByID(ctx, orgID, workspaceIDOrSandboxURL, creds, endpoint)
 	return workspaceIDOrSandboxURL, uri, err
 }
 
 // ExchangeWorkspaceToken exchanges a workspace ID for a short-lived bearer token.
-func ExchangeWorkspaceToken(ctx context.Context, apiKey, workspaceID, endpoint string) (string, error) {
+func ExchangeWorkspaceToken(ctx context.Context, creds Credentials, workspaceID, endpoint string) (string, error) {
 	u := endpoint + "/ai-optimizer/v1beta/workspace-tokens:exchange"
 	bodyBytes, _ := json.Marshal(map[string]string{"workspaceId": workspaceID})
 	reqCtx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()
-	resp, err := doRequest(reqCtx, http.MethodPost, u, apiKey, bytes.NewReader(bodyBytes))
+	resp, err := doRequest(reqCtx, http.MethodPost, u, creds, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", err
 	}

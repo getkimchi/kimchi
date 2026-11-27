@@ -584,6 +584,7 @@ describe("runRemoteAgent", () => {
 				localPath: "/work/kimchi",
 				remotePath: expect.stringMatching(/^\/home\/sandbox\/acp-[0-9a-f]{8}$/),
 				remoteHost: "worker.example.com",
+				credentials: TEST_CREDENTIALS,
 				freshClone: true,
 			}),
 		)

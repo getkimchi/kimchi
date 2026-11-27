@@ -31,7 +31,7 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
  */
 export async function runSyncArgs(args: SyncArgs, ctx: TeleportContext): Promise<void> {
 	if (!ctx.credentials.token) {
-		refuse(ctx, "No API key configured. Run `kimchi login`.")
+		refuse(ctx, "No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 	}
 
 	if (!whichRsync()) {
@@ -79,6 +79,7 @@ export async function runSyncArgs(args: SyncArgs, ctx: TeleportContext): Promise
 				remoteHost: creds.host,
 				remoteUser: SANDBOX_USER,
 				authToken: creds.connectToken,
+				credentials: ctx.credentials,
 				excludeGlobs: args.exclude,
 				includeIgnored: args.includeIgnored,
 				deleteExtraneous: args.delete,
@@ -105,6 +106,7 @@ export async function runSyncArgs(args: SyncArgs, ctx: TeleportContext): Promise
 			const configResult = await provisionHarnessConfig({
 				remoteHost: creds.host,
 				authToken: creds.connectToken,
+				credentials: ctx.credentials,
 				signal: ctx.signal,
 			})
 			if (!configResult.ok) {

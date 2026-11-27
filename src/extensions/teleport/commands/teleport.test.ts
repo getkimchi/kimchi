@@ -712,7 +712,10 @@ describe("runTeleport", () => {
 
 		await expect(runTeleport("", ctx)).rejects.toBeInstanceOf(TeleportRefusal)
 		expect(authMock).not.toHaveBeenCalled()
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/API key/), "error")
+		expect(ui.notify).toHaveBeenCalledWith(
+			"No credentials configured. Run `kimchi` and sign in (API key or SSO).",
+			"error",
+		)
 	})
 
 	it("refuses when args fail to parse", async () => {
@@ -754,6 +757,7 @@ describe("runTeleport", () => {
 			expect(provisionHarnessConfigMock.mock.calls[0][0]).toMatchObject({
 				remoteHost: CREDS.host,
 				authToken: CREDS.connectToken,
+				credentials: ctx.credentials,
 			})
 			// Teleport still completes — overlay opens, no warning emitted.
 			expect(ui.custom).toHaveBeenCalledOnce()
@@ -1224,6 +1228,7 @@ describe("runTeleport --fast", () => {
 			filesFrom: ["src/a.ts", "README.md"],
 			deleteExtraneous: true,
 			excludeFilters: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],
+			credentials: ctx.credentials,
 		})
 		expect(buildIncludeListMock).not.toHaveBeenCalled()
 		expect(ui.custom).toHaveBeenCalledOnce()

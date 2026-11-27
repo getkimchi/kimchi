@@ -204,9 +204,11 @@ describe("harness config sync", () => {
 		expect(runRsyncMock).toHaveBeenCalledOnce()
 		expect(runRsyncMock).toHaveBeenCalledBefore(provisionHarnessConfigMock)
 		expect(provisionHarnessConfigMock).toHaveBeenCalledOnce()
+		expect(runRsyncMock.mock.calls[0][0]).toMatchObject({ credentials: ctx.credentials })
 		expect(provisionHarnessConfigMock.mock.calls[0][0]).toMatchObject({
 			remoteHost: "host.example",
 			authToken: "tok-1",
+			credentials: ctx.credentials,
 			signal: ac.signal,
 		})
 	})
@@ -238,5 +240,20 @@ describe("harness config sync", () => {
 		)
 		expect(provisionHarnessConfigMock).toHaveBeenCalledOnce()
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("Could not sync harness config: boom"), "error")
+	})
+})
+
+describe("credentials", () => {
+	it("refuses before authenticating when no credentials are configured", async () => {
+		const { ctx, ui } = makeCtx({ cwd: syncTempDir, credentials: { token: "" } })
+
+		await expect(runSync("up --workspace my-ws --source file.txt --target /remote/path", ctx)).rejects.toBeInstanceOf(
+			TeleportRefusal,
+		)
+		expect(authMock).not.toHaveBeenCalled()
+		expect(ui.notify).toHaveBeenCalledWith(
+			"No credentials configured. Run `kimchi` and sign in (API key or SSO).",
+			"error",
+		)
 	})
 })

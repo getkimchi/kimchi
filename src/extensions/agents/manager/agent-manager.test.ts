@@ -1778,6 +1778,7 @@ describe("AgentManager git-intent baseline capture", () => {
 			remoteUser: "sandbox",
 			authToken: "tok",
 			cwd: META.cwd,
+			credentials: { token: "tok" },
 		})
 		if (opts?.captureError) {
 			mockCaptureBaseline.mockRejectedValue(new Error("ssh unreachable"))

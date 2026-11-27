@@ -7,6 +7,7 @@ import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { SANDBOX_USER } from "../provisioning/constants.js"
 import { provisionGitCredential } from "../provisioning/git-provision.js"
 import { buildProxyCommand } from "../provisioning/proxy-command.js"
+import { buildSshProxyEnv } from "../provisioning/sandbox-ssh.js"
 import type { TeleportContext } from "../types.js"
 import { runChildWithTTYHandoff as runChildWithTTYHandoffImpl } from "../ui/tty-handoff.js"
 import { authFailureMessage, info, refuse, status, warn } from "./errors.js"
@@ -34,7 +35,7 @@ export async function runTerminal(
 	const rawRef = tokens[0]
 
 	if (!ctx.credentials.token) {
-		refuse(ctx, "No API key configured. Run `kimchi login`.")
+		refuse(ctx, "No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 	}
 
 	const workspace = await resolveWorkspaceRef(ctx, rawRef, {
@@ -82,8 +83,7 @@ export async function runTerminal(
 	]
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
-		KIMCHI_API_KEY: ctx.credentials.token,
-		AUTH_TOKEN: creds.connectToken,
+		...buildSshProxyEnv({ credentials: ctx.credentials, authToken: creds.connectToken }),
 	}
 
 	info(ctx, `Connecting to ${workspaceId.slice(0, 8)}…`)

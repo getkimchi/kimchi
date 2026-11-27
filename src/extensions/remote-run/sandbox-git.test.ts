@@ -1,6 +1,7 @@
 import type { ChildProcess, execFileSync, spawn } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { describe, expect, it, vi } from "vitest"
+import type { RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
 import {
 	buildSandboxGitRemoteCommand,
 	captureBaseline,
@@ -10,20 +11,33 @@ import {
 	pushBranchRemotely,
 	pushViaLocalFallback,
 	recoverBaseShaFromMergeBase,
+	resolveSandboxGitConnection,
 	runSandboxGit,
 	type SandboxGitConnection,
 	SandboxGitError,
 } from "./sandbox-git.js"
 
+// Config holds no SSO token: a fallback to it would hand the proxy the wrong
+// (or an empty) bearer, so the tests make that fallback observable.
 vi.mock("../../config.js", () => ({
-	loadConfig: () => ({ apiKey: "test-key" }),
+	loadConfig: () => ({ apiKey: "config-key" }),
 }))
+
+const mockAuthenticateWorkspace = vi.hoisted(() => vi.fn())
+vi.mock("../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: mockAuthenticateWorkspace }))
+vi.mock("../../sandbox/worker/sessions.js", () => ({ getSession: vi.fn(async () => ({ alive: true })) }))
 
 const CONNECTION: SandboxGitConnection = {
 	host: "session-host.example",
 	remoteUser: "sandbox",
 	authToken: "tok-123",
 	cwd: "/home/sandbox/acp-deadbeef",
+	credentials: { token: "test-key" },
+}
+
+const SSO_CONNECTION: SandboxGitConnection = {
+	...CONNECTION,
+	credentials: { token: "sso-token", organizationId: "org-picked" },
 }
 
 interface FakeChildResult {
@@ -74,13 +88,37 @@ describe("buildSandboxGitRemoteCommand", () => {
 	})
 })
 
+describe("resolveSandboxGitConnection", () => {
+	it("keeps the SSO credentials on the connection for the ssh proxy", async () => {
+		mockAuthenticateWorkspace.mockResolvedValueOnce({
+			host: "live-host.example",
+			connectToken: "fresh-tok",
+			wsUrl: "wss://live-host.example",
+		})
+		const credentials = { token: "sso-token", organizationId: "org-picked" }
+
+		const connection = await resolveSandboxGitConnection(
+			{ workspaceId: "ws-1", sessionName: "sess-1", cwd: "/home/sandbox/repo" } as RemoteSessionMeta,
+			credentials,
+		)
+
+		expect(mockAuthenticateWorkspace).toHaveBeenCalledWith("ws-1", credentials, "kimchi", expect.anything())
+		expect(connection).toEqual({
+			host: "live-host.example",
+			remoteUser: "sandbox",
+			authToken: "fresh-tok",
+			cwd: "/home/sandbox/repo",
+			credentials,
+		})
+	})
+})
+
 describe("runSandboxGit", () => {
 	it("spawns ssh with the connection's host/user and the quoted git command", async () => {
 		const spawner = fakeSpawn({ stdout: "ok\n" })
 		const result = await runSandboxGit({
 			connection: CONNECTION,
 			args: ["rev-parse", "HEAD"],
-			apiKey: "key",
 			proxyCommand: "proxy %h %p",
 			_spawn: spawner,
 		})
@@ -91,12 +129,21 @@ describe("runSandboxGit", () => {
 		expect(args[args.length - 1]).toBe("git -C '/home/sandbox/acp-deadbeef' 'rev-parse' 'HEAD'")
 	})
 
-	it("injects AUTH_TOKEN and KIMCHI_API_KEY into the child env", async () => {
+	it("injects AUTH_TOKEN and the connection's API key, with no organization", async () => {
 		const spawner = fakeSpawn({ stdout: "" })
-		await runSandboxGit({ connection: CONNECTION, args: ["status"], apiKey: "key-42", _spawn: spawner })
+		await runSandboxGit({ connection: CONNECTION, args: ["status"], _spawn: spawner })
 		const env = (spawner as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2].env as NodeJS.ProcessEnv
 		expect(env.AUTH_TOKEN).toBe("tok-123")
-		expect(env.KIMCHI_API_KEY).toBe("key-42")
+		expect(env.KIMCHI_API_KEY).toBe("test-key")
+		expect(env.KIMCHI_ORGANIZATION_ID).toBeUndefined()
+	})
+
+	it("injects the SSO token and its organization from the connection, not config", async () => {
+		const spawner = fakeSpawn({ stdout: "" })
+		await runSandboxGit({ connection: SSO_CONNECTION, args: ["status"], _spawn: spawner })
+		const env = (spawner as unknown as ReturnType<typeof vi.fn>).mock.calls[0][2].env as NodeJS.ProcessEnv
+		expect(env.KIMCHI_API_KEY).toBe("sso-token")
+		expect(env.KIMCHI_ORGANIZATION_ID).toBe("org-picked")
 	})
 
 	it("streams stdout chunks to onStdoutChunk while accumulating them", async () => {
@@ -105,7 +152,6 @@ describe("runSandboxGit", () => {
 		const result = await runSandboxGit({
 			connection: CONNECTION,
 			args: ["diff", "abc...def"],
-			apiKey: "key",
 			onStdoutChunk: (c) => chunks.push(c),
 			_spawn: spawner,
 		})
@@ -115,9 +161,7 @@ describe("runSandboxGit", () => {
 
 	it("rejects with SandboxGitError carrying exit code and stderr on non-zero exit", async () => {
 		const spawner = fakeSpawn({ code: 128, stderr: "fatal: not a git repository" })
-		const err = await runSandboxGit({ connection: CONNECTION, args: ["status"], apiKey: "k", _spawn: spawner }).catch(
-			(e) => e,
-		)
+		const err = await runSandboxGit({ connection: CONNECTION, args: ["status"], _spawn: spawner }).catch((e) => e)
 		expect(err).toBeInstanceOf(SandboxGitError)
 		expect(err.exitCode).toBe(128)
 		expect(err.stderr).toBe("fatal: not a git repository")
@@ -125,9 +169,7 @@ describe("runSandboxGit", () => {
 
 	it("rejects with the spawn error itself", async () => {
 		const spawner = fakeSpawn({ error: new Error("spawn ssh ENOENT") })
-		const err = await runSandboxGit({ connection: CONNECTION, args: ["status"], apiKey: "k", _spawn: spawner }).catch(
-			(e) => e,
-		)
+		const err = await runSandboxGit({ connection: CONNECTION, args: ["status"], _spawn: spawner }).catch((e) => e)
 		expect(err).not.toBeInstanceOf(SandboxGitError)
 		expect(err.message).toBe("spawn ssh ENOENT")
 	})
@@ -138,7 +180,6 @@ describe("runSandboxGit", () => {
 		await runSandboxGit({
 			connection: CONNECTION,
 			args: ["status"],
-			apiKey: "k",
 			signal: controller.signal,
 			_spawn: spawner,
 		})
@@ -157,7 +198,6 @@ describe("runSandboxGit", () => {
 			runSandboxGit({
 				connection: CONNECTION,
 				args: ["rev-parse", "HEAD"],
-				apiKey: "k",
 				timeoutMs: 10,
 				_spawn: spawner,
 			}),
@@ -170,7 +210,7 @@ describe("runSandboxGit", () => {
 		try {
 			const spawner = fakeSpawn({ stdout: "ok\n" })
 			await expect(
-				runSandboxGit({ connection: CONNECTION, args: ["status"], apiKey: "k", timeoutMs: 60_000, _spawn: spawner }),
+				runSandboxGit({ connection: CONNECTION, args: ["status"], timeoutMs: 60_000, _spawn: spawner }),
 			).resolves.toEqual({ stdout: "ok\n", stderr: "" })
 			expect(vi.getTimerCount()).toBe(0)
 		} finally {
@@ -221,7 +261,7 @@ describe("captureBaseline", () => {
 			return child
 		}) as unknown as typeof spawn
 
-		const baseline = await captureBaseline(CONNECTION, { apiKey: "k", _spawn: spawner })
+		const baseline = await captureBaseline(CONNECTION, { _spawn: spawner })
 		expect(baseline).toEqual({ baseSha: sha, dirtyFiles: ["dirty.ts", "new.ts"] })
 		expect(commands).toEqual([
 			"git -C '/home/sandbox/acp-deadbeef' 'rev-parse' 'HEAD'",
@@ -231,14 +271,12 @@ describe("captureBaseline", () => {
 
 	it("rejects when rev-parse returns something that is not a 40-char SHA", async () => {
 		const spawner = fakeSpawn({ stdout: "not-a-sha\n" })
-		await expect(captureBaseline(CONNECTION, { apiKey: "k", _spawn: spawner })).rejects.toThrow(
-			/unexpected rev-parse output/,
-		)
+		await expect(captureBaseline(CONNECTION, { _spawn: spawner })).rejects.toThrow(/unexpected rev-parse output/)
 	})
 
 	it("propagates SandboxGitError from the first failing command", async () => {
 		const spawner = fakeSpawn({ code: 1, stderr: "fatal" })
-		await expect(captureBaseline(CONNECTION, { apiKey: "k", _spawn: spawner })).rejects.toThrow(SandboxGitError)
+		await expect(captureBaseline(CONNECTION, { _spawn: spawner })).rejects.toThrow(SandboxGitError)
 	})
 })
 
@@ -271,7 +309,7 @@ describe("recoverBaseShaFromMergeBase", () => {
 			return base(binary, args)
 		}) as unknown as typeof spawn
 
-		const got = await recoverBaseShaFromMergeBase(CONNECTION, "main", { apiKey: "k", _spawn: spawner })
+		const got = await recoverBaseShaFromMergeBase(CONNECTION, "main", { _spawn: spawner })
 
 		expect(got).toBe(sha)
 		expect(commands).toEqual([
@@ -297,7 +335,7 @@ describe("recoverBaseShaFromMergeBase", () => {
 			return base(binary, args)
 		}) as unknown as typeof spawn
 
-		const got = await recoverBaseShaFromMergeBase(CONNECTION, "master", { apiKey: "k", _spawn: spawner })
+		const got = await recoverBaseShaFromMergeBase(CONNECTION, "master", { _spawn: spawner })
 
 		expect(got).toBe(sha)
 		// merge-base probes: origin/master, master, origin/HEAD, origin/release-1, origin/release-2
@@ -313,7 +351,7 @@ describe("recoverBaseShaFromMergeBase", () => {
 	it("returns undefined when no remote ref shares a fork point", async () => {
 		const spawner = mergeBaseSpawner([{ match: "fetch", stdout: "" }])
 
-		const got = await recoverBaseShaFromMergeBase(CONNECTION, "main", { apiKey: "k", _spawn: spawner })
+		const got = await recoverBaseShaFromMergeBase(CONNECTION, "main", { _spawn: spawner })
 
 		expect(got).toBeUndefined()
 	})
@@ -402,6 +440,19 @@ describe("pushViaLocalFallback", () => {
 
 		// The staging ref is deleted after the push — never left in the user's repo.
 		expect(calls[2]?.args).toEqual(["update-ref", "-d", "refs/kimchi-push/kimchi/fix"])
+	})
+
+	it("fetches with the SSO token and organization from the connection", async () => {
+		const envs: Array<NodeJS.ProcessEnv | undefined> = []
+		const execFile = vi.fn((_cmd: string, _args: string[], opts: { env?: NodeJS.ProcessEnv }) => {
+			envs.push(opts.env)
+			return Buffer.from("")
+		}) as unknown as typeof execFileSync
+
+		await pushViaLocalFallback({ connection: SSO_CONNECTION, branch: "kimchi/fix", localRepo: "/repo", execFile })
+
+		expect(envs[0]?.KIMCHI_API_KEY).toBe("sso-token")
+		expect(envs[0]?.KIMCHI_ORGANIZATION_ID).toBe("org-picked")
 	})
 
 	it("deletes the staging ref even when the local push fails", async () => {

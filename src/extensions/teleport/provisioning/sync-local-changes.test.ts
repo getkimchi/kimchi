@@ -23,6 +23,7 @@ const LOCAL_PATH = "/work/project"
 const REMOTE_PATH = "/home/sandbox/project/"
 const REMOTE_HOST = "worker.example.com"
 const AUTH_TOKEN = "tok-123"
+const CREDENTIALS = { token: "sso-token", organizationId: "org-picked" }
 
 function makeOpts(overrides: Record<string, unknown> = {}) {
 	return {
@@ -30,6 +31,7 @@ function makeOpts(overrides: Record<string, unknown> = {}) {
 		remotePath: REMOTE_PATH,
 		remoteHost: REMOTE_HOST,
 		authToken: AUTH_TOKEN,
+		credentials: CREDENTIALS,
 		freshClone: true,
 		signal: undefined,
 		onWarn: vi.fn(),
@@ -71,6 +73,7 @@ describe("syncLocalChangesAfterClone", () => {
 				remotePath: REMOTE_PATH,
 				remoteHost: REMOTE_HOST,
 				authToken: AUTH_TOKEN,
+				credentials: CREDENTIALS,
 				deleteExtraneous: true,
 				filesFrom: ["src/a.ts", "README.md"],
 				excludeFilters: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],

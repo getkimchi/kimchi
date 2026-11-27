@@ -362,6 +362,7 @@ async function syncRemoteChanges(ctx: ExtensionContext, remoteSession?: RemoteSe
 			remoteHost: creds.host,
 			remoteUser: SANDBOX_USER,
 			authToken: creds.connectToken,
+			credentials,
 			excludeFilters: [...DIFF_RSYNC_EXCLUDES],
 			deleteExtraneous: false,
 			signal: undefined,
@@ -895,7 +896,7 @@ async function consentPush(
 			)
 			return "declined"
 		}
-		push = await pushViaLocalFallback({ connection, branch, localRepo: ctx.cwd, apiKey: run.credentials.token })
+		push = await pushViaLocalFallback({ connection, branch, localRepo: ctx.cwd })
 		if (!push.ok) {
 			ctx.ui.notify(
 				`Local fallback push also failed (${push.failure.kind}): ${push.failure.reason}. Nothing was pushed — the branch stays on the sandbox.`,

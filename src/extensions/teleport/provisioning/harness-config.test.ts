@@ -28,6 +28,7 @@ function baseArgs(overrides: Partial<{ remoteHost: string; authToken: string; si
 	return {
 		remoteHost: "session-host.example.com",
 		authToken: "tok-123",
+		credentials: { token: "sso-token", organizationId: "org-picked" },
 		...overrides,
 	}
 }
@@ -47,6 +48,7 @@ describe("provisionHarnessConfig", () => {
 			remoteHost: "session-host.example.com",
 			remoteUser: SANDBOX_USER,
 			authToken: "tok-123",
+			credentials: { token: "sso-token", organizationId: "org-picked" },
 			filesFrom: [...HARNESS_CONFIG_ALLOWLIST],
 			deleteExtraneous: false,
 			signal,

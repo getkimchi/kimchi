@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { BearerCredentials } from "../../../auth/gateway-credentials.js"
 
 /** The two caller-varying inputs the policy needs. Everything else is fixed. */
 export interface SandboxSshPolicy {
@@ -97,12 +98,21 @@ export function buildSshCommandString(policy: SandboxSshPolicy): string {
 }
 
 /**
- * Env the ProxyCommand helper authenticates with: the cloud API key (listing
- * endpoint) and the per-workspace bearer token (WS tunnel). Callers resolve
- * the key (loadConfig etc.) — this module never reads config.
+ * Env the ProxyCommand helper authenticates with. The helper resolves the
+ * workspace and mints its own tunnel token from the gateway bearer, so an SSO
+ * bearer needs its organization too: without it the helper looks in the
+ * user's default organization. Callers pass the session's credentials
+ * because config holds no SSO token. The current helper does not read
+ * AUTH_TOKEN.
  */
-export function buildSshProxyEnv(input: { apiKey: string; authToken: string }): NodeJS.ProcessEnv {
-	return { KIMCHI_API_KEY: input.apiKey, AUTH_TOKEN: input.authToken }
+export function buildSshProxyEnv(input: { credentials: BearerCredentials; authToken: string }): NodeJS.ProcessEnv {
+	return {
+		KIMCHI_API_KEY: input.credentials.token,
+		AUTH_TOKEN: input.authToken,
+		// Always set: callers spread process.env first, and spawn drops undefined
+		// values, so an inherited org cannot leak onto an API-key session.
+		KIMCHI_ORGANIZATION_ID: input.credentials.organizationId || undefined,
+	}
 }
 
 export interface SshSession {
