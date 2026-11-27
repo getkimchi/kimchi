@@ -38,7 +38,10 @@
  * This module is intentionally free of any `ExtensionAPI` dependency so
  * it stays unit-testable with fake timers.
  */
-import { watchQueuedUserInput } from "../../utils/queued-input-watch.js"
+import { USER_INPUT_POLL_MS, watchQueuedUserInput } from "../../utils/queued-input-watch.js"
+
+export { USER_INPUT_POLL_MS } from "../../utils/queued-input-watch.js"
+
 import type { ProcessRegistry } from "./process-registry.js"
 import type { TerminalDelivery } from "./terminal-delivery.js"
 
@@ -61,14 +64,6 @@ export const DEFAULT_WAIT_SECONDS = 300
 
 /** Harness-enforced maximum wait duration (seconds) per call. */
 export const MAX_WAIT_SECONDS = 600
-
-/**
- * Polling interval (milliseconds) for the pending-user-input check of a
- * user-facing wait. Short enough that a queued user message releases the
- * wait well within the 100 ms responsiveness target, cheap enough to run
- * for the whole bounded wait without measurable cost. Exported for tests.
- */
-export const USER_INPUT_POLL_MS = 50
 
 export type HandoffResult = "exited" | "handoff" | "aborted"
 

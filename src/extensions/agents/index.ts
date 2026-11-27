@@ -32,7 +32,7 @@ import { loadConfig } from "../../config.js"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { notifyUser } from "../../utils/notify-user.js"
-import { watchQueuedUserInput } from "../../utils/queued-input-watch.js"
+import { USER_INPUT_POLL_MS, watchQueuedUserInput } from "../../utils/queued-input-watch.js"
 import { createDeferredReveal } from "../deferred-reveal.js"
 import { getRawErrorMessage } from "../error-preservation.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
@@ -144,8 +144,6 @@ const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
 // completion notification; the wait is only a bounded join for real
 // dependencies (e.g. ferment worker handoff).
 const GET_SUBAGENT_RESULT_WAIT_CAP_MS = 60_000
-
-const USER_INPUT_POLL_MS = 100
 
 type AgentWaitOutcome = "completed" | "timed_out" | "aborted" | "user_input"
 

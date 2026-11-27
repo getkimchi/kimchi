@@ -1,3 +1,6 @@
+/** Shared pending-input responsiveness target used by bash and subagent waits. */
+export const USER_INPUT_POLL_MS = 50
+
 export interface QueuedInputWatchOptions {
 	/** Polling cadence; the caller owns this behavior. */
 	pollIntervalMs: number

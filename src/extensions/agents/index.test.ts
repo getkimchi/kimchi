@@ -1709,11 +1709,11 @@ describe("get_subagent_result wait contract", () => {
 		void execPromise.then(() => {
 			settled = true
 		})
-		await vi.advanceTimersByTimeAsync(50)
+		await vi.advanceTimersByTimeAsync(25)
 		expect(settled).toBe(false)
 
 		queued = true
-		await vi.advanceTimersByTimeAsync(100)
+		await vi.advanceTimersByTimeAsync(25)
 		const result = await execPromise
 		expect(result.content[0]?.text).toContain("Wait released for queued user input")
 		expect(record.status).toBe("running")
