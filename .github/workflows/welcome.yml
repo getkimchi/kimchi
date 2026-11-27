@@ -22,4 +22,4 @@ jobs:
             While you wait, make sure you've checked the [existing issues](https://github.com/getkimchi/kimchi/issues) for duplicates.
           pr-message: |
             👋 Thanks for your first PR on kimchi! A maintainer will review it soon.
-            Please make sure your PR links to an open issue and your checklist is complete.
+            Please make sure your checklist is complete.
