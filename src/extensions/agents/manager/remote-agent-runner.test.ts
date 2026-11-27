@@ -133,10 +133,11 @@ import {
 
 const WORKSPACE_ID = "ws-123"
 const PROMPT = "Fix the bug in auth.ts"
+const TEST_CREDENTIALS = { token: "test-api-key" }
 
 function makeOptions(overrides: Partial<RemoteRunOptions> = {}): RemoteRunOptions {
 	return {
-		apiKey: "test-api-key",
+		credentials: TEST_CREDENTIALS,
 		signal: undefined,
 		callbacks: {
 			onTextDelta: vi.fn(),
@@ -257,11 +258,21 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("runRemoteAgent", () => {
+	it("carries the SSO organization into authenticateWorkspace", async () => {
+		const credentials = { token: "sso-tok", organizationId: "org-a" }
+
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ credentials }))
+
+		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, credentials, "kimchi", { endpoint: undefined })
+	})
+
 	it("authenticates, creates session, initializes ACP client, sends prompt, and returns result", async () => {
 		const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
 
 		// 1. Authentication
-		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, "test-api-key", "kimchi", { endpoint: undefined })
+		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, TEST_CREDENTIALS, "kimchi", {
+			endpoint: undefined,
+		})
 
 		// 2. Readiness check
 		expect(waitForWorkspaceReady).toHaveBeenCalledWith(
@@ -426,7 +437,7 @@ describe("runRemoteAgent", () => {
 
 		expect(authenticateWorkspace).toHaveBeenCalledWith(
 			WORKSPACE_ID,
-			"test-api-key",
+			TEST_CREDENTIALS,
 			"kimchi",
 			expect.objectContaining({ endpoint: "https://custom.endpoint" }),
 		)
@@ -435,7 +446,7 @@ describe("runRemoteAgent", () => {
 	it("forwards the workspace spec to authenticateWorkspace when provided", async () => {
 		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ spec: { resources: { cpu: "250m", memory: "1Gi" } } }))
 
-		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, "test-api-key", "kimchi", {
+		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, TEST_CREDENTIALS, "kimchi", {
 			endpoint: undefined,
 			spec: { resources: { cpu: "250m", memory: "1Gi" } },
 		})
@@ -444,7 +455,7 @@ describe("runRemoteAgent", () => {
 	it("omits the spec key when not provided", async () => {
 		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
 
-		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, "test-api-key", "kimchi", {
+		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, TEST_CREDENTIALS, "kimchi", {
 			endpoint: undefined,
 		})
 	})
@@ -1681,7 +1692,7 @@ describe("attachRemoteAgent", () => {
 
 	function makeAttachOptions(overrides: Partial<AttachRemoteAgentOptions> = {}): AttachRemoteAgentOptions {
 		return {
-			apiKey: "test-api-key",
+			credentials: TEST_CREDENTIALS,
 			remoteSession: META,
 			acpSessionId: "remote-acp-1",
 			callbacks: {
@@ -1811,17 +1822,17 @@ describe("attachRemoteAgent", () => {
 			clientConnected: true,
 			connectedThroughBridge: false,
 		})
-		await expect(isRemoteSessionConnected(META, "test-api-key")).resolves.toBe(true)
+		await expect(isRemoteSessionConnected(META, TEST_CREDENTIALS)).resolves.toBe(true)
 
 		// Negative: a failed poll must NOT block the resume — the attach's own
 		// recovery machinery handles the real session state.
 		vi.mocked(getSession).mockRejectedValue(new Error("network down"))
-		await expect(isRemoteSessionConnected(META, "test-api-key")).resolves.toBe(false)
+		await expect(isRemoteSessionConnected(META, TEST_CREDENTIALS)).resolves.toBe(false)
 
 		// The probe is side-effect-free: it must go through
 		// authenticateWorkspaceProbe, never authenticateWorkspace (which upserts
 		// and resumes — waking a hibernated workspace).
-		expect(authenticateWorkspaceProbe).toHaveBeenCalledWith(META.workspaceId, "test-api-key", {
+		expect(authenticateWorkspaceProbe).toHaveBeenCalledWith(META.workspaceId, TEST_CREDENTIALS, {
 			endpoint: undefined,
 		})
 		expect(authenticateWorkspace).not.toHaveBeenCalled()
@@ -1852,7 +1863,7 @@ describe("continueRemoteAgent", () => {
 
 	function makeContinueOptions(overrides: Partial<ContinueRemoteAgentOptions> = {}): ContinueRemoteAgentOptions {
 		return {
-			apiKey: "test-api-key",
+			credentials: TEST_CREDENTIALS,
 			remoteSession: PR_META,
 			acpSessionId: "acp-123",
 			prompt: "Rename the button to Save",
@@ -1993,7 +2004,7 @@ describe("continueRemoteAgent", () => {
 		expect(result.stopReason).toBe("end_turn")
 
 		// A terminal action on one workspace leaves the other's kept client alone.
-		await deleteRemoteSession(PR_META, "test-api-key")
+		await deleteRemoteSession(PR_META, TEST_CREDENTIALS)
 		expect(getLiveKeptAcpClient(PR_META)).toBeUndefined()
 		expect(getLiveKeptAcpClient(otherWorkspace)).toBeDefined()
 	})
@@ -2030,8 +2041,8 @@ describe("deleteRemoteSession", () => {
 	}
 
 	it("re-authenticates and deletes the kept session at a terminal action", async () => {
-		await deleteRemoteSession(KEEP_META, "test-api-key")
-		expect(authenticateWorkspace).toHaveBeenCalledWith(KEEP_META.workspaceId, "test-api-key", "kimchi", {
+		await deleteRemoteSession(KEEP_META, TEST_CREDENTIALS)
+		expect(authenticateWorkspace).toHaveBeenCalledWith(KEEP_META.workspaceId, TEST_CREDENTIALS, "kimchi", {
 			endpoint: undefined,
 		})
 		expect(deleteSession).toHaveBeenCalledWith(expect.anything(), KEEP_META.sessionName)

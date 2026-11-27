@@ -1397,7 +1397,11 @@ describe("AgentManager remote stale-session resilience", () => {
 			remote: true,
 		})
 		expect(record.status).toBe("completed")
-		expect(deleteRemoteSession).toHaveBeenCalledWith(expect.anything(), "test-key", expect.anything())
+		expect(deleteRemoteSession).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ token: "test-key" }),
+			expect.anything(),
+		)
 	})
 
 	it("completes with the captured session facts when the ctx goes stale mid workspace lookup", async () => {
@@ -1815,7 +1819,7 @@ describe("AgentManager git-intent baseline capture", () => {
 
 		expect(mockResolveSandboxGitConnection).toHaveBeenCalledWith(
 			META,
-			"test-key",
+			expect.objectContaining({ token: "test-key" }),
 			expect.objectContaining({ endpoint: undefined }),
 		)
 		expect(mockCaptureBaseline).toHaveBeenCalledTimes(1)
@@ -1946,7 +1950,7 @@ describe("AgentManager steer continuation", () => {
 		expect(record.result).toBe("steered result")
 		expect(mockContinueRemoteAgent).toHaveBeenCalledTimes(1)
 		expect(mockContinueRemoteAgent.mock.calls[0]?.[0]).toMatchObject({
-			apiKey: "test-key",
+			credentials: expect.objectContaining({ token: "test-key" }),
 			prompt: "steer prompt text",
 			acpSessionId: "acp-9",
 			remoteSession: CONTINUE_META,

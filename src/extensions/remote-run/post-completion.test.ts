@@ -3,6 +3,7 @@ import { tmpdir as osTmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { resolveEndpoints } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import type { RemoteSessionMeta } from "../agents/manager/remote-agent-runner.js"
@@ -16,6 +17,9 @@ vi.mock("../../config.js", () => ({
 	resolveEndpoints: vi.fn(() => ({ webAppUrl: "https://app.kimchi.dev" })),
 }))
 vi.mock("../../sandbox/cloud/auth.js", () => ({ authenticateWorkspace: vi.fn() }))
+vi.mock("../../auth/gateway-credentials.js", () => ({
+	resolveGatewayCredentials: vi.fn(() => ({ token: "fake-key", source: "api-key" })),
+}))
 vi.mock("../ferment/prompt-ui.js", () => ({ withWorkingHidden: vi.fn((_ui, fn) => fn()) }))
 vi.mock("../herdr-events.js", () => ({ withBlocked: vi.fn((_events, _label, fn) => fn()) }))
 vi.mock("../steer-marker.js", () => ({ markHarnessSteer: (s: string) => s }))
@@ -335,7 +339,7 @@ describe("handleRemoteCompletion", () => {
 			// Should authenticate with the remoteSession's workspaceId
 			expect(authenticateWorkspace).toHaveBeenCalledWith(
 				"ws-remote-1",
-				"fake-key",
+				expect.objectContaining({ token: "fake-key" }),
 				"kimchi",
 				expect.objectContaining({ endpoint: undefined }),
 			)
@@ -659,6 +663,29 @@ describe("handleRemoteCompletion — PR intent", () => {
 		)
 	})
 
+	it("deletes the remote session with the SSO organization", async () => {
+		vi.mocked(resolveGatewayCredentials).mockReturnValueOnce({
+			token: "sso-tok",
+			organizationId: "org-a",
+			source: "oauth",
+		})
+		const pi = makePi()
+		const ctx = makeCtx()
+		;(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValue("Done")
+
+		await handleRemoteCompletion(pi, ctx, "remote result", "plan", {
+			transcriptPath: join(tmp, "t-sso", "a.jsonl"),
+			remoteSession: REMOTE,
+			gitWorkflow: GIT,
+		})
+
+		expect(mockDeleteRemoteSession).toHaveBeenCalledWith(
+			REMOTE,
+			expect.objectContaining({ token: "sso-tok", organizationId: "org-a" }),
+			expect.objectContaining({ endpoint: undefined }),
+		)
+	})
+
 	it("shows the stat in the dropdown title with Show/Pull/Done entries; Done deletes the session (terminal)", async () => {
 		const pi = makePi()
 		const ctx = makeCtx()
@@ -672,7 +699,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 
 		expect(mockResolveSandboxGitConnection).toHaveBeenCalledWith(
 			REMOTE,
-			"fake-key",
+			expect.objectContaining({ token: "fake-key" }),
 			expect.objectContaining({ endpoint: undefined }),
 		)
 		expect(mockCollectCompletionDiff).toHaveBeenCalledWith(
@@ -698,7 +725,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 		expect(pi.appendEntry).not.toHaveBeenCalled()
 		expect(mockDeleteRemoteSession).toHaveBeenCalledWith(
 			REMOTE,
-			"fake-key",
+			expect.objectContaining({ token: "fake-key" }),
 			expect.objectContaining({ endpoint: undefined }),
 		)
 		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("the remote session was deleted"), "info")
@@ -965,7 +992,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 		await handleRemoteCompletion(pi, ctx, "remote result", "plan", { remoteSession: REMOTE, gitWorkflow: GIT })
 		expect(mockDeleteRemoteSession).toHaveBeenCalledWith(
 			REMOTE,
-			"fake-key",
+			expect.objectContaining({ token: "fake-key" }),
 			expect.objectContaining({ endpoint: undefined }),
 		)
 
@@ -1049,7 +1076,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 		// Terminal: kept session retires + result is injected into the turn.
 		expect(mockDeleteRemoteSession).toHaveBeenCalledWith(
 			REMOTE,
-			"fake-key",
+			expect.objectContaining({ token: "fake-key" }),
 			expect.objectContaining({ endpoint: undefined }),
 		)
 		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
@@ -1146,7 +1173,7 @@ describe("handleRemoteCompletion — PR intent", () => {
 		// Terminal cleanup: kept session deleted, ferment completed, result injected.
 		expect(mockDeleteRemoteSession).toHaveBeenCalledWith(
 			REMOTE,
-			"fake-key",
+			expect.objectContaining({ token: "fake-key" }),
 			expect.objectContaining({ endpoint: undefined }),
 		)
 		expect(mockApplyAndPersist).toHaveBeenCalledWith("f-1", expect.objectContaining({ type: "complete_ferment" }))

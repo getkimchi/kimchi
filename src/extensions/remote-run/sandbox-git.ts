@@ -28,6 +28,7 @@
  */
 
 import { type ChildProcess, execFileSync, spawn } from "node:child_process"
+import type { BearerCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import { WorkerClient } from "../../sandbox/worker/client.js"
@@ -107,14 +108,14 @@ export class SandboxGitError extends Error {
  */
 export async function resolveSandboxGitConnection(
 	remoteSession: RemoteSessionMeta,
-	apiKey: string,
+	credentials: BearerCredentials,
 	opts?: { endpoint?: string; description?: string },
 ): Promise<SandboxGitConnection> {
 	if (readE2eSeam("KIMCHI_E2E_FAKE_SANDBOX_GIT") === "1") {
 		// TUI-E2E seam: skip the credential exchange entirely.
 		return { host: "e2e.fake", remoteUser: SANDBOX_USER, authToken: "e2e", cwd: remoteSession.cwd }
 	}
-	const creds = await authenticateWorkspace(remoteSession.workspaceId, apiKey, opts?.description ?? "kimchi", {
+	const creds = await authenticateWorkspace(remoteSession.workspaceId, credentials, opts?.description ?? "kimchi", {
 		endpoint: opts?.endpoint ?? process.env.KIMCHI_REMOTE_ENDPOINT,
 	})
 	// Hibernated sandbox: SSH to a sleeping pod is a bare 255 with zero

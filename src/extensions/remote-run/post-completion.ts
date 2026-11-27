@@ -13,6 +13,7 @@ import { tmpdir } from "node:os"
 import { basename, dirname, join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import open from "open"
+import type { BearerCredentials } from "../../auth/gateway-credentials.js"
 import { resolveGatewayCredentials } from "../../auth/gateway-credentials.js"
 import { loadConfig, resolveEndpoints } from "../../config.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
@@ -334,15 +335,15 @@ async function syncRemoteChanges(ctx: ExtensionContext, remoteSession?: RemoteSe
 			return false
 		}
 
-		const apiKey = resolveGatewayCredentials(loadConfig()).token
-		if (!apiKey) {
+		const credentials = resolveGatewayCredentials(loadConfig())
+		if (!credentials.token) {
 			ctx.ui.notify("No credentials configured. Run `kimchi` and sign in (API key or SSO).", "error")
 			return false
 		}
 
 		// The session was deleted after the run, but the workspace is still
 		// alive — re-authenticate to get a fresh token for the same workspace.
-		const creds = await authenticateWorkspace(remoteSession.workspaceId, apiKey, basename(ctx.cwd) || "kimchi", {
+		const creds = await authenticateWorkspace(remoteSession.workspaceId, credentials, basename(ctx.cwd) || "kimchi", {
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 		})
 
@@ -498,7 +499,7 @@ interface PrReviewContext {
  */
 async function resolvePrReviewContext(
 	ctx: ExtensionContext,
-	apiKey: string,
+	credentials: BearerCredentials,
 	git: PersistedGitWorkflow,
 	remoteSession: RemoteSessionMeta,
 ): Promise<PrReviewContext | undefined> {
@@ -509,7 +510,7 @@ async function resolvePrReviewContext(
 	let baseSha = git.baseSha
 	if (!baseSha) {
 		if (git.baseBranch) {
-			const conn0 = await resolveSandboxGitConnection(remoteSession, apiKey, {
+			const conn0 = await resolveSandboxGitConnection(remoteSession, credentials, {
 				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			}).catch(() => undefined)
 			if (conn0) {
@@ -537,7 +538,7 @@ async function resolvePrReviewContext(
 		// hop in practice — it aborts silently when the control endpoint
 		// stalls, with no bearing on whether the sandbox itself is alive.
 		const collect = async (): Promise<[SandboxGitConnection, CompletionDiffStat | undefined]> => {
-			const conn = await resolveSandboxGitConnection(remoteSession, apiKey, {
+			const conn = await resolveSandboxGitConnection(remoteSession, credentials, {
 				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			})
 			const diffStat = await collectCompletionDiff({
@@ -610,12 +611,12 @@ async function handlePrCompletion(
 	// Read once, guarded (see handleRemoteCompletion).
 	const sessionId = trySessionId(ctx)
 	const git = opts.gitWorkflow
-	const apiKey = resolveGatewayCredentials(loadConfig()).token
-	if (!apiKey) {
+	const credentials = resolveGatewayCredentials(loadConfig())
+	if (!credentials.token) {
 		ctx.ui.notify("No credentials configured. Run `kimchi` and sign in (API key or SSO).", "error")
 		return false
 	}
-	const review = await resolvePrReviewContext(ctx, apiKey, git, opts.remoteSession)
+	const review = await resolvePrReviewContext(ctx, credentials, git, opts.remoteSession)
 	if (!review) return false
 	const { connection, baseSha, statText, warnings } = review
 
@@ -659,7 +660,7 @@ async function handlePrCompletion(
 				git,
 				result,
 				opts,
-				apiKey,
+				credentials,
 			},
 			{ steer: doRequestChanges },
 		)
@@ -796,7 +797,7 @@ async function handlePrCompletion(
 			// (a failed pull keeps it — the user may retry or steer).
 			if (synced) {
 				try {
-					await deleteRemoteSession(opts.remoteSession, apiKey, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT })
+					await deleteRemoteSession(opts.remoteSession, credentials, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT })
 				} catch (err) {
 					ctx.ui.notify(
 						`The changes synced, but the remote session could not be deleted: ${errMessage(err)} — the server cleans it up on TTL.`,
@@ -815,7 +816,7 @@ async function handlePrCompletion(
 		// failure only warns (server TTL is the backstop); the sandbox branch
 		// itself dies with the workspace.
 		trackRemoteExecution("done", promptPrefix, undefined, sessionId)
-		await deleteKeptRemoteSession(ctx, opts.remoteSession, apiKey)
+		await deleteKeptRemoteSession(ctx, opts.remoteSession, credentials)
 		ctx.ui.notify(
 			`Done — the remote session was deleted. Unpushed work on ${git.branch} is discarded when the workspace expires.`,
 			"info",
@@ -830,7 +831,7 @@ interface PushRunArgs {
 	git: PersistedGitWorkflow
 	result: string
 	opts: HandleRemoteCompletionOpts & { gitWorkflow: PersistedGitWorkflow; remoteSession: RemoteSessionMeta }
-	apiKey: string
+	credentials: BearerCredentials
 }
 
 /** Outcome of the consent push gate: the branch is on origin, the user
@@ -894,7 +895,7 @@ async function consentPush(
 			)
 			return "declined"
 		}
-		push = await pushViaLocalFallback({ connection, branch, localRepo: ctx.cwd, apiKey: run.apiKey })
+		push = await pushViaLocalFallback({ connection, branch, localRepo: ctx.cwd, apiKey: run.credentials.token })
 		if (!push.ok) {
 			ctx.ui.notify(
 				`Local fallback push also failed (${push.failure.kind}): ${push.failure.reason}. Nothing was pushed — the branch stays on the sandbox.`,
@@ -953,7 +954,7 @@ async function pushAndPullLocally(
 		"Opening the Plannotator code-review UI in your browser (needs @plannotator/pi-extension installed). If nothing opens, the extension is not installed.",
 		"info",
 	)
-	await deleteKeptRemoteSession(ctx, run.opts.remoteSession, run.apiKey)
+	await deleteKeptRemoteSession(ctx, run.opts.remoteSession, run.credentials)
 	return "pulled"
 }
 
@@ -981,11 +982,11 @@ function firePlannotatorCodeReview(pi: ExtensionAPI, cwd: string, baseBranch?: s
 async function deleteKeptRemoteSession(
 	ctx: ExtensionContext,
 	remoteSession: RemoteSessionMeta,
-	apiKey: string,
+	credentials: BearerCredentials,
 ): Promise<void> {
 	if (readE2eSeam("KIMCHI_E2E_FAKE_SANDBOX_GIT") === "1") return // TUI-E2E seam: nothing real to delete
 	try {
-		await deleteRemoteSession(remoteSession, apiKey, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT })
+		await deleteRemoteSession(remoteSession, credentials, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT })
 	} catch (err) {
 		ctx.ui.notify(
 			`The remote session could not be deleted: ${errMessage(err)} — the server cleans it up on TTL.`,
