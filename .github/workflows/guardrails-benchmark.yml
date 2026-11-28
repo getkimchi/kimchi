@@ -1,0 +1,182 @@
+name: Guardrails benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: Models to benchmark
+        required: true
+        type: choice
+        default: both
+        options:
+          - both
+          - kimi-k3
+          - deepseek-v4.1-flash-1017
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guardrails-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check actor permission
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.actor,
+            });
+            const allowed = ['admin', 'maintain', 'write'].includes(data.permission);
+            core.info(`Actor permission: ${data.permission}`);
+            if (!allowed) {
+              core.setFailed(`${context.actor} needs write, maintain, or admin access to spend benchmark capacity.`);
+              return;
+            }
+
+      - name: Resolve model and route matrix
+        id: matrix
+        env:
+          SELECTION: ${{ inputs.models }}
+        run: |
+          set -euo pipefail
+          MATRIX="$(python3 tools/guardrails-benchmark/benchmark.py matrix --selection "$SELECTION")"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: ./.github/actions/setup
+        with:
+          bun: "true"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/proxy-helper/go.mod
+          cache-dependency-path: tools/proxy-helper/go.sum
+
+      - name: Build proxy helper
+        run: make -C tools/proxy-helper build
+
+      - name: Build Kimchi from this commit
+        run: pnpm run build:binary
+
+      - name: Verify the built harness
+        run: |
+          set -euo pipefail
+          ./dist/bin/kimchi --version
+          ./dist/bin/kimchi --help >/dev/null
+
+      - name: Upload built harness
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardrails-benchmark-kimchi-${{ github.sha }}
+          path: |
+            dist/bin/
+            dist/share/
+          retention-days: 1
+
+  benchmark:
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      BASELINE_API_KEY: ${{ secrets.GUARDRAILS_BENCHMARK_BASELINE_API_KEY }}
+      BASELINE_BASE_URL: https://llm.kimchi.dev/openai/v1
+      GUARDED_API_KEY: ${{ matrix.entry.route == 'guarded' && secrets.GUARDRAILS_BENCHMARK_GUARDED_API_KEY || '' }}
+      GUARDED_BASE_URL: https://llm.kimchi.dev/openai/v1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Download harness built from this commit
+        uses: actions/download-artifact@v4
+        with:
+          name: guardrails-benchmark-kimchi-${{ github.sha }}
+          path: dist
+
+      - name: Run AgentThreatBench and AgentHarm
+        env:
+          LABEL: ${{ matrix.entry.label }}
+          ROUTE: ${{ matrix.entry.route }}
+        run: |
+          set -euo pipefail
+          test -x dist/bin/kimchi
+          mkdir -p results
+          uv run --frozen --project tools/guardrails-benchmark python tools/guardrails-benchmark/benchmark.py run \
+            --label "$LABEL" \
+            --route "$ROUTE" \
+            --commit-sha "$GITHUB_SHA" \
+            --binary dist/bin/kimchi \
+            --output "results/${LABEL}-${ROUTE}.json" \
+            --log-root "$RUNNER_TEMP/guardrails-private-logs"
+
+      - name: Upload sanitized metrics only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardrails-benchmark-result-${{ matrix.entry.label }}-${{ matrix.entry.route }}
+          path: results/${{ matrix.entry.label }}-${{ matrix.entry.route }}.json
+          if-no-files-found: warn
+          retention-days: 1
+
+  report:
+    needs: [plan, benchmark]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download sanitized metrics
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          pattern: guardrails-benchmark-result-*
+          path: sanitized-results
+          merge-multiple: true
+
+      - name: Generate reports and comparative step summary
+        if: always()
+        env:
+          SELECTION: ${{ inputs.models }}
+        run: |
+          set -euo pipefail
+          python3 tools/guardrails-benchmark/benchmark.py report \
+            --selection "$SELECTION" \
+            --results-dir sanitized-results \
+            --out-dir reports \
+            --step-summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload baseline and guarded reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardrails-benchmark-reports
+          path: |
+            reports/baseline.md
+            reports/guarded.md
+          if-no-files-found: error
+          retention-days: 1
