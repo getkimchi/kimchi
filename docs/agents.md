@@ -32,6 +32,13 @@ While agents run, a persistent widget above the editor shows live status, token
 counts, and current activity. Open `/agents` to see the menu — select any
 running or completed agent to view its full conversation in a live overlay.
 
+### Waiting and user input
+
+Foreground `Agent` calls and `get_subagent_result(wait: true)` yield their wait
+when user input is queued, allowing the parent agent to handle the message
+promptly. The child agent continues running and is not detached, aborted, or
+marked complete; its result can still be retrieved with `get_subagent_result`.
+
 ## Permissions
 
 Subagent tool calls go through the same permission gate as the main session and

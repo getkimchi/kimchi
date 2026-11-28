@@ -38,6 +38,10 @@
  * This module is intentionally free of any `ExtensionAPI` dependency so
  * it stays unit-testable with fake timers.
  */
+import { USER_INPUT_POLL_MS, watchQueuedUserInput } from "../../utils/queued-input-watch.js"
+
+export { USER_INPUT_POLL_MS } from "../../utils/queued-input-watch.js"
+
 import type { ProcessRegistry } from "./process-registry.js"
 import type { TerminalDelivery } from "./terminal-delivery.js"
 
@@ -60,14 +64,6 @@ export const DEFAULT_WAIT_SECONDS = 300
 
 /** Harness-enforced maximum wait duration (seconds) per call. */
 export const MAX_WAIT_SECONDS = 600
-
-/**
- * Polling interval (milliseconds) for the pending-user-input check of a
- * user-facing wait. Short enough that a queued user message releases the
- * wait well within the 100 ms responsiveness target, cheap enough to run
- * for the whole bounded wait without measurable cost. Exported for tests.
- */
-export const USER_INPUT_POLL_MS = 50
 
 export type HandoffResult = "exited" | "handoff" | "aborted"
 
@@ -161,8 +157,7 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 	interface HandoffWaiter {
 		resolve: (result: HandoffResult) => void
 		timer: NodeJS.Timeout | undefined
-		/** Delay before user-input polling starts, then the polling interval. */
-		inputTimer: NodeJS.Timeout | undefined
+		stopInputWatch: (() => void) | undefined
 		onAbort: (() => void) | undefined
 		signal: AbortSignal | undefined
 		settled: boolean
@@ -201,7 +196,7 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		if (waiter.settled) return
 		waiter.settled = true
 		if (waiter.timer) clearTimeout(waiter.timer)
-		if (waiter.inputTimer) clearTimeout(waiter.inputTimer)
+		waiter.stopInputWatch?.()
 		if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener("abort", waiter.onAbort)
 		handoffWaiters.delete(handle)
 		waiter.resolve(result)
@@ -244,7 +239,7 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		const waiter: HandoffWaiter = {
 			resolve: () => {},
 			timer: undefined,
-			inputTimer: undefined,
+			stopInputWatch: undefined,
 			onAbort: undefined,
 			signal,
 			settled: false,
@@ -273,21 +268,13 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		// User-facing sessions: a queued user message hands off early so the
 		// agent can answer it, but only after the minimum runtime — quick
 		// commands still return a normal result. Same accepted-queue check
-		// and cadence as a cohort wait (see awaitCohortEvent). clearTimeout
-		// also clears an interval, so one field covers both phases.
+		// and cadence as a cohort wait (see awaitCohortEvent).
 		if (hasPendingUserInput) {
-			waiter.inputTimer = setTimeout(() => {
-				if (waiter.settled) return
-				if (hasPendingUserInput()) {
-					settleHandoffWaiter(handle, waiter, "handoff")
-					return
-				}
-				waiter.inputTimer = setInterval(() => {
-					if (hasPendingUserInput()) settleHandoffWaiter(handle, waiter, "handoff")
-				}, USER_INPUT_POLL_MS)
-				waiter.inputTimer.unref?.()
-			}, minHandoffSeconds * 1000)
-			waiter.inputTimer.unref?.()
+			waiter.stopInputWatch = watchQueuedUserInput(
+				hasPendingUserInput,
+				() => settleHandoffWaiter(handle, waiter, "handoff"),
+				{ pollIntervalMs: USER_INPUT_POLL_MS, initialDelayMs: minHandoffSeconds * 1000 },
+			)
 		}
 
 		return promise
@@ -376,15 +363,12 @@ export function createReviewCoordinator(options: ReviewCoordinatorOptions): Revi
 		// cleanups clear the checkpoint timer, this interval, and every
 		// listener. Unattended waits pass no check and are unaffected.
 		if (hasPendingUserInput) {
-			if (hasPendingUserInput()) {
-				settle({ kind: "user-input" })
-				return promise
-			}
-			const inputTimer = setInterval(() => {
-				if (hasPendingUserInput()) settle({ kind: "user-input" })
-			}, USER_INPUT_POLL_MS)
-			inputTimer.unref?.()
-			cleanups.push(() => clearInterval(inputTimer))
+			const stopInputWatch = watchQueuedUserInput(hasPendingUserInput, () => settle({ kind: "user-input" }), {
+				pollIntervalMs: USER_INPUT_POLL_MS,
+			})
+			cleanups.push(stopInputWatch)
+			// An immediate queued-input probe has already settled this wait.
+			if (wait.settle === undefined) return promise
 		}
 
 		// A handle that already reached a terminal state before the wait

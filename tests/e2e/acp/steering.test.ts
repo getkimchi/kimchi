@@ -15,7 +15,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import type { ContentChunk } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
-import { newSession, waitForSessionUpdate } from "./support/scenarios.js"
+import { newSession, waitFor, waitForSessionUpdate } from "./support/scenarios.js"
 
 const STEER_METHOD = "_kimchi.dev/steering"
 const DROPPED_NOTIFICATION = "_kimchi.dev/queue_dropped"
@@ -102,6 +102,81 @@ describe("ACP integration — injected steer echo", () => {
 		// The steer reached the model: the continuation request(s) after the
 		// tool result include it in the transcript the fake backend saw.
 		expect(fixture.fake.requests.length, "continuation request after injection").toBeGreaterThanOrEqual(2)
+	})
+})
+
+describe("ACP integration — steering releases a foreground subagent wait", () => {
+	let fixture: AcpFixture
+	const childTask = "CHILD-TASK-HELD-UNTIL-AFTER-THE-STEER"
+	const steer = "Answer this message before the subagent finishes."
+	let releaseChild: (() => void) | undefined
+
+	beforeEach(async () => {
+		const childHold = new Promise<void>((resolve) => {
+			releaseChild = resolve
+		})
+		fixture = await startAcpFixture({
+			artifactName: "steering-releases-subagent-wait",
+			responses: [
+				{
+					toolCalls: [
+						{
+							function: {
+								name: "Agent",
+								arguments: JSON.stringify({
+									prompt: childTask,
+									description: "Held child",
+									subagent_type: "general-purpose",
+									run_in_background: false,
+								}),
+							},
+						},
+					],
+				},
+				{ forSubagent: true, holdUntil: childHold, stream: ["Child finished only after release."] },
+				{ stream: ["The queued steer was handled while the child was still running."] },
+			],
+		})
+	}, STARTUP_TIMEOUT_MS)
+
+	afterEach(async () => {
+		releaseChild?.()
+		await fixture.stop()
+	})
+
+	it("injects the steer before the held child completes", async () => {
+		const sessionId = await newSession(fixture, fixture.workDir)
+		const promptPromise = fixture.conn.request("session/prompt", {
+			sessionId,
+			prompt: [{ type: "text", text: "Delegate the held task and wait for it." }],
+		})
+
+		// One fake child request is now parked on holdUntil: the parent is
+		// blocked in Agent, not in a streaming model response.
+		await waitFor(
+			() => fixture.fake.requests,
+			(requests) => requests.some((request) => JSON.stringify(request.body ?? {}).includes(childTask)),
+		)
+		const steerResult = (await fixture.conn.request(STEER_METHOD, { sessionId, prompt: steer })) as { status: string }
+		expect(steerResult.status).toBe("injected")
+
+		await waitForSessionUpdate(
+			fixture,
+			sessionId,
+			(u) => u.sessionUpdate === "user_message_chunk" && u.content.type === "text" && u.content.text === steer,
+		)
+		const result = await promptPromise
+		expect(result.stopReason).toBe("end_turn")
+
+		const continuation = fixture.fake.requests.find((request) => JSON.stringify(request.body ?? {}).includes(steer))
+		expect(continuation, "steer reached a parent model request").toBeDefined()
+		expect(JSON.stringify(continuation?.body)).toContain("Wait released for queued user input")
+		expect(
+			fixture.fake.requests.filter(
+				(request) => request.body && JSON.stringify(request.body).includes("Child finished only after release"),
+			),
+			"the child was never released, so its completion cannot have unblocked the parent",
+		).toHaveLength(0)
 	})
 })
 

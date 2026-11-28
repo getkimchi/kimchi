@@ -483,10 +483,11 @@ export class AgentManager {
 							record.completedAt ??= Date.now()
 							record.latestOutcome = buildAgentOutcome(record)
 
-							if (record.isBackground) {
-								this.decrementRunningBackground()
+							if (record.isBackground || record.foregroundCompletionPending) {
+								if (record.isBackground) this.decrementRunningBackground()
+								record.foregroundCompletionPending = false
 								if (!this.disposed) this.onComplete?.(record)
-								this.drainQueue()
+								if (record.isBackground) this.drainQueue()
 							}
 							return finalText
 						},
@@ -499,10 +500,11 @@ export class AgentManager {
 						record.completedAt ??= Date.now()
 						record.latestOutcome = buildAgentOutcome(record)
 
-						if (record.isBackground) {
-							this.decrementRunningBackground()
+						if (record.isBackground || record.foregroundCompletionPending) {
+							if (record.isBackground) this.decrementRunningBackground()
+							record.foregroundCompletionPending = false
 							if (!this.disposed) this.onComplete?.(record)
-							this.drainQueue()
+							if (record.isBackground) this.drainQueue()
 						}
 						return ""
 					})

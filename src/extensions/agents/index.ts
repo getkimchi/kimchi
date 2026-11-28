@@ -32,6 +32,7 @@ import { loadConfig } from "../../config.js"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
 import { isProjectScopeAllowed } from "../../project-scope-trust.js"
 import { notifyUser } from "../../utils/notify-user.js"
+import { USER_INPUT_POLL_MS, watchQueuedUserInput } from "../../utils/queued-input-watch.js"
 import { createDeferredReveal } from "../deferred-reveal.js"
 import { getRawErrorMessage } from "../error-preservation.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
@@ -144,22 +145,35 @@ const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
 // dependencies (e.g. ferment worker handoff).
 const GET_SUBAGENT_RESULT_WAIT_CAP_MS = 60_000
 
-type AgentWaitOutcome = "completed" | "timed_out" | "aborted"
+type AgentWaitOutcome = "completed" | "timed_out" | "aborted" | "user_input"
+
+interface AgentWaitOptions {
+	signal?: AbortSignal
+	/** Zero means no timeout (used by foreground Agent calls). */
+	timeoutMs?: number
+	hasPendingUserInput?: () => boolean
+}
 
 /**
- * Bounded, interruptible wait on an agent's run promise.
+ * Interruptible wait on an agent's run promise.
  * Resolves "completed" when the agent settles (success or failure), or early
- * on cap timeout / abort signal. Never rejects.
+ * on cap timeout / abort signal / queued user input. Never rejects.
  */
-function waitForAgentCompletion(agentPromise: Promise<unknown>, signal?: AbortSignal): Promise<AgentWaitOutcome> {
+function waitForAgentCompletion(
+	agentPromise: Promise<unknown>,
+	options: AgentWaitOptions = {},
+): Promise<AgentWaitOutcome> {
+	const { signal, timeoutMs = GET_SUBAGENT_RESULT_WAIT_CAP_MS, hasPendingUserInput } = options
 	return new Promise((resolve) => {
 		let done = false
+		let timer: ReturnType<typeof setTimeout> | undefined
+		let stopInputWatch: (() => void) | undefined
 		const onAbort = () => finish("aborted")
-		const timer = setTimeout(() => finish("timed_out"), GET_SUBAGENT_RESULT_WAIT_CAP_MS)
 		function finish(outcome: AgentWaitOutcome) {
 			if (done) return
 			done = true
-			clearTimeout(timer)
+			if (timer) clearTimeout(timer)
+			stopInputWatch?.()
 			signal?.removeEventListener("abort", onAbort)
 			resolve(outcome)
 		}
@@ -167,11 +181,25 @@ function waitForAgentCompletion(agentPromise: Promise<unknown>, signal?: AbortSi
 			finish("aborted")
 			return
 		}
-		signal?.addEventListener("abort", onAbort)
+		signal?.addEventListener("abort", onAbort, { once: true })
 		agentPromise.then(
 			() => finish("completed"),
 			() => finish("completed"),
 		)
+		if (hasPendingUserInput) {
+			// Queue inspection is advisory: stale sessions and other probe
+			// failures mean no observed input, never a rejected wait or an
+			// exception escaping this polling interval.
+			stopInputWatch = watchQueuedUserInput(hasPendingUserInput, () => finish("user_input"), {
+				pollIntervalMs: USER_INPUT_POLL_MS,
+				suppressProbeErrors: true,
+			})
+			if (done) return
+		}
+		if (timeoutMs > 0) {
+			timer = setTimeout(() => finish("timed_out"), timeoutMs)
+			timer.unref?.()
+		}
 	})
 }
 
@@ -205,6 +233,8 @@ Use steer_subagent to send it messages. Do not duplicate this agent's work.`,
 			`Waited ${capSeconds}s (cap) and the agent is still running. The result was NOT consumed — you will be notified when it completes. If this agent's output is a hard dependency (e.g. joining a ferment worker), call get_subagent_result with wait: true again to re-join; otherwise end your turn and continue when the notification arrives.`,
 		abortedBody:
 			"Wait cancelled before the agent completed. The result was NOT consumed — you will be notified when it completes. Re-call with wait: true to re-join, or continue other work and wait for the notification.",
+		userInputBody:
+			"Wait released for queued user input. The agent is still running and its result was NOT consumed. Answer the queued message first; re-join with wait: true if its result is still needed.",
 		runningBody:
 			"Agent is still running. Do not poll or wait for it — end your turn; you will be notified when it completes and the notification will contain the results.",
 	},
@@ -226,6 +256,8 @@ Use steer_subagent to send it messages. Do not duplicate this agent's work.`,
 			`Waited ${capSeconds}s (cap) and the agent is still running. The result was NOT consumed. Call get_subagent_result with wait: true again to keep waiting; do not finish your turn while it runs — notifications are not delivered after the turn ends in this session.`,
 		abortedBody:
 			"Wait cancelled before the agent completed. The result was NOT consumed. Re-call with wait: true to re-join before ending your turn.",
+		userInputBody:
+			"Wait released for queued user input. The agent is still running and its result was NOT consumed. Answer the queued message first, then re-join with wait: true before ending your turn.",
 		runningBody:
 			"Agent is still running. Join it with get_subagent_result wait: true before ending your turn — notifications are not delivered after the turn ends in this session.",
 	},
@@ -1370,6 +1402,15 @@ export default function (pi: ExtensionAPI) {
 				if (!isError && !completionState.completionPending) void retirePlainRemote(record)
 			}
 
+			// Yielded foreground records need their terminal accounting and
+			// persistence, but stay foreground: never raise a background nudge.
+			if (record.isBackground === false) {
+				agentActivity.delete(record.id)
+				widget.markFinished(record.id)
+				widget.update()
+				return
+			}
+
 			// A consumed result normally suppresses the completion surface — but
 			// never for remote runs: polling a remote background agent with
 			// get_subagent_result consumes its result, and bailing here would
@@ -2418,10 +2459,10 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 				let spinnerFrame = 0
 				const startedAt = Date.now()
 				let fgId: string | undefined
-				let fgDetached = false
+				let fgResultReturned = false
 
 				const streamUpdate = () => {
-					if (fgDetached) return
+					if (fgResultReturned) return
 					const activity = describeActivity(fgState.activeTools, fgState.responseText)
 					const details: AgentDetails = {
 						...detailBase,
@@ -2535,12 +2576,42 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					record.outputFile = fgOutputFile.replace("placeholder", spawnedId)
 					writeInitialEntry(record.outputFile, spawnedId, params.prompt as string, ctx.cwd)
 				}
+				// Either early return can leave the child completing in the
+				// background, where only this candidate preserves the retry guard.
+				if (explicitTokenBudget != null) {
+					budgetRetryCandidates.set(spawnedId, {
+						budget: explicitTokenBudget,
+						subagentType,
+						description: params.description as string,
+						prompt: params.prompt as string,
+					})
+				}
 
-				// biome-ignore lint/style/noNonNullAssertion: promise is always set after spawn() calls startAgent()
-				const raceResult = await Promise.race([record.promise!.then(() => "completed" as const), detachPromise])
+				// A queued user message releases only the tool wait. The foreground
+				// child keeps running and stays joinable while pi injects the steer.
+				const raceResult = await Promise.race([
+					// biome-ignore lint/style/noNonNullAssertion: promise is always set after spawn() calls startAgent()
+					waitForAgentCompletion(record.promise!, {
+						timeoutMs: 0,
+						hasPendingUserInput: () => ctx.hasPendingMessages(),
+					}),
+					detachPromise,
+				])
+
+				if (raceResult === "user_input") {
+					fgResultReturned = true
+					record.detachResolver = undefined
+					record.foregroundCompletionPending = true
+					clearInterval(spinnerInterval)
+					const texts = backgroundText(backgroundNotificationsReachUser(ctx.mode))
+					return textResult(
+						`Agent ${spawnedId} is still running.\n\n${texts.userInputBody}`,
+						buildDetails(detailBase, record, fgState),
+					)
+				}
 
 				if (raceResult === "detached") {
-					fgDetached = true
+					fgResultReturned = true
 					clearInterval(spinnerInterval)
 
 					const outputFile = createOutputFilePath(agentCwd, spawnedId, parentSessionId, parentSessionDir)
@@ -2561,14 +2632,6 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					const joinMode = resolveJoinMode(getDefaultJoinMode(), true)
 					if (record && joinMode) {
 						record.joinMode = joinMode
-					}
-					if (explicitTokenBudget != null) {
-						budgetRetryCandidates.set(spawnedId, {
-							budget: explicitTokenBudget,
-							subagentType,
-							description: params.description as string,
-							prompt: params.prompt as string,
-						})
 					}
 					if (joinMode != null && joinMode !== "async") {
 						currentBatchAgents.push({ id: spawnedId, joinMode })
@@ -2780,7 +2843,10 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 					// the wait cap instead of blocking the caller's run indefinitely.
 					// On timeout/abort the result stays unconsumed and the completion
 					// nudge stays armed, so the notification still delivers the result.
-					waitOutcome = await waitForAgentCompletion(record.promise, signal)
+					waitOutcome = await waitForAgentCompletion(record.promise, {
+						signal,
+						hasPendingUserInput: () => ctx.hasPendingMessages(),
+					})
 					if (waitOutcome === "completed") {
 						record.resultConsumed = true
 						cancelNudge(params.agent_id as string)
@@ -2812,6 +2878,8 @@ ${buildAgentToolGuidelines(isTuiSession())}`,
 						bodyForDisplay = texts.timedOutBody(GET_SUBAGENT_RESULT_WAIT_CAP_MS / 1000)
 					} else if (waitOutcome === "aborted") {
 						bodyForDisplay = texts.abortedBody
+					} else if (waitOutcome === "user_input") {
+						bodyForDisplay = texts.userInputBody
 					} else {
 						bodyForDisplay = texts.runningBody
 					}
