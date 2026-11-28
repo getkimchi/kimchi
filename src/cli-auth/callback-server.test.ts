@@ -6,6 +6,14 @@ import { generateState, startCallbackServer } from "./callback-server.js"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
 
+function isIpv6Unavailable(error: unknown): boolean {
+	const networkError = error as NodeJS.ErrnoException
+	const cause = networkError.cause as NodeJS.ErrnoException | undefined
+	return [networkError.code, cause?.code].some(
+		(code) => code === "ECONNREFUSED" || code === "EADDRNOTAVAIL" || code === "EAFNOSUPPORT",
+	)
+}
+
 describe("generateState", () => {
 	it("produces a 64-character hex string", () => {
 		const state = generateState()
@@ -173,9 +181,8 @@ describe("startCallbackServer", () => {
 			expect(res.status).toBe(200)
 			expect((await server.result).code).toBe("V6")
 		} catch (err) {
-			// ECONNREFUSED on ::1 → host has no IPv6 loopback; v4-only is correct there.
-			const code = ((err as NodeJS.ErrnoException).cause as NodeJS.ErrnoException | undefined)?.code
-			if (code !== "ECONNREFUSED") throw err
+			// A refused/unavailable ::1 loopback means v4-only is correct here.
+			if (!isIpv6Unavailable(err)) throw err
 			server.close()
 		}
 	})
@@ -187,21 +194,26 @@ describe("startCallbackServer", () => {
 		// browser-sent code silently 404'd on the foreign server. Now the login
 		// must fail at startup with the actionable message.
 		const squatter = createServer()
-		await new Promise<void>((res) => squatter.listen(0, "::1", res))
+		try {
+			await new Promise<void>((resolveListen, rejectListen) => {
+				squatter.once("error", rejectListen)
+				squatter.listen(0, "::1", resolveListen)
+			})
+		} catch (err) {
+			// Without an IPv6 loopback there is no conflict fixture to exercise;
+			// the production server itself covers the v4-only fallback above.
+			if (isIpv6Unavailable(err)) return
+			throw err
+		}
 		const squatterAddr = squatter.address()
 		if (!squatterAddr || typeof squatterAddr === "string") {
 			squatter.close()
-			throw new Error("This host has no IPv6 loopback — test cannot run")
+			throw new Error("Could not determine the IPv6 listener port")
 		}
 		try {
 			await expect(
 				startCallbackServer(generateState(), { mode: "code", port: { kind: "fixed", value: squatterAddr.port } }),
 			).rejects.toThrow(/in use/)
-		} catch (err) {
-			// Hosts without IPv6 loopback: the ::1 squat itself fails to bind on
-			// some platforms — the expectation above then can't be meaningful.
-			const code = (err as NodeJS.ErrnoException).code
-			if (code !== "EADDRNOTAVAIL" && code !== "EAFNOSUPPORT") throw err
 		} finally {
 			squatter.close()
 		}
