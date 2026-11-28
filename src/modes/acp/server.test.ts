@@ -11677,7 +11677,7 @@ describe("setSessionConfigOption", () => {
 			}
 			const agent = makeAgent(fake)
 			await optIntoModelThinking(agent)
-			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
 			await agent.setSessionConfigOption({ sessionId: fake.sessionId, configId: "model", value: "test/curated" })
 
@@ -11701,7 +11701,6 @@ describe("setSessionConfigOption", () => {
 				sessionId: reloaded.sessionId,
 				cwd: "/tmp",
 				mcpServers: [],
-				_meta: { "kimchi.dev": { appMode: "chat" } },
 			})
 
 			expect(reloaded.thinkingLevel).toBe("high")
@@ -11729,7 +11728,7 @@ describe("setSessionConfigOption", () => {
 			}
 			const agent = makeAgent(fake)
 			await optIntoModelThinking(agent)
-			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 			vi.mocked(writeModelThinkingLevelDefault).mockClear()
 
 			await agent.setSessionConfigOption({
@@ -11745,7 +11744,7 @@ describe("setSessionConfigOption", () => {
 			expect(writeModelThinkingLevelDefault).not.toHaveBeenCalled()
 		})
 
-		it("updates the Session and concrete-model default for a fresh edit, ignoring legacy mode metadata", async () => {
+		it("updates the Session and concrete-model default for a fresh edit", async () => {
 			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
 			vi.mocked(readModelThinkingLevelDefaults).mockReturnValue({})
 			vi.mocked(writeModelThinkingLevelDefault).mockClear()
@@ -11756,11 +11755,10 @@ describe("setSessionConfigOption", () => {
 				protocolVersion: 1,
 				clientCapabilities: { _meta: { "kimchi.dev": { modelThinking: 1 } } },
 			})
-			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
 			const result = await agent.extMethod("_kimchi.dev/set_model_thinking", {
 				sessionId: fake.sessionId,
-				appMode: "design",
 				modelId: "test/reasoner",
 				value: "max",
 			})
@@ -11781,7 +11779,7 @@ describe("setSessionConfigOption", () => {
 			fake.thinkingLevel = "low"
 			const agent = makeAgent(fake)
 			await optIntoModelThinking(agent)
-			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 			const failure = new Error("config is read-only")
 			vi.mocked(writeModelThinkingLevelDefault).mockImplementationOnce(() => {
 				throw failure
@@ -11791,7 +11789,6 @@ describe("setSessionConfigOption", () => {
 
 			const result = await agent.extMethod(AVAILABLE_EXT_METHODS.set_model_thinking, {
 				sessionId: fake.sessionId,
-				appMode: "chat",
 				modelId: "test/reasoner",
 				value: "max",
 			})
@@ -11824,7 +11821,7 @@ describe("setSessionConfigOption", () => {
 			}
 			const agent = makeAgent(fake)
 			await optIntoModelThinking(agent)
-			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
 			let markSwitchStarted!: () => void
 			const switchStarted = new Promise<void>((resolve) => {
@@ -11845,7 +11842,6 @@ describe("setSessionConfigOption", () => {
 
 			const freshEdit = agent.extMethod(AVAILABLE_EXT_METHODS.set_model_thinking, {
 				sessionId: fake.sessionId,
-				appMode: "chat",
 				modelId: "test/reasoner",
 				value: "max",
 			})
@@ -11886,13 +11882,12 @@ describe("setSessionConfigOption", () => {
 				protocolVersion: 1,
 				clientCapabilities: { _meta: { "kimchi.dev": { modelThinking: 1 } } },
 			})
-			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
-			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 			expect(other.thinkingLevel).toBe("high")
 
 			await agent.extMethod("_kimchi.dev/set_model_thinking", {
 				sessionId: first.sessionId,
-				appMode: "chat",
 				modelId: "test/reasoner",
 				value: "max",
 			})
@@ -11901,10 +11896,10 @@ describe("setSessionConfigOption", () => {
 			expect(other.thinkingLevel).toBe("high")
 		})
 
-		it("uses flat defaults and persists Session selections for opted-in setups without App-mode metadata", async () => {
+		it("uses flat defaults and persists Session selections for opted-in setups", async () => {
 			registerModelThinkingLevels("test/reasoner", ["low", "high", "max"])
 			vi.mocked(readModelThinkingLevelDefaults).mockReturnValue({ "test/reasoner": "max" })
-			const fake = new FakeAgentSession("test-session-thinkingLevel-no-app-mode")
+			const fake = new FakeAgentSession("test-session-thinkingLevel-flat-defaults")
 			fake.model = REASONING_MODEL
 			fake.thinkingLevel = "low"
 			const agent = makeAgent(fake)
@@ -11937,7 +11932,7 @@ describe("setSessionConfigOption", () => {
 			fake.thinkingLevel = "low"
 			const agent = makeAgent(fake)
 			await agent.initialize({ protocolVersion: 1, clientCapabilities: {} })
-			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 			expect(fake.thinkingLevel).toBe("low")
 
 			await agent.setSessionConfigOption({
@@ -11949,7 +11944,6 @@ describe("setSessionConfigOption", () => {
 			await expect(
 				agent.extMethod("_kimchi.dev/set_model_thinking", {
 					sessionId: fake.sessionId,
-					appMode: "chat",
 					modelId: "test/reasoner",
 					value: "high",
 				}),
@@ -11994,7 +11988,7 @@ describe("setSessionConfigOption", () => {
 				protocolVersion: 1,
 				clientCapabilities: { _meta: { "kimchi.dev": { modelThinking: 1 } } },
 			})
-			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 
 			await expect(
 				agent.extMethod("_kimchi.dev/set_model_thinking", {
@@ -12018,13 +12012,12 @@ describe("setSessionConfigOption", () => {
 				protocolVersion: 1,
 				clientCapabilities: { _meta: { "kimchi.dev": { modelThinking: 1 } } },
 			})
-			await agent.newSession({ cwd: "/tmp", mcpServers: [], _meta: { "kimchi.dev": { appMode: "chat" } } })
+			await agent.newSession({ cwd: "/tmp", mcpServers: [] })
 			fake.modelRegistry = { ...fake.modelRegistry, getAvailable: () => [] }
 
 			await expect(
 				agent.extMethod("_kimchi.dev/set_model_thinking", {
 					sessionId: fake.sessionId,
-					appMode: "chat",
 					modelId: "test/reasoner",
 					value: "high",
 				}),

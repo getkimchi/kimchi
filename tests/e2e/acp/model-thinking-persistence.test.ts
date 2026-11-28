@@ -147,11 +147,10 @@ function rowThinkingLevel(response: unknown, modelId: string): Record<string, un
 	return meta?.modelThinking
 }
 
-async function newThinkingSession(fixture: AcpFixture, legacyMode?: "chat" | "design" | "code") {
+async function newThinkingSession(fixture: AcpFixture) {
 	return fixture.conn.request("session/new", {
 		cwd: fixture.workDir,
 		mcpServers: [],
-		...(legacyMode ? { _meta: { "kimchi.dev": { appMode: legacyMode } } } : {}),
 	})
 }
 
@@ -233,7 +232,6 @@ describe("ACP integration — model Thinking level persistence", () => {
 			sessionId: session.sessionId,
 			cwd: workDir,
 			mcpServers: [],
-			_meta: { "kimchi.dev": { appMode: "chat" } },
 		})
 		expect(currentModel(loaded)).toBe(BETA_REF)
 		expect(currentThinkingLevel(loaded)).toBe("high")
@@ -315,7 +313,7 @@ describe("ACP integration — model Thinking level persistence", () => {
 				writeFileSync(configPath(home), JSON.stringify(config, null, "\t"))
 			},
 		})
-		const created = await newThinkingSession(first, "code")
+		const created = await newThinkingSession(first)
 		const sessionEntries = [
 			{ modelId: ALPHA_REF, value: "low" },
 			{ modelId: ALPHA_REF, value: "max" },
@@ -349,7 +347,6 @@ describe("ACP integration — model Thinking level persistence", () => {
 			sessionId: created.sessionId,
 			cwd: workDir,
 			mcpServers: [],
-			_meta: { "kimchi.dev": { appMode: "chat" } },
 		})
 
 		expect(currentThinkingLevel(loaded)).toBe("max")
