@@ -134,8 +134,8 @@ describe("todo prompt block", () => {
 		expect(block).toContain("Skip it for single-step answers")
 		expect(block).toContain("Do not leave TODO placeholders in code")
 		expect(block).toContain("pair todo updates with work tool calls when possible")
-		expect(block).toContain("At wrap-up, todo-only updates are appropriate")
-		expect(block).toContain("preserve deferred, blocked, uncertain, and awaiting-approval work")
+		expect(block).toContain("todo-only updates are appropriate at wrap-up")
+		expect(block).toContain("Preserve deferred, blocked, uncertain, and awaiting-approval work")
 		expect(block).toContain("natural breakpoint")
 		expect(block).toContain("staleness warning")
 		expect(block).toContain("never authorize")
@@ -157,6 +157,23 @@ describe("todo prompt block", () => {
 		expect(__test_renderTodoPromptBlock()).not.toContain("Current global todos:")
 		expect(__test_renderTodoPromptBlock()).not.toContain("alpha")
 		expect(__test_renderTodoPromptBlock()).not.toContain("bravo")
+	})
+
+	it("guidance speaks only the one-tool contract — no retired verbs", () => {
+		const block = __test_renderTodoPromptBlock()
+		for (const retired of [
+			"create_todos",
+			"update_todos",
+			"add_todo",
+			"mark_todo",
+			"clear_todos",
+			"write_todos",
+			"confirm_todos",
+		]) {
+			expect(block).not.toContain(retired)
+		}
+		expect(block).toContain("update to re-status or edit existing items by id")
+		expect(block).toContain("keeping existing ids and user-created todos")
 	})
 })
 
@@ -475,7 +492,7 @@ describe("ferment-conditional todo guidance", () => {
 		expect(supplement).toContain("skip the list and just do the work")
 		expect(supplement).toContain("roughly 5+ tool calls")
 		expect(supplement).toContain("state of record")
-		expect(supplement).toContain("one batched update_todos call")
+		expect(supplement).toContain("one batched todos call")
 		expect(supplement).toContain("never spend a whole turn only updating todos")
 	})
 

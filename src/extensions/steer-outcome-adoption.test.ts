@@ -60,7 +60,7 @@ describe("steer outcome watcher — site adoptions", () => {
 
 		await fire("tool_execution_end", { toolName: "read" })
 		expect(outcomes(emitted)).toHaveLength(0)
-		await fire("tool_execution_end", { toolName: "mark_todo" })
+		await fire("tool_execution_end", { toolName: "todos" })
 		expect(outcomes(emitted)).toEqual([expect.objectContaining({ kind: "todo_staleness", outcome: "complied" })])
 	})
 
@@ -68,7 +68,7 @@ describe("steer outcome watcher — site adoptions", () => {
 	// extension actually registers (plus the legacy upstream write_todos
 	// name). It previously mirrored upstream-style names ("todo",
 	// "todo_write", "todowrite") that kimchi never registers, so real
-	// compliance — e.g. a mark_todo call following a staleness steer — was
+	// compliance — e.g. a todos write following a staleness steer — was
 	// misclassified: the window expired and emitted "expired" instead.
 	it.each(TODO_WRITE_TOOL_NAMES)("todo_staleness: a %s write counts as compliance", async (name) => {
 		const { pi, emitted, fire } = makePi()

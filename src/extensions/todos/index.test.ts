@@ -29,7 +29,7 @@ import {
 	hasEverHadTodos,
 	registerActiveTodoScopeProvider,
 } from "./store.js"
-import { TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "./tool.js"
+import { TODO_TOOL_NAMES, TODOS_TOOL_NAME } from "./tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoScope, type TodoStatus } from "./types.js"
 import { __resetTodoCrowding, claimTodoCrowding, isTodoCrowdingActive } from "./widget.js"
 
@@ -50,7 +50,7 @@ const theme = {
 	bold: (text: string) => text,
 } as Theme
 
-function createTodosHarness(activeTools: string[] = [...TODO_TOOL_NAMES, "confirm_todos"]) {
+function createTodosHarness(activeTools: string[] = [...TODO_TOOL_NAMES]) {
 	const mock = createExtensionApi()
 	mock.setActiveTools(activeTools)
 	todosExtension(mock.api)
@@ -177,7 +177,7 @@ function writeTodosEntry(
 	id: string,
 	content: string,
 	status: TodoStatus = "pending",
-	toolName: string = UPDATE_TODOS_TOOL_NAME,
+	toolName: string = TODOS_TOOL_NAME,
 ): SessionEntry {
 	return {
 		type: "message",
@@ -593,11 +593,46 @@ describe("early todo nudge", () => {
 			}
 			// Adopt within the window (3): a todo write counts as compliance.
 			applyWriteTodos({ todos: [{ content: "work", status: "in_progress" }] }, "session")
-			await harness.fire("tool_execution_end", { toolName: "create_todos", isError: false }, ctx)
+			await harness.fire("tool_execution_end", { toolName: "todos", isError: false }, ctx)
 
 			const outcomes = vi.mocked(harness.events.emit).mock.calls.filter(([channel]) => channel === "steer:outcome")
 			expect(outcomes).toHaveLength(1)
 			expect(outcomes[0]?.[1]).toMatchObject({ kind: "todo_early_nudge", outcome: "complied" })
+		})
+
+		it("a confirm result inside the nudge window is not compliance and not work", async () => {
+			// The guard must run BEFORE the write branch: a confirm made no
+			// store change, so it clears nothing and counts for nothing.
+			const harness = createTodosHarness()
+			const ctx = createContext("session", [])
+			await harness.fire("session_start", { reason: "new" }, ctx)
+
+			// Fire the nudge (threshold 5).
+			for (let i = 0; i < 6; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+			// A todos() call whose result is a confirm: no "complied" outcome.
+			await harness.fire(
+				"tool_execution_end",
+				{
+					toolName: "todos",
+					isError: false,
+					result: {
+						details: { schemaVersion: 3, scope: { kind: "global" }, todos: [], confirm: true, inputRevision: 0 },
+					},
+				},
+				ctx,
+			)
+			let outcomes = vi.mocked(harness.events.emit).mock.calls.filter(([channel]) => channel === "steer:outcome")
+			expect(outcomes).toHaveLength(0)
+
+			// The window expires instead, emitting repeated exactly once.
+			for (let i = 0; i < 6; i++) {
+				await harness.fire("tool_execution_end", { toolName: "bash", isError: false }, ctx)
+			}
+			outcomes = vi.mocked(harness.events.emit).mock.calls.filter(([channel]) => channel === "steer:outcome")
+			expect(outcomes).toHaveLength(1)
+			expect(outcomes[0]?.[1]).toMatchObject({ kind: "todo_early_nudge", outcome: "repeated" })
 		})
 
 		it("window expiry with no todo write → steer:outcome repeated (once)", async () => {
@@ -842,6 +877,9 @@ describe("todo check-in gate", () => {
 		// shape, so the contract is asserted against literals, not constants.
 		expect((result as { reason?: string }).reason).toMatch(/^⏸ Todo check-in pending \(input revision 1\)\. /)
 		expect((result as { reason?: string }).reason).toContain("[in_progress] #1 task")
+		// The release instruction is part of the same single surface: pinned
+		// byte-exact so a wording drift fails here, not in the wild.
+		expect((result as { reason?: string }).reason).toContain("confirm it with todos, passing {confirm: 1}")
 
 		// No instruction steer is queued at receipt (ordering hazard); the
 		// block reason above carries the instructions.
@@ -853,12 +891,12 @@ describe("todo check-in gate", () => {
 
 		// Reconciliation tools pass through while the gate is open.
 		expect(
-			await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "mark_todo", input: {} }, ctx),
+			await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "todos", input: {} }, ctx),
 		).toEqual({ block: false })
 		expect(
 			await harness.fire(
 				"tool_call",
-				{ type: "tool_call", toolCallId: "c1", toolName: "confirm_todos", input: {} },
+				{ type: "tool_call", toolCallId: "c1", toolName: "todos", input: { confirm: 1 } },
 				ctx,
 			),
 		).toEqual({ block: false })
@@ -878,7 +916,7 @@ describe("todo check-in gate", () => {
 		expect(isGateBlockedToolCall("w1")).toBe(true)
 		// Reconciliation calls admitted while gated are never registered.
 		expect(
-			await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "mark_todo", input: {} }, ctx),
+			await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "todos", input: {} }, ctx),
 		).toEqual({ block: false })
 		expect(isGateBlockedToolCall("m1")).toBe(false)
 
@@ -1008,17 +1046,29 @@ describe("todo check-in gate", () => {
 		// The real executor closes the gate through the production store subscriber,
 		// and its own result text carries the reminder.
 		const toolCtx = createToolContext("session", [])
-		const markTodo = harness.registeredTool("mark_todo")
-		const result = await markTodo.execute("m1", { id: 1, status: "pending" }, undefined, undefined, toolCtx)
+		const todosTool = harness.registeredTool("todos")
+		const result = await todosTool.execute(
+			"m1",
+			{ update: [{ id: 1, status: "pending" }] },
+			undefined,
+			undefined,
+			toolCtx,
+		)
 		const text = result.content[0].type === "text" ? result.content[0].text : ""
-		expect(text).toContain("Marked todo #1 pending in global.")
+		expect(text).toContain("Applied todo edits in global: updated #1.")
 		expect(text).toContain("1 tool call was blocked by this check-in and never executed (bash(git status -sb))")
 		expect(text).toContain("Re-issue it (or its updated equivalent) now")
 
 		// Drained: a later write carries no reminder.
-		const again = await markTodo.execute("m2", { id: 1, status: "in_progress" }, undefined, undefined, toolCtx)
+		const again = await todosTool.execute(
+			"m2",
+			{ update: [{ id: 1, status: "in_progress" }] },
+			undefined,
+			undefined,
+			toolCtx,
+		)
 		const againText = again.content[0].type === "text" ? again.content[0].text : ""
-		expect(againText).toBe("Marked todo #1 in_progress in global.")
+		expect(againText).toBe("Applied todo edits in global: updated #1.")
 	})
 
 	it("arms the gate without queueing an instruction steer — the block reason carries the instructions", async () => {
@@ -1100,13 +1150,11 @@ describe("todo check-in gate", () => {
 		// Newer input re-arms the check; a matching confirmation releases it.
 		await fireInput(harness, ctx, "Second thought")
 		expect(await fireWork(harness, ctx, "w3")).toMatchObject({ block: true })
-		await harness
-			.registeredTool("confirm_todos")
-			.execute("c1", { inputRevision: 2, expected: [{ id: 1, status: "pending" }] }, undefined, undefined, ctx)
+		await harness.registeredTool("todos").execute("c1", { confirm: 2 }, undefined, undefined, ctx)
 		expect(await fireWork(harness, ctx, "w4")).toEqual({ block: false })
 	})
 
-	it("a mismatched or stale-revision confirmation keeps work blocked", async () => {
+	it("a stale-revision confirmation keeps work blocked", async () => {
 		const harness = createTodosHarness()
 		const ctx = createToolContext("session", [])
 		await harness.fire("session_start", { reason: "new" }, ctx)
@@ -1114,15 +1162,17 @@ describe("todo check-in gate", () => {
 		await fireInput(harness, ctx)
 		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
 
-		await harness
-			.registeredTool("confirm_todos")
-			.execute("c1", { inputRevision: 1, expected: [{ id: 1, status: "completed" }] }, undefined, undefined, ctx)
+		// Wrong revision, older than current — rejected, gate stays armed.
+		await harness.registeredTool("todos").execute("c1", { confirm: 0 }, undefined, undefined, ctx)
 		expect(await fireWork(harness, ctx, "w2")).toMatchObject({ block: true })
 
-		await harness
-			.registeredTool("confirm_todos")
-			.execute("c2", { inputRevision: 0, expected: [{ id: 1, status: "in_progress" }] }, undefined, undefined, ctx)
+		// Wrong revision, newer than current — also rejected.
+		await harness.registeredTool("todos").execute("c2", { confirm: 5 }, undefined, undefined, ctx)
 		expect(await fireWork(harness, ctx, "w3")).toMatchObject({ block: true })
+
+		// Only the current revision releases.
+		await harness.registeredTool("todos").execute("c3", { confirm: 1 }, undefined, undefined, ctx)
+		expect(await fireWork(harness, ctx, "w4")).toEqual({ block: false })
 	})
 
 	it("a write admitted before newer user input cannot satisfy the newer check", async () => {
@@ -1132,11 +1182,13 @@ describe("todo check-in gate", () => {
 		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, "session")
 		await fireInput(harness, ctx)
 
-		// Admit a mark_todo call under revision 1…
-		await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "mark_todo", input: {} }, ctx)
+		// Admit a todos write under revision 1…
+		await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "todos", input: {} }, ctx)
 		// …then newer input arrives before the write executes.
 		await fireInput(harness, ctx, "Changed my mind")
-		await harness.registeredTool("mark_todo").execute("m1", { id: 1, status: "pending" }, undefined, undefined, ctx)
+		await harness
+			.registeredTool("todos")
+			.execute("m1", { todos: [{ id: 1, content: "task", status: "pending" }] }, undefined, undefined, ctx)
 
 		// The write acknowledged revision 1 only; the revision-2 check stays pending.
 		expect(getPendingCheckins("session")).toHaveLength(1)
@@ -1155,7 +1207,7 @@ describe("todo check-in gate", () => {
 		// before the reconciliation completed is still blocked — execution
 		// order within a batch must not be assumed.
 		expect(
-			await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "mark_todo", input: {} }, ctx),
+			await harness.fire("tool_call", { type: "tool_call", toolCallId: "m1", toolName: "todos", input: {} }, ctx),
 		).toEqual({ block: false })
 		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
 
@@ -1164,7 +1216,9 @@ describe("todo check-in gate", () => {
 		expect(getWorkToolCalls("session")).toBe(0)
 
 		// Once the admitted reconciliation executes, later admissions pass.
-		await harness.registeredTool("mark_todo").execute("m1", { id: 1, status: "pending" }, undefined, undefined, ctx)
+		await harness
+			.registeredTool("todos")
+			.execute("m1", { todos: [{ id: 1, content: "task", status: "pending" }] }, undefined, undefined, ctx)
 		expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
 	})
 
@@ -1362,9 +1416,7 @@ describe("todo check-in gate", () => {
 		expect(await fireWork(harness, ctx, "w1")).toMatchObject({ block: true })
 
 		// Closable: confirming the current revision releases work.
-		await harness
-			.registeredTool("confirm_todos")
-			.execute("c1", { inputRevision: 1, expected: [{ id: 1, status: "in_progress" }] }, undefined, undefined, ctx)
+		await harness.registeredTool("todos").execute("c1", { confirm: 1 }, undefined, undefined, ctx)
 		expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
 	})
 
@@ -1704,16 +1756,12 @@ describe("todo check-in gate", () => {
 		// Newer input re-arms; a closing confirmation emits exactly one
 		// complied…
 		await fireInput(harness, ctx, "Second thought")
-		await harness
-			.registeredTool("confirm_todos")
-			.execute("c1", { inputRevision: 2, expected: [{ id: 1, status: "pending" }] }, undefined, undefined, ctx)
+		await harness.registeredTool("todos").execute("c1", { confirm: 2 }, undefined, undefined, ctx)
 		expect(outcomes).toHaveLength(2)
 		expect(outcomes[1]).toMatchObject({ kind: "todo_checkin", outcome: "complied", method: "confirm" })
 		// …and a confirmation with nothing pending emits nothing — no watcher
 		// expiry, no spurious complied.
-		await harness
-			.registeredTool("confirm_todos")
-			.execute("c2", { inputRevision: 2, expected: [{ id: 1, status: "pending" }] }, undefined, undefined, ctx)
+		await harness.registeredTool("todos").execute("c2", { confirm: 2 }, undefined, undefined, ctx)
 		expect(outcomes).toHaveLength(2)
 
 		unsubscribe()
@@ -1968,9 +2016,7 @@ describe("todo check-in gate", () => {
 		expect(reminders()).toHaveLength(2)
 
 		// Confirm the accurate list with no check pending.
-		await harness
-			.registeredTool("confirm_todos")
-			.execute("c1", { inputRevision: 0, expected: [{ id: 1, status: "pending" }] }, undefined, undefined, ctx)
+		await harness.registeredTool("todos").execute("c1", { confirm: 0 }, undefined, undefined, ctx)
 
 		// The confirmation restarted the schedule: nine more calls stay quiet…
 		for (let i = 23; i < 32; i++) await workOnce(`w${i}`)
@@ -2079,9 +2125,7 @@ describe("plan-submission check-in gate", () => {
 		// …and so does a matching confirmation after newer input re-arms it.
 		await fireInput(harness, ctx, "Second thought")
 		expect(await submitCall("p3")).toMatchObject({ block: true })
-		await harness
-			.registeredTool("confirm_todos")
-			.execute("c1", { inputRevision: 2, expected: [{ id: 1, status: "pending" }] }, undefined, undefined, ctx)
+		await harness.registeredTool("todos").execute("c1", { confirm: 2 }, undefined, undefined, ctx)
 		expect(await submitCall("p4")).toEqual({ block: false })
 	})
 
@@ -2333,7 +2377,7 @@ describe("check-in gate blocked-work ledger", () => {
 		// The model re-issues the call on its own, as the block reason tells it to.
 		expect(await harness.fire("tool_call", { ...call, toolCallId: "w2" }, ctx)).toMatchObject({ block: false })
 
-		const update = harness.registeredTool(UPDATE_TODOS_TOOL_NAME)
+		const update = harness.registeredTool(TODOS_TOOL_NAME)
 		const result = await update.execute(
 			"u1",
 			{ todos: [{ content: "task", status: "completed" }] },

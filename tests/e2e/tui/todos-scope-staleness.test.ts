@@ -129,8 +129,20 @@ test("per-scope staleness: step work and step writes keep global-list pressure a
 					stream: ["Reconciling the seeded step list first."],
 					toolCalls: [
 						{
-							id: "call-mark-1",
-							function: { name: "mark_todo", arguments: JSON.stringify({ id: 1, status: "completed" }) },
+							id: "call-write-1",
+							function: {
+								name: "todos",
+								arguments: JSON.stringify({
+									todos: [
+										{
+											id: 1,
+											content: "[Step 1] Do work in the step scope while the global list ages.",
+											status: "completed",
+											activeForm: "Do work in the step scope while the global list ages.",
+										},
+									],
+								}),
+							},
 						},
 					],
 				},
@@ -144,7 +156,7 @@ test("per-scope staleness: step work and step writes keep global-list pressure a
 						{
 							id: "call-create-1",
 							function: {
-								name: "create_todos",
+								name: "todos",
 								arguments: JSON.stringify({
 									scope: { kind: "global" },
 									todos: [
@@ -169,7 +181,7 @@ test("per-scope staleness: step work and step writes keep global-list pressure a
 						{
 							id: "call-update-1",
 							function: {
-								name: "update_todos",
+								name: "todos",
 								arguments: JSON.stringify({ todos: [{ content: "Step progress noted", status: "completed" }] }),
 							},
 						},

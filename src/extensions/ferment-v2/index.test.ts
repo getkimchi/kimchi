@@ -31,7 +31,14 @@ import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "../todos/command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "../todos/store.js"
-import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
+
+// Historical-shape transcript fixtures: these retired names no longer
+// register (the single todos tool replaced them) but still appear in older
+// transcripts, whose entries the completion reader must interpret.
+const MARK_TODO_TOOL_NAME = "mark_todo"
+const UPDATE_TODOS_TOOL_NAME = "update_todos"
+
+import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoItem } from "../todos/types.js"
 import {
 	FERMENT_V2_CONTEXT_MESSAGE_TYPE,
@@ -4331,7 +4338,7 @@ describe("Ferment V2 extension", () => {
 	})
 
 	it("does not start when only part of the Todo toolset is visible", async () => {
-		harness.setActiveTools([...FERMENT_V2_TOOL_NAMES, TODO_TOOL_NAMES[0]])
+		harness.setActiveTools([...FERMENT_V2_TOOL_NAMES])
 		await harness.command("keep going")
 
 		expect(harness.sendMessage).not.toHaveBeenCalled()

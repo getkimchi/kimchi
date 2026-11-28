@@ -93,13 +93,13 @@ it("sends a failing claim back with a finding, re-checks the fix, and completes"
 			{
 				stream: ["Writing the file."],
 				toolCalls: [
-					call("create-ferment-todos", "create_todos", {
+					call("create-ferment-todos", "todos", {
 						todos: [{ content: `Create and verify ${outputFile}`, status: "in_progress" }],
 					}),
 					call("write-ferment-file", "write", { path: outputFile, content: "don" }, 1),
 				],
 			},
-			{ toolCalls: [call("finish-ferment-todo", "mark_todo", { id: 1, status: "completed" })] },
+			{ toolCalls: [call("finish-ferment-todo", "todos", { update: [{ id: 1, status: "completed" }] })] },
 			{ toolCalls: [call("claim-1", "update_ferment_v2", { status: "complete", completion_confidence: "tested" })] },
 			// After the continue: repair the file and claim again.
 			{
