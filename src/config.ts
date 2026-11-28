@@ -198,6 +198,7 @@ export function ensureHideThinkingBlockDefault(settings: Record<string, unknown>
 
 /**
  * Seed quietStartup when absent so settings.json files predating this default
+
  * (or otherwise missing the key) don't fall back to pi's verbose startup
  * listing (the `[Extensions]`/`[Themes]` resource dump).
  */
@@ -398,6 +399,7 @@ export function readApiKeyFromConfigFile(configPath: string = KIMCHI_CONFIG_PATH
 	try {
 		const raw = readFileSync(configPath, "utf-8")
 		const parsed = JSON.parse(raw)
+
 		if (typeof parsed.apiKey === "string" && parsed.apiKey.length > 0) {
 			return parsed.apiKey
 		}
@@ -598,6 +600,7 @@ const configPermissionWarnedPaths = new Set<string>()
 
 export function checkConfigFilePermissions(configPath: string): string | undefined {
 	if (process.platform === "win32") return undefined
+
 	try {
 		const stat = statSync(configPath)
 		if ((stat.mode & 0o077) !== 0 && !configPermissionWarnedPaths.has(configPath)) {
@@ -998,6 +1001,7 @@ function missingSelfHostedBaseUrlError(): Error {
 }
 
 /**
+
  * Endpoints of a given region, with the same env overrides as resolveEndpoints().
  *
  * This and resolveEndpoints() are the only sanctioned entry points for region
@@ -1088,34 +1092,30 @@ function writeConfigField(key: string, value: unknown, configPath: string): void
 	})
 }
 
-type ModelEffortDefaults = Record<string, Record<string, string>>
+type ModelThinkingLevelDefaults = Record<string, string>
 
-function parseModelEffortDefaults(value: unknown): ModelEffortDefaults {
+function parseModelThinkingLevelDefaults(value: unknown): ModelThinkingLevelDefaults {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {}
-	const defaults: ModelEffortDefaults = Object.create(null)
-	for (const [appMode, rawModels] of Object.entries(value)) {
-		if (!rawModels || typeof rawModels !== "object" || Array.isArray(rawModels)) continue
-		const models = Object.fromEntries(
-			Object.entries(rawModels).filter(([modelId, effort]) => modelId.length > 0 && typeof effort === "string"),
-		) as Record<string, string>
-		if (Object.keys(models).length > 0) defaults[appMode] = models
+	const defaults: ModelThinkingLevelDefaults = Object.create(null)
+	for (const [modelId, thinkingLevel] of Object.entries(value)) {
+		if (modelId.length > 0 && typeof thinkingLevel === "string") defaults[modelId] = thinkingLevel
 	}
 	return defaults
 }
 
-export function readModelEffortDefaults(configPath: string = KIMCHI_CONFIG_PATH): ModelEffortDefaults {
-	return parseModelEffortDefaults(readConfigObject(configPath)?.modelEffortDefaults)
+/** Read flat concrete-model defaults without rewriting existing configuration. */
+export function readModelThinkingLevelDefaults(configPath: string = KIMCHI_CONFIG_PATH): ModelThinkingLevelDefaults {
+	return parseModelThinkingLevelDefaults(readConfigObject(configPath)?.modelEffortDefaults)
 }
 
-export function writeModelEffortDefault(
-	appMode: string,
+export function writeModelThinkingLevelDefault(
 	modelId: string,
-	effort: string,
+	thinkingLevel: string,
 	configPath: string = KIMCHI_CONFIG_PATH,
 ): void {
 	updateConfigFile(configPath, (raw) => {
-		const defaults = parseModelEffortDefaults(raw.modelEffortDefaults)
-		defaults[appMode] = { ...defaults[appMode], [modelId]: effort }
+		const defaults = parseModelThinkingLevelDefaults(raw.modelEffortDefaults)
+		defaults[modelId] = thinkingLevel
 		raw.modelEffortDefaults = defaults
 	})
 }
@@ -1182,6 +1182,7 @@ export function readStudioOnboardingSeenAt(configPath?: string): string | undefi
 
 export function writeStudioOnboardingSeenAt(seenAt: string, configPath?: string): void {
 	const path = configPath ?? KIMCHI_CONFIG_PATH
+
 	updateOnboardingConfig(path, (onboarding) => {
 		onboarding.studioOnboardingSeenAt = seenAt
 	})
@@ -1382,6 +1383,7 @@ export function writeTuiTimezone(timezone: string, configPath?: string): void {
 }
 
 /**
+
  * Pin (or, with `undefined`, unpin) the reply language in the global config.
  * The value must already be normalized (see normalizeLanguageSetting); the
  * `kimchi config set language` and `/language` surfaces validate before

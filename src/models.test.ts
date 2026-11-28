@@ -16,6 +16,7 @@ import {
 	getModelDescription,
 	getModelLabel,
 	getModelThinkingLevels,
+	getModelVirtualIdentity,
 	injectExperimentalProvider,
 	isTransientModelsError,
 	ModelsFetchError,
@@ -1784,6 +1785,41 @@ describe("model thinking levels registry (/model table THINKING column)", () => 
 		// Responses-API curated-none: the "none" disable fallback is stamped
 		// out too (gpt-5.1's map would otherwise send effort "none").
 		expect(byId("gpt-5.1")?.thinkingLevelMap).toMatchObject({ off: null })
+	})
+
+	it("round-trips other-virtual identity through discovery and the cache", async () => {
+		const family = {
+			...(KIMI as Record<string, unknown>),
+			slug: "family",
+			display_name: "Family alias",
+			virtual: "other",
+		}
+		fetchOnce([family])
+		await updateModelsConfig(modelsJsonPath, "test-key")
+
+		const cached = JSON.parse(readFileSync(modelsJsonPath, "utf-8")).providers["kimchi-dev"].models[0]
+		expect(cached).toMatchObject({ id: "family", virtual: "other" })
+		expect(cached).not.toHaveProperty("searchAliases")
+		vi.restoreAllMocks()
+
+		const result = await updateModelsConfig(modelsJsonPath, "")
+		expect(result.models[0]).toMatchObject({ slug: "family", virtual: "other" })
+		expect(result.models[0]).not.toHaveProperty("search_aliases")
+	})
+
+	it("clears other-virtual identity when a refresh withdraws it", () => {
+		const provider = "metadata-withdrawal-test"
+		const ref = `${provider}/family`
+		registerModelInfoFromProviders({
+			[provider]: {
+				models: [{ id: "family", virtual: "other" }],
+			},
+		})
+		expect(getModelVirtualIdentity(ref)).toBe("other")
+
+		registerModelInfoFromProviders({ [provider]: { models: [{ id: "family" }] } })
+
+		expect(getModelVirtualIdentity(ref)).toBeUndefined()
 	})
 
 	it("round-trips thinking_levels onto the cached ModelMetadata", async () => {

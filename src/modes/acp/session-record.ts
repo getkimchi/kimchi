@@ -2,7 +2,6 @@ import type { ToolCallContent } from "@agentclientprotocol/sdk/unstable"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import type { SessionPermissionFlagController } from "../../extensions/permissions/types.js"
 import type { StreamDesanitizer } from "../../extensions/pii-redaction/stream-desanitizer.js"
-import type { SessionAppMode } from "../../model-effort.js"
 import type { createAcpPermissionPrompter } from "./acp-prompter.js"
 import type { ModelAttribution } from "./model-attribution.js"
 import type { AcpPlanTracker } from "./plans.js"
@@ -42,8 +41,7 @@ export function cancelPendingPrompts(entry: SessionRecord): void {
 
 export type SessionRecord = {
 	session: AgentSession
-	appMode?: SessionAppMode
-	effortByModel: Map<string, AgentSession["thinkingLevel"]>
+	thinkingLevelByModel: Map<string, AgentSession["thinkingLevel"]>
 	unsubscribe: () => void
 	/**
 	 * The prompter THIS record registered — threaded so every teardown of
@@ -207,6 +205,7 @@ export type SessionRecord = {
 	skillCommands: Map<string, AcpSkillInfo>
 	/** Mirrors this session's Todo store writes to ACP `plan` updates. */
 	planTracker?: AcpPlanTracker
+
 	/** Present only for announced child routes; keeps root run boundaries out of child streams. */
 	subagentParentSessionId?: string
 }
@@ -223,7 +222,7 @@ export function createProjectionSessionRecord(
 			: SubagentToolIdHistory.fromEntries(session.sessionManager.getBranch())
 	const record: SessionRecord = {
 		session,
-		effortByModel: new Map(),
+		thinkingLevelByModel: new Map(),
 		unsubscribe: () => {},
 		cwd,
 		childToolIdHistory,

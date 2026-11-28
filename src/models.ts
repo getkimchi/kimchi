@@ -203,6 +203,8 @@ export interface ModelMetadata {
 	/** Optional human-facing description from the models endpoint; shown in the
 	 *  /model selector's DESCRIPTION column. Absent until the backend sends it. */
 	description?: string
+	/** Optional non-Auto virtual identity for explicit Effort row metadata. */
+	virtual?: "other"
 	/** Curation state from the models endpoint — tri-state: omitted for
 	 *  uncurated models (clients must not infer levels), the explicit empty
 	 *  array for curated models whose thinking offers no distinct levels
@@ -332,6 +334,8 @@ export interface PiModelConfig {
 	 *  offline cache round-trip keeps it; pi's loader ignores the extra key
 	 *  (verified: ModelConfig tolerates unknown model fields). */
 	description?: string
+	/** Optional non-Auto virtual identity supplied by model configuration. */
+	virtual?: "other"
 	/** Curation state from the models endpoint — tri-state, persisted for the
 	 *  offline cache round-trip: undefined for uncurated models, the explicit
 	 *  empty array for curated-none ("thinking exists but offers no distinct
@@ -419,6 +423,7 @@ function metadataToModel(m: ModelMetadata): PiModelConfig {
 		...(responsesApi && { api: isChatgpt ? ("openai-codex-responses" as const) : ("openai-responses" as const) }),
 		...(m.provider_name?.trim() ? { providerName: m.provider_name.trim() } : {}),
 		...(m.description?.trim() ? { description: m.description.trim() } : {}),
+		...(m.virtual ? { virtual: m.virtual } : {}),
 		...(curatedLevels && { thinkingLevels: curatedLevels }),
 		...(effectiveCompat && { compat: effectiveCompat }),
 		...(thinkingLevelMap && { thinkingLevelMap }),
@@ -523,6 +528,7 @@ function modelToMetadata(m: PiModelConfig): ModelMetadata {
 		is_serverless: true,
 		limits: { context_window: m.contextWindow, max_output_tokens: m.maxTokens },
 		...(m.description ? { description: m.description } : {}),
+		...(m.virtual ? { virtual: m.virtual } : {}),
 		...(m.thinkingLevels !== undefined ? { thinking_levels: m.thinkingLevels } : {}),
 	}
 }
@@ -579,6 +585,14 @@ export function registerModelDescription(key: string, description: string): void
 
 export function getModelDescription(key: string): string | undefined {
 	return modelDescriptionRegistry().get(key)
+}
+
+// Patched Pi components never read this ACP cache, so it stays private.
+const modelVirtualRegistry = new Map<string, NonNullable<PiModelConfig["virtual"]>>()
+
+/** Non-Auto virtual identity survives Pi's known-key model projection. */
+export function getModelVirtualIdentity(key: string): PiModelConfig["virtual"] {
+	return modelVirtualRegistry.get(key)
 }
 
 /** @internal — test hook clearing the process-global registry. */
@@ -665,7 +679,13 @@ export function registerModelInfoFromProviders(
 	providers: Record<
 		string,
 		{
-			models?: Array<{ id: string; description?: string; thinkingLevels?: ModelThinkingLevel[]; providerName?: string }>
+			models?: Array<{
+				id: string
+				description?: string
+				thinkingLevels?: ModelThinkingLevel[]
+				providerName?: string
+				virtual?: "other"
+			}>
 		}
 	>,
 ): void {
@@ -680,6 +700,8 @@ export function registerModelInfoFromProviders(
 			// is absent (uncurated).
 			if (Array.isArray(model.thinkingLevels)) registerModelThinkingLevels(key, model.thinkingLevels)
 			else modelThinkingLevelsRegistry().delete(key)
+			if (model.virtual !== undefined) modelVirtualRegistry.set(key, model.virtual)
+			else modelVirtualRegistry.delete(key)
 		}
 	}
 }
