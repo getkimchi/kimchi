@@ -4272,20 +4272,67 @@ function getSessionModelRegistry(
  * (backend display name); the description is the harness's one-liner for what
  * a routed virtual model does.
  */
-function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSelectOption {
+function modelBaseDisplayName(model: Model<Api>): string {
+	return isAutoRoutedModel(model) ? splitModelDisplayName(model.name ?? model.id).name : model.name
+}
+
+/** A model's picker label: its base display name plus an optional collision qualifier. */
+interface ModelDisplayLabel {
+	baseName: string
+	/** Set only when `baseName` is shared with another model; unique names stay bare. */
+	qualifier?: string
+}
+
+function formatModelLabel({ baseName, qualifier }: ModelDisplayLabel, resolvedTo?: string): string {
+	// One parenthetical per label: a resolved Auto row folds its routed model
+	// into the collision qualifier (`Auto (kimchi-dev → kimi-k3)`) instead of
+	// stacking a second group (`Auto (kimchi-dev) (kimi-k3)`).
+	const detail = qualifier && resolvedTo ? `${qualifier} → ${resolvedTo}` : (qualifier ?? resolvedTo)
+	return detail ? `${baseName} (${detail})` : baseName
+}
+
+/**
+ * Qualifies display names shared by more than one model so every picker row is
+ * distinguishable. Unique names are left bare. Colliding names are qualified by
+ * provider; when one provider owns several models with the same name, the
+ * qualifier narrows to the model id (single provider) or the full ref (several
+ * providers) — option values and routing are never touched.
+ */
+function disambiguateModelDisplayNames(models: readonly Model<Api>[]): Map<Model<Api>, ModelDisplayLabel> {
+	const nameCounts = new Map<string, { total: number; providers: Map<string, number> }>()
+	for (const model of models) {
+		const baseName = modelBaseDisplayName(model)
+		const entry = nameCounts.get(baseName) ?? { total: 0, providers: new Map<string, number>() }
+		entry.total += 1
+		entry.providers.set(model.provider, (entry.providers.get(model.provider) ?? 0) + 1)
+		nameCounts.set(baseName, entry)
+	}
+	const labels = new Map<Model<Api>, ModelDisplayLabel>()
+	for (const model of models) {
+		const baseName = modelBaseDisplayName(model)
+		const entry = nameCounts.get(baseName)
+		if (!entry || entry.total <= 1) {
+			labels.set(model, { baseName })
+			continue
+		}
+		const sameProviderCount = entry.providers.get(model.provider) ?? 0
+		if (sameProviderCount <= 1) {
+			labels.set(model, { baseName, qualifier: model.provider })
+			continue
+		}
+		labels.set(model, { baseName, qualifier: entry.providers.size > 1 ? refFromModel(model) : model.id })
+	}
+	return labels
+}
+
+function autoModelOption(model: Model<Api>, sessionId: string, label: ModelDisplayLabel): SessionConfigSelectOption {
 	// The backend may ship the description inside the display name; ACP has a
 	// dedicated description field, so the pair is split apart here.
-	const { name: baseName, description: nameDescription } = splitModelDisplayName(model.name ?? model.id)
+	const { description: nameDescription } = splitModelDisplayName(model.name ?? model.id)
 	const description = nameDescription ?? AUTO_MODEL_DESCRIPTION
 	const state = getAutoRoutingState(sessionId)
-	if (state.status === "resolved" && isRoutedModel(model, sessionId)) {
-		return {
-			value: refFromModel(model),
-			name: `${baseName} (${state.model.id})`,
-			description,
-		}
-	}
-	return { value: refFromModel(model), name: baseName, description }
+	const resolvedTo = state.status === "resolved" && isRoutedModel(model, sessionId) ? state.model.id : undefined
+	return { value: refFromModel(model), name: formatModelLabel(label, resolvedTo), description }
 }
 
 export function buildModelConfigOption(
@@ -4296,10 +4343,13 @@ export function buildModelConfigOption(
 	// Registry descriptions join ACP rows only for the negotiated Thinking level view.
 	// Legacy rows keep their previous marker-only presentation byte-for-byte.
 	const deprecationMarkers = collectDeprecationMarkers(join(loadKimchiConfig().agentConfigDir, "models.json"))
-	const options: SessionConfigSelectOption[] = modelRegistry.getAvailable().map((m) => {
+	const availableModels = modelRegistry.getAvailable()
+	const displayNames = disambiguateModelDisplayNames(availableModels)
+	const options: SessionConfigSelectOption[] = availableModels.map((m) => {
+		const label = displayNames.get(m) ?? { baseName: modelBaseDisplayName(m) }
 		let option: SessionConfigSelectOption
 		if (isAutoRoutedModel(m)) {
-			option = autoModelOption(m, session.sessionId)
+			option = autoModelOption(m, session.sessionId, label)
 		} else {
 			const modelId = refFromModel(m)
 			const marker = deprecationMarkers.get(m.id)
@@ -4307,7 +4357,7 @@ export function buildModelConfigOption(
 			const description = modelThinking
 				? (getModelDescription(modelId) ?? ([marker, configured].filter(Boolean).join(" ") || undefined))
 				: marker
-			option = { value: modelId, name: m.name, ...(description ? { description } : {}) }
+			option = { value: modelId, name: formatModelLabel(label), ...(description ? { description } : {}) }
 		}
 		return modelThinking ? { ...option, _meta: buildModelThinkingMeta(m, modelThinking) } : option
 	})
