@@ -682,26 +682,25 @@ function rawValid(raw: RawUsage = {}): boolean {
 		(reasoning === undefined || output === undefined || reasoning <= output)
 	)
 }
-function issueValid(keys: IssueKey[] = []): boolean {
+/** Whether one issue key can cross the events wire, independently of a fact's total key-count limit. */
+export function validEventIssueKey(value: IssueKey): boolean {
+	const parts = value.key.split("-"),
+		prefix = parts[0] ?? "",
+		suffix = parts[1] ?? ""
 	return (
-		keys.length <= 20 &&
-		keys.every((v) => {
-			const parts = v.key.split("-"),
-				prefix = parts[0] ?? "",
-				suffix = parts[1] ?? ""
-			return (
-				parts.length === 2 &&
-				prefix.length >= 1 &&
-				prefix.length <= 32 &&
-				suffix.length >= 1 &&
-				suffix.length <= 20 &&
-				Array.from(prefix).every((c, i) => (c >= "A" && c <= "Z") || (i > 0 && digit(c))) &&
-				Array.from(suffix).every(digit) &&
-				["work", "branch", "title", "commit", "explicit"].includes(v.source) &&
-				(dec(v.revision ?? "0") ?? -1n) >= 0n
-			)
-		})
+		parts.length === 2 &&
+		prefix.length >= 1 &&
+		prefix.length <= 32 &&
+		suffix.length >= 1 &&
+		suffix.length <= 20 &&
+		Array.from(prefix).every((c, i) => (c >= "A" && c <= "Z") || (i > 0 && digit(c))) &&
+		Array.from(suffix).every(digit) &&
+		["work", "branch", "title", "commit", "explicit"].includes(value.source) &&
+		(dec(value.revision ?? "0") ?? -1n) >= 0n
 	)
+}
+function issueValid(keys: IssueKey[] = []): boolean {
+	return keys.length <= 20 && keys.every(validEventIssueKey)
 }
 export function validateEvent(e: Event, encoded?: string): void {
 	const rev = dec(e.revision),

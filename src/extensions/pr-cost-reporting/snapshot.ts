@@ -44,7 +44,7 @@ export interface SnapshotContent {
 		/** The author's provider login, at most 255 characters; left out when unknown. */
 		author?: string
 		/**
-		 * Jira keys the PR is for, at most 20: the issue chosen with `/work issue` for the work behind its requests, then
+		 * Issue keys the PR is for, at most 20: the issue chosen with `/work issue` for the work behind its requests, then
 		 * the keys its head branch names. Left out when there are none.
 		 */
 		issueKeys?: PullRequestIssueKey[]
@@ -72,7 +72,7 @@ export interface SnapshotContent {
 
 type SnapshotRequest = SnapshotContent["requests"][number]
 
-/** A Jira key a PR is for and how the client knows it. */
+/** An issue key a PR is for and how the client knows it. */
 export interface PullRequestIssueKey {
 	key: string
 	source: "work" | "branch"
@@ -894,10 +894,12 @@ export function buildSnapshots(
 			if (omitted.length) group.content.windowedPullRequestIds = omitted.sort()
 			for (const pr of group.content.pullRequests) {
 				const keys = issueKeys.get(`${key}\n${pr.id}`)
+				const work = [...(keys?.work ?? [])].slice(0, MAX_PULL_REQUEST_ISSUE_KEYS)
+				const branch = [...(keys?.branch ?? [])].slice(0, MAX_PULL_REQUEST_ISSUE_KEYS - work.length)
 				const chosen: PullRequestIssueKey[] = [
-					...[...(keys?.work ?? [])].sort().map((issueKey) => ({ key: issueKey, source: "work" as const })),
-					...[...(keys?.branch ?? [])].sort().map((issueKey) => ({ key: issueKey, source: "branch" as const })),
-				].slice(0, MAX_PULL_REQUEST_ISSUE_KEYS)
+					...work.sort().map((issueKey) => ({ key: issueKey, source: "work" as const })),
+					...branch.sort().map((issueKey) => ({ key: issueKey, source: "branch" as const })),
+				]
 				if (chosen.length) pr.issueKeys = chosen
 			}
 			group.content.coverage.observedRequests = retained.length

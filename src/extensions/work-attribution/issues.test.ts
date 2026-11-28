@@ -80,7 +80,7 @@ function command(cwd: string, args: string) {
 	return workIssueCommand({ agentDir, workId, sessionId: "session", cwd }, args)
 }
 
-describe("Jira issue keys", () => {
+describe("issue keys", () => {
 	it.each([
 		["ABC-123", "ABC-123"],
 		["MY_PROJ2-10", "MY_PROJ2-10"],
@@ -95,7 +95,7 @@ describe("Jira issue keys", () => {
 
 	it.each([
 		"",
-		// Jira project keys have at least two characters.
+		// Project keys have at least two characters.
 		"A-1",
 		"ABC",
 		"ABC-",
@@ -207,11 +207,11 @@ if (process.argv[2] === "read") {
 })
 
 describe("/work issue", () => {
-	it("suggests the one key in the branch name without selecting it", async () => {
-		const cwd = repository("feature/ABC-123-add-jira")
+	it("suggests the uppercase form of a lowercase branch key without selecting it", async () => {
+		const cwd = repository("feature/abc-123-add-issue")
 
 		expect(await command(cwd, "")).toEqual({
-			lines: ["Jira issue: none", "Branch feature/ABC-123-add-jira names ABC-123. Select it with: /work issue ABC-123"],
+			lines: ["Issue: none", "Branch feature/abc-123-add-issue names ABC-123. Select it with: /work issue ABC-123"],
 			changed: false,
 		})
 		expect(existsSync(workIssuePath(agentDir, workId))).toBe(false)
@@ -222,7 +222,7 @@ describe("/work issue", () => {
 
 		expect(await command(cwd, "")).toEqual({
 			lines: [
-				"Jira issue: none",
+				"Issue: none",
 				"Branch ABC-1-and-ABC-2 names several issues: ABC-1, ABC-2. Select one with: /work issue <KEY>",
 			],
 			changed: false,
@@ -230,8 +230,18 @@ describe("/work issue", () => {
 		expect(existsSync(workIssuePath(agentDir, workId))).toBe(false)
 	})
 
+	it("drops the selected key before counting a branch's other issue-shaped words", async () => {
+		const cwd = repository("feature/ENG-5-phase-2")
+		await command(cwd, "ENG-5")
+
+		expect(await command(cwd, "")).toEqual({
+			lines: ["Branch feature/ENG-5-phase-2 names PHASE-2. Select it with: /work issue PHASE-2"],
+			changed: false,
+		})
+	})
+
 	it("suggests nothing for a branch without a key, a detached HEAD or a folder outside Git", async () => {
-		const detached = repository("ABC-123-add-jira")
+		const detached = repository("ABC-123-add-issue")
 		git(detached, "commit", "-q", "--allow-empty", "--no-verify", "-m", "Start")
 		git(detached, "checkout", "-q", "--detach")
 		const outside = mkdtempSync(join(tmpdir(), "kimchi-work-issue-plain-"))
@@ -239,51 +249,47 @@ describe("/work issue", () => {
 
 		for (const cwd of [repository("main"), detached, outside])
 			expect(await command(cwd, "")).toEqual({
-				lines: ["Jira issue: none. Select one with: /work issue <KEY>"],
+				lines: ["Issue: none. Select one with: /work issue <KEY>"],
 				changed: false,
 			})
 	})
 
 	it("selects, replaces and clears the work's issue", async () => {
-		const cwd = repository("feature/ABC-123-add-jira")
+		const cwd = repository("feature/ABC-123-add-issue")
 
 		expect(await command(cwd, "ABC-123")).toEqual({
-			lines: [
-				"Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged.",
-			],
+			lines: ["Issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged."],
 			changed: true,
 		})
 		// The work's details name the selected issue, and the branch names no other one.
 		expect(await command(cwd, "")).toEqual({ lines: [], changed: false })
 		expect(await command(cwd, "ABC-123")).toEqual({
-			lines: ["Jira issue ABC-123 is already selected for this work."],
+			lines: ["Issue ABC-123 is already selected for this work."],
 			changed: false,
 		})
 		expect(await command(cwd, "ABC-124")).toEqual({
 			lines: [
-				"Jira issue ABC-124 selected for this work, replacing ABC-123. It applies from the next prompt; earlier requests are unchanged.",
+				"Issue ABC-124 selected for this work, replacing ABC-123. It applies from the next prompt; earlier requests are unchanged.",
 			],
 			changed: true,
 		})
 		expect(await command(cwd, "")).toEqual({
-			lines: ["Branch feature/ABC-123-add-jira names ABC-123. Select it with: /work issue ABC-123"],
+			lines: ["Branch feature/ABC-123-add-issue names ABC-123. Select it with: /work issue ABC-123"],
 			changed: false,
 		})
 		expect(await command(cwd, " clear ")).toEqual({
 			lines: [
-				"Jira issue ABC-124 cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.",
+				"Issue ABC-124 cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.",
 			],
 			changed: true,
 		})
-		expect(await command(cwd, "clear")).toEqual({ lines: ["No Jira issue is selected for this work."], changed: false })
+		expect(await command(cwd, "clear")).toEqual({ lines: ["No issue is selected for this work."], changed: false })
 		expect(saved()).toMatchObject({ revision: 3 })
 		expect(saved()).not.toHaveProperty("issueKey")
 	})
 
 	it("saves and shows a lowercase key in uppercase", async () => {
-		expect((await command(agentDir, "abc-123")).lines[0].startsWith("Jira issue ABC-123 selected for this work.")).toBe(
-			true,
-		)
+		expect((await command(agentDir, "abc-123")).lines[0].startsWith("Issue ABC-123 selected for this work.")).toBe(true)
 		expect(saved().issueKey).toBe("ABC-123")
 	})
 
@@ -295,7 +301,7 @@ describe("/work issue", () => {
 	])("rejects %j without saving anything", async (args) => {
 		expect(await command(agentDir, args)).toEqual({
 			lines: [
-				`Not a Jira issue key: ${JSON.stringify(args)}. Use /work issue <KEY>, such as /work issue ABC-123, or /work issue clear.`,
+				`Not an issue key: ${JSON.stringify(args)}. Use /work issue <KEY>, such as /work issue ABC-123, or /work issue clear.`,
 			],
 			changed: false,
 			warning: true,
@@ -308,7 +314,7 @@ describe("/work issue", () => {
 
 		expect(await command(agentDir, "clear")).toEqual({
 			lines: [
-				"Jira issue cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.",
+				"Issue cleared from this work. From the next prompt, requests have no issue; earlier requests are unchanged.",
 			],
 			changed: true,
 		})
@@ -320,9 +326,9 @@ describe("the /work issue line", () => {
 	it("names the selected issue or an unreadable selection, and nothing without one", () => {
 		expect(workIssueLines({ revision: 0 })).toEqual([])
 		expect(workIssueLines({ revision: 2 })).toEqual([])
-		expect(workIssueLines({ revision: 1, selected: { key: "ABC-123", revision: 1 } })).toEqual(["Jira issue: ABC-123"])
+		expect(workIssueLines({ revision: 1, selected: { key: "ABC-123", revision: 1 } })).toEqual(["Issue: ABC-123"])
 		expect(workIssueLines({ revision: 0, unreadable: "/agent/work/issue.json" })).toEqual([
-			"Jira issue: unknown; /agent/work/issue.json is unreadable. Choose with: /work issue <KEY> or /work issue clear",
+			"Issue: unknown; /agent/work/issue.json is unreadable. Choose with: /work issue <KEY> or /work issue clear",
 		])
 	})
 })

@@ -330,12 +330,20 @@ describe("allowlisted repository snapshots", () => {
 		expect(() => validateSnapshot({ ...wire(), pullRequests: content.pullRequests })).not.toThrow()
 		expect(build().snapshots[0].content.pullRequests[0]).not.toHaveProperty("issueKeys")
 	})
-	it("sends at most 20 Jira keys for a PR, the work's issue first", () => {
-		const branchIssueKeys = Array.from({ length: 20 }, (_, index) => `ABC-${index + 1}`)
-		const content = build(records([{ ...pull(), branchIssueKeys }], { issue: { key: "WORK-9", revision: 2 } }))
-			.snapshots[0].content
-		expect(content.pullRequests[0].issueKeys).toHaveLength(20)
-		expect(content.pullRequests[0].issueKeys?.[0]).toEqual({ key: "WORK-9", source: "work" })
+	it("keeps the first 20 work and branch keys before sorting them", () => {
+		const branchIssueKeys = Array.from({ length: 20 }, (_, index) => `ABC-${20 - index}`)
+		const pr = { ...pull(), branchIssueKeys }
+		const first = records([pr])
+		const second = records([], {
+			requestId: "44444444-4444-4444-8444-444444444444",
+			issue: { key: "WORK-9", revision: 2 },
+		})[0]
+		const content = build([...first, second]).snapshots[0].content
+		const keys = content.pullRequests[0].issueKeys
+		expect(keys).toHaveLength(20)
+		expect(keys?.[0]).toEqual({ key: "WORK-9", source: "work" })
+		expect(keys?.map(({ key }) => key)).toContain("ABC-20")
+		expect(keys?.map(({ key }) => key)).not.toContain("ABC-1")
 	})
 	it.each([
 		["a source the server does not take", [{ key: "ABC-1", source: "title" }]],

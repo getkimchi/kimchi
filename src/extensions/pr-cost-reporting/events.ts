@@ -23,6 +23,7 @@ import {
 	timeNanos,
 	type Usage,
 	validateIngestEvent,
+	validEventIssueKey,
 } from "./protocol.js"
 import {
 	accountKey,
@@ -49,6 +50,11 @@ export interface EventUnit {
 	recordHashes: string[]
 }
 type RequestOwner = { row: WorkRecord; scope: WorkScope }
+type EventIssueKeys = { work: Set<string>; branch: Set<string> }
+
+function addValidEventIssueKeys(target: Set<string>, keys: readonly string[], source: "work" | "branch"): void {
+	for (const key of keys) if (validEventIssueKey({ key, source })) target.add(key)
+}
 
 /**
  * Builds every fact the records support. Shared work and PR facts always aggregate every request, but with `touched`
@@ -90,6 +96,15 @@ export async function buildEvents(
 	}
 	const accounts = new Map<string, { account: WorkAccount; facts: Map<string, Fact>; recordHashes: Set<string> }>()
 	const owners = new Map<string, RequestOwner>()
+	// Outgoing facts sort their keys, but aggregation must retain the original work/branch insertion order.
+	const eventIssueKeys = new Map<string, EventIssueKeys>()
+	const issueKeysFor = (entityId: string): EventIssueKeys => {
+		const existing = eventIssueKeys.get(entityId)
+		if (existing) return existing
+		const created: EventIssueKeys = { work: new Set(), branch: new Set() }
+		eventIssueKeys.set(entityId, created)
+		return created
+	}
 	// The claims the outbox holds for the requests this pass translates, by account and entity.
 	const claims = new Map<string, Event | undefined>()
 	const claimAccounts = new Set<string>()
@@ -297,8 +312,8 @@ export async function buildEvents(
 			})
 			const workEntity = stableID("kimchi", "work", key, producerId, row.workId)
 			entities.push(workEntity)
-			const previousWork = group.facts.get(workEntity)?.work
-			const workKeys = new Set([...(previousWork?.issueKeys ?? []).map(({ key }) => key), ...evidence.workIssueKeys])
+			const workKeys = issueKeysFor(workEntity).work
+			addValidEventIssueKeys(workKeys, evidence.workIssueKeys, "work")
 			group.facts.set(workEntity, {
 				...common,
 				repository: undefined,
@@ -308,8 +323,8 @@ export async function buildEvents(
 					reason: "observed_request",
 					quality: "observed",
 					issueKeys: [...workKeys]
-						.sort()
 						.slice(0, 20)
+						.sort()
 						.map((key) => ({ key, source: "work" })),
 				},
 			})
@@ -320,14 +335,9 @@ export async function buildEvents(
 				const repo = { provider: pr.provider ?? "github", host: pr.host, id: pr.repositoryId, name: pr.repository }
 				const prEntity = stableID("kimchi", "pull_request", key, producerId, repositoryKey(repo), pr.id)
 				entities.push(prEntity)
-				const previous = group.facts.get(prEntity)?.pullRequest
-				const keys = new Map<string, IssueKey>()
-				for (const issue of [
-					...(previous?.issueKeys ?? []),
-					...evidence.workIssueKeys.map((key) => ({ key, source: "work" })),
-					...(pr.branchIssueKeys ?? []).map((key) => ({ key, source: "branch" })),
-				])
-					keys.set(`${issue.source}:${issue.key}`, issue)
+				const keys = issueKeysFor(prEntity)
+				addValidEventIssueKeys(keys.work, evidence.workIssueKeys, "work")
+				addValidEventIssueKeys(keys.branch, pr.branchIssueKeys ?? [], "branch")
 				group.facts.set(prEntity, {
 					...common,
 					sourceVersion: "unknown",
@@ -344,9 +354,12 @@ export async function buildEvents(
 						mergeTime: pr.mergedAt ?? undefined,
 						closeTime: pr.closedAt ?? undefined,
 						mergeCommitId: pr.mergeCommitSha ?? undefined,
-						issueKeys: [...keys.values()]
-							.sort((a, b) => Number(b.source === "work") - Number(a.source === "work") || a.key.localeCompare(b.key))
-							.slice(0, 20),
+						issueKeys: [
+							...[...keys.work].map((key): IssueKey => ({ key, source: "work" })),
+							...[...keys.branch].map((key): IssueKey => ({ key, source: "branch" })),
+						]
+							.slice(0, 20)
+							.sort((a, b) => Number(b.source === "work") - Number(a.source === "work") || a.key.localeCompare(b.key)),
 					},
 				})
 				const link = stableID("kimchi", "work_pr", key, producerId, row.workId, repositoryKey(repo), pr.id)

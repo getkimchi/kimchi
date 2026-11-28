@@ -37,15 +37,15 @@ async function notice(active: AcpFixture, sessionId: string, command: string): P
 	return text ?? ""
 }
 
-it("selects a Jira issue for the work, binds the next prompt, shows it in /work and clears it over ACP", async () => {
+it("selects an issue for the work, binds the next prompt, shows it in /work and clears it over ACP", async () => {
 	const active = await startAcpFixture({
 		artifactName: "work-issue",
-		responses: [{ stream: ["Implemented the Jira integration."] }],
+		responses: [{ stream: ["Implemented the issue integration."] }],
 		clientMeta: { "kimchi.dev": { pi_notify: true } },
 	})
 	fixture = active
 	execFileSync("git", ["init", "-q", active.workDir])
-	execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/feature/ABC-123-add-jira"], { cwd: active.workDir })
+	execFileSync("git", ["symbolic-ref", "HEAD", "refs/heads/feature/abc-123-add-issue"], { cwd: active.workDir })
 	const sessionId = await newSession(active, active.workDir)
 
 	const [workLine] = (await notice(active, sessionId, "/work")).split("\n")
@@ -53,14 +53,14 @@ it("selects a Jira issue for the work, binds the next prompt, shows it in /work 
 	const workId = workLine.slice("Work ID: ".length)
 	// The work's cost lines follow; they depend on whether a background cost pass has run yet.
 	expect((await notice(active, sessionId, "/work issue")).split("\n").slice(0, 3)).toEqual([
-		"Jira issue: none",
-		"Branch feature/ABC-123-add-jira names ABC-123. Select it with: /work issue ABC-123",
+		"Issue: none",
+		"Branch feature/abc-123-add-issue names ABC-123. Select it with: /work issue ABC-123",
 		`Work ID: ${workId}`,
 	])
 	expect((await notice(active, sessionId, "/work issue ABC-123")).split("\n").slice(0, 3)).toEqual([
-		"Jira issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged.",
+		"Issue ABC-123 selected for this work. It applies from the next prompt; earlier requests are unchanged.",
 		`Work ID: ${workId}`,
-		"Jira issue: ABC-123",
+		"Issue: ABC-123",
 	])
 
 	expect((await prompt(active, sessionId, "Implement it")).stopReason).toBe("end_turn")
@@ -75,10 +75,10 @@ it("selects a Jira issue for the work, binds the next prompt, shows it in /work 
 
 	expect((await notice(active, sessionId, "/work")).split("\n").slice(0, 2)).toEqual([
 		`Work ID: ${workId}`,
-		"Jira issue: ABC-123",
+		"Issue: ABC-123",
 	])
 	expect(
-		(await notice(active, sessionId, "/work issue clear")).startsWith("Jira issue ABC-123 cleared from this work."),
+		(await notice(active, sessionId, "/work issue clear")).startsWith("Issue ABC-123 cleared from this work."),
 	).toBe(true)
-	expect(await notice(active, sessionId, "/work")).not.toContain("Jira issue")
+	expect(await notice(active, sessionId, "/work")).not.toContain("Issue:")
 })

@@ -144,11 +144,11 @@ interface PendingRequest {
 	headers?: BeforeProviderHeadersEvent["headers"]
 	/** Set while the request's input waits for its matching decision; shared by its retries. */
 	deferred?: DeferredRows
-	/** The Jira issue of its work when its input began; a matching decision takes the decided work's. */
+	/** The issue of its work when its input began; a matching decision takes the decided work's. */
 	issue?: WorkIssueBinding
 }
 const pendingRequests = new Map<string, PendingRequest>()
-/** By session ledger and work: the Jira issue selected when the current input began, null for none. */
+/** By session ledger and work: the issue selected when the current input began, null for none. */
 const inputIssues = new Map<string, Map<string, WorkIssueBinding | null>>()
 /**
  * A work's issue as its first request of the input found it. A selection made since, here or in another session,
@@ -740,7 +740,7 @@ export function createWorkAttributionExtension(
 			return attributeInput(event, ctx)
 		})
 		pi.on("before_agent_start", async (_event, ctx) => {
-			// Every run reads its works' Jira issues again before its first request, also one without typed input that
+			// Every run reads its works' issues again before its first request, also one without typed input that
 			// a command such as /ferment starts.
 			inputIssues.delete(workLedgerPath(ctx))
 			// The initial prompt was handled before skill/template expansion by the input hook.
@@ -797,7 +797,7 @@ export function createWorkAttributionExtension(
 			abortMatching()
 			const generation = inputGeneration
 			if (event.source === "extension") return
-			// A delivered input reads its works' Jira issues again before its first request.
+			// A delivered input reads its works' issues again before its first request.
 			inputIssues.delete(workLedgerPath(ctx))
 			// Model matching runs beside the turn and never delays it. Without a verdict, an input keeps the attribution
 			// it has with matching off.
@@ -1131,7 +1131,7 @@ export function createWorkAttributionExtension(
 		})
 		pi.registerCommand("work", {
 			description:
-				"Show work details, start work (new), continue a plan (<path>), choose its Jira issue (issue [<KEY>|clear]), control matching (matching on|off), or correct earlier requests (link|unlink)",
+				"Show work details, start work (new), continue a plan (<path>), choose its issue (issue [<KEY>|clear]), control matching (matching on|off), or correct earlier requests (link|unlink)",
 			handler: async (args, ctx) => {
 				try {
 					const value = args.trim()
@@ -1214,7 +1214,7 @@ export function createWorkAttributionExtension(
 						notifyWorkChanged()
 					}
 					const details: WorkDetailsRequest = { workId: getWorkId(ctx), lines: [] }
-					// The work's Jira issue comes first; other extensions add PR and lookup lines.
+					// The work's issue comes first; other extensions add PR and lookup lines.
 					details.lines.push(...workIssueLines(readWorkIssue(getAgentDir(), details.workId)))
 					pi.events.emit(WORK_DETAILS_REQUEST_EVENT, details)
 					const stopped =
