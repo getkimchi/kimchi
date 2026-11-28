@@ -307,6 +307,7 @@ describe("runRsync filesFrom guard", () => {
 			remoteHost: "h",
 			remoteUser: "u",
 			authToken: "tok",
+			credentials: { token: "key" },
 			proxyCommand: "node /p %h %p",
 			// Skip the gitignore subprocess — we don't care about its output here.
 			gitignoredPaths: [],
@@ -338,9 +339,10 @@ describe("runRsync filesFrom guard", () => {
 	})
 })
 
-it("passes the effective API key to both SSH mkdir and rsync without restoring the parent environment", async () => {
+it("passes the session credentials, not config, to both SSH mkdir and rsync without restoring the parent environment", async () => {
 	vi.stubEnv("KIMCHI_API_KEY", undefined)
-	vi.spyOn(config, "loadConfig").mockReturnValue({ ...config.loadConfig(), apiKey: "captured-environment-key" })
+	// Config holds no SSO token, so reading it here would send the wrong bearer.
+	vi.spyOn(config, "loadConfig").mockReturnValue({ ...config.loadConfig(), apiKey: "config-key" })
 	const calls: { binary: string; env: NodeJS.ProcessEnv | undefined }[] = []
 	const fakeSpawn: typeof spawn = ((binary: string, _args: readonly string[], opts: { env?: NodeJS.ProcessEnv }) => {
 		calls.push({ binary, env: opts.env })
@@ -354,13 +356,18 @@ it("passes the effective API key to both SSH mkdir and rsync without restoring t
 			remoteHost: "h",
 			remoteUser: "u",
 			authToken: "tok",
+			credentials: { token: "sso-token", organizationId: "org-picked" },
 			proxyCommand: "kimchi --ssh-proxy %h",
 			gitignoredPaths: [],
 			_spawn: fakeSpawn,
 		})
 		expect(calls.map(({ binary }) => binary)).toEqual(["ssh", "rsync"])
 		for (const { env } of calls) {
-			expect(env).toMatchObject({ KIMCHI_API_KEY: "captured-environment-key", AUTH_TOKEN: "tok" })
+			expect(env).toMatchObject({
+				KIMCHI_API_KEY: "sso-token",
+				KIMCHI_ORGANIZATION_ID: "org-picked",
+				AUTH_TOKEN: "tok",
+			})
 		}
 		expect(process.env.KIMCHI_API_KEY).toBeUndefined()
 	} finally {

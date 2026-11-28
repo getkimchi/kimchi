@@ -1,8 +1,12 @@
+import { type BearerCredentials, gatewayAuthHeaders } from "../../auth/gateway-credentials.js"
 import { checkResponse, fetchWithTimeout, resolveEndpoint } from "./http.js"
 import type { AuthenticateOptions, VerifiedKey } from "./types.js"
 import { RemoteNetworkError } from "./types.js"
 
-export async function verifyApiKey(apiKey: string, options?: AuthenticateOptions): Promise<VerifiedKey> {
+export async function verifyApiKey(
+	credentials: BearerCredentials,
+	options?: AuthenticateOptions,
+): Promise<VerifiedKey> {
 	const endpoint = resolveEndpoint(options)
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
@@ -12,7 +16,7 @@ export async function verifyApiKey(apiKey: string, options?: AuthenticateOptions
 		{
 			method: "POST",
 			headers: {
-				Authorization: `Bearer ${apiKey}`,
+				...gatewayAuthHeaders(credentials),
 				"Content-Type": "application/json",
 			},
 		},

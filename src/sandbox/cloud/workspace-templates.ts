@@ -1,3 +1,4 @@
+import { type BearerCredentials, gatewayAuthHeaders } from "../../auth/gateway-credentials.js"
 import { checkResponse, fetchWithTimeout, resolveEndpoint } from "./http.js"
 import { verifyApiKey } from "./keys.js"
 import type {
@@ -25,7 +26,7 @@ const LIST_TEMPLATES_PAGE_HARD_CAP = 10
  * setup dialog degrades to manual configuration) should catch and degrade.
  */
 export async function listWorkspaceTemplates(
-	apiKey: string,
+	credentials: BearerCredentials,
 	options?: ListWorkspaceTemplatesOptions,
 ): Promise<WorkspaceTemplateSummary[]> {
 	const fetchImpl = options?.fetch ?? globalThis.fetch
@@ -33,7 +34,7 @@ export async function listWorkspaceTemplates(
 	const signal = options?.signal
 
 	try {
-		const orgId = options?.orgId ?? (await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })).organizationId
+		const orgId = options?.orgId ?? (await verifyApiKey(credentials, { ...options, fetch: fetchImpl })).organizationId
 
 		const results: WorkspaceTemplateSummary[] = []
 		let cursor = ""
@@ -49,7 +50,7 @@ export async function listWorkspaceTemplates(
 				{
 					method: "GET",
 					headers: {
-						Authorization: `Bearer ${apiKey}`,
+						...gatewayAuthHeaders(credentials),
 						Accept: "application/json",
 					},
 				},

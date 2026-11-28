@@ -17,11 +17,10 @@ type CommandFn = (args: string, ctx: TeleportContext) => Promise<void>
 function makeHandler(run: CommandFn) {
 	return async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
 		// Same credential resolution as every other harness caller: configured
-		// key first, then the SSO credential in auth.json. The cloud helpers
-		// take this bearer and derive org/user from workspace-tokens:verifyKey.
-		const apiKey = resolveGatewayCredentials(loadConfig()).token
+		// key first, then the SSO credential in auth.json. The whole credential
+		// travels on, because the SSO org header picks the org verifyKey reports.
 		const tctx: TeleportContext = {
-			apiKey,
+			credentials: resolveGatewayCredentials(loadConfig()),
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			cwd: ctx.cwd,
 			signal: ctx.signal,

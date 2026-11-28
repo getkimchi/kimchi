@@ -615,13 +615,13 @@ export class AgentManager {
 		}
 
 		if (!record.isBackground && !record.gitWorkflow && !this.remoteSignal(record).aborted) {
-			const apiKey = resolveGatewayCredentials(loadConfig()).token
-			if (apiKey)
-				await deleteRemoteSession(result.remoteSession, apiKey, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT }).catch(
-					(err) => {
-						console.warn(`[agent-manager] failed to retire remote session: ${err}`)
-					},
-				)
+			const credentials = resolveGatewayCredentials(loadConfig())
+			if (credentials.token)
+				await deleteRemoteSession(result.remoteSession, credentials, {
+					endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+				}).catch((err) => {
+					console.warn(`[agent-manager] failed to retire remote session: ${err}`)
+				})
 		}
 
 		return {
@@ -649,14 +649,14 @@ export class AgentManager {
 		options: SpawnOptions,
 		_ctx: ExtensionContext,
 	): Promise<RemoteRunResult> {
-		const apiKey = resolveGatewayCredentials(loadConfig()).token
-		if (!apiKey) throw new Error("No credentials configured. Run `kimchi` and sign in (API key or SSO).")
+		const credentials = resolveGatewayCredentials(loadConfig())
+		if (!credentials.token) throw new Error("No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 		const continuation = options.continuation
 		if (!continuation) throw new Error("_runRemoteContinuation requires options.continuation")
 
 		const remoteSession = this._prepareRemoteAdapter(record, prompt, options)
 		const result = await continueRemoteAgent({
-			apiKey,
+			credentials,
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			signal: this.remoteSignal(record),
 			remoteSession: continuation.remoteSession,
@@ -704,10 +704,10 @@ export class AgentManager {
 		const remoteUi = ctx.ui
 		const remoteMode = ctx.mode
 
-		const apiKey = resolveGatewayCredentials(loadConfig()).token
-		if (!apiKey) throw new Error("No credentials configured. Run `kimchi` and sign in (API key or SSO).")
+		const credentials = resolveGatewayCredentials(loadConfig())
+		if (!credentials.token) throw new Error("No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 
-		const workspaces = await listWorkspaces(apiKey, {
+		const workspaces = await listWorkspaces(credentials, {
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			signal: this.remoteSignal(record),
 		})
@@ -757,7 +757,7 @@ export class AgentManager {
 
 		let baselineCaptureAttempted = false
 		const result = await runRemoteAgent(workspaceId, prompt, {
-			apiKey,
+			credentials,
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			signal: this.remoteSignal(record),
 			// Keep the result recoverable until the originating session handles
@@ -801,7 +801,7 @@ export class AgentManager {
 					// status 255. Everything else fails once, honestly.
 					for (let attempt = 0; ; attempt++) {
 						try {
-							const connection = await resolveSandboxGitConnection(meta, apiKey, {
+							const connection = await resolveSandboxGitConnection(meta, credentials, {
 								endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 							})
 							const baseline = await captureBaseline(connection, {
@@ -1331,9 +1331,11 @@ export class AgentManager {
 			return "completed"
 		}
 
-		const apiKey = resolveGatewayCredentials(loadConfig()).token
-		if (!apiKey) throw new Error("No credentials configured. Run `kimchi` and sign in (API key or SSO).")
-		if (await isRemoteSessionConnected(state.remoteSession, apiKey, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT })) {
+		const credentials = resolveGatewayCredentials(loadConfig())
+		if (!credentials.token) throw new Error("No credentials configured. Run `kimchi` and sign in (API key or SSO).")
+		if (
+			await isRemoteSessionConnected(state.remoteSession, credentials, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT })
+		) {
 			return "already-watched"
 		}
 		if (this.disposed) return "already-watched"
@@ -1346,7 +1348,7 @@ export class AgentManager {
 		record.session = adapter as unknown as AgentSession
 
 		const promise = attachRemoteAgent({
-			apiKey,
+			credentials,
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			signal: this.remoteSignal(record),
 			remoteSession: state.remoteSession,

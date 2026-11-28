@@ -228,7 +228,7 @@ function makeCtx(over: Partial<TeleportContext> = {}): {
 } {
 	const ui = makeUi()
 	const ctx: TeleportContext = {
-		apiKey: "test-key",
+		credentials: { token: "test-key" },
 		endpoint: "https://api.example.com",
 		cwd: "/work/proj",
 		ui,
@@ -699,7 +699,7 @@ describe("runTeleport", () => {
 	})
 
 	it("--help ignores other arguments and works without an apiKey", async () => {
-		const { ctx } = makeCtx({ apiKey: "" })
+		const { ctx } = makeCtx({ credentials: { token: "" } })
 
 		await runTeleport("name --workspace bogus --unknown --help extra", ctx)
 
@@ -708,11 +708,14 @@ describe("runTeleport", () => {
 	})
 
 	it("refuses when apiKey is missing", async () => {
-		const { ctx, ui } = makeCtx({ apiKey: "" })
+		const { ctx, ui } = makeCtx({ credentials: { token: "" } })
 
 		await expect(runTeleport("", ctx)).rejects.toBeInstanceOf(TeleportRefusal)
 		expect(authMock).not.toHaveBeenCalled()
-		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/API key/), "error")
+		expect(ui.notify).toHaveBeenCalledWith(
+			"No credentials configured. Run `kimchi` and sign in (API key or SSO).",
+			"error",
+		)
 	})
 
 	it("refuses when args fail to parse", async () => {
@@ -754,6 +757,7 @@ describe("runTeleport", () => {
 			expect(provisionHarnessConfigMock.mock.calls[0][0]).toMatchObject({
 				remoteHost: CREDS.host,
 				authToken: CREDS.connectToken,
+				credentials: ctx.credentials,
 			})
 			// Teleport still completes — overlay opens, no warning emitted.
 			expect(ui.custom).toHaveBeenCalledOnce()
@@ -1224,6 +1228,7 @@ describe("runTeleport --fast", () => {
 			filesFrom: ["src/a.ts", "README.md"],
 			deleteExtraneous: true,
 			excludeFilters: [".git/", ".env", ".env.*", ".envrc", ".kimchi/"],
+			credentials: ctx.credentials,
 		})
 		expect(buildIncludeListMock).not.toHaveBeenCalled()
 		expect(ui.custom).toHaveBeenCalledOnce()

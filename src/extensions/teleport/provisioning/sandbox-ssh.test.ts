@@ -73,11 +73,29 @@ describe("buildSshCommandString", () => {
 })
 
 describe("buildSshProxyEnv", () => {
-	it("returns exactly the two keys the proxy helper needs", () => {
-		expect(buildSshProxyEnv({ apiKey: "key", authToken: "tok" })).toEqual({
-			KIMCHI_API_KEY: "key",
-			AUTH_TOKEN: "tok",
-		})
+	it("passes an API key without an organization", () => {
+		const env = buildSshProxyEnv({ credentials: { token: "key" }, authToken: "tok" })
+		expect(env).toStrictEqual({ KIMCHI_API_KEY: "key", AUTH_TOKEN: "tok", KIMCHI_ORGANIZATION_ID: undefined })
+	})
+
+	it("passes the SSO organization with an SSO token", () => {
+		const env = buildSshProxyEnv({ credentials: { token: "sso", organizationId: "org-picked" }, authToken: "tok" })
+		expect(env).toStrictEqual({ KIMCHI_API_KEY: "sso", AUTH_TOKEN: "tok", KIMCHI_ORGANIZATION_ID: "org-picked" })
+	})
+
+	it("treats an empty organization as none", () => {
+		const env = buildSshProxyEnv({ credentials: { token: "sso", organizationId: "" }, authToken: "tok" })
+		expect(env.KIMCHI_ORGANIZATION_ID).toBeUndefined()
+	})
+
+	it("clears an organization inherited from the parent env when spread over it", () => {
+		// The key must exist (set to undefined) so the spread overrides the parent value.
+		const env = {
+			KIMCHI_ORGANIZATION_ID: "stale",
+			...buildSshProxyEnv({ credentials: { token: "key" }, authToken: "t" }),
+		}
+		expect(Object.hasOwn(env, "KIMCHI_ORGANIZATION_ID")).toBe(true)
+		expect(env.KIMCHI_ORGANIZATION_ID).toBeUndefined()
 	})
 })
 

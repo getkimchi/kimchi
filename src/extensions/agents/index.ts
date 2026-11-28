@@ -1315,13 +1315,13 @@ export default function (pi: ExtensionAPI) {
 
 	async function retirePlainRemote(record: AgentRecord): Promise<void> {
 		if (record.gitWorkflow || !record.remoteSession) return
-		const apiKey = resolveGatewayCredentials(loadConfig()).token
-		if (apiKey)
-			await deleteRemoteSession(record.remoteSession, apiKey, { endpoint: process.env.KIMCHI_REMOTE_ENDPOINT }).catch(
-				(err) => {
-					console.warn(`[agents] failed to retire remote session: ${err}`)
-				},
-			)
+		const credentials = resolveGatewayCredentials(loadConfig())
+		if (credentials.token)
+			await deleteRemoteSession(record.remoteSession, credentials, {
+				endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
+			}).catch((err) => {
+				console.warn(`[agents] failed to retire remote session: ${err}`)
+			})
 	}
 
 	let sessionShuttingDown = false

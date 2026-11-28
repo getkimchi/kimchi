@@ -107,7 +107,7 @@ function makeCtx(over: Partial<TeleportContext> = {}): {
 } {
 	const ui = makeUi()
 	const ctx: TeleportContext = {
-		apiKey: "test-key",
+		credentials: { token: "test-key" },
 		endpoint: "https://api.example.com",
 		cwd: "/work/proj",
 		ui,
@@ -208,7 +208,7 @@ describe("runAttachSession", () => {
 	})
 
 	it("refuses when apiKey is missing without making any network call", async () => {
-		const { ctx, ui } = makeCtx({ apiKey: "" })
+		const { ctx, ui } = makeCtx({ credentials: { token: "" } })
 
 		await expect(runAttachSession({ workspaceId: "w-1", sessionName: "x" }, ctx)).rejects.toBeInstanceOf(
 			TeleportRefusal,

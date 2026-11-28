@@ -1,3 +1,4 @@
+import { type BearerCredentials, gatewayAuthHeaders } from "../../auth/gateway-credentials.js"
 import { checkResponse, fetchWithTimeout, resolveEndpoint } from "./http.js"
 import { verifyApiKey } from "./keys.js"
 import { parseInt64 } from "./parse.js"
@@ -13,7 +14,10 @@ import { RemoteAuthError, RemoteNetworkError } from "./types.js"
  * RemoteAuthError/RemoteNetworkError on failure. Callers that can live
  * without the data should catch and degrade.
  */
-export async function getQuotaUsage(apiKey: string, options?: GetQuotaUsageOptions): Promise<QuotaUsage> {
+export async function getQuotaUsage(
+	credentials: BearerCredentials,
+	options?: GetQuotaUsageOptions,
+): Promise<QuotaUsage> {
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 	const endpoint = resolveEndpoint(options)
 	const signal = options?.signal
@@ -22,7 +26,7 @@ export async function getQuotaUsage(apiKey: string, options?: GetQuotaUsageOptio
 		// Callers that already verified the key (e.g. /remote-sessions, which
 		// caches orgId for its refresh loop) pass it through to skip the
 		// duplicate verifyKey round-trip.
-		const orgId = options?.orgId ?? (await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })).organizationId
+		const orgId = options?.orgId ?? (await verifyApiKey(credentials, { ...options, fetch: fetchImpl })).organizationId
 
 		const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/quotas:usage`
 		const resp = await fetchWithTimeout(
@@ -30,7 +34,7 @@ export async function getQuotaUsage(apiKey: string, options?: GetQuotaUsageOptio
 			{
 				method: "GET",
 				headers: {
-					Authorization: `Bearer ${apiKey}`,
+					...gatewayAuthHeaders(credentials),
 					Accept: "application/json",
 				},
 			},

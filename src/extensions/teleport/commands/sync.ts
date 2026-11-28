@@ -30,8 +30,8 @@ export async function runSync(rawArgs: string, ctx: TeleportContext): Promise<vo
  * through the whitespace tokenizing parser.
  */
 export async function runSyncArgs(args: SyncArgs, ctx: TeleportContext): Promise<void> {
-	if (!ctx.apiKey) {
-		refuse(ctx, "No API key configured. Run `kimchi login`.")
+	if (!ctx.credentials.token) {
+		refuse(ctx, "No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 	}
 
 	if (!whichRsync()) {
@@ -58,9 +58,14 @@ export async function runSyncArgs(args: SyncArgs, ctx: TeleportContext): Promise
 		progress.setPhase("Authenticating…")
 		let creds: WorkspaceCredentials
 		try {
-			creds = await authenticateWorkspace(workspace.id, ctx.apiKey, workspace.name ?? (basename(ctx.cwd) || "kimchi"), {
-				endpoint: ctx.endpoint,
-			})
+			creds = await authenticateWorkspace(
+				workspace.id,
+				ctx.credentials,
+				workspace.name ?? (basename(ctx.cwd) || "kimchi"),
+				{
+					endpoint: ctx.endpoint,
+				},
+			)
 		} catch (err) {
 			refuse(ctx, authFailureMessage(err))
 		}
@@ -74,6 +79,7 @@ export async function runSyncArgs(args: SyncArgs, ctx: TeleportContext): Promise
 				remoteHost: creds.host,
 				remoteUser: SANDBOX_USER,
 				authToken: creds.connectToken,
+				credentials: ctx.credentials,
 				excludeGlobs: args.exclude,
 				includeIgnored: args.includeIgnored,
 				deleteExtraneous: args.delete,
@@ -100,6 +106,7 @@ export async function runSyncArgs(args: SyncArgs, ctx: TeleportContext): Promise
 			const configResult = await provisionHarnessConfig({
 				remoteHost: creds.host,
 				authToken: creds.connectToken,
+				credentials: ctx.credentials,
 				signal: ctx.signal,
 			})
 			if (!configResult.ok) {

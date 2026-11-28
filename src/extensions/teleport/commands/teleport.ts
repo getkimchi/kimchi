@@ -53,8 +53,8 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		refuse(ctx, err instanceof Error ? err.message : String(err))
 	}
 
-	if (!ctx.apiKey) {
-		refuse(ctx, "No API key configured. Run `kimchi login`.")
+	if (!ctx.credentials.token) {
+		refuse(ctx, "No credentials configured. Run `kimchi` and sign in (API key or SSO).")
 	}
 
 	if (readTeleportHelpSeenAt(ctx.configPath) === undefined) {
@@ -184,7 +184,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			// Template (resolved.setup.templateName) and spec (manual
 			// configuration) are mutually exclusive on the wire; the dialog only
 			// ever produces one of the two.
-			creds = await authenticateWorkspace(workspaceId, ctx.apiKey, description, {
+			creds = await authenticateWorkspace(workspaceId, ctx.credentials, description, {
 				endpoint: ctx.endpoint,
 				...(workspaceSpec ? { spec: workspaceSpec } : {}),
 				...(resolved.setup?.templateName ? { templateName: resolved.setup.templateName } : {}),
@@ -274,6 +274,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 							remoteHost: creds.host,
 							remoteUser: SANDBOX_USER,
 							authToken: creds.connectToken,
+							credentials: ctx.credentials,
 							signal,
 							deleteExtraneous: false,
 							precomputeTotal: true,
@@ -316,6 +317,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 		const configSyncP = provisionHarnessConfig({
 			remoteHost: creds.host,
 			authToken: creds.connectToken,
+			credentials: ctx.credentials,
 			signal,
 		}).then((result) => {
 			if (!result.ok && !signal.aborted && !commandFailed) {
@@ -442,6 +444,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 					remoteHost: creds.host,
 					remoteUser: SANDBOX_USER,
 					authToken: creds.connectToken,
+					credentials: ctx.credentials,
 					signal,
 					deleteExtraneous: false,
 					precomputeTotal: true,
@@ -470,6 +473,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 				remotePath: remoteDest,
 				remoteHost: creds.host,
 				authToken: creds.connectToken,
+				credentials: ctx.credentials,
 				freshClone: initialSession.freshClone ?? false,
 				signal,
 				onWarn: (msg) => warn(ctx, msg),
@@ -508,7 +512,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			creds,
 			workspaceId,
 			workspaceName: description,
-			apiKey: ctx.apiKey,
+			credentials: ctx.credentials,
 			cwd: ctx.cwd,
 			endpoint: ctx.endpoint,
 			ui: ctx.ui,

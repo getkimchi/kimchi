@@ -1,3 +1,4 @@
+import type { BearerCredentials } from "../../../auth/gateway-credentials.js"
 import { getAgentConfigDir } from "../../../config.js"
 import { SANDBOX_HOME, SANDBOX_USER } from "./constants.js"
 import { formatRsyncFailure, runRsync } from "./rsync-runner.js"
@@ -47,6 +48,7 @@ export interface ProvisionHarnessConfigResult {
 export async function provisionHarnessConfig(args: {
 	remoteHost: string
 	authToken: string
+	credentials: BearerCredentials
 	signal?: AbortSignal
 }): Promise<ProvisionHarnessConfigResult> {
 	const localConfigDir = getAgentConfigDir()
@@ -63,6 +65,7 @@ export async function provisionHarnessConfig(args: {
 			remoteHost: args.remoteHost,
 			remoteUser: SANDBOX_USER,
 			authToken: args.authToken,
+			credentials: args.credentials,
 			filesFrom: [...HARNESS_CONFIG_ALLOWLIST],
 			deleteExtraneous: false,
 			signal: args.signal,

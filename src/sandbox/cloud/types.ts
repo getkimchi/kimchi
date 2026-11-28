@@ -142,6 +142,8 @@ export interface ListWorkspacesOptions extends AuthenticateOptions {
 	 * Pre-resolved organization id. The ids are consumed atomically: unless
 	 * BOTH are provided, both are re-resolved from a fresh verifyKey call — a
 	 * caller can never pair its own userId with the key's orgId (or vice versa).
+	 * The ids only build the URL. The SSO org header always comes from the
+	 * credentials, so the gatekeeper authorizes in the org the user picked.
 	 */
 	orgId?: string
 	/** Pre-resolved user id — the listing is creator-filtered to this workspace owner. See orgId. */

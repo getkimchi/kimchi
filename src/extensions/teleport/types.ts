@@ -1,9 +1,11 @@
 import type { ContextUsage, ExtensionCommandContext } from "@earendil-works/pi-coding-agent"
+import type { BearerCredentials } from "../../auth/gateway-credentials.js"
 
 export const STATUS_KEY = "teleport"
 
 export interface TeleportContext {
-	apiKey: string
+	/** Bearer plus SSO org; the org header picks the org for SSO users. */
+	credentials: BearerCredentials
 	endpoint?: string
 	cwd: string
 	configPath?: string

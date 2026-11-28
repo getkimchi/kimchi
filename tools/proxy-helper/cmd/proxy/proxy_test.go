@@ -36,6 +36,17 @@ type fakeBackend struct {
 	mu           sync.Mutex
 	gotAuthOnWS  string
 	listRequests int
+	// gotOrgHeaders records the SSO organization header of every API call
+	// (verifyKey, each list page, exchange) in order.
+	gotOrgHeaders []string
+}
+
+// authorized checks the bearer and records the SSO organization header.
+func (f *fakeBackend) authorized(r *http.Request) bool {
+	f.mu.Lock()
+	f.gotOrgHeaders = append(f.gotOrgHeaders, r.Header.Get("X-CastAi-Organization-Id"))
+	f.mu.Unlock()
+	return r.Header.Get("Authorization") == "Bearer "+f.apiKey
 }
 
 func newFakeBackend(t *testing.T) *fakeBackend {
@@ -57,7 +68,7 @@ func (f *fakeBackend) handler() http.Handler {
 			http.Error(w, "method", http.StatusMethodNotAllowed)
 			return
 		}
-		if r.Header.Get("X-Api-Key") != f.apiKey {
+		if !f.authorized(r) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -70,7 +81,7 @@ func (f *fakeBackend) handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		if r.Header.Get("X-Api-Key") != f.apiKey {
+		if !f.authorized(r) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -102,7 +113,7 @@ func (f *fakeBackend) handler() http.Handler {
 	})
 
 	mux.HandleFunc("/ai-optimizer/v1beta/workspace-tokens:exchange", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Api-Key") != f.apiKey {
+		if !f.authorized(r) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -195,7 +206,7 @@ func TestProxyConnect_HappyPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := proxyConnectIO(ctx, fb.workspaceURI, fb.apiKey, srv.URL, 443, stdinR, &stdout); err != nil {
+	if err := proxyConnectIO(ctx, fb.workspaceURI, cast.Credentials{Token: fb.apiKey}, srv.URL, 443, stdinR, &stdout); err != nil {
 		t.Fatalf("proxyConnectIO: %v", err)
 	}
 
@@ -213,6 +224,66 @@ func TestProxyConnect_HappyPath(t *testing.T) {
 	}
 }
 
+// dialFakeWS points the WS dial at the httptest server for the test's lifetime.
+func dialFakeWS(t *testing.T, srv *httptest.Server) {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := buildWSURL
+	buildWSURL = func(_ string, _ int) string { return "ws://" + u.Host + "/ssh" }
+	t.Cleanup(func() { buildWSURL = orig })
+}
+
+func runEchoSession(t *testing.T, fb *fakeBackend, srv *httptest.Server, creds cast.Credentials) {
+	t.Helper()
+	dialFakeWS(t, srv)
+	stdinR, stdinW := io.Pipe()
+	defer stdinW.Close()
+	go func() { _, _ = stdinW.Write([]byte("hello")) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := proxyConnectIO(ctx, fb.workspaceURI, creds, srv.URL, 443, stdinR, io.Discard); err != nil {
+		t.Fatalf("proxyConnectIO: %v", err)
+	}
+}
+
+func TestProxyConnect_SendsSSOOrganizationOnEveryAPICall(t *testing.T) {
+	fb := newFakeBackend(t)
+	srv := httptest.NewServer(fb.handler())
+	defer srv.Close()
+
+	runEchoSession(t, fb, srv, cast.Credentials{Token: fb.apiKey, OrganizationID: "org-picked"})
+
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	// verifyKey + 2 list pages + exchange.
+	want := []string{"org-picked", "org-picked", "org-picked", "org-picked"}
+	if strings.Join(fb.gotOrgHeaders, ",") != strings.Join(want, ",") {
+		t.Errorf("org headers: got %q want %q", fb.gotOrgHeaders, want)
+	}
+}
+
+func TestProxyConnect_OmitsOrganizationHeaderForAPIKeys(t *testing.T) {
+	fb := newFakeBackend(t)
+	srv := httptest.NewServer(fb.handler())
+	defer srv.Close()
+
+	runEchoSession(t, fb, srv, cast.Credentials{Token: fb.apiKey})
+
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	if len(fb.gotOrgHeaders) != 4 {
+		t.Fatalf("expected 4 API calls, got %d", len(fb.gotOrgHeaders))
+	}
+	for i, h := range fb.gotOrgHeaders {
+		if h != "" {
+			t.Errorf("call %d: unexpected org header %q", i, h)
+		}
+	}
+}
+
 func TestProxyConnect_BadAPIKey(t *testing.T) {
 	fb := newFakeBackend(t)
 	srv := httptest.NewServer(fb.handler())
@@ -221,13 +292,17 @@ func TestProxyConnect_BadAPIKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := proxyConnectIO(ctx, fb.workspaceURI, "wrong-key", srv.URL, 443, strings.NewReader(""), io.Discard)
+	err := proxyConnectIO(ctx, fb.workspaceURI, cast.Credentials{Token: "wrong-key"}, srv.URL, 443, strings.NewReader(""), io.Discard)
 	if err == nil {
 		t.Fatal("expected error for bad API key")
 	}
 	var authErr *cast.RemoteAuthError
 	if !errors.As(err, &authErr) || authErr.Status != 401 {
 		t.Errorf("got %T %v; want *cast.RemoteAuthError status=401", err, err)
+	}
+	// SSO tokens fail here too, so the message must not blame an API key only.
+	if !strings.Contains(err.Error(), "Invalid credentials (API key or SSO token)") {
+		t.Errorf("401 message: got %q", err.Error())
 	}
 }
 
@@ -239,7 +314,7 @@ func TestProxyConnect_WorkspaceNotFound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := proxyConnectIO(ctx, "nonexistent.example.test", fb.apiKey, srv.URL, 443, strings.NewReader(""), io.Discard)
+	err := proxyConnectIO(ctx, "nonexistent.example.test", cast.Credentials{Token: fb.apiKey}, srv.URL, 443, strings.NewReader(""), io.Discard)
 	if err == nil {
 		t.Fatal("expected error for missing workspace URI")
 	}
@@ -275,7 +350,7 @@ func TestProxyConnect_ServerCloseExitsCleanly(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- proxyConnectIO(ctx, fb.workspaceURI, fb.apiKey, srv.URL, 443, stdin, &stdout)
+		done <- proxyConnectIO(ctx, fb.workspaceURI, cast.Credentials{Token: fb.apiKey}, srv.URL, 443, stdin, &stdout)
 	}()
 
 	select {
@@ -292,18 +367,28 @@ func TestProxyConnect_ServerCloseExitsCleanly(t *testing.T) {
 	}
 }
 
-func TestReadAPIKey(t *testing.T) {
+func TestReadCredentials(t *testing.T) {
 	t.Setenv("KIMCHI_API_KEY", "env-key")
-	k, err := cast.ReadAPIKey()
+	t.Setenv("KIMCHI_ORGANIZATION_ID", "")
+	c, err := cast.ReadCredentials()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if k != "env-key" {
-		t.Errorf("got %q want %q", k, "env-key")
+	if c != (cast.Credentials{Token: "env-key"}) {
+		t.Errorf("got %+v want token only", c)
+	}
+
+	t.Setenv("KIMCHI_ORGANIZATION_ID", "org-picked")
+	c, err = cast.ReadCredentials()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c != (cast.Credentials{Token: "env-key", OrganizationID: "org-picked"}) {
+		t.Errorf("got %+v want token and org", c)
 	}
 
 	t.Setenv("KIMCHI_API_KEY", "")
-	if _, err := cast.ReadAPIKey(); err == nil {
+	if _, err := cast.ReadCredentials(); err == nil {
 		t.Error("expected error when KIMCHI_API_KEY is unset")
 	}
 }

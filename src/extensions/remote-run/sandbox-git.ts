@@ -28,7 +28,7 @@
  */
 
 import { type ChildProcess, execFileSync, spawn } from "node:child_process"
-import { loadConfig } from "../../config.js"
+import type { BearerCredentials } from "../../auth/gateway-credentials.js"
 import { authenticateWorkspace } from "../../sandbox/cloud/auth.js"
 import { WorkerClient } from "../../sandbox/worker/client.js"
 import { getSession } from "../../sandbox/worker/sessions.js"
@@ -50,10 +50,12 @@ export interface SandboxGitConnection {
 	host: string
 	/** SSH user on the sandbox. */
 	remoteUser: string
-	/** Bearer token surfaced to teleport-proxy via the AUTH_TOKEN env var. */
+	/** Workspace connect token. Set as AUTH_TOKEN, which the current proxy helper ignores. */
 	authToken: string
 	/** Absolute path of the repository working directory on the sandbox. */
 	cwd: string
+	/** Gateway bearer and SSO org the ProxyCommand helper authenticates with. */
+	credentials: BearerCredentials
 }
 
 export interface RunSandboxGitOptions {
@@ -67,11 +69,6 @@ export interface RunSandboxGitOptions {
 	timeoutMs?: number
 	/** Fired with each stdout chunk as it arrives (streaming diff viewer). */
 	onStdoutChunk?: (chunk: string) => void
-	/**
-	 * Cloud API key injected as KIMCHI_API_KEY for the ProxyCommand helper.
-	 * Defaults to loadConfig().apiKey at call time.
-	 */
-	apiKey?: string
 	/** Override path to the vendored teleport-proxy.js. Tests inject a stub. */
 	proxyCommand?: string
 	/** Test seam: injectable spawner. Defaults to child_process.spawn. */
@@ -107,14 +104,14 @@ export class SandboxGitError extends Error {
  */
 export async function resolveSandboxGitConnection(
 	remoteSession: RemoteSessionMeta,
-	apiKey: string,
+	credentials: BearerCredentials,
 	opts?: { endpoint?: string; description?: string },
 ): Promise<SandboxGitConnection> {
 	if (readE2eSeam("KIMCHI_E2E_FAKE_SANDBOX_GIT") === "1") {
 		// TUI-E2E seam: skip the credential exchange entirely.
-		return { host: "e2e.fake", remoteUser: SANDBOX_USER, authToken: "e2e", cwd: remoteSession.cwd }
+		return { host: "e2e.fake", remoteUser: SANDBOX_USER, authToken: "e2e", cwd: remoteSession.cwd, credentials }
 	}
-	const creds = await authenticateWorkspace(remoteSession.workspaceId, apiKey, opts?.description ?? "kimchi", {
+	const creds = await authenticateWorkspace(remoteSession.workspaceId, credentials, opts?.description ?? "kimchi", {
 		endpoint: opts?.endpoint ?? process.env.KIMCHI_REMOTE_ENDPOINT,
 	})
 	// Hibernated sandbox: SSH to a sleeping pod is a bare 255 with zero
@@ -125,7 +122,13 @@ export async function resolveSandboxGitConnection(
 	// The session may have moved hosts between runs (reconnect) — the freshly
 	// exchanged credential carries the live host, while the recorded cwd
 	// stays valid because the workspace filesystem persists.
-	return { host: creds.host, remoteUser: SANDBOX_USER, authToken: creds.connectToken, cwd: remoteSession.cwd }
+	return {
+		host: creds.host,
+		remoteUser: SANDBOX_USER,
+		authToken: creds.connectToken,
+		cwd: remoteSession.cwd,
+		credentials,
+	}
 }
 
 /**
@@ -204,7 +207,7 @@ export async function runSandboxGit(opts: RunSandboxGitOptions): Promise<Sandbox
 	return withSshSession(async ({ knownHostsFile }) => {
 		const env: NodeJS.ProcessEnv = {
 			...process.env,
-			...buildSshProxyEnv({ apiKey: opts.apiKey ?? loadConfig().apiKey, authToken: opts.connection.authToken }),
+			...buildSshProxyEnv({ credentials: opts.connection.credentials, authToken: opts.connection.authToken }),
 		}
 		const argv = buildSshArgv({
 			proxyCommand: opts.proxyCommand ?? buildProxyCommand(),
@@ -288,7 +291,7 @@ export interface SandboxBaseline {
  */
 export async function captureBaseline(
 	connection: SandboxGitConnection,
-	opts?: { signal?: AbortSignal; apiKey?: string; proxyCommand?: string; timeoutMs?: number; _spawn?: typeof spawn },
+	opts?: { signal?: AbortSignal; proxyCommand?: string; timeoutMs?: number; _spawn?: typeof spawn },
 ): Promise<SandboxBaseline> {
 	const rev = await runSandboxGit({ connection, args: ["rev-parse", "HEAD"], ...opts })
 	const status = await runSandboxGit({ connection, args: ["status", "--porcelain"], ...opts })
@@ -311,7 +314,7 @@ export async function captureBaseline(
 export async function recoverBaseShaFromMergeBase(
 	connection: SandboxGitConnection,
 	baseBranch: string,
-	opts?: { signal?: AbortSignal; apiKey?: string; proxyCommand?: string; _spawn?: typeof spawn },
+	opts?: { signal?: AbortSignal; proxyCommand?: string; _spawn?: typeof spawn },
 ): Promise<string | undefined> {
 	// Best effort — the clone may be offline-only or the token read-only.
 	await runSandboxGit({ connection, args: ["fetch", "--no-tags", "origin"], ...opts }).catch(() => {})
@@ -446,8 +449,6 @@ export async function pushViaLocalFallback(opts: {
 	connection: SandboxGitConnection
 	branch: string
 	localRepo: string
-	/** Cloud API key for the ProxyCommand tunnel; defaults to loadConfig(). */
-	apiKey?: string
 	/** Test seams. */
 	execFile?: typeof execFileSync
 	proxyCommand?: string
@@ -461,7 +462,7 @@ export async function pushViaLocalFallback(opts: {
 				proxyCommand: opts.proxyCommand ?? buildProxyCommand(),
 				knownHostsFile,
 			}),
-			...buildSshProxyEnv({ apiKey: opts.apiKey ?? loadConfig().apiKey, authToken: opts.connection.authToken }),
+			...buildSshProxyEnv({ credentials: opts.connection.credentials, authToken: opts.connection.authToken }),
 		}
 		const sshUrl = `ssh://${opts.connection.remoteUser}@${opts.connection.host}${opts.connection.cwd}`
 		try {

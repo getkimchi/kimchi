@@ -132,6 +132,7 @@ export const IGNORED_ENV_VARS: string[] = [
 	// debugging
 	"KIMCHI_DEBUG_SESSION",
 	// set by kimchi for child processes, hooks, and pi-mono
+	"KIMCHI_ORGANIZATION_ID",
 	"KIMCHI_ORIGINAL_PI_CODING_AGENT_DIR",
 	"KIMCHI_DISABLE_BUILTIN_PROVIDERS",
 	"KIMCHI_OAUTH_TEMPLATE_DIR",

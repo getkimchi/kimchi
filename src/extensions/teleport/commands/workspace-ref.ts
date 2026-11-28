@@ -83,7 +83,7 @@ export async function resolveWorkspaceRef(
 	let orgId: string
 	let userId: string | undefined
 	try {
-		const verified = await verifyApiKey(ctx.apiKey, { endpoint: ctx.endpoint })
+		const verified = await verifyApiKey(ctx.credentials, { endpoint: ctx.endpoint })
 		orgId = verified.organizationId
 		userId = verified.userId
 	} catch (err) {
@@ -97,13 +97,13 @@ export async function resolveWorkspaceRef(
 	// picker, so the request is skipped entirely when an explicit ref is given.
 	const quotaPromise = ref
 		? undefined
-		: getQuotaUsage(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId }).catch(() => undefined)
+		: getQuotaUsage(ctx.credentials, { endpoint: ctx.endpoint, signal: ctx.signal, orgId }).catch(() => undefined)
 	// Always list so we can return the workspace's current name to the caller —
 	// the UUID shortcut is gone because callers now use `resolved.name` to
 	// avoid clobbering the server-stored description on the next PUT.
 	let workspaces: Workspace[]
 	try {
-		workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId, userId })
+		workspaces = await listWorkspaces(ctx.credentials, { endpoint: ctx.endpoint, signal: ctx.signal, orgId, userId })
 	} catch (err) {
 		refuse(ctx, `Could not list workspaces: ${err instanceof Error ? err.message : String(err)}`)
 	}
@@ -181,7 +181,7 @@ async function mintViaSetupDialog(ctx: TeleportContext, orgId: string, opts: Res
 	// on the form) instead of blocking workspace creation.
 	let templates: WorkspaceTemplateSummary[] = []
 	try {
-		templates = await listWorkspaceTemplates(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId })
+		templates = await listWorkspaceTemplates(ctx.credentials, { endpoint: ctx.endpoint, signal: ctx.signal, orgId })
 	} catch (err) {
 		if (!ctx.signal?.aborted) {
 			warn(

@@ -30,6 +30,7 @@
 
 import { randomUUID } from "node:crypto"
 import { setTimeout as timersSleep } from "node:timers/promises"
+import type { BearerCredentials } from "../../../auth/gateway-credentials.js"
 import { authenticateWorkspace, authenticateWorkspaceProbe } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
 import type { WorkspaceCredentials, WorkspaceSpecConfig } from "../../../sandbox/cloud/types.js"
@@ -59,8 +60,8 @@ export interface RemoteSessionMeta {
 }
 
 export interface RemoteRunOptions {
-	/** Cloud API key for workspace authentication. */
-	apiKey: string
+	/** Bearer plus SSO org for workspace authentication. */
+	credentials: BearerCredentials
 	/** Override the cloud API endpoint (used by tests). */
 	endpoint?: string
 	/** User cancellation aborts the worker; AcpSessionDetachedError only disconnects local observation. */
@@ -328,7 +329,7 @@ interface RemoteRecoveryState {
 interface RecoveryConfig {
 	sessionName: string
 	workspaceId: string
-	apiKey: string
+	credentials: BearerCredentials
 	workspaceName: string
 	endpoint: string | undefined
 	signal: AbortSignal | undefined
@@ -379,7 +380,7 @@ async function tryReviveWorkspace(st: RemoteRecoveryState, config: RecoveryConfi
 		try {
 			applyRecoveryCreds(
 				st,
-				await authenticateWorkspace(config.workspaceId, config.apiKey, config.workspaceName, {
+				await authenticateWorkspace(config.workspaceId, config.credentials, config.workspaceName, {
 					endpoint: config.endpoint,
 				}),
 			)
@@ -452,7 +453,7 @@ async function recoverOutcome(st: RemoteRecoveryState, config: RecoveryConfig): 
 		if (!config.signal?.aborted) {
 			applyRecoveryCreds(
 				st,
-				await authenticateWorkspace(config.workspaceId, config.apiKey, config.workspaceName, {
+				await authenticateWorkspace(config.workspaceId, config.credentials, config.workspaceName, {
 					endpoint: config.endpoint,
 				}),
 			)
@@ -521,7 +522,7 @@ async function recoverFromDisconnectInner(st: RemoteRecoveryState, config: Recov
 				try {
 					applyRecoveryCreds(
 						st,
-						await authenticateWorkspace(config.workspaceId, config.apiKey, config.workspaceName, {
+						await authenticateWorkspace(config.workspaceId, config.credentials, config.workspaceName, {
 							endpoint: config.endpoint,
 						}),
 					)
@@ -650,7 +651,7 @@ async function recoverFromDisconnectInner(st: RemoteRecoveryState, config: Recov
 		try {
 			applyRecoveryCreds(
 				st,
-				await authenticateWorkspace(config.workspaceId, config.apiKey, config.workspaceName, {
+				await authenticateWorkspace(config.workspaceId, config.credentials, config.workspaceName, {
 					endpoint: config.endpoint,
 				}),
 			)
@@ -830,7 +831,7 @@ export async function runRemoteAgent(
 	prompt: string,
 	options: RemoteRunOptions,
 ): Promise<RemoteRunResult> {
-	const { apiKey, endpoint, signal, callbacks } = options
+	const { credentials, endpoint, signal, callbacks } = options
 	const sessionName = `acp-${randomUUID().slice(0, 8)}`
 	const workspaceName = options.workspaceName ?? "kimchi"
 
@@ -851,7 +852,7 @@ export async function runRemoteAgent(
 	// 1. Authenticate — wakes a hibernated workspace: authenticateWorkspace
 	// calls ResumeWorkspace (the only RPC that scales the sandbox pod back
 	// up) and propagates any failure honestly.
-	const creds: WorkspaceCredentials = await authenticateWorkspace(workspaceId, apiKey, workspaceName, {
+	const creds: WorkspaceCredentials = await authenticateWorkspace(workspaceId, credentials, workspaceName, {
 		endpoint,
 		...(options.spec ? { spec: options.spec } : {}),
 	})
@@ -911,7 +912,7 @@ export async function runRemoteAgent(
 	const config: RecoveryConfig = {
 		sessionName,
 		workspaceId,
-		apiKey,
+		credentials,
 		workspaceName,
 		endpoint,
 		signal,
@@ -987,6 +988,7 @@ export async function runRemoteAgent(
 				remotePath: cwd,
 				remoteHost: creds.host,
 				authToken: creds.connectToken,
+				credentials,
 				freshClone: session.freshClone ?? false,
 				signal,
 			})
@@ -1041,8 +1043,8 @@ export async function runRemoteAgent(
 
 /** Options for attachRemoteAgent — attach to an EXISTING remote session. */
 export interface AttachRemoteAgentOptions {
-	/** Cloud API key for workspace authentication. */
-	apiKey: string
+	/** Bearer plus SSO org for workspace authentication. */
+	credentials: BearerCredentials
 	/** Override the cloud API endpoint (used by tests). */
 	endpoint?: string
 	/** Abort signal — aborts the remote session (user kill). */
@@ -1091,7 +1093,7 @@ export interface AttachRemoteAgentOptions {
  * remote session).
  */
 export async function attachRemoteAgent(options: AttachRemoteAgentOptions): Promise<RemoteRunResult> {
-	const { apiKey, endpoint, signal, remoteSession, acpSessionId } = options
+	const { credentials, endpoint, signal, remoteSession, acpSessionId } = options
 
 	// TUI-E2E seam (KIMCHI_E2E_FAKE_SANDBOX_GIT=1): skip the WS/ACP worker
 	// entirely — the keep-alive cycle then the recovery result, with the same
@@ -1114,9 +1116,14 @@ export async function attachRemoteAgent(options: AttachRemoteAgentOptions): Prom
 
 	// Authenticate against the persisted workspace — creds never survive a
 	// restart (connect tokens expire), so this always starts with a fresh one.
-	const creds: WorkspaceCredentials = await authenticateWorkspace(remoteSession.workspaceId, apiKey, workspaceName, {
-		endpoint,
-	})
+	const creds: WorkspaceCredentials = await authenticateWorkspace(
+		remoteSession.workspaceId,
+		credentials,
+		workspaceName,
+		{
+			endpoint,
+		},
+	)
 
 	const st: RemoteRecoveryState = {
 		creds,
@@ -1141,7 +1148,7 @@ export async function attachRemoteAgent(options: AttachRemoteAgentOptions): Prom
 	const config: RecoveryConfig = {
 		sessionName: remoteSession.sessionName,
 		workspaceId: remoteSession.workspaceId,
-		apiKey,
+		credentials,
 		workspaceName,
 		endpoint,
 		signal,
@@ -1191,7 +1198,7 @@ export async function attachRemoteAgent(options: AttachRemoteAgentOptions): Prom
 /** Options for continueRemoteAgent — prompt an EXISTING kept-alive session. */
 export interface ContinueRemoteAgentOptions {
 	/** Cloud API key for workspace authentication (fresh creds each steer). */
-	apiKey: string
+	credentials: BearerCredentials
 	endpoint?: string
 	/** Abort signal — aborts the local wait; the kept session is never deleted here. */
 	signal?: AbortSignal
@@ -1220,16 +1227,21 @@ export interface ContinueRemoteAgentOptions {
  * terminal actions (sync done / push done) or the server-side TTL.
  */
 export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): Promise<RemoteRunResult> {
-	const { apiKey, endpoint, signal, remoteSession, acpSessionId, prompt } = options
+	const { credentials, endpoint, signal, remoteSession, acpSessionId, prompt } = options
 	if (!acpSessionId) {
 		throw new Error("continueRemoteAgent requires the persisted acpSessionId (session/load attaches by id)")
 	}
 	const workspaceName = options.workspaceName ?? "kimchi"
 	const { backoffs, reviveDelayMs, turnSettleGraceMs, pollDelayMs } = resolveTimingOptions(options)
 
-	const creds: WorkspaceCredentials = await authenticateWorkspace(remoteSession.workspaceId, apiKey, workspaceName, {
-		endpoint,
-	})
+	const creds: WorkspaceCredentials = await authenticateWorkspace(
+		remoteSession.workspaceId,
+		credentials,
+		workspaceName,
+		{
+			endpoint,
+		},
+	)
 
 	// Fast path: the original keepAlive run LEFT THE SAME CONNECTION OPEN —
 	// a steer is then a plain session/prompt over it (no readiness wait, no
@@ -1260,7 +1272,7 @@ export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): 
 	const config: RecoveryConfig = {
 		sessionName: remoteSession.sessionName,
 		workspaceId: remoteSession.workspaceId,
-		apiKey,
+		credentials,
 		workspaceName,
 		endpoint,
 		signal,
@@ -1328,7 +1340,7 @@ export async function continueRemoteAgent(options: ContinueRemoteAgentOptions): 
 					try {
 						applyRecoveryCreds(
 							st,
-							await authenticateWorkspace(remoteSession.workspaceId, apiKey, workspaceName, { endpoint }),
+							await authenticateWorkspace(remoteSession.workspaceId, credentials, workspaceName, { endpoint }),
 						)
 					} catch {
 						// Keep the stale creds — the next attempt retries anyway.
@@ -1374,12 +1386,17 @@ function isRetryableAttachError(err: unknown): boolean {
  */
 export async function deleteRemoteSession(
 	remoteSession: RemoteSessionMeta,
-	apiKey: string,
+	credentials: BearerCredentials,
 	options?: { endpoint?: string; workspaceName?: string },
 ): Promise<void> {
-	const creds = await authenticateWorkspace(remoteSession.workspaceId, apiKey, options?.workspaceName ?? "kimchi", {
-		endpoint: options?.endpoint,
-	})
+	const creds = await authenticateWorkspace(
+		remoteSession.workspaceId,
+		credentials,
+		options?.workspaceName ?? "kimchi",
+		{
+			endpoint: options?.endpoint,
+		},
+	)
 	const client = new WorkerClient(creds)
 	try {
 		await deleteSession(client, remoteSession.sessionName)
@@ -1400,13 +1417,13 @@ export async function deleteRemoteSession(
  */
 export async function isRemoteSessionConnected(
 	remoteSession: RemoteSessionMeta,
-	apiKey: string,
+	credentials: BearerCredentials,
 	options?: { endpoint?: string },
 ): Promise<boolean> {
 	try {
 		// Side-effect-free probe: no upsert, no resume — a read-only check must
 		// not wake a hibernated workspace or fail on resume quota errors.
-		const creds = await authenticateWorkspaceProbe(remoteSession.workspaceId, apiKey, {
+		const creds = await authenticateWorkspaceProbe(remoteSession.workspaceId, credentials, {
 			endpoint: options?.endpoint,
 		})
 		const client = new WorkerClient(creds)

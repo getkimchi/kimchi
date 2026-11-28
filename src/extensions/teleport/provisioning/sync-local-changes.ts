@@ -1,3 +1,4 @@
+import type { BearerCredentials } from "../../../auth/gateway-credentials.js"
 import { SANDBOX_USER } from "./constants.js"
 import { sumIncludeListBytes } from "./estimate-bytes.js"
 import { buildChangedFilesList } from "./include-list.js"
@@ -17,8 +18,10 @@ export interface SyncLocalChangesOptions {
 	remotePath: string
 	/** Sandbox SSH host (expanded by ssh's %h in ProxyCommand). */
 	remoteHost: string
-	/** Bearer token surfaced to teleport-proxy via the AUTH_TOKEN env var. */
+	/** Workspace connect token. Set as AUTH_TOKEN, which the current proxy helper ignores. */
 	authToken: string
+	/** Gateway bearer and SSO org the ProxyCommand helper authenticates with. */
+	credentials: BearerCredentials
 	/** Whether the remote clone was freshly created (enables `--delete`). */
 	freshClone: boolean
 	/** Cancellation. */
@@ -68,6 +71,7 @@ export async function syncLocalChangesAfterClone(opts: SyncLocalChangesOptions):
 			remoteHost: opts.remoteHost,
 			remoteUser: SANDBOX_USER,
 			authToken: opts.authToken,
+			credentials: opts.credentials,
 			signal: opts.signal,
 			deleteExtraneous: opts.freshClone,
 			excludeFilters: [...DIFF_RSYNC_EXCLUDES],

@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process"
 import { mkdir, writeFile } from "node:fs/promises"
 import { join, dirname as nodePathDirname, posix } from "node:path"
-import { loadConfig } from "../../../config.js"
+import type { BearerCredentials } from "../../../auth/gateway-credentials.js"
 
 const posixDirname = posix.dirname
 
@@ -42,8 +42,10 @@ export interface RsyncOptions {
 	remoteHost: string
 	/** SSH user to log in as on the sandbox. */
 	remoteUser: string
-	/** Bearer token surfaced to teleport-proxy via the AUTH_TOKEN env var. */
+	/** Workspace connect token. Set as AUTH_TOKEN, which the current proxy helper ignores. */
 	authToken: string
+	/** Gateway bearer and SSO org the ProxyCommand helper authenticates with. */
+	credentials: BearerCredentials
 	/**
 	 * Whether the *source* of the transfer is a directory. Controls whether
 	 * the base excludes + gitignore filter are applied (directories) or
@@ -366,7 +368,7 @@ export async function runRsync(opts: RsyncOptions): Promise<RsyncResult> {
 
 		const env: NodeJS.ProcessEnv = {
 			...process.env,
-			...buildSshProxyEnv({ apiKey: loadConfig().apiKey, authToken: opts.authToken }),
+			...buildSshProxyEnv({ credentials: opts.credentials, authToken: opts.authToken }),
 		}
 
 		const proxyCommand = opts.proxyCommand ?? buildProxyCommand()

@@ -1,3 +1,4 @@
+import { type BearerCredentials, gatewayAuthHeaders } from "../../auth/gateway-credentials.js"
 import { HARNESS_CLIENT_TYPE } from "../constants.js"
 import { checkResponse, fetchWithTimeout, resolveEndpoint } from "./http.js"
 import { verifyApiKey } from "./keys.js"
@@ -9,7 +10,10 @@ import { normalizeWsUri } from "./uri.js"
 const LIST_WORKSPACES_PAGE_LIMIT = 200
 const LIST_WORKSPACES_PAGE_HARD_CAP = 10
 
-export async function listWorkspaces(apiKey: string, options?: ListWorkspacesOptions): Promise<Workspace[]> {
+export async function listWorkspaces(
+	credentials: BearerCredentials,
+	options?: ListWorkspacesOptions,
+): Promise<Workspace[]> {
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 	const endpoint = resolveEndpoint(options)
 	const signal = options?.signal
@@ -22,7 +26,7 @@ export async function listWorkspaces(apiKey: string, options?: ListWorkspacesOpt
 		let orgId = options?.orgId
 		let userId = options?.userId
 		if (!orgId || !userId) {
-			const verified = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
+			const verified = await verifyApiKey(credentials, { ...options, fetch: fetchImpl })
 			orgId = verified.organizationId
 			userId = verified.userId
 		}
@@ -51,7 +55,7 @@ export async function listWorkspaces(apiKey: string, options?: ListWorkspacesOpt
 				{
 					method: "GET",
 					headers: {
-						Authorization: `Bearer ${apiKey}`,
+						...gatewayAuthHeaders(credentials),
 						Accept: "application/json",
 					},
 				},
@@ -104,7 +108,7 @@ export async function listWorkspaces(apiKey: string, options?: ListWorkspacesOpt
 export async function deleteWorkspace(
 	orgId: string,
 	workspaceId: string,
-	apiKey: string,
+	credentials: BearerCredentials,
 	options?: AuthenticateOptions,
 ): Promise<void> {
 	const fetchImpl = options?.fetch ?? globalThis.fetch
@@ -116,7 +120,7 @@ export async function deleteWorkspace(
 		{
 			method: "DELETE",
 			headers: {
-				Authorization: `Bearer ${apiKey}`,
+				...gatewayAuthHeaders(credentials),
 			},
 		},
 		fetchImpl,

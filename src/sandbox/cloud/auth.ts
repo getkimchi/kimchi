@@ -1,3 +1,4 @@
+import { type BearerCredentials, gatewayAuthHeaders } from "../../auth/gateway-credentials.js"
 import { checkResponse, fetchWithTimeout, resolveEndpoint } from "./http.js"
 import { verifyApiKey } from "./keys.js"
 import type { AuthenticateOptions, WorkspaceCredentials } from "./types.js"
@@ -12,16 +13,16 @@ import { normalizeWsUri } from "./uri.js"
  */
 async function authenticateVia(
 	workspaceId: string,
-	apiKey: string,
+	credentials: BearerCredentials,
 	options: AuthenticateOptions | undefined,
 	resolveWorkspace: (orgId: string, fetchImpl: typeof globalThis.fetch) => Promise<{ uri: string }>,
 ): Promise<WorkspaceCredentials> {
 	const fetchImpl = options?.fetch ?? globalThis.fetch
 
 	try {
-		const orgId = (await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })).organizationId
+		const orgId = (await verifyApiKey(credentials, { ...options, fetch: fetchImpl })).organizationId
 		const workspace = await resolveWorkspace(orgId, fetchImpl)
-		const { token, expireTime } = await exchangeWorkspaceToken(apiKey, workspaceId, {
+		const { token, expireTime } = await exchangeWorkspaceToken(credentials, workspaceId, {
 			...options,
 			fetch: fetchImpl,
 		})
@@ -51,18 +52,18 @@ async function authenticateVia(
  */
 export async function authenticateWorkspace(
 	workspaceId: string,
-	apiKey: string,
+	credentials: BearerCredentials,
 	description: string,
 	options?: AuthenticateOptions,
 ): Promise<WorkspaceCredentials> {
-	return authenticateVia(workspaceId, apiKey, options, async (orgId, fetchImpl) => {
-		const workspace = await createOrUpdateWorkspace(orgId, workspaceId, apiKey, description, {
+	return authenticateVia(workspaceId, credentials, options, async (orgId, fetchImpl) => {
+		const workspace = await createOrUpdateWorkspace(orgId, workspaceId, credentials, description, {
 			...options,
 			fetch: fetchImpl,
 		})
 		// Wake a hibernated workspace if needed — failures propagate honestly
 		// (see resumeWorkspace).
-		await resumeWorkspace(orgId, workspaceId, apiKey, { ...options, fetch: fetchImpl })
+		await resumeWorkspace(orgId, workspaceId, credentials, { ...options, fetch: fetchImpl })
 		return workspace
 	})
 }
@@ -83,7 +84,7 @@ export async function authenticateWorkspace(
 async function resumeWorkspace(
 	orgId: string,
 	workspaceId: string,
-	apiKey: string,
+	credentials: BearerCredentials,
 	options?: AuthenticateOptions,
 ): Promise<void> {
 	const endpoint = resolveEndpoint(options)
@@ -95,7 +96,7 @@ async function resumeWorkspace(
 		{
 			method: "POST",
 			headers: {
-				Authorization: `Bearer ${apiKey}`,
+				...gatewayAuthHeaders(credentials),
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({}),
@@ -132,18 +133,18 @@ async function resumeWorkspace(
  */
 export async function authenticateWorkspaceProbe(
 	workspaceId: string,
-	apiKey: string,
+	credentials: BearerCredentials,
 	options?: AuthenticateOptions,
 ): Promise<WorkspaceCredentials> {
-	return authenticateVia(workspaceId, apiKey, options, (orgId, fetchImpl) =>
-		getWorkspace(orgId, workspaceId, apiKey, { ...options, fetch: fetchImpl }),
+	return authenticateVia(workspaceId, credentials, options, (orgId, fetchImpl) =>
+		getWorkspace(orgId, workspaceId, credentials, { ...options, fetch: fetchImpl }),
 	)
 }
 
 export async function getWorkspace(
 	orgId: string,
 	workspaceId: string,
-	apiKey: string,
+	credentials: BearerCredentials,
 	options?: AuthenticateOptions,
 ): Promise<{ uri: string }> {
 	const endpoint = resolveEndpoint(options)
@@ -155,7 +156,7 @@ export async function getWorkspace(
 		{
 			method: "GET",
 			headers: {
-				Authorization: `Bearer ${apiKey}`,
+				...gatewayAuthHeaders(credentials),
 			},
 		},
 		fetchImpl,
@@ -178,7 +179,7 @@ export async function getWorkspace(
 export async function createOrUpdateWorkspace(
 	orgId: string,
 	workspaceId: string,
-	apiKey: string,
+	credentials: BearerCredentials,
 	description: string,
 	options?: AuthenticateOptions,
 ): Promise<{ uri: string; description: string }> {
@@ -197,7 +198,7 @@ export async function createOrUpdateWorkspace(
 		{
 			method: "PUT",
 			headers: {
-				Authorization: `Bearer ${apiKey}`,
+				...gatewayAuthHeaders(credentials),
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({
@@ -237,7 +238,7 @@ export async function createOrUpdateWorkspace(
 }
 
 export async function exchangeWorkspaceToken(
-	apiKey: string,
+	credentials: BearerCredentials,
 	workspaceId: string,
 	options?: AuthenticateOptions,
 ): Promise<{ token: string; expireTime: string }> {
@@ -250,7 +251,7 @@ export async function exchangeWorkspaceToken(
 		{
 			method: "POST",
 			headers: {
-				Authorization: `Bearer ${apiKey}`,
+				...gatewayAuthHeaders(credentials),
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({ workspaceId: workspaceId }),
