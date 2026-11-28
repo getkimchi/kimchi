@@ -4272,20 +4272,52 @@ function getSessionModelRegistry(
  * (backend display name); the description is the harness's one-liner for what
  * a routed virtual model does.
  */
-function autoModelOption(model: Model<Api>, sessionId: string): SessionConfigSelectOption {
+function modelBaseDisplayName(model: Model<Api>): string {
+	return isAutoRoutedModel(model) ? splitModelDisplayName(model.name ?? model.id).name : model.name
+}
+
+function disambiguateModelDisplayNames(models: readonly Model<Api>[]): Map<Model<Api>, string> {
+	const nameCounts = new Map<string, { total: number; providers: Map<string, number> }>()
+	for (const model of models) {
+		const baseName = modelBaseDisplayName(model)
+		const entry = nameCounts.get(baseName) ?? { total: 0, providers: new Map<string, number>() }
+		entry.total += 1
+		entry.providers.set(model.provider, (entry.providers.get(model.provider) ?? 0) + 1)
+		nameCounts.set(baseName, entry)
+	}
+	const resolved = new Map<Model<Api>, string>()
+	for (const model of models) {
+		const baseName = modelBaseDisplayName(model)
+		const entry = nameCounts.get(baseName)
+		if (!entry || entry.total <= 1) {
+			resolved.set(model, baseName)
+			continue
+		}
+		const sameProviderCount = entry.providers.get(model.provider) ?? 0
+		if (sameProviderCount > 1) {
+			const qualifier = entry.providers.size > 1 ? refFromModel(model) : model.id
+			resolved.set(model, `${baseName} (${qualifier})`)
+		} else {
+			resolved.set(model, `${baseName} (${model.provider})`)
+		}
+	}
+	return resolved
+}
+
+function autoModelOption(model: Model<Api>, sessionId: string, displayName: string): SessionConfigSelectOption {
 	// The backend may ship the description inside the display name; ACP has a
 	// dedicated description field, so the pair is split apart here.
-	const { name: baseName, description: nameDescription } = splitModelDisplayName(model.name ?? model.id)
+	const { description: nameDescription } = splitModelDisplayName(model.name ?? model.id)
 	const description = nameDescription ?? AUTO_MODEL_DESCRIPTION
 	const state = getAutoRoutingState(sessionId)
 	if (state.status === "resolved" && isRoutedModel(model, sessionId)) {
 		return {
 			value: refFromModel(model),
-			name: `${baseName} (${state.model.id})`,
+			name: `${displayName} (${state.model.id})`,
 			description,
 		}
 	}
-	return { value: refFromModel(model), name: baseName, description }
+	return { value: refFromModel(model), name: displayName, description }
 }
 
 export function buildModelConfigOption(
@@ -4296,10 +4328,13 @@ export function buildModelConfigOption(
 	// Registry descriptions join ACP rows only for the negotiated Thinking level view.
 	// Legacy rows keep their previous marker-only presentation byte-for-byte.
 	const deprecationMarkers = collectDeprecationMarkers(join(loadKimchiConfig().agentConfigDir, "models.json"))
-	const options: SessionConfigSelectOption[] = modelRegistry.getAvailable().map((m) => {
+	const availableModels = modelRegistry.getAvailable()
+	const displayNames = disambiguateModelDisplayNames(availableModels)
+	const options: SessionConfigSelectOption[] = availableModels.map((m) => {
+		const displayName = displayNames.get(m) ?? modelBaseDisplayName(m)
 		let option: SessionConfigSelectOption
 		if (isAutoRoutedModel(m)) {
-			option = autoModelOption(m, session.sessionId)
+			option = autoModelOption(m, session.sessionId, displayName)
 		} else {
 			const modelId = refFromModel(m)
 			const marker = deprecationMarkers.get(m.id)
@@ -4307,7 +4342,7 @@ export function buildModelConfigOption(
 			const description = modelThinking
 				? (getModelDescription(modelId) ?? ([marker, configured].filter(Boolean).join(" ") || undefined))
 				: marker
-			option = { value: modelId, name: m.name, ...(description ? { description } : {}) }
+			option = { value: modelId, name: displayName, ...(description ? { description } : {}) }
 		}
 		return modelThinking ? { ...option, _meta: buildModelThinkingMeta(m, modelThinking) } : option
 	})

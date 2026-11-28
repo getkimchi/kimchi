@@ -10110,6 +10110,188 @@ describe("initializeHeadlessTheme", () => {
 })
 
 describe("newSession model state", () => {
+	it("distinguishes duplicate display names across providers while keeping unique labels intact", async () => {
+		const fake = new FakeAgentSession("session-provider-labels")
+		fake.model = { provider: "kimchi-dev/upstream", id: "shared", name: "Shared Model" }
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [
+				{ provider: "kimchi-dev", id: "shared", name: "Shared Model" },
+				{ provider: "kimchi-dev/upstream", id: "shared", name: "Shared Model" },
+				{ provider: "kimchi-dev/upstream", id: "unique", name: "Unique Model" },
+			],
+		}
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const option = res.configOptions?.find((opt) => opt.id === "model")
+		expect(option).toMatchObject({
+			currentValue: "kimchi-dev/upstream/shared",
+			options: expect.arrayContaining([
+				{ value: "kimchi-dev/shared", name: "Shared Model (kimchi-dev)" },
+				{ value: "kimchi-dev/upstream/shared", name: "Shared Model (kimchi-dev/upstream)" },
+				{ value: "kimchi-dev/upstream/unique", name: "Unique Model" },
+			]),
+		})
+	})
+
+	it("disambiguates same-provider and mixed cross-provider display name collisions", async () => {
+		const fake = new FakeAgentSession("session-same-provider-labels")
+		fake.model = { provider: "kimchi-dev", id: "gpt-4o", name: "GPT-4o" }
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [
+				{ provider: "kimchi-dev", id: "gpt-4o", name: "GPT-4o" },
+				{ provider: "kimchi-dev", id: "gpt-4o-2024-05-13", name: "GPT-4o" },
+				{ provider: "openai", id: "sonnet", name: "Sonnet" },
+				{ provider: "openai", id: "sonnet-latest", name: "Sonnet" },
+				{ provider: "anthropic", id: "sonnet", name: "Sonnet" },
+			],
+		}
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const options = modelSelectOptions(res)
+		expect(options).toEqual([
+			{ value: "anthropic/sonnet", name: "Sonnet (anthropic)" },
+			{ value: "kimchi-dev/gpt-4o", name: "GPT-4o (gpt-4o)" },
+			{ value: "kimchi-dev/gpt-4o-2024-05-13", name: "GPT-4o (gpt-4o-2024-05-13)" },
+			{ value: "openai/sonnet", name: "Sonnet (openai/sonnet)" },
+			{ value: "openai/sonnet-latest", name: "Sonnet (openai/sonnet-latest)" },
+		])
+	})
+
+	it("disambiguates colliding Auto options without altering unique Auto or resolved picks", async () => {
+		const sessionId = "session-auto-collision"
+		const fake = routedVirtualSession(sessionId, "auto")
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [
+				{ provider: "kimchi-dev", id: "auto", name: "Auto — Picks the best model for your tasks automatically." },
+				{ provider: "kimchi-dev", id: "auto-beta", name: "Auto Beta" },
+				{ provider: "other-gateway", id: "auto", name: "Auto" },
+			],
+		}
+		setAutoRoutingState(sessionId, {
+			status: "resolved",
+			model: { provider: "kimchi-dev", id: "kimi-k3", name: "Kimi K3" } as Model<string>,
+			requestedId: "auto",
+		})
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		try {
+			const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			const options = modelSelectOptions(res)
+			expect(options.find((o) => o.value === "kimchi-dev/auto")).toEqual({
+				value: "kimchi-dev/auto",
+				name: "Auto (kimchi-dev) (kimi-k3)",
+				description: "Picks the best model for your tasks automatically.",
+			})
+			expect(options.find((o) => o.value === "other-gateway/auto")).toEqual({
+				value: "other-gateway/auto",
+				name: "Auto (other-gateway)",
+			})
+			expect(options.find((o) => o.value === "kimchi-dev/auto-beta")?.name).toBe("Auto Beta")
+		} finally {
+			clearAutoRoutingState(sessionId)
+		}
+	})
+
+	it("preserves deprecation descriptions alongside provider-disambiguated names", async () => {
+		const agentConfigDir = loadConfig().agentConfigDir
+		const deprecationsPath = join(agentConfigDir, "model-deprecations.json")
+		const hadExisting = existsSync(deprecationsPath)
+		const previous = hadExisting ? readFileSync(deprecationsPath, "utf-8") : undefined
+		mkdirSync(agentConfigDir, { recursive: true })
+		writeFileSync(deprecationsPath, JSON.stringify({ shared: { deprecated_at: "2025-01-01" } }))
+
+		const fake = new FakeAgentSession("session-deprecated-duplicate")
+		fake.model = { provider: "kimchi-dev/upstream", id: "shared", name: "Shared Model" }
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [
+				{ provider: "kimchi-dev", id: "shared", name: "Shared Model" },
+				{ provider: "kimchi-dev/upstream", id: "shared", name: "Shared Model" },
+			],
+		}
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		try {
+			const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+			const options = modelSelectOptions(res)
+			expect(options).toEqual([
+				{ value: "kimchi-dev/shared", name: "Shared Model (kimchi-dev)", description: "[Deprecated]" },
+				{
+					value: "kimchi-dev/upstream/shared",
+					name: "Shared Model (kimchi-dev/upstream)",
+					description: "[Deprecated]",
+				},
+			])
+		} finally {
+			if (hadExisting && previous !== undefined) writeFileSync(deprecationsPath, previous)
+			else rmSync(deprecationsPath, { force: true })
+		}
+	})
+
+	it("preserves _meta.kimchi.dev.modelThinking alongside provider-disambiguated names", async () => {
+		registerModelThinkingLevels("kimchi-dev/shared", ["low", "high"])
+		registerModelThinkingLevels("kimchi-dev/upstream/shared", ["high"])
+		onTestFinished(() => __clearModelThinkingLevelsForTest())
+
+		const fake = new FakeAgentSession("session-thinking-duplicate")
+		fake.model = { provider: "kimchi-dev", id: "shared", name: "Shared Model", reasoning: true }
+		fake.thinkingLevel = "low"
+		fake.modelRegistry = {
+			...fake.modelRegistry,
+			getAvailable: () => [
+				{ provider: "kimchi-dev", id: "shared", name: "Shared Model", reasoning: true },
+				{ provider: "kimchi-dev/upstream", id: "shared", name: "Shared Model", reasoning: true },
+			],
+		}
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		await agent.initialize({
+			protocolVersion: 1,
+			clientCapabilities: { _meta: { "kimchi.dev": { modelThinking: 1 } } },
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		const options = modelSelectOptions(res)
+		expect(options.find((o) => o.value === "kimchi-dev/shared")).toMatchObject({
+			value: "kimchi-dev/shared",
+			name: "Shared Model (kimchi-dev)",
+			_meta: {
+				"kimchi.dev": {
+					modelThinking: { availability: "multiple", levels: ["low", "high"], currentValue: "low" },
+				},
+			},
+		})
+		expect(options.find((o) => o.value === "kimchi-dev/upstream/shared")).toMatchObject({
+			value: "kimchi-dev/upstream/shared",
+			name: "Shared Model (kimchi-dev/upstream)",
+			_meta: {
+				"kimchi.dev": {
+					modelThinking: { availability: "fixed", levels: ["high"] },
+				},
+			},
+		})
+	})
+
 	it("returns model state in the response when a model is available", async () => {
 		const sessionId = "session-model"
 		const fake = new FakeAgentSession(sessionId)
