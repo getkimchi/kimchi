@@ -7,11 +7,13 @@
  * resolution beyond this file.
  */
 
+export const LARGE_TOOL_TEXT = Array.from(
+	{ length: 4000 },
+	(_, index) => `${index % 2 === 0 ? "alpha" : "beta"} ${String(index).padStart(5, "0")} large tool output line`,
+).join("\n")
+
 export default function largeNestedToolExtension(pi) {
-	const text = Array.from(
-		{ length: 4000 },
-		(_, index) => `${index % 2 === 0 ? "alpha" : "beta"} ${String(index).padStart(5, "0")} large tool output line`,
-	).join("\n")
+	const text = LARGE_TOOL_TEXT
 
 	pi.registerTool({
 		name: "big_text",

@@ -231,11 +231,12 @@ export function handleToolResult(
 	event: ToolResultEvent,
 	state: ToolOutputExternalizerState,
 ): { content: [{ type: "text"; text: string }] } | undefined {
-	// Nested tool results (e.g. calls made by a codemode script via
-	// ctx.executeTool()) return directly to the calling tool and never enter
-	// session messages or before_provider_request — replacing content here
-	// hands the script a raw marker string and causes Pi to drop
-	// structuredContent on outputSchema tools.
+	// Nested tool calls (ctx.executeTool(), e.g. from codemode scripts) return
+	// directly to the calling tool instead of entering transcript toolResult
+	// messages or before_provider_request. Externalizing here would hand the
+	// caller an unhydrated marker string (and clear structuredContent because
+	// emitToolResult drops it on content-only replacements); the calling tool's
+	// own outer result is still externalized when it returns.
 	if (event.parentToolCallId) return undefined
 	const text = allTextContent(event.content)
 	if (text === undefined) return undefined

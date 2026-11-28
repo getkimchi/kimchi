@@ -8,6 +8,7 @@ import {
 	type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createModelRegistry } from "./__mocks__/model-registry.js"
 import toolOutputExternalizerExtension, {
 	handleToolResult,
 	hydrateMarkers,
@@ -312,7 +313,7 @@ describe("tool-output-externalizer", () => {
 		})
 		await loader.reload()
 		const { extensions, runtime } = loader.getExtensions()
-		const runner = new ExtensionRunner(extensions, runtime, dir, SessionManager.inMemory() as never, {} as never)
+		const runner = new ExtensionRunner(extensions, runtime, dir, SessionManager.inMemory(), createModelRegistry())
 
 		// Nested tool call (e.g. from a codemode script): >64 KiB text + structuredContent stays intact.
 		const nestedEvent = {

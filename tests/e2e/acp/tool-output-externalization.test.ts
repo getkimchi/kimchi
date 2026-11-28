@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { chatRequests } from "../tui/support/wire-requests.js"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
+import { LARGE_TOOL_TEXT } from "./support/test-large-nested-tool-extension.js"
 
 const LARGE_NESTED_TOOL_EXTENSION = fileURLToPath(
 	new URL("./support/test-large-nested-tool-extension.js", import.meta.url),
@@ -162,13 +163,15 @@ describe("ACP integration — codemode nested >64 KiB tool results", () => {
 				structuredType?: string
 				structuredLength?: number | null
 			}
+			const expectedAlphaLines = LARGE_TOOL_TEXT.split("\n").filter((l) => l.startsWith("alpha")).length
+			expect(LARGE_TOOL_TEXT.length).toBeGreaterThan(64 * 1024)
 			expect(summary).toEqual({
 				type: "string",
-				length: 137_999,
-				head: "alpha 00000 large tool output line\nbeta 00001 la",
-				alphaLines: 2_000,
+				length: LARGE_TOOL_TEXT.length,
+				head: LARGE_TOOL_TEXT.slice(0, 48),
+				alphaLines: expectedAlphaLines,
 				structuredType: "object",
-				structuredLength: 137_999,
+				structuredLength: LARGE_TOOL_TEXT.length,
 			})
 
 			// Outer codemode returning >64 KiB still gets externalized cleanly:
@@ -181,9 +184,10 @@ describe("ACP integration — codemode nested >64 KiB tool results", () => {
 			expect(wire).not.toContain("[kimchi-ext:tool]")
 			expect(wire).not.toContain("[kimchi-ext:log]")
 
+			const lines = LARGE_TOOL_TEXT.split("\n")
 			const outerContent = toolMessageText(fixture, "cm-outer")
-			expect(outerContent).toContain("alpha 00000 large tool output line")
-			expect(outerContent).toContain("beta 03999 large tool output line")
+			expect(outerContent).toContain(lines[0])
+			expect(outerContent).toContain(lines[lines.length - 1])
 			expect(outerContent).not.toContain("[kimchi-ext:tool]")
 		},
 		PROMPT_TIMEOUT_MS * 3,
