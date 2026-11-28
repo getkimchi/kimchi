@@ -139,8 +139,15 @@ let latestMessages: ContextEvent["messages"] = []
 /** Timestamp of the last context event that updated latestMessages (ms since epoch). */
 let latestMessagesTimestamp = 0
 
+/** Invalidate an in-flight branch refresh whenever newer context is applied. */
+let latestMessagesRevision = 0
+let latestMessagesRefreshId = 0
+
 /** Map storing image descriptions keyed by data hash (for replacing images with descriptions). */
 const imageDescriptions = new Map<string, string>()
+
+/** Persist the images already accepted as descriptions/placeholders for this session. */
+const strippedImageHashes = new Set<string>()
 
 /**
  * Returns true if the most recent `context` event contained image blocks.
@@ -158,6 +165,7 @@ export function sessionHasImages(): boolean {
  */
 export function markImagesAsStripped(): void {
 	imagesStripped = true
+	for (const hash of getImageHashes(latestMessages)) strippedImageHashes.add(hash)
 }
 
 /**
@@ -192,12 +200,72 @@ export function getLatestMessagesTimestamp(): number {
 	return latestMessagesTimestamp
 }
 
+function applyLatestMessages(messages: ContextEvent["messages"], preserveStripped = false): void {
+	latestMessages = messages
+	latestMessagesTimestamp = Date.now()
+	latestMessagesRevision += 1
+	const currentlyHasImages = hasImages(messages)
+	if (!preserveStripped && imagesStripped && currentlyHasImages && hasUnstrippedImages(messages)) {
+		imagesStripped = false
+		imageDescriptions.clear()
+		strippedImageHashes.clear()
+	}
+	imagesDetected = currentlyHasImages
+	if (!currentlyHasImages) {
+		imagesStripped = false
+		imageDescriptions.clear()
+		strippedImageHashes.clear()
+	}
+}
+
+export type RefreshLatestMessagesResult =
+	| { status: "ok"; messages: ContextEvent["messages"]; generation: number; revision: number }
+	| { status: "superseded" }
+	| { status: "error"; error: unknown }
+
+/** Rebuild cached context on explicit demand without waiting for a model turn. */
+export async function refreshLatestMessagesFromSession(
+	ctx: ExtensionContext,
+	options: { preserveStripped?: boolean } = {},
+): Promise<RefreshLatestMessagesResult> {
+	const refreshId = ++latestMessagesRefreshId
+	const generation = sessionGeneration
+	const revision = latestMessagesRevision
+	try {
+		const branch = await Promise.resolve(ctx.sessionManager.getBranch())
+		const messages = buildSessionContext(branch).messages
+		if (
+			generation !== sessionGeneration ||
+			refreshId !== latestMessagesRefreshId ||
+			revision !== latestMessagesRevision
+		) {
+			await Promise.resolve()
+			if (generation === sessionGeneration && refreshId === latestMessagesRefreshId) {
+				return { status: "ok", messages: getLatestMessages(), generation, revision: latestMessagesRevision }
+			}
+			return { status: "superseded" }
+		}
+		applyLatestMessages(messages, options.preserveStripped)
+		return { status: "ok", messages, generation, revision: latestMessagesRevision }
+	} catch (error) {
+		console.warn("[model-guard] lazy session context refresh failed:", error)
+		return { status: "error", error }
+	}
+}
+
+/** Prevent stale async consumers from committing after a newer context or session. */
+export function refreshedSessionIsCurrent(refreshed: Extract<RefreshLatestMessagesResult, { status: "ok" }>): boolean {
+	return refreshed.generation === sessionGeneration && refreshed.revision === latestMessagesRevision
+}
+
 function resetSessionState(): void {
 	imagesDetected = false
 	imagesStripped = false
 	latestMessages = []
 	latestMessagesTimestamp = 0
+	latestMessagesRevision += 1
 	imageDescriptions.clear()
+	strippedImageHashes.clear()
 	sessionGeneration += 1
 	midTurnCompaction.inFlight = false
 	midTurnCompaction.awaitingValidation = false
@@ -315,19 +383,24 @@ export function hasImages(messages: ContextEvent["messages"]): boolean {
 	return false
 }
 
-function hasUndescribedImages(messages: ContextEvent["messages"]): boolean {
+function getImageHashes(messages: ContextEvent["messages"]): Set<string> {
+	const hashes = new Set<string>()
 	for (const msg of messages) {
 		if (!("content" in msg)) continue
 		const content = (msg as ContentMessage).content
 		if (typeof content === "string") continue
 		if (Array.isArray(content)) {
 			for (const block of content) {
-				if (block.type === "image") {
-					const hash = getImageDataHash((block as ImageContent).data)
-					if (!imageDescriptions.has(hash)) return true
-				}
+				if (block.type === "image") hashes.add(getImageDataHash((block as ImageContent).data))
 			}
 		}
+	}
+	return hashes
+}
+
+function hasUnstrippedImages(messages: ContextEvent["messages"]): boolean {
+	for (const hash of getImageHashes(messages)) {
+		if (!strippedImageHashes.has(hash)) return true
 	}
 	return false
 }
@@ -430,30 +503,7 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 	// compaction does not replace AgentSession in the pinned upstream, so the
 	// ctx stays valid across it.
 	_pi.on("session_compact", async (_event, ctx: ExtensionContext) => {
-		// Refresh cached state so model-switch guards see post-compaction reality
-		// immediately, rather than waiting for the next context event (which only
-		// fires on the next LLM call). Without this, latestMessages still holds
-		// pre-compaction messages (inflated token count) and imagesDetected stays
-		// true even though the compaction summary is text-only.
-		try {
-			const branch = await Promise.resolve(ctx.sessionManager.getBranch())
-			const postCompactMessages = buildSessionContext(branch).messages
-			latestMessages = postCompactMessages
-			latestMessagesTimestamp = Date.now()
-			// Reset strip state only when no images survived compaction — Pi keeps a
-			// recent tail after the summary and images in it remain in the active
-			// context, so an unconditional reset would undo /strip-images for
-			// images that are still present.
-			imagesDetected = hasImages(postCompactMessages)
-			if (!imagesDetected) {
-				imagesStripped = false
-				imageDescriptions.clear()
-			}
-		} catch (err) {
-			// If we can't refresh (e.g. sessionManager not fully available),
-			// the next context event will correct the state.
-			console.warn("[model-guard] session_compact state refresh failed:", err)
-		}
+		await refreshLatestMessagesFromSession(ctx, { preserveStripped: true })
 	})
 
 	_pi.on("context", async (event, ctx: ExtensionContext) => {
@@ -462,18 +512,8 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 
 		const messages = event.messages
 
-		// Store reference to latest messages for /strip-images command
-		latestMessages = messages
-		latestMessagesTimestamp = Date.now()
-		// Always scan for images in the current context.
-		// If new images appear after a previous strip, reset the stripped flag
-		// so the guards re-engage for the fresh images.
-		const currentlyHasImages = hasImages(messages)
-		if (imagesStripped && currentlyHasImages && hasUndescribedImages(messages)) {
-			imagesStripped = false
-			imageDescriptions.clear()
-		}
-		imagesDetected = currentlyHasImages
+		// Store the raw messages so image descriptions remain available for stripping.
+		applyLatestMessages(messages)
 
 		let modified = false
 		let result = messages
