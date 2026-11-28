@@ -1,10 +1,10 @@
 // Unit tests for the Cast AI SSO ext-method state machine
-// (`_kimchi.dev/sso_*`). The manager is driven with injected fakes
-// for every IO seam (loopback server, token exchange, org listing, settle
-// tail, clock) so the tests cover the wire contract's outcomes without
-// network, ports, or real time: happy path, multi-org, cancel mid-wait,
-// unknown/expired/consumed requestIds, port busy, per-region pinning, IdP
-// errors, and the one-flow-per-connection rule.
+// (`_kimchi.dev/sso_*`). Most manager cases use injected fakes for every IO
+// seam (loopback server, token exchange, org listing, settle tail, clock), so
+// those tests cover the wire contract's outcomes without network, ports, or
+// real time. The production-listener suite at the end deliberately binds the
+// fixed SSO port. Keep fixed-port integration cases in that suite: test files
+// run in parallel workers, while these cases run sequentially within this file.
 
 import { createServer, type Server } from "node:http"
 import { RequestError } from "@agentclientprotocol/sdk/unstable"
@@ -655,7 +655,7 @@ describe("SsoFlowManager with production callback listeners", () => {
 		const authorizeUrl = new URL(begin.authorizeUrl)
 		const redirectUri = authorizeUrl.searchParams.get("redirect_uri")
 		const state = authorizeUrl.searchParams.get("state")
-		expect(redirectUri).toBe("http://localhost:8765/callback")
+		expect(redirectUri).toBe(`http://localhost:${KIMCHI_SSO_CALLBACK_PORT}/callback`)
 		expect(state).toMatch(/^[0-9a-f]+$/)
 		if (!redirectUri || !state) throw new Error("recovered authorize URL omitted redirect or state")
 
@@ -770,6 +770,8 @@ describe("SsoFlowManager with production callback listeners", () => {
 				owner.manager.cancel({})
 				// Deliberately no sleep: B immediately observes A's deferred close,
 				// then succeeds through its one automatic retry and normal browser leg.
+				// Waiting for a port-released signal here would remove the transient
+				// contention this regression is required to exercise.
 				const recovered = await competing.manager.begin({})
 				await completeRecoveredBrowserLeg(competing, recovered)
 			} finally {
