@@ -1731,7 +1731,16 @@ describe("todo check-in gate", () => {
 		// carry reconciled todos like any work tool.
 		for (const toolName of ["submit_plan", "workflow_submit_result", "workflow_submit_questions"]) {
 			expect(
-				await harness.fire("tool_call", { type: "tool_call", toolCallId: `h-${toolName}`, toolName, input: {} }, ctx),
+				await harness.fire(
+					"tool_call",
+					{
+						type: "tool_call",
+						toolCallId: `h-${toolName}`,
+						toolName,
+						input: { plan: "x".repeat(1000) },
+					},
+					ctx,
+				),
 			).toMatchObject({ block: true })
 		}
 	})
@@ -2018,6 +2027,178 @@ describe("todo check-in gate", () => {
 		applyWriteTodos({ todos: [{ id: 1, content: "task", status: "completed" }] }, "session")
 		expect(getPendingCheckins("session")).toHaveLength(0)
 		expect(await fireWork(harness, ctx, "w2")).toEqual({ block: false })
+	})
+})
+
+describe("check-in gate expensive tool calls", () => {
+	const inputAtSize = (size: number) => ({
+		command: "x".repeat(size - JSON.stringify({ command: "" }).length),
+	})
+
+	async function pendingGate(sessionId: string) {
+		const harness = createTodosHarness()
+		const ctx = createToolContext(sessionId, [])
+		await harness.fire("session_start", { reason: "new" }, ctx)
+		applyWriteTodos({ todos: [{ content: "task", status: "in_progress" }] }, sessionId)
+		await fireInput(harness, ctx)
+		return { harness, ctx }
+	}
+
+	function expensiveCall(toolCallId: string) {
+		return { type: "tool_call", toolCallId, toolName: "bash", input: inputAtSize(1000) }
+	}
+
+	function resultFor(call: ReturnType<typeof expensiveCall>, isError = false) {
+		return {
+			type: "tool_result",
+			toolCallId: call.toolCallId,
+			toolName: call.toolName,
+			input: call.input,
+			content: [{ type: "text", text: "original result" }],
+			details: { exitCode: isError ? 1 : 0 },
+			structuredContent: { original: true },
+			isError,
+		}
+	}
+
+	beforeEach(() => {
+		__resetTodoStore()
+		__resetCheckinGate()
+		__resetReconciliationBookkeeping()
+		isResourceEnabledMock.mockReturnValue(true)
+	})
+
+	it("admits calls at the expensive-argument threshold while smaller calls stay gated", async () => {
+		const { harness, ctx } = await pendingGate("session")
+		expect(
+			await harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "small", toolName: "bash", input: inputAtSize(999) },
+				ctx,
+			),
+		).toMatchObject({ block: true })
+		expect(await harness.fire("tool_call", expensiveCall("large"), ctx)).toEqual({ block: false })
+		expect(isGateBlockedToolCall("large")).toBe(false)
+		expect(getPendingCheckins("session")).toHaveLength(1)
+	})
+
+	it("appends the reminder once while preserving the result and the pending check", async () => {
+		const { harness, ctx } = await pendingGate("session")
+		const call = expensiveCall("large")
+		expect(await harness.fire("tool_call", call, ctx)).toEqual({ block: false })
+
+		const result = await harness.fire("tool_result", resultFor(call), ctx)
+		expect(result).toMatchObject({ structuredContent: { original: true } })
+		const content = (result as { content: Array<{ text: string }> }).content
+		expect(content[0]?.text).toBe("original result")
+		expect(content[1]?.text).toContain("This expensive tool call was admitted")
+		expect(content[1]?.text).toContain("input revision 1")
+		expect(getPendingCheckins("session")).toHaveLength(1)
+
+		// Duplicate delivery cannot append the same reminder again.
+		expect(await harness.fire("tool_result", resultFor(call), ctx)).toBeUndefined()
+		expect(
+			await harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "small", toolName: "bash", input: { command: "printf next" } },
+				ctx,
+			),
+		).toMatchObject({ block: true })
+
+		await harness
+			.registeredTool("confirm_todos")
+			.execute("confirm", { inputRevision: 1, expected: [{ id: 1, status: "in_progress" }] }, undefined, undefined, ctx)
+		expect(claimGateBlockedWork("session")).toEqual([])
+		expect(
+			await harness.fire(
+				"tool_call",
+				{ type: "tool_call", toolCallId: "small-2", toolName: "bash", input: { command: "printf next" } },
+				ctx,
+			),
+		).toEqual({ block: false })
+	})
+
+	it("does not attach an obsolete reminder when reconciliation finished in the same tool batch", async () => {
+		const { harness, ctx } = await pendingGate("session")
+		const call = expensiveCall("large")
+		await harness.fire("tool_call", call, ctx)
+		await harness
+			.registeredTool("confirm_todos")
+			.execute("confirm", { inputRevision: 1, expected: [{ id: 1, status: "in_progress" }] }, undefined, undefined, ctx)
+
+		expect(await harness.fire("tool_result", resultFor(call), ctx)).toBeUndefined()
+	})
+
+	it("preserves failure results and appends the still-pending check", async () => {
+		const { harness, ctx } = await pendingGate("session")
+		const call = expensiveCall("large")
+		await harness.fire("tool_call", call, ctx)
+
+		const result = await harness.fire("tool_result", resultFor(call, true), ctx)
+		expect(result).not.toHaveProperty("isError")
+		expect(JSON.stringify(result)).toContain("This expensive tool call was admitted")
+		expect(getPendingCheckins("session")).toHaveLength(1)
+	})
+
+	it("clears unused deferrals at turn end when no tool result arrives", async () => {
+		const { harness, ctx } = await pendingGate("session")
+		const call = expensiveCall("large")
+		await harness.fire("tool_call", call, ctx)
+
+		await harness.fire(
+			"turn_end",
+			{ message: { role: "assistant", content: [], stopReason: "aborted" }, toolResults: [] },
+			ctx,
+		)
+		expect(await harness.fire("tool_result", resultFor(call), ctx)).toBeUndefined()
+	})
+
+	it("falls back to the normal gate when nested arguments cannot be serialized", async () => {
+		const { harness, ctx } = await pendingGate("session")
+		const error = vi.spyOn(console, "error").mockImplementation(() => {})
+		try {
+			expect(
+				await harness.fire(
+					"tool_call",
+					{ type: "tool_call", toolCallId: "bigint", toolName: "custom", input: { value: BigInt(1) } },
+					ctx,
+				),
+			).toMatchObject({ block: true })
+			const circular: Record<string, unknown> = {}
+			circular.self = circular
+			expect(
+				await harness.fire(
+					"tool_call",
+					{ type: "tool_call", toolCallId: "circular", toolName: "custom", input: circular },
+					ctx,
+				),
+			).toMatchObject({ block: true })
+			expect(error).toHaveBeenCalledTimes(2)
+		} finally {
+			error.mockRestore()
+		}
+	})
+
+	it("interleaves sibling calls and concurrent sessions without consuming each other's reminders", async () => {
+		const a = await pendingGate("a")
+		const b = await pendingGate("b")
+		const calls = [expensiveCall("a-1"), expensiveCall("a-2"), expensiveCall("b-1")]
+		for (const call of calls) {
+			const target = call.toolCallId.startsWith("a-") ? a : b
+			expect(await target.harness.fire("tool_call", call, target.ctx)).toEqual({ block: false })
+		}
+
+		expect(JSON.stringify(await b.harness.fire("tool_result", resultFor(calls[2]), b.ctx))).toContain(
+			"This expensive tool call was admitted",
+		)
+		expect(await b.harness.fire("tool_result", resultFor(calls[2]), b.ctx)).toBeUndefined()
+		for (const call of calls.slice(0, 2)) {
+			expect(JSON.stringify(await a.harness.fire("tool_result", resultFor(call), a.ctx))).toContain(
+				"This expensive tool call was admitted",
+			)
+		}
+		expect(getPendingCheckins("a")).toHaveLength(1)
+		expect(getPendingCheckins("b")).toHaveLength(1)
 	})
 })
 

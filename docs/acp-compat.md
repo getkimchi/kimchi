@@ -118,6 +118,10 @@ when v2 stabilizes.)
    details shape, while host-side detection retains the original result.
    See `mcp-oauth-turn-lifecycle.test.ts` for both negotiated
    and default-client coverage. Studio's adoption is tracked by #798.
+   Expensive todo check-in deferrals stay disabled for ACP clients. They
+   retain the legacy synthetic gate block and re-issue flow on both live
+   turns and replay, so no new client capability or session policy is needed.
+   The behavior applies only to TUI and native RPC sessions.
 2. **Schema-first.** *(Anchor: tool-calls §rawInput + patch semantics.)* New wire content
    names its field in the spec/SDK first; if it is not in the schema, it goes in `_meta`.
    Never invent top-level fields (the spec reserves them). `rawInput` is the agent's

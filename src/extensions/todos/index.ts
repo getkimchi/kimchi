@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, SessionManager, ToolCallEvent } from "@earendil-works/pi-coding-agent"
+import { isAcpSessionHost } from "../../modes/acp/state.js"
 import { isResourceEnabled } from "../../resources/store.js"
 import { REVIEW_HANDOFF_TOOL_NAMES, SUBMIT_PLAN_TOOL_NAME } from "../../shared/planning/tool-catalog.js"
 import { isAgentWorker } from "../agent-worker-context.js"
@@ -15,7 +16,10 @@ import {
 	CHECKIN_HARD_THRESHOLD,
 	type CheckinPending,
 	canOpenStalenessGate,
+	clearCheckinDeferrals,
 	clearGateBlockedWork,
+	consumeCheckinDeferral,
+	deferCheckinForToolCall,
 	disposeCheckinGateSession,
 	dropIrrelevantPending,
 	getPendingCheckins,
@@ -148,6 +152,10 @@ function restoreTodoStoreFromSessionEntries(sessionManager: Pick<SessionManager,
 	)
 }
 
+/** Serialized argument size at which discarding and regenerating a gated
+ *  tool call costs more than deferring reconciliation until its result. */
+const CHECKIN_EXPENSIVE_ARGUMENT_CHARS = 1000
+
 export const TODO_EARLY_NUDGE_THRESHOLD = 5
 
 /** Compliance window (non-todo tool calls) after the early todo nudge
@@ -239,18 +247,43 @@ function describeWorkToolCall(event: ToolCallEvent): string {
 	return event.toolName
 }
 
+function reconciliationInstruction(revision: number): string {
+	return `Reconcile the todo list with the user's latest direction and the work already done before further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}.`
+}
+
 /** Block reason for work tools admitted while a check is pending. Carries
  *  the current instructions on every blocked call — without queuing
  *  repeated steer messages. */
 function checkinBlockReason(pending: readonly CheckinPending[], sessionId: string, revision: number): string {
 	return [
-		`${TODO_CHECKIN_BLOCK_PREFIX}${revision}). Reconcile the todo list with the user's latest direction and the work already done before starting further work tools: add newly requested work, remove obsolete items, revise statuses — or, if a list is still accurate, confirm it with confirm_todos, passing its complete current id+status set and inputRevision ${revision}. Finish the reconciliation tool round first; do not batch reconciliation in parallel with work tools. Every non-todo tool is gated — submitting a plan included: reconcile or confirm the list first, then proceed. Blocked work calls are NOT executed and are never replayed — after reconciling or confirming, re-issue them (or their updated equivalents) yourself.`,
+		`${TODO_CHECKIN_BLOCK_PREFIX}${revision}). ${reconciliationInstruction(revision)} Finish the reconciliation tool round first; do not batch reconciliation in parallel with work tools. Every non-todo tool is gated — submitting a plan included: reconcile or confirm the list first, then proceed. Blocked work calls are NOT executed and are never replayed — after reconciling or confirming, re-issue them (or their updated equivalents) yourself.`,
 		...checkinListBlocks(
 			pending.map((check) => check.scope),
 			sessionId,
 			revision,
 		),
 	].join("\n")
+}
+
+function deferredCheckinReminder(pending: readonly CheckinPending[], sessionId: string, revision: number): string {
+	return [
+		`${TODO_CHECKIN_BLOCK_PREFIX}${revision}). This expensive tool call was admitted so its generated arguments would not be discarded. ${reconciliationInstruction(revision)} The check remains pending; review handoffs and smaller work calls are still gated.`,
+		...checkinListBlocks(
+			pending.map((check) => check.scope),
+			sessionId,
+			revision,
+		),
+	].join("\n")
+}
+
+function isExpensiveDeferrableCall(event: ToolCallEvent): boolean {
+	if (REVIEW_HANDOFF_TOOL_NAMES.has(event.toolName)) return false
+	try {
+		return JSON.stringify(event.input ?? {}).length >= CHECKIN_EXPENSIVE_ARGUMENT_CHARS
+	} catch (error) {
+		console.error("[todos] Failed to measure tool-call arguments:", error)
+		return false
+	}
 }
 
 /** Hidden-steer instruction sent when a plan submission leaves the global
@@ -637,12 +670,33 @@ export default function todosExtension(pi: ExtensionAPI): void {
 
 		const pending = getPendingCheckins(sessionId)
 		if (pending.length === 0) return { block: false }
+		if (!isAcpSessionHost() && isExpensiveDeferrableCall(event)) {
+			deferCheckinForToolCall(sessionId, event.toolCallId)
+			return { block: false }
+		}
 		// Record the blocked call so transcript renderers can anchor the
 		// collapsed gate display on provenance tool output cannot forge, and
 		// its one-line summary so the closing surface can remind the model to
 		// re-issue it — the gate never replays blocked calls itself.
 		recordGateBlockedToolCall(sessionId, event.toolCallId, describeWorkToolCall(event))
 		return { block: true, reason: checkinBlockReason(pending, sessionId, revision) }
+	})
+
+	pi.on("tool_result", (event, ctx) => {
+		const sessionId = ctx.sessionManager.getSessionId()
+		if (!consumeCheckinDeferral(sessionId, event.toolCallId)) return
+		const pending = getPendingCheckins(sessionId)
+		if (pending.length === 0 || !isCheckinEnforcementAvailable(pi)) return
+		return {
+			content: [
+				...event.content,
+				{
+					type: "text" as const,
+					text: `\n\n${deferredCheckinReminder(pending, sessionId, getInputRevision(sessionId))}`,
+				},
+			],
+			structuredContent: event.structuredContent,
+		}
 	})
 
 	pi.on("session_start", (_event, ctx) => {
@@ -883,6 +937,7 @@ export default function todosExtension(pi: ExtensionAPI): void {
 	})
 
 	pi.on("turn_end", (event, ctx) => {
+		clearCheckinDeferrals(ctx.sessionManager.getSessionId())
 		const message = event.message
 		// Role check first: isRecord narrows to the only Record-assignable
 		// union member (toolResult) under upstream pi's message types.

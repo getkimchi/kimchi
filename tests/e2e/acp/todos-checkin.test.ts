@@ -7,11 +7,13 @@
 // check-in gate releases work tools after a confirmation that writes
 // nothing — with the gate state published under plan `_meta["kimchi.dev"]`.
 
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import type { Plan } from "@agentclientprotocol/sdk/unstable"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
-import { newSession } from "./support/scenarios.js"
+import { newSession, prompt } from "./support/scenarios.js"
 
 const CLOSURE_PHRASE = "The turn ended with unfinished todos"
 
@@ -402,5 +404,116 @@ describe("ACP integration — staleness escalation", () => {
 			"pending check-in scope published under plan _meta",
 		).toBe(true)
 		expect(todoCheckinMeta(plans.at(-1) ?? ({} as Plan))?.pendingScopes).toEqual([])
+	})
+})
+
+const EXPENSIVE_CONTENT = "expensive write payload\n".repeat(50)
+const DEFERRED_REMINDER = "This expensive tool call was admitted"
+
+function expensiveWriteResponses() {
+	return [
+		{
+			toolCalls: [
+				{
+					function: {
+						name: "create_todos",
+						arguments: JSON.stringify({ todos: [{ content: "Write the payload", status: "pending" }] }),
+					},
+				},
+			],
+		},
+		{ stream: ["Pending work is recorded."] },
+		{
+			toolCalls: [
+				{
+					function: {
+						name: "write",
+						arguments: JSON.stringify({ path: "expensive.txt", content: EXPENSIVE_CONTENT }),
+					},
+				},
+			],
+		},
+		{
+			toolCalls: [
+				{
+					function: {
+						name: "confirm_todos",
+						arguments: JSON.stringify({ inputRevision: 2, expected: [{ id: 1, status: "pending" }] }),
+					},
+				},
+			],
+		},
+		{
+			toolCalls: [
+				{
+					function: {
+						name: "write",
+						arguments: JSON.stringify({ path: "expensive.txt", content: EXPENSIVE_CONTENT }),
+					},
+				},
+			],
+		},
+		{ stream: ["Write completed."] },
+	]
+}
+
+function expensiveWriteCallIds(fixture: AcpFixture, sessionId: string): string[] {
+	return fixture.client.sessionUpdates.flatMap((update) => {
+		if (update.sessionId !== sessionId || update.update.sessionUpdate !== "tool_call") return []
+		const rawInput = update.update.rawInput as Record<string, unknown> | undefined
+		if (rawInput?.path !== "expensive.txt" || rawInput.content !== EXPENSIVE_CONTENT) return []
+		return [update.update.toolCallId]
+	})
+}
+
+function terminalRawOutput(
+	fixture: AcpFixture,
+	sessionId: string,
+	toolCallId: string,
+	status: "completed" | "failed" = "completed",
+): string {
+	const terminal = fixture.client.sessionUpdates.find(
+		(update) =>
+			update.sessionId === sessionId &&
+			update.update.sessionUpdate === "tool_call_update" &&
+			update.update.toolCallId === toolCallId &&
+			update.update.status === status,
+	)
+	if (terminal?.update.sessionUpdate !== "tool_call_update") throw new Error(`Missing ${status} write`)
+	return JSON.stringify(terminal.update.rawOutput ?? {})
+}
+
+async function replaySince(fixture: AcpFixture, sessionId: string, updateCount: number): Promise<string> {
+	await fixture.conn.request("session/load", { sessionId, cwd: fixture.workDir, mcpServers: [] })
+	return JSON.stringify(fixture.client.sessionUpdates.slice(updateCount))
+}
+
+describe("ACP integration — legacy large-write check-in behavior", () => {
+	it("keeps large writes gated in every ACP client and preserves the result on replay", async () => {
+		const fixture = await startAcpFixture({
+			artifactName: "todo-checkin-expensive-legacy",
+			extraArgs: ["--yolo"],
+			responses: expensiveWriteResponses(),
+		})
+		try {
+			const sessionId = await newSession(fixture, fixture.workDir)
+			await prompt(fixture, sessionId, "Create the pending work list")
+			const result = await prompt(fixture, sessionId, "Write the long payload and then reconcile the list")
+			expect(result.stopReason).toBe("end_turn")
+			expect(readFileSync(join(fixture.workDir, "expensive.txt"), "utf8")).toBe(EXPENSIVE_CONTENT)
+
+			const calls = expensiveWriteCallIds(fixture, sessionId)
+			expect(calls).toHaveLength(2)
+			expect(terminalRawOutput(fixture, sessionId, calls[0], "failed")).toContain("Todo check-in pending")
+			expect(terminalRawOutput(fixture, sessionId, calls[1])).toContain("Successfully wrote")
+			expect(terminalRawOutput(fixture, sessionId, calls[1])).not.toContain(DEFERRED_REMINDER)
+
+			const replay = await replaySince(fixture, sessionId, fixture.client.sessionUpdates.length)
+			expect(replay).toContain("Todo check-in pending")
+			expect(replay).toContain("Successfully wrote")
+			expect(replay).not.toContain(DEFERRED_REMINDER)
+		} finally {
+			await fixture.stop()
+		}
 	})
 })
