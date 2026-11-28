@@ -10193,7 +10193,7 @@ describe("newSession model state", () => {
 			const options = modelSelectOptions(res)
 			expect(options.find((o) => o.value === "kimchi-dev/auto")).toEqual({
 				value: "kimchi-dev/auto",
-				name: "Auto (kimchi-dev) (kimi-k3)",
+				name: "Auto (kimchi-dev → kimi-k3)",
 				description: "Picks the best model for your tasks automatically.",
 			})
 			expect(options.find((o) => o.value === "other-gateway/auto")).toEqual({
@@ -10207,12 +10207,16 @@ describe("newSession model state", () => {
 	})
 
 	it("preserves deprecation descriptions alongside provider-disambiguated names", async () => {
-		const agentConfigDir = loadConfig().agentConfigDir
-		const deprecationsPath = join(agentConfigDir, "model-deprecations.json")
-		const hadExisting = existsSync(deprecationsPath)
-		const previous = hadExisting ? readFileSync(deprecationsPath, "utf-8") : undefined
-		mkdirSync(agentConfigDir, { recursive: true })
-		writeFileSync(deprecationsPath, JSON.stringify({ shared: { deprecated_at: "2025-01-01" } }))
+		// Isolated config dir: the deprecation sidecar lives next to models.json,
+		// so point loadConfig at a throwaway dir instead of the real agentConfigDir.
+		const agentConfigDir = mkdtempSync(join(tmpdir(), "kimchi-acp-deprecations-"))
+		writeFileSync(
+			join(agentConfigDir, "model-deprecations.json"),
+			JSON.stringify({ shared: { deprecated_at: "2025-01-01" } }),
+		)
+		const previousLoadConfig = vi.mocked(loadConfig).getMockImplementation()
+		if (!previousLoadConfig) throw new Error("expected the default loadConfig implementation")
+		vi.mocked(loadConfig).mockImplementation((...args) => ({ ...previousLoadConfig(...args), agentConfigDir }))
 
 		const fake = new FakeAgentSession("session-deprecated-duplicate")
 		fake.model = { provider: "kimchi-dev/upstream", id: "shared", name: "Shared Model" }
@@ -10240,8 +10244,8 @@ describe("newSession model state", () => {
 				},
 			])
 		} finally {
-			if (hadExisting && previous !== undefined) writeFileSync(deprecationsPath, previous)
-			else rmSync(deprecationsPath, { force: true })
+			vi.mocked(loadConfig).mockImplementation(previousLoadConfig)
+			rmSync(agentConfigDir, { recursive: true, force: true })
 		}
 	})
 
