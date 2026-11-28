@@ -291,70 +291,6 @@ describe("ACP integration — model Thinking level persistence", () => {
 		)
 	})
 
-	it("clears legacy default buckets without losing unrelated config or durable Session selections", async () => {
-		const legacyDefaults = {
-			chat: { [ALPHA_REF]: "max" },
-			design: { [ALPHA_REF]: "high" },
-			code: { [ALPHA_REF]: "max" },
-			[BETA_REF]: "high",
-		}
-		const first = await start({
-			artifactName: "model-thinking-persistence-legacy-first",
-			models: CATALOG,
-			defaultModel: "alpha",
-			settings: { defaultThinkingLevel: "low" },
-			responses: [{ stream: ["Persist session selections."] }],
-			clientMeta: MODEL_THINKING_META,
-			keepDirsOnStop: true,
-			seedHome: (home) => {
-				const config = readConfig(home)
-				config.modelEffortDefaults = legacyDefaults
-				config.unrelatedPreference = { keep: true }
-				writeFileSync(configPath(home), JSON.stringify(config, null, "\t"))
-			},
-		})
-		const created = await newThinkingSession(first)
-		const sessionEntries = [
-			{ modelId: ALPHA_REF, value: "low" },
-			{ modelId: ALPHA_REF, value: "max" },
-		]
-
-		expect(currentThinkingLevel(created)).toBe("low")
-		expect(currentThinkingLevel(await setStandardThinkingLevel(first, created.sessionId, "max"))).toBe("max")
-		const turn = await first.conn.request("session/prompt", {
-			sessionId: created.sessionId,
-			prompt: [{ type: "text", text: "Persist session selections" }],
-		})
-		expect(turn.stopReason).toBe("end_turn")
-		expect(readDefaults(first.homeDir)).toEqual({ [BETA_REF]: "high" })
-		expect(readConfig(first.homeDir)).toMatchObject({ unrelatedPreference: { keep: true } })
-		expect(readSessionThinkingEntries(first.homeDir, created.sessionId)).toEqual(sessionEntries)
-
-		const persistedConfig = readConfig(first.homeDir)
-		const { homeDir, workDir } = first
-		await stop(first)
-		const second = await start({
-			artifactName: "model-thinking-persistence-legacy-second",
-			models: CATALOG,
-			defaultModel: "alpha",
-			responses: [],
-			clientMeta: MODEL_THINKING_META,
-			homeDirOverride: homeDir,
-			workDirOverride: workDir,
-			seedHome: (home) => writeFileSync(configPath(home), JSON.stringify(persistedConfig, null, "\t")),
-		})
-		const loaded = await second.conn.request("session/load", {
-			sessionId: created.sessionId,
-			cwd: workDir,
-			mcpServers: [],
-		})
-
-		expect(currentThinkingLevel(loaded)).toBe("max")
-		expect(readDefaults(second.homeDir)).toEqual({ [BETA_REF]: "high" })
-		expect(readConfig(second.homeDir)).toMatchObject({ unrelatedPreference: { keep: true } })
-		expect(readSessionThinkingEntries(second.homeDir, created.sessionId)).toEqual(sessionEntries)
-	})
-
 	it("passes other-virtual identity through the real model registry without alias or default metadata", async () => {
 		const family = { ...CATALOG[0], slug: "family", displayName: "Family alias" }
 		const fixture = await start({
@@ -393,7 +329,7 @@ describe("ACP integration — model Thinking level persistence", () => {
 			defaultModel: "alpha",
 			settings: { defaultThinkingLevel: "high" },
 			responses: [{ stream: ["Legacy turn."] }],
-			seedHome: (home) => seedDefaults(home, { chat: { [ALPHA_REF]: "max" } }),
+			seedHome: (home) => seedDefaults(home, { [ALPHA_REF]: "max" }),
 		})
 		const session = await newThinkingSession(fixture)
 
@@ -412,13 +348,13 @@ describe("ACP integration — model Thinking level persistence", () => {
 		})
 		expect(turn.stopReason).toBe("end_turn")
 		expect(readSessionThinkingEntries(fixture.homeDir, session.sessionId)).toEqual([])
-		expect(readDefaults(fixture.homeDir)).toEqual({ chat: { [ALPHA_REF]: "max" } })
+		expect(readDefaults(fixture.homeDir)).toEqual({ [ALPHA_REF]: "max" })
 		await expect(setFreshThinkingLevel(fixture, session.sessionId, ALPHA_REF, "max")).rejects.toMatchObject({
 			code: -32601,
 		})
 		await expect(fixture.conn.request(GET_MODEL_THINKING, { sessionId: session.sessionId })).rejects.toMatchObject({
 			code: -32601,
 		})
-		expect(readDefaults(fixture.homeDir)).toEqual({ chat: { [ALPHA_REF]: "max" } })
+		expect(readDefaults(fixture.homeDir)).toEqual({ [ALPHA_REF]: "max" })
 	})
 })

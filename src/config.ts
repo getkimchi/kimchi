@@ -1094,38 +1094,18 @@ function writeConfigField(key: string, value: unknown, configPath: string): void
 
 type ModelThinkingLevelDefaults = Record<string, string>
 
-// Legacy mode buckets have no deterministic merge order. Never promote one
-// into the concrete-provider/model map introduced after those buckets.
-const LEGACY_MODEL_THINKING_BUCKET_KEYS = new Set(["chat", "design", "code"])
-
 function parseModelThinkingLevelDefaults(value: unknown): ModelThinkingLevelDefaults {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {}
 	const defaults: ModelThinkingLevelDefaults = Object.create(null)
 	for (const [modelId, thinkingLevel] of Object.entries(value)) {
-		if (LEGACY_MODEL_THINKING_BUCKET_KEYS.has(modelId)) continue
 		if (modelId.length > 0 && typeof thinkingLevel === "string") defaults[modelId] = thinkingLevel
 	}
 	return defaults
 }
 
-function hasLegacyModelThinkingBuckets(value: unknown): boolean {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return false
-	return Object.keys(value).some((key) => LEGACY_MODEL_THINKING_BUCKET_KEYS.has(key))
-}
-
-/** Read flat concrete-model defaults and clear obsolete mode buckets on access.
- * Re-read through the existing update helper so unrelated config survives. */
+/** Read flat concrete-model defaults without rewriting existing configuration. */
 export function readModelThinkingLevelDefaults(configPath: string = KIMCHI_CONFIG_PATH): ModelThinkingLevelDefaults {
-	const raw = readConfigObject(configPath)
-	if (hasLegacyModelThinkingBuckets(raw?.modelEffortDefaults)) {
-		let cleared: ModelThinkingLevelDefaults = {}
-		updateConfigFile(configPath, (next) => {
-			cleared = parseModelThinkingLevelDefaults(next.modelEffortDefaults)
-			next.modelEffortDefaults = cleared
-		})
-		return cleared
-	}
-	return parseModelThinkingLevelDefaults(raw?.modelEffortDefaults)
+	return parseModelThinkingLevelDefaults(readConfigObject(configPath)?.modelEffortDefaults)
 }
 
 export function writeModelThinkingLevelDefault(

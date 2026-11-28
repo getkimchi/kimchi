@@ -40,25 +40,6 @@ describe("Model thinking defaults", () => {
 		})
 	})
 
-	it("clears legacy mode buckets while preserving flat defaults and unrelated configuration", () => {
-		const configPath = makeConfig({
-			modelEffortDefaults: {
-				chat: { "test/reasoner": "max" },
-				design: { "test/reasoner": "high" },
-				code: { "test/reasoner": "low" },
-				"test/flat": "medium",
-			},
-			sessionSelections: { test: "keep-session-settings" },
-		})
-
-		expect(readModelThinkingLevelDefaults(configPath)).toEqual({ "test/flat": "medium" })
-		expect(JSON.parse(readFileSync(configPath, "utf-8"))).toEqual({
-			apiKey: "keep-me",
-			modelEffortDefaults: { "test/flat": "medium" },
-			sessionSelections: { test: "keep-session-settings" },
-		})
-	})
-
 	it("reads flat defaults without rewriting configuration", () => {
 		const configPath = makeConfig({
 			modelEffortDefaults: { "test/flat": "medium" },
@@ -70,26 +51,27 @@ describe("Model thinking defaults", () => {
 		expect(readFileSync(configPath, "utf-8")).toBe(originalConfig)
 	})
 
-	it("ignores malformed models, unknown levels, and legacy buckets when reading", () => {
+	it("ignores malformed models, unknown levels, and non-string values when reading", () => {
 		const configPath = makeConfig({
 			modelEffortDefaults: {
 				"test/reasoner": "medium",
 				"test/invalid": "ultra",
 				"test/nonstring": 4,
-				chat: { "test/reasoner": "high" },
-				code: ["high"],
+				"test/nested": { value: "high" },
+				"test/array": ["high"],
 			},
 		})
 
 		expect(getModelThinkingLevelDefault("test/reasoner", configPath)).toBe("medium")
 		expect(getModelThinkingLevelDefault("test/invalid", configPath)).toBeUndefined()
 		expect(getModelThinkingLevelDefault("test/nonstring", configPath)).toBeUndefined()
-		expect(getModelThinkingLevelDefault("chat", configPath)).toBeUndefined()
+		expect(getModelThinkingLevelDefault("test/nested", configPath)).toBeUndefined()
+		expect(getModelThinkingLevelDefault("test/array", configPath)).toBeUndefined()
 	})
 
 	it("does not resolve model defaults through a __proto__ config key", () => {
 		const configPath = makeConfig({
-			modelEffortDefaults: JSON.parse('{"__proto__":{"chat":"max"}}'),
+			modelEffortDefaults: JSON.parse('{"__proto__":{"test/prototype":"max"}}'),
 		})
 
 		expect(Object.hasOwn(readModelThinkingLevelDefaults(configPath), "__proto__")).toBe(false)
