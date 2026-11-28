@@ -1,13 +1,15 @@
+import { dirname, isAbsolute, relative, sep } from "node:path"
 import {
 	DefaultPackageManager,
 	getAgentDir,
 	parseArgs as parsePiArgs,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
+import { InstallTargetNotWritableError } from "../update/install.js"
 import { acquireUpdaterLock } from "../update/lock.js"
 import { isHomebrewInstall } from "../update/paths.js"
 import { saveLastInstalled } from "../update/state.js"
-import { applyUpdate, checkForUpdate } from "../update/workflow.js"
+import { applyUpdate, checkForUpdate, installTargetStatus } from "../update/workflow.js"
 import { getVersion } from "../utils.js"
 import { confirm } from "./_helpers.js"
 
@@ -285,6 +287,89 @@ async function updateSelf(flags: Pick<UpdateFlags, "canary" | "dryRun" | "force"
 	}
 }
 
+/** Errnos that mean the install location refused a write. EPERM is Windows-only:
+ *  there libuv's access() reports every directory as writable, so the pre-flight
+ *  cannot see ACL denials and the swap's EPERM is the first signal — the common
+ *  ACL-denied install outweighs the rarer locked executable. On POSIX EPERM means
+ *  an immutable flag or a sandbox policy, which "reinstall somewhere writable"
+ *  does not fix. Read at call time so platform-stubbed tests see the change. */
+function unwritableInstallCodes(): string[] {
+	return process.platform === "win32" ? ["EROFS", "EACCES", "EPERM"] : ["EROFS", "EACCES"]
+}
+
+/** Node attaches the target path to copy/rename failures as `dest` (the source
+ *  is `path`), but @types/node does not declare it. */
+type FsFailure = NodeJS.ErrnoException & { dest?: string }
+
+/** `path` is `dir` itself or lies under it. Compared by relative path rather
+ *  than string prefix, so `/usr/local/bin-old` is not inside `/usr/local/bin`
+ *  and a root `dir` works. */
+function isInside(path: string, dir: string): boolean {
+	const rel = relative(dir, path)
+	return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+}
+
+/** The install location refusing a write: the pre-flight error, or an
+ *  unwritable errno on a path inside the directory the binary is swapped into.
+ *  The path test keeps the guidance honest: an EACCES on the backup cache or the
+ *  share directory is a different problem, and blaming the binary's directory
+ *  would send the user to the wrong place. `path` is the copy source and `dest`
+ *  the target, so either may be the one inside the directory.
+ *
+ *  The errno may sit on a wrapper's `cause` rather than the top-level error:
+ *  applyUpdate's contract says step failures are thrown "wrapped in context".
+ *  It propagates swap errnos unwrapped today (pinned by a test in
+ *  workflow.test.ts); the walk keeps the mapping working if that changes. The
+ *  depth cap guards against a cause cycle. */
+function isUnwritableInstallFailure(err: unknown, targetPath: string): boolean {
+	if (err instanceof InstallTargetNotWritableError) return true
+	const dir = dirname(targetPath)
+	const codes = unwritableInstallCodes()
+	let e: unknown = err
+	for (let depth = 0; e instanceof Error && depth < 10; depth++) {
+		const { code, path, dest } = e as FsFailure
+		if (code !== undefined && codes.includes(code) && [path, dest].some((p) => p !== undefined && isInside(p, dir))) {
+			return true
+		}
+		e = (e as Error & { cause?: unknown }).cause
+	}
+	return false
+}
+
+/** The documented one-liner that reinstalls into a user-writable location:
+ *  install.sh falls back to ~/.local/bin when /usr/local/bin is not writable, and
+ *  install.ps1 installs under %LOCALAPPDATA%\Kimchi by default. */
+function reinstallGuidance(): { where: string; command: string } {
+	if (process.platform === "win32") {
+		return {
+			where: "the installer defaults to %LOCALAPPDATA%\\Kimchi",
+			command: "irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex",
+		}
+	}
+	return {
+		where: "the installer falls back to ~/.local/bin when /usr/local/bin is not writable",
+		command: "curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash",
+	}
+}
+
+/** An unwritable install target is environmental, not a harness bug: the
+ *  in-place update replaces the binary where it runs, so it needs write access
+ *  to that directory. Point at the two ways out. */
+function printUnwritableTargetGuidance(targetPath: string): void {
+	const reinstall = reinstallGuidance()
+	console.error(`kimchi: the install target is not writable: ${dirname(targetPath)}`)
+	console.error("")
+	console.error(`The in-place update replaces the binary where it runs (${targetPath}), so it needs write`)
+	console.error("access to that directory. A read-only filesystem (for example a sandboxed runtime with an")
+	console.error("immutable root) can never be updated in place, and a root-owned install needs a user that")
+	console.error("can write there.")
+	console.error("")
+	console.error("Run the update from an environment where the install location is writable, or")
+	console.error(`reinstall to a user-writable location (${reinstall.where}):`)
+	console.error("")
+	console.error(`  ${reinstall.command}`)
+}
+
 async function checkAndInstall(
 	flags: Pick<UpdateFlags, "canary" | "dryRun" | "force" | "version">,
 	current: string,
@@ -304,11 +389,30 @@ async function checkAndInstall(
 		else console.log(`kimchi: already up to date (${current})`)
 		return 0
 	}
+	// One read of the install target: the dry-run note below and the early exit
+	// + failure mapping after it all describe the same path applyUpdate would
+	// install over.
+	const target = installTargetStatus()
 	if (flags.dryRun) {
 		if (flags.version) console.log(`kimchi: would install ${check.latestVersion} (currently ${current})`)
 		else console.log(`kimchi update available: ${current} → ${check.latestVersion}`)
 		if (check.releaseUrl) console.log(`  ${check.releaseUrl}`)
+		// The dry run predicts the install too: an unwritable target would make the
+		// real update fail (applyUpdate enforces the same gate before downloading).
+		if (!target.writable) {
+			console.log(
+				`  note: the install directory ${dirname(target.targetPath)} is not writable — the update could not be installed`,
+			)
+			console.log("  (read-only filesystem or missing write permission)")
+		}
 		return 0
+	}
+
+	// Fail before the confirmation prompt and the download: the swap cannot
+	// write the binary's directory, so there is nothing to confirm.
+	if (!target.writable) {
+		printUnwritableTargetGuidance(target.targetPath)
+		return 1
 	}
 
 	if (!flags.force) {
@@ -334,6 +438,12 @@ async function checkAndInstall(
 		saveLastInstalled(check.tag)
 	} catch (err) {
 		console.error(`kimchi update: update failed — ${(err as Error).message}`)
+		// An unwritable install location is environmental, not a harness bug:
+		// explain the way out instead of asking for a bug report.
+		if (isUnwritableInstallFailure(err, target.targetPath)) {
+			printUnwritableTargetGuidance(target.targetPath)
+			return 1
+		}
 		console.error("")
 		console.error(
 			"Please copy the error message above and create a bug report at https://github.com/getkimchi/kimchi/issues",

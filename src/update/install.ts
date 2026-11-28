@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process"
 import {
+	accessSync,
 	chmodSync,
 	closeSync,
+	constants,
 	copyFileSync,
 	existsSync,
 	mkdirSync,
@@ -91,6 +93,48 @@ export async function macosCodesignReSign(newPath: string): Promise<void> {
 	if (sign.status !== 0) {
 		const detail = sign.stderr.trim() || sign.error?.message || `exit ${sign.status}`
 		throw new Error(`codesign re-sign failed: ${detail}`)
+	}
+}
+
+/**
+ * Thrown before any download when the install target cannot be written: the
+ * atomic swap below (rename, or its EXDEV copy fallback) writes into the
+ * directory holding the installed binary, so a read-only or otherwise
+ * non-writable install prefix can never be updated in place.
+ */
+export class InstallTargetNotWritableError extends Error {
+	constructor(targetPath: string) {
+		super(
+			`install target not writable: ${dirname(targetPath)} (read-only filesystem or missing write permission); cannot replace ${targetPath}`,
+		)
+		this.name = "InstallTargetNotWritableError"
+	}
+}
+
+/**
+ * Whether the updater can replace a binary at `targetPath`: the swap creates
+ * and renames entries in the directory that holds it, so that directory needs
+ * write and search (x) permission. A missing directory is not itself a verdict
+ * — atomicInstall creates it with `mkdir -p` semantics — so the nearest
+ * existing ancestor decides. False for read-only filesystems (EROFS), missing
+ * permission (EACCES), and paths with no usable ancestor.
+ *
+ * Windows: libuv's access() only consults the read-only attribute (X_OK has no
+ * effect) and always reports a directory as writable, so an ACL-denied
+ * directory passes this check there and the swap's own error path applies.
+ */
+export function isInstallTargetWritable(targetPath: string): boolean {
+	let dir = dirname(targetPath)
+	for (;;) {
+		try {
+			accessSync(dir, constants.W_OK | constants.X_OK)
+			return true
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") return false
+			const parent = dirname(dir)
+			if (parent === dir) return false
+			dir = parent
+		}
 	}
 }
 
