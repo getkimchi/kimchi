@@ -12897,6 +12897,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 			} as unknown as SessionManager,
 			cwd,
 			mode: "rpc",
+			isIdle: vi.fn(() => true),
 			hasUI: true,
 			ui: {
 				notify: vi.fn(),
