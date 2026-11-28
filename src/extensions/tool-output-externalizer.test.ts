@@ -1,22 +1,40 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ToolResultEvent } from "@earendil-works/pi-coding-agent"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
+	DefaultResourceLoader,
+	ExtensionRunner,
+	SessionManager,
+	type ToolResultEvent,
+} from "@earendil-works/pi-coding-agent"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import toolOutputExternalizerExtension, {
 	handleToolResult,
 	hydrateMarkers,
 	hydratePayloadMarkers,
 	type ToolOutputExternalizerState,
 } from "./tool-output-externalizer.js"
-import { createToolOutputStore, parseMarker, TOOL_OUTPUT_EXTERNALIZE_BYTES } from "./tool-output-store.js"
+import {
+	createToolOutputStore,
+	parseMarker,
+	resetToolOutputStoreForTests,
+	setToolOutputStoreForTests,
+	TOOL_OUTPUT_EXTERNALIZE_BYTES,
+} from "./tool-output-store.js"
 
 const ENV_KEYS = ["KIMCHI_TOOL_OUTPUT_STORE", "KIMCHI_TOOL_OUTPUT_EXTERNALIZE_BYTES"]
 const below = "s".repeat(1024)
 const above = "b".repeat(TOOL_OUTPUT_EXTERNALIZE_BYTES + 1)
 
-function resultEvent(toolCallId: string, content: unknown[]): ToolResultEvent {
-	return { type: "tool_result", toolCallId, input: {}, content, isError: false } as ToolResultEvent
+function resultEvent(toolCallId: string, content: unknown[], parentToolCallId?: string): ToolResultEvent {
+	return {
+		type: "tool_result",
+		toolCallId,
+		...(parentToolCallId === undefined ? {} : { parentToolCallId }),
+		input: {},
+		content,
+		isError: false,
+	} as ToolResultEvent
 }
 
 describe("tool-output-externalizer", () => {
@@ -35,6 +53,7 @@ describe("tool-output-externalizer", () => {
 		globalThis.__kimchiSessionFile = undefined
 	})
 	afterEach(() => {
+		resetToolOutputStoreForTests()
 		rmSync(dir, { recursive: true, force: true })
 		for (const key of ENV_KEYS) delete process.env[key]
 		globalThis.__kimchiSessionFile = undefined
@@ -271,5 +290,62 @@ describe("tool-output-externalizer", () => {
 		const snapshot = JSON.stringify(messages)
 		expect(hydrateMarkers(messages, state)).toBe(false)
 		expect(JSON.stringify(messages)).toBe(snapshot)
+	})
+
+	it("leaves oversized nested tool results (parentToolCallId set) untouched", () => {
+		const event = resultEvent("cm_1/1", [{ type: "text", text: above }], "cm_1")
+		expect(handleToolResult(event, state)).toBeUndefined()
+		expect(state.store.stats().size).toBe(0)
+		expect(state.toolCallIdsByMarker.size).toBe(0)
+	})
+
+	it("preserves nested content and structuredContent via ExtensionRunner while externalizing outer calls", async () => {
+		setToolOutputStoreForTests(state.store)
+		const loader = new DefaultResourceLoader({
+			cwd: dir,
+			agentDir: dir,
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			extensionFactories: [toolOutputExternalizerExtension],
+		})
+		await loader.reload()
+		const { extensions, runtime } = loader.getExtensions()
+		const runner = new ExtensionRunner(extensions, runtime, dir, SessionManager.inMemory() as never, {} as never)
+
+		// Nested tool call (e.g. from a codemode script): >64 KiB text + structuredContent stays intact.
+		const nestedEvent = {
+			type: "tool_result" as const,
+			toolName: "big_structured",
+			toolCallId: "cm_1/1",
+			parentToolCallId: "cm_1",
+			input: {},
+			content: [{ type: "text" as const, text: above }],
+			structuredContent: { text: above },
+			details: {},
+			isError: false,
+		}
+		const nestedHookResult = await runner.emitToolResult(nestedEvent)
+		expect(nestedHookResult).toBeUndefined()
+
+		// Outer (top-level) call still externalizes to a marker and hydrates on provider requests.
+		const outerHookResult = await runner.emitToolResult({
+			type: "tool_result",
+			toolName: "codemode",
+			toolCallId: "cm_1",
+			input: {},
+			content: [{ type: "text", text: above }],
+			details: {},
+			isError: false,
+		})
+		const marker = (outerHookResult?.content?.[0] as { text?: string } | undefined)?.text ?? ""
+		expect(parseMarker(marker)).toBeDefined()
+
+		const payload = {
+			messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "cm_1", content: marker }] }],
+		}
+		await runner.emitBeforeProviderRequest(payload)
+		expect(payload.messages[0].content[0].content).toBe(above)
 	})
 })

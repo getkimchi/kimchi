@@ -6,12 +6,38 @@
 // (toolResultContent), so the client always sees the real tool output — this
 // test drives a real binary end-to-end and asserts on the wire shape.
 
+import { fileURLToPath } from "node:url"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { type AcpFixture, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
+import { chatRequests } from "../tui/support/wire-requests.js"
+import { type AcpFixture, PROMPT_TIMEOUT_MS, STARTUP_TIMEOUT_MS, startAcpFixture } from "./support/acp-fixture.js"
 import { newSession, prompt } from "./support/scenarios.js"
+
+const LARGE_NESTED_TOOL_EXTENSION = fileURLToPath(
+	new URL("./support/test-large-nested-tool-extension.js", import.meta.url),
+)
 
 /** The big-output command the fake model asks bash to run (~70 KiB of output). */
 const BIG_OUTPUT_COMMAND = "yes kimchi-e2e-big-output | head -c 70000"
+
+const NESTED_CODEMODE_SCRIPT = [
+	"// @description: Inspect >64 KiB plain and structured nested tool outputs",
+	"const out = await tools.big_text({});",
+	"const structured = await tools.big_structured({});",
+	"return JSON.stringify({",
+	"  type: typeof out,",
+	"  length: out.length,",
+	"  head: out.slice(0, 48),",
+	'  alphaLines: out.split("\\n").filter((l) => l.startsWith("alpha")).length,',
+	"  structuredType: typeof structured,",
+	"  structuredLength: structured && typeof structured === 'object' && typeof structured.text === 'string' ? structured.text.length : null,",
+	"});",
+].join("\n")
+
+const OUTER_CODEMODE_SCRIPT = [
+	'// @options: {"max_output_tokens": 50000}',
+	"// @description: Return >64 KiB text from codemode itself",
+	"return await tools.big_text({});",
+].join("\n")
 
 describe("ACP integration — externalized tool results", () => {
 	let fixture: AcpFixture
@@ -65,4 +91,101 @@ describe("ACP integration — externalized tool results", () => {
 		const content = JSON.stringify(completed)
 		expect(content).toContain("kimchi-e2e-big-output")
 	})
+})
+
+function toolMessageText(fixture: AcpFixture, toolCallId: string): string {
+	for (const req of chatRequests(fixture)) {
+		const messages = (req.body as { messages?: Array<{ role?: string; tool_call_id?: string; content?: unknown }> })
+			?.messages
+		const match = messages?.find((m) => m.role === "tool" && m.tool_call_id === toolCallId)
+		if (match === undefined) continue
+		if (typeof match.content === "string") return match.content
+		if (Array.isArray(match.content)) {
+			return match.content
+				.map((part) => (typeof part === "object" && part !== null && "text" in part ? String(part.text) : ""))
+				.join("")
+		}
+	}
+	throw new Error(`missing tool message for ${toolCallId}`)
+}
+
+describe("ACP integration — codemode nested >64 KiB tool results", () => {
+	let fixture: AcpFixture
+
+	beforeEach(async () => {
+		fixture = await startAcpFixture({
+			artifactName: "codemode-large-tool-result",
+			extensionPath: LARGE_NESTED_TOOL_EXTENSION,
+			responses: [
+				{
+					toolCalls: [
+						{
+							id: "cm-nested",
+							function: { name: "codemode", arguments: JSON.stringify({ code: NESTED_CODEMODE_SCRIPT }) },
+						},
+					],
+				},
+				{ stream: ["Nested codemode complete."] },
+				{
+					toolCalls: [
+						{
+							id: "cm-outer",
+							function: { name: "codemode", arguments: JSON.stringify({ code: OUTER_CODEMODE_SCRIPT }) },
+						},
+					],
+				},
+				{ stream: ["Outer codemode complete."] },
+			],
+		})
+	}, STARTUP_TIMEOUT_MS)
+
+	afterEach(async () => {
+		await fixture.stop()
+	})
+
+	it(
+		"passes >64 KiB plain and structured nested results to codemode while still externalizing outer results",
+		async () => {
+			const sessionId = await newSession(fixture, fixture.workDir)
+
+			const nestedTurn = await prompt(fixture, sessionId, "Run nested large tool codemode")
+			expect(nestedTurn.stopReason).toBe("end_turn")
+
+			const nestedContent = toolMessageText(fixture, "cm-nested")
+			const summaryMatch = nestedContent.match(/\{[\s\S]*\}/)
+			expect(summaryMatch, `expected JSON summary in ${nestedContent}`).toBeTruthy()
+			const summary = JSON.parse(summaryMatch?.[0] ?? "{}") as {
+				type?: string
+				length?: number
+				head?: string
+				alphaLines?: number
+				structuredType?: string
+				structuredLength?: number | null
+			}
+			expect(summary).toEqual({
+				type: "string",
+				length: 137_999,
+				head: "alpha 00000 large tool output line\nbeta 00001 la",
+				alphaLines: 2_000,
+				structuredType: "object",
+				structuredLength: 137_999,
+			})
+
+			// Outer codemode returning >64 KiB still gets externalized cleanly:
+			// no raw marker reaches the ACP wire, and the provider receives the
+			// full hydrated output on the follow-up request.
+			const outerTurn = await prompt(fixture, sessionId, "Return >64 KiB directly from codemode")
+			expect(outerTurn.stopReason).toBe("end_turn")
+
+			const wire = JSON.stringify(fixture.client.sessionUpdates.filter((u) => u.sessionId === sessionId))
+			expect(wire).not.toContain("[kimchi-ext:tool]")
+			expect(wire).not.toContain("[kimchi-ext:log]")
+
+			const outerContent = toolMessageText(fixture, "cm-outer")
+			expect(outerContent).toContain("alpha 00000 large tool output line")
+			expect(outerContent).toContain("beta 03999 large tool output line")
+			expect(outerContent).not.toContain("[kimchi-ext:tool]")
+		},
+		PROMPT_TIMEOUT_MS * 3,
+	)
 })
