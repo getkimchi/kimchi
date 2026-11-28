@@ -256,6 +256,14 @@ export async function postProcessHtmlExportOnce(filePath: string, options?: Expo
 	appendConfigChangeEntries(entries, configChanges)
 	const tabData = collectSubAgentTabData(entries, options?.agentSystemPrompts)
 
+	// The tab payloads own the full transcripts. Keep only the summary records
+	// in the main payload instead of base64-encoding every transcript twice.
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== "subagents:record") continue
+		const recordData = entry.data as { transcript?: unknown } | undefined
+		if (recordData) recordData.transcript = undefined
+	}
+
 	// Redact the complete assembled object graph — fail closed. The walk
 	// returns new structures; assign them.
 	const redactedData = await redactObjectStringsStrict(data)
