@@ -97,6 +97,8 @@ jobs:
         env:
           # Never interpolate workflow inputs directly into run: blocks.
           CALIBRATE: ${{ github.event.inputs.calibrate }}
+          KIMCHI_PERF_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          KIMCHI_PERF_HARNESS_SHA: ${{ github.sha }}
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           if [ "$CALIBRATE" = "true" ]; then

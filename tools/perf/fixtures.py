@@ -25,11 +25,13 @@ import hashlib
 import json
 import os
 import sqlite3
+import shutil
 import subprocess
 import uuid
 
 NS = uuid.UUID("b3a1c0de-0000-4000-8000-000000000000")
-BASE_MS = 1770000000000  # fixed epoch: deterministic timestamps
+BASE_MS = 1793232000000  # 2026-10-29T00:00:00Z: deterministic, within the current billing window
+LEDGER_GENERATION = "ledger-heavy-v2"
 
 LEDGER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -233,6 +235,10 @@ def make_repo(path, name, commits=6, git="git"):
     os.makedirs(home, exist_ok=True)
     with open(os.path.join(home, ".gitconfig"), "w") as g:
         g.write("[user]\n\tname = bench\n\temail = bench@example.com\n[init]\n\tdefaultBranch = main\n")
+    existing = subprocess.run([git, "rev-parse", "--verify", "HEAD"], cwd=path, env=env, check=False,
+                              capture_output=True)
+    if existing.returncode == 0:
+        return path
     for c in (["init", "-q"], ["add", "."]):
         subprocess.run([git] + c, cwd=path, env=env, check=True, capture_output=True)
     for i in range(commits):
@@ -324,6 +330,28 @@ def _commit_body(repo_path, i):
     }
 
 
+def _work_receipt_body(repo_path, i, now_ms):
+    """A work record with a saved-plan continuation: an unconfirmable receipt.
+
+    acceptedContinuation (links.ts) accepts it as a receipt; the plan it names
+    does not exist and no work_link confirmation ever arrives, so the work
+    stays pending forever — the reconcile can never settle to its quiet path.
+    This is the state that makes every pass re-walk the history: the class the
+    ledger scenario gates (pre-incremental reconcile re-reads the whole ledger
+    on every such pass).
+    """
+    return {
+        "version": 1,
+        "type": "work",
+        "workId": _work_id(i % 40),
+        "sessionId": _session_id(i % 12),
+        "cwd": repo_path, "repository": repo_path, "worktree": repo_path,
+        "continuation": {"source": "saved-plan",
+                         "evidence": {"path": f"plan-{i}.md", "contentHash": _sha(f"plan{i}")} },
+        "recordedAt": _iso(now_ms + i),
+    }
+
+
 def _request_body(repo_path, i):
     return {
         "version": 1,
@@ -348,6 +376,65 @@ def _tool_execution_body(repo_path, i):
     }
 
 
+def _mixed_record_body(repo_path, base_url, index):
+    """One record from a linked, priced request group.
+
+    Counts approximate the request/billing/tool record mix. Matching identities,
+    billing selectors and evidence make discovery and price reconciliation work;
+    request-only filler does not exercise those paths at all.
+    """
+    slot = index % 10
+    family = index // 10
+    at = BASE_MS + family * 2000
+    work_id, session_id = _work_id(family % 1834), _session_id(family % 12)
+    request_id = _work_id(5_000_000 + family)
+    account = (
+        {"apiUrl": base_url, "organizationId": _work_id(2_000_000), "userId": _work_id(2_000_001)}
+        if family % 10 == 9
+        else {"apiUrl": "https://app.kimchi.dev/api" if family % 10 < 7 else base_url, **HEALTHY_ACCOUNT}
+    )
+    source = {"apiUrl": account["apiUrl"], "gatewayUrl": f"{base_url}/openai/v1/chat/completions",
+              "credentialHash": _sha("perf-only-api-key")}
+    selector = {"type": "tag", "tag": f"kimchi-request:{request_id}",
+                "startTime": _iso(at - 12 * 60 * 60 * 1000),
+                "endTime": _iso(at + 32 * 24 * 60 * 60 * 1000)}
+    base = {"version": 1, "workId": work_id, "sessionId": session_id,
+            "cwd": repo_path, "repository": repo_path, "worktree": repo_path,
+            "requestId": request_id, "recordedAt": _iso(at),
+            "scope": {"account": account, "repository": repo_path}}
+    if slot == 0:
+        return {**base, "type": "request", "startedAt": _iso(at),
+                "summary": " ".join(f"word{n}" for n in range(140))}
+    if slot == 1:
+        return {**base, "type": "request_dispatch", "startedAt": _iso(at), "dispatchedAt": _iso(at),
+                "billingSource": source, "billingSelector": selector}
+    if slot in (2, 4):
+        return {**base, "type": "request_response", "billingSource": source,
+                "response": {"status": 200, "sequence": slot, "text": " ".join(f"result {n}" for n in range(120))}}
+    if slot == 3:
+        priced = family % 5 != 0
+        return {**base, "type": "request_cost", "billingSource": source, "billingSelector": selector,
+                "billingRows": ([{"id": _work_id(6_000_000 + family), "costUsd": "0.000100000"}] if priced else []),
+                "billingLookup": {"status": "priced" if priced else "pending", "checkedAt": _iso(at),
+                                    "organizationId": account["organizationId"], "userId": account["userId"]}}
+    tool_call_id = f"tool-call-{family}"
+    if slot in (5, 8):
+        path = f"src/module-{family % 30}.ts"
+        return {**base, "type": "tool_execution", "toolCallId": tool_call_id,
+                "toolName": "edit" if slot == 5 else "read", "outcome": "completed",
+                "durationMs": 12.75, "args": {"path": path}, "result": {"content": "fixture result"}}
+    if slot == 6:
+        body = _commit_body(repo_path, index)
+        return {**body, "workId": work_id, "sessionId": session_id, "requestId": request_id}
+    if slot == 7:
+        body = _work_receipt_body(repo_path, family, at)
+        return {**body, "workId": work_id, "sessionId": session_id, "requestId": request_id}
+    return {**base, "type": "file_transition", "transitionId": f"transition-{family}",
+            "toolCallId": tool_call_id, "path": f"src/module-{family % 30}.ts",
+            "before": {"blob": f"{family:040d}", "mode": "100644"},
+            "after": {"blob": f"{family + 1:040d}", "mode": "100644"}}
+
+
 def _costs_note(repo_i, requests=200):
     """A `costs` bookkeeping note in the recorded real-world shape."""
     body = {"version": 1, "workId": _work_id(repo_i), "pullRequests": [], "requests": []}
@@ -369,18 +456,43 @@ def _costs_note(repo_i, requests=200):
     return json.dumps(body)
 
 
+def _seed_outbox_history(con, base_url, count):
+    """Seed retry notes. The SDK warm-up creates request-linked claim histories.
+
+    A large legacy-console-URL key and the current key have the same identity;
+    a genuinely foreign account has only a tiny backlog. All three are backed
+    off, so the timed lane measures retained reads rather than synthetic drain work.
+    """
+    if count < 3:
+        raise ValueError("retained-history fixture needs three accounts")
+    legacy_key = js(["https://app.kimchi.dev/api", HEALTHY_ACCOUNT["organizationId"], HEALTHY_ACCOUNT["userId"]])
+    current_key = js([base_url, HEALTHY_ACCOUNT["organizationId"], HEALTHY_ACCOUNT["userId"]])
+    foreign_key = js([base_url, _work_id(2_000_000), _work_id(2_000_001)])
+    # deliveryRetry requires batchId to match the first batch; this profile
+    # retains unbatched history, hence null. Its future retry keeps every
+    # account quiet while the journal appender continues forcing full passes.
+    for account_key in (legacy_key, current_key, foreign_key):
+        retry = {"batchId": None, "attempts": 3, "retryAt": 4_000_000_000_000,
+                 "error": "heavy-install retained delivery history"}
+        con.execute("INSERT OR REPLACE INTO bookkeeping VALUES (?,?,?,?)",
+                    ("pr-cost-delivery", account_key, js(retry), BASE_MS))
+
+
 def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=40,
-              filler_per_repo=900, producer_id=None):
+              filler_per_repo=900, producer_id=None, journal_count=1, outbox_event_count=0):
     """Seed a kimchi HOME with an aged, reporting-active install.
 
     Layout under <home>/.config/kimchi: config.json + harness/settings.json +
     models.json (fake provider), pr-cost-reporting/ledger.db with work records
     (mirrored into legacy journals, as real installs keep both), bookkeeping
     costs notes, frozen snapshot queues under the 'legacy-pr-cost-snapshots'
-    work id, and pr-cost-reporting/state.json whose queue entries hold
-    pending snapshots the endpoint keeps refusing (403: the key verifies
-    but lacks upload permission), so every pass re-reads and re-serializes
-    them.
+    work id, and pr-cost-reporting/state.json whose queued snapshots keep
+    reporting active.
+
+    journal_count=1 preserves the original compact fixture. A larger count
+    streams records across journals with 2% in the first one, mirroring a
+    heavy install's many small journals plus one large active history without
+    materializing all record bodies in Python.
     """
     producer_id = producer_id or str(uuid.uuid5(NS, "producer"))
     seed_clean_home(home, base_url)
@@ -398,6 +510,39 @@ def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=
         con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('projectionVersion', '1')")
         offset = 0
         for ri, repo in enumerate(repos):
+            if journal_count > 1:
+                # Stream the heavy fixture: one large journal (~2% of records)
+                # and many small ones, with a bounded insert batch and no
+                # million-element list of record dictionaries retained.
+                total = transitions_per_repo + commits_per_repo + 2 * (filler_per_repo // 2)
+                def record_bodies():
+                    for i in range(total):
+                        yield _mixed_record_body(repo, base_url, ri * 1000000 + i)
+                bodies = record_bodies()
+                if total < journal_count:
+                    raise ValueError("heavy fixture needs at least one record per journal")
+                largest = min(total - journal_count + 1, max(1, int(total * 0.02)))
+                remaining = total - largest
+                counts = [largest] + [remaining // (journal_count - 1) + (j < remaining % (journal_count - 1))
+                                      for j in range(journal_count - 1)]
+                for ji, count in enumerate(counts):
+                    path = os.path.join(journals_dir, f"j{ri}-{ji}.jsonl")
+                    offset = 0
+                    rows = []
+                    with open(path, "w") as journal:
+                        for _ in range(count):
+                            body = next(bodies)
+                            text = js(body)
+                            journal.write(text + "\n")
+                            rows.append((_sha(text), body["type"], body["workId"], body["sessionId"], text,
+                                         path, 1, offset, BASE_MS))
+                            offset += len(text.encode()) + 1
+                            if len(rows) == 5000:
+                                con.executemany("INSERT INTO work_records VALUES (?,?,?,?,?,?,?,?,?)", rows)
+                                rows = []
+                    if rows:
+                        con.executemany("INSERT INTO work_records VALUES (?,?,?,?,?,?,?,?,?)", rows)
+                continue
             records = ([_transition_body(repo, ri * 100000 + i) for i in range(transitions_per_repo)] +
                        [_commit_body(repo, ri * 100000 + i) for i in range(commits_per_repo)])
             for kind, gen in (("request", _request_body), ("tool_execution", _tool_execution_body)):
@@ -411,6 +556,8 @@ def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=
                             (_sha(text), body["type"], body["workId"], body["sessionId"], text,
                              f"{journals_dir}/j{ri}.jsonl", 1, offset, BASE_MS))
                 offset += len(text) + 1
+        if outbox_event_count:
+            _seed_outbox_history(con, base_url, outbox_event_count)
         con.commit()
 
         # ---- bookkeeping: costs notes + frozen snapshot queues (big bodies, re-read every pass)
@@ -451,6 +598,216 @@ def aged_home(home, base_url, repos, transitions_per_repo=140, commits_per_repo=
              "producerId": producer_id, "entries": entries}
     json.dump(state, open(os.path.join(pr_cost, "state.json"), "w"))
     return db_path
+
+
+def ledger_projection_health(home):
+    """Whether warm-up produced the state a real, current install keeps.
+
+    Heads must cover every authority work, no work may remain dirty, and every
+    on-disk journal must have a cursor. A busy writer is still warm-up progress;
+    malformed state and missing files are never silently accepted.
+    """
+    agent = os.path.join(home, ".config", "kimchi", "harness")
+    db_path = os.path.join(agent, "pr-cost-reporting", "ledger.db")
+    if not os.path.exists(db_path):
+        return {"ready": False, "reason": "ledger not opened"}
+    try:
+        with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+            works, heads, dirty, cursors = con.execute(
+                "SELECT (SELECT COUNT(DISTINCT work_id) FROM work_records), "
+                "(SELECT COUNT(*) FROM work_projection_head), (SELECT COUNT(*) FROM work_dirty), "
+                "(SELECT COUNT(*) FROM journal_cursor)"
+            ).fetchone()
+    except sqlite3.OperationalError as error:
+        if "locked" not in str(error).lower():
+            raise
+        return {"ready": False, "reason": "ledger writer busy"}
+    journals = []
+    for base, _, names in os.walk(os.path.join(agent, "work-attribution")):
+        journals.extend(os.path.join(base, name) for name in names if name.endswith(".jsonl"))
+    return {"ready": works > 0 and works == heads and dirty == 0 and cursors == len(journals),
+            "works": works, "projection_heads": heads, "dirty_works": dirty,
+            "journal_cursors": cursors, "journals": len(journals)}
+
+
+def ledger_pricing_health(home):
+    """A small fail-closed check that warm-up produced priced billing evidence."""
+    db_path = os.path.join(home, ".config", "kimchi", "harness", "pr-cost-reporting", "ledger.db")
+    if not os.path.exists(db_path):
+        return {"ready": False, "reason": "ledger not opened"}
+    with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+        notes = con.execute("SELECT COUNT(*) FROM bookkeeping WHERE name = 'costs'").fetchone()[0]
+        rows = con.execute("SELECT body FROM bookkeeping WHERE name = 'costs'").fetchall()
+    priced = 0
+    for (body,) in rows:
+        for request in json.loads(body).get("requests", []):
+            if request.get("priceStatus") == "priced":
+                priced += 1
+                break
+        if priced:
+            break
+    return {"ready": priced > 0, "cost_notes": notes, "priced_requests": priced}
+
+
+def validate_warm_home(home):
+    """Fail closed if copied hot state is incomplete or still points at its source."""
+    health = ledger_projection_health(home)
+    if not health["ready"]:
+        raise ValueError(f"incomplete warmed ledger: {health}")
+    pricing = ledger_pricing_health(home)
+    if not pricing["ready"]:
+        raise ValueError(f"warmed ledger lacks priced billing evidence: {pricing}")
+    agent = os.path.join(home, ".config", "kimchi", "harness")
+    db_path = os.path.join(agent, "pr-cost-reporting", "ledger.db")
+    try:
+        with open(os.path.join(agent, "warm-summary.json")) as handle:
+            summary = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"missing or invalid warm summary: {error}") from error
+    if not isinstance(summary, dict) or not isinstance(summary.get("expected_requests"), int) or summary["expected_requests"] < 3:
+        raise ValueError("warm summary lacks a valid expected request count")
+    expected_works = min(summary["expected_requests"], 1834) + 1
+    for key in ("works", "projection_heads"):
+        if health.get(key) != expected_works:
+            raise ValueError(f"warmed work granularity: expected {expected_works} {key}, found {health.get(key)}")
+    with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+        cursors = con.execute("SELECT path, offset FROM journal_cursor").fetchall()
+        for key, sql in (("expected_requests", "SELECT COUNT(*) FROM work_records WHERE type = 'request'"),
+                         ("outbox_events", "SELECT COUNT(*) FROM outbox_events"),
+                         ("outbox_pending", "SELECT COUNT(*) FROM outbox_events WHERE acked_at IS NULL"),
+                         ("outbox_accounts", "SELECT COUNT(DISTINCT account_key) FROM outbox_events")):
+            actual = con.execute(sql).fetchone()[0]
+            if not isinstance(summary.get(key), int) or summary[key] != actual:
+                raise ValueError(f"warmed {key}: summary={summary.get(key)!r}, database={actual}")
+        expected = summary.get("expected_by_account")
+        if not isinstance(expected, dict):
+            raise ValueError("warm summary lacks per-account expectations")
+        actual = {row[0]: {"pending": row[1], "acknowledged": row[2], "events": row[3]}
+                  for row in con.execute("SELECT account_key, SUM(acked_at IS NULL), "
+                                         "SUM(acked_at IS NOT NULL), COUNT(*) FROM outbox_events GROUP BY account_key")}
+        if set(actual) != set(expected):
+            raise ValueError("warm-cache account set does not match the expected history")
+        for key, expected_shape in expected.items():
+            if not isinstance(expected_shape, dict): raise ValueError("invalid per-account expectation")
+            for metric in ("events", "pending", "acknowledged"):
+                if type(expected_shape.get(metric)) is not int or expected_shape[metric] != actual[key][metric]:
+                    raise ValueError(f"warmed account shape: expected {metric}={expected_shape.get(metric)!r}, "
+                                     f"actual={actual[key][metric]}")
+    from sampler import reap_process_tree
+    driver = subprocess.Popen([shutil.which("bun"), os.path.join(os.path.dirname(__file__), "warm-billing.ts"),
+                               agent, "--verify-claims"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+    try:
+        code = reap_process_tree(driver, 90)
+        if code:
+            raise ValueError(f"cached claim verification failed ({code}): {driver.stderr.read()[-600:]}")
+        claims = json.loads(driver.stdout.read())
+        if not claims.get("ok") or claims.get("claims_verified") != 3:
+            raise ValueError(f"cached linked-claim verification failed: {claims}")
+    finally:
+        if driver.poll() is None:
+            reap_process_tree(driver, 0)
+        driver.stdout.close()
+        driver.stderr.close()
+    for path, offset in cursors:
+        if not os.path.isfile(path):
+            raise ValueError("warmed ledger has a cursor for a missing journal")
+        if os.path.getsize(path) < offset:
+            raise ValueError("warmed ledger cursor exceeds its journal size")
+    return health
+
+
+def remap_warm_home(source_home, destination_home):
+    """Copy a warm HOME, preserving ledger and journal identities at its new path.
+
+    Both rows and cursors reference ledger-owned files by absolute path. Update
+    them together with the copied journal dev/ino values; copied ctimes are
+    newer than source cursors, so advance the fast-cache timestamps as well.
+    Callers separately ensure the real binary has completed warm-up.
+    """
+    # The product writes path strings without resolving filesystem symlinks;
+    # preserve that spelling (/var vs /private/var on macOS) while stat uses the OS target.
+    source = os.path.abspath(os.path.join(source_home, ".config", "kimchi", "harness"))
+    destination = os.path.abspath(os.path.join(destination_home, ".config", "kimchi", "harness"))
+    if source == destination:
+        validate_warm_home(destination_home)
+        return
+    validate_warm_home(source_home)
+    shutil.copytree(source, destination,
+                    dirs_exist_ok=True,
+                    copy_function=shutil.copy2,
+                    ignore=shutil.ignore_patterns("ledger.db", "ledger.db-wal", "ledger.db-shm"))
+    source_db = os.path.join(source, "pr-cost-reporting", "ledger.db")
+    destination_db = os.path.join(destination, "pr-cost-reporting", "ledger.db")
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as source_con, \
+            contextlib.closing(sqlite3.connect(destination_db)) as destination_con:
+        source_con.backup(destination_con)
+    os.chmod(destination_db, os.stat(source_db).st_mode & 0o777)
+    prefix = source + "/"
+    with sqlite3.connect(os.path.join(destination, "pr-cost-reporting", "ledger.db")) as con:
+        with con:
+            for table, column in (("work_records", "source_path"), ("bookkeeping", "work_id"),
+                                  ("bookkeeping", "name")):
+                con.execute(
+                    f"UPDATE {table} SET {column} = ? || substr({column}, ?) WHERE substr({column}, 1, ?) = ?",
+                    (destination, len(prefix), len(prefix), prefix),
+                )
+                if con.execute(f"SELECT COUNT(*) FROM {table} WHERE substr({column}, 1, ?) = ?",
+                               (len(prefix), prefix)).fetchone()[0]:
+                    raise ValueError(f"warmed ledger still contains source paths in {table}.{column}")
+            cursor_time = int(time.time() * 1000) + 120_000
+            cursors = con.execute("SELECT path, offset FROM journal_cursor").fetchall()
+            for path, _ in cursors:
+                if not path.startswith(prefix):
+                    raise ValueError(f"journal cursor path outside synthetic home: source={source!r}, cursor={path!r}")
+                replacement = destination + path[len(source):]
+                info = os.stat(replacement)
+                con.execute("UPDATE journal_cursor SET path=?, dev=?, ino=?, updated_at=? WHERE path=?",
+                            (replacement, info.st_dev, info.st_ino, cursor_time, path))
+    validate_warm_home(destination_home)
+
+
+def ledger_shape(home):
+    """Record the heavy fixture actually measured, without reading event bodies."""
+    db_path = os.path.join(home, ".config", "kimchi", "harness", "pr-cost-reporting", "ledger.db")
+    if not os.path.exists(db_path):
+        return None
+    with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+        records, outbox, pending, accounts = con.execute(
+            "SELECT (SELECT COUNT(*) FROM work_records), (SELECT COUNT(*) FROM outbox_events), "
+            "(SELECT COUNT(*) FROM outbox_events WHERE acked_at IS NULL), "
+            "(SELECT COUNT(DISTINCT account_key) FROM outbox_events)"
+        ).fetchone()
+    journal_bytes = []
+    journal_root = os.path.join(home, ".config", "kimchi", "harness", "work-attribution")
+    for base, _, names in os.walk(journal_root):
+        for name in names:
+            if name.endswith(".jsonl"):
+                path = os.path.join(base, name)
+                if os.path.isfile(path):
+                    journal_bytes.append(os.path.getsize(path))
+    return {"work_records": records, "outbox_events": outbox, "outbox_pending": pending,
+            "outbox_accounts": accounts, "journals": len(journal_bytes),
+            "journal_bytes": sum(journal_bytes), "largest_journal_bytes": max(journal_bytes, default=0)}
+
+
+def ledger_index_census(home):
+    """Which indexes exist on work_records/outbox_events after a run.
+
+    Advisory census for the ledger scenario: the additive indexes
+    (work_records_imported, outbox_pending_cover, outbox_batches_by_account)
+    are applied on open by the fixed binary and by nothing else, so their
+    presence after a scenario is proof the binary's ledger path ran against
+    the scaled fixture. Returns a sorted list, or None when no ledger exists
+    (very old releases created none — a sweep finding, not an error)."""
+    db_path = os.path.join(home, ".config", "kimchi", "harness", "pr-cost-reporting", "ledger.db")
+    if not os.path.exists(db_path):
+        return None
+    with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as con:
+        rows = con.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('work_records','outbox_events','outbox_batches')"
+        ).fetchall()
+    return sorted(r[0] for r in rows)
 
 
 def retire_queue_retries(home, horizon_ms=3_600_000):

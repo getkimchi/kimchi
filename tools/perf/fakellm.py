@@ -188,10 +188,14 @@ def make_handler(state: State):
                 if state.upload_failure == "forbidden" and not state.accept_uploads:
                     return self._json(403, {"error": {"code": "PERMISSION_DENIED"}})
                 if state.accept_uploads and isinstance(body, dict):
-                    events = body.get("events") if isinstance(body.get("events"), list) else []
+                    # wireBody sends {"batch": {...}}. Retain the old direct form
+                    # for callers of this fixture, but never return an empty ACK
+                    # for the production envelope.
+                    batch = body.get("batch") if isinstance(body.get("batch"), dict) else body
+                    events = batch.get("events") if isinstance(batch.get("events"), list) else []
                     with state.lock:
                         state.uploads_accepted += 1
-                    return self._json(200, {"batchId": body.get("id"),
+                    return self._json(200, {"batchId": batch.get("id"),
                                             "receiveTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                                             "receipts": [{"id": e.get("id"), "status": "accepted", "revision": e.get("revision")}
                                                          for e in events if isinstance(e, dict)]})

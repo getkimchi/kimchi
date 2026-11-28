@@ -28,6 +28,14 @@ import time
 IS_LINUX = sys.platform.startswith("linux")
 IS_MACOS = sys.platform == "darwin"
 
+
+def enable_child_subreaper():
+    """Keep orphan descendants owned by this scenario on Linux (PR_SET_CHILD_SUBREAPER)."""
+    if IS_LINUX:
+        # Constant and semantics: Linux include/uapi/linux/prctl.h and prctl(2).
+        if ctypes.CDLL(None).prctl(36, 1) != 0:
+            raise OSError("unable to enable child subreaper ownership")
+
 if IS_MACOS:
     libproc = ctypes.CDLL(ctypes.util.find_library("proc"))
     libc = ctypes.CDLL(ctypes.util.find_library("c"))
@@ -220,6 +228,86 @@ def tree(pid):
         out.append(p)
         stack.extend(child_pids(p))
     return out
+
+
+def descendant_process_groups(root_pid):
+    """Owned process-group IDs, including children that created a new session."""
+    output = subprocess.run(["ps", "-axo", "pid=,pgid=,ppid="], capture_output=True, text=True).stdout
+    children = {}
+    for line in output.splitlines():
+        pid, pgid, parent = map(int, line.split())
+        children.setdefault(parent, []).append((pid, pgid))
+    groups, pending = set(), [root_pid]
+    while pending:
+        parent = pending.pop()
+        try:
+            groups.add(os.getpgid(parent))
+        except ProcessLookupError:
+            continue
+        for child_pid, _child_pgid in children.pop(parent, []):
+            pending.append(child_pid)
+    return groups
+
+
+def reap_process_tree(proc, timeout_s, owned_groups=(), force=False):
+    """Wait, or terminate an owned tree, including independent sessions.
+
+    Capture ownership before waiting, freeze the owned groups, then rescan
+    before killing so sessions created during cleanup are included. Never
+    kill the caller's own process group.
+    """
+    groups = set(owned_groups)
+    try:
+        if not force:
+            return proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        pass
+    def refresh_groups():
+        # A reaped PID may belong to a new, unrelated process. A live or
+        # zombie root still has a stable identity for descendant discovery.
+        if proc.returncode is None:
+            groups.update(descendant_process_groups(proc.pid))
+
+    refresh_groups()
+    caller_pgid = os.getpgid(0)
+    def signal_groups(sig):
+        for group in groups:
+            if group == caller_pgid:
+                continue
+            try:
+                os.killpg(group, sig)
+            except ProcessLookupError:
+                pass
+            except PermissionError as error:
+                snapshot = subprocess.run(["ps", "-axo", "pid=,ppid=,pgid=,uid=,stat="],
+                                          capture_output=True, text=True).stdout
+                members = [line.split() for line in snapshot.splitlines()
+                           if line.split() and int(line.split()[2]) == group]
+                if members and all(member[4].startswith("Z") for member in members):
+                    # Darwin rejects SIGSTOP/SIGCONT for a zombie-only group
+                    # with EPERM. No live member needs signaling or can spawn.
+                    continue
+                error.add_note(f"owned-tree cleanup: pid={proc.pid}, group={group}, "
+                               f"caller_pgid={caller_pgid}, groups={sorted(groups)}, "
+                               f"root_returncode={proc.poll()}, members={members}")
+                raise
+
+    try:
+        # Freeze all owned groups, including an already-exited root's, so
+        # descendants cannot create more independent sessions.
+        signal_groups(signal.SIGSTOP)
+        refresh_groups()
+        signal_groups(signal.SIGKILL)
+    finally:
+        # Always reap the driver. A permission failure is not a vanished group,
+        # and must retain its original exception rather than be hidden.
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=10)
+    return 124
 
 
 class GateCgroup:
@@ -542,6 +630,7 @@ class Pty:
         self.proc = subprocess.Popen(argv, env=env, cwd=cwd, stdin=slave, stdout=slave, stderr=slave,
                                      start_new_session=True, close_fds=True)
         os.close(slave)
+        self.group_ids = {self.proc.pid}
         self.buf = bytearray()
         self.lock = threading.Lock()
         self.alive = True
@@ -570,6 +659,10 @@ class Pty:
                     os.write(self.master, b"\x1b[?62;22c")
             except OSError:
                 break
+
+    def owned_groups(self):
+        self.group_ids.update(descendant_process_groups(self.proc.pid))
+        return set(self.group_ids)
 
     def plain(self):
         with self.lock:
