@@ -1,15 +1,22 @@
 // Unit tests for the Cast AI SSO ext-method state machine
-// (`_kimchi.dev/sso_*`). The manager is driven with injected fakes
-// for every IO seam (loopback server, token exchange, org listing, settle
-// tail, clock) so the tests cover the wire contract's outcomes without
-// network, ports, or real time: happy path, multi-org, cancel mid-wait,
-// unknown/expired/consumed requestIds, port busy, per-region pinning, IdP
-// errors, and the one-flow-per-connection rule.
+// (`_kimchi.dev/sso_*`). Most manager cases use injected fakes for every IO
+// seam (loopback server, token exchange, org listing, settle tail, clock), so
+// those tests cover the wire contract's outcomes without network, ports, or
+// real time. The production-listener suite at the end deliberately binds the
+// fixed SSO port. Keep fixed-port integration cases in that suite: test files
+// run in parallel workers, while these cases run sequentially within this file.
 
+import { createServer, type Server } from "node:http"
 import { RequestError } from "@agentclientprotocol/sdk/unstable"
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { CallbackPortInUseError, type CallbackResult, type CallbackServer } from "../../../cli-auth/callback-server.js"
+import {
+	CallbackPortInUseError,
+	type CallbackResult,
+	type CallbackServer,
+	KIMCHI_SSO_CALLBACK_PORT,
+	startCallbackServer as startRealCallbackServer,
+} from "../../../cli-auth/callback-server.js"
 import type { KimchiOrganization } from "../../../cli-auth/oauth.js"
 import type { KimchiOAuthConfig } from "../../../oauth-config.js"
 import { type SsoBeginResponse, type SsoErrorCode, SsoFlowManager, type SsoFlowManagerDeps } from "./sso.js"
@@ -195,46 +202,81 @@ describe("SsoFlowManager", () => {
 			await expectSsoError(h.manager.begin({}), "SSO_UNAVAILABLE_REGION")
 		})
 
-		it("maps a busy callback port to CALLBACK_PORT_BUSY", async () => {
+		it("maps a persistent busy callback port to CALLBACK_PORT_BUSY after exactly two attempts", async () => {
 			const h = makeHarness({
+				portRetryDelayMs: 1,
 				startCallbackServer: vi.fn(async () => {
 					throw new CallbackPortInUseError(8765)
 				}),
 			})
+
 			await expectSsoError(h.manager.begin({}), "CALLBACK_PORT_BUSY")
-			// No drain context (nothing was discarded on this manager): a held
-			// port fails fast, one attempt only.
-			expect(h.startCallbackServer).toHaveBeenCalledTimes(1)
+			expect(h.startCallbackServer).toHaveBeenCalledTimes(2)
+			// A failed begin leaves the manager free for an explicit user retry;
+			// each new begin has its own single-retry budget.
+			await expectSsoError(h.manager.begin({}), "CALLBACK_PORT_BUSY")
+			expect(h.startCallbackServer).toHaveBeenCalledTimes(4)
+		})
+
+		it("returns an ordinary begin response after a transient first busy result", async () => {
+			const h = makeHarness({ portRetryDelayMs: 1 })
+			h.startCallbackServer.mockRejectedValueOnce(new CallbackPortInUseError(8765))
+
+			const begin = await h.manager.begin({})
+
+			expect(begin).toMatchObject({ requestId: expect.any(String) })
+			expect(new URL(begin.authorizeUrl).searchParams.get("redirect_uri")).toBe("http://localhost:8765/callback")
+			expect(h.startCallbackServer).toHaveBeenCalledTimes(2)
 		})
 
 		// closeServer defers socket destruction (~100ms), so a begin immediately
 		// after a cancel/terminal outcome can race the port release. One bounded
-		// retry covers the drain window; a genuinely held port still fails fast.
-		it("retries once through the port drain window after a cancelled flow", async () => {
+		// retry covers the close interval; a held port stops after two attempts.
+		it("retries once through the port close interval after a cancelled flow", async () => {
 			const h = makeHarness({ portRetryDelayMs: 1 })
 			const first = await h.manager.begin({})
 			h.manager.cancel({ requestId: first.requestId })
 			h.startCallbackServer.mockRejectedValueOnce(new CallbackPortInUseError(8765))
 
 			await expect(h.manager.begin({})).resolves.toMatchObject({ requestId: expect.any(String) })
-			expect(h.startCallbackServer).toHaveBeenCalledTimes(3) // first flow + failed retry + retry
+			expect(h.startCallbackServer).toHaveBeenCalledTimes(3) // first flow + failed attempt + retry
 		})
 
-		it("does not retry the drain window when the previous flow ended long ago", async () => {
+		it("does not use manager-local discard history to suppress an injected retry", async () => {
 			const h = makeHarness({ portRetryDelayMs: 1 })
 			const first = await h.manager.begin({})
 			h.manager.cancel({ requestId: first.requestId })
-			h.startCallbackServer.mockRejectedValue(new CallbackPortInUseError(8765))
-			h.clock.now += 5_000 // past the drain window
+			h.startCallbackServer.mockRejectedValueOnce(new CallbackPortInUseError(8765))
 
-			await expectSsoError(h.manager.begin({}), "CALLBACK_PORT_BUSY")
-			expect(h.startCallbackServer).toHaveBeenCalledTimes(2) // attempt + no retry
+			await expect(h.manager.begin({})).resolves.toMatchObject({ requestId: expect.any(String) })
+			expect(h.startCallbackServer).toHaveBeenCalledTimes(3)
 		})
 
 		it("enforces one flow per connection with SSO_IN_PROGRESS", async () => {
 			const h = makeHarness()
 			await h.manager.begin({})
 			await expectSsoError(h.manager.begin({}), "SSO_IN_PROGRESS")
+		})
+
+		it("rejects a concurrent begin while the first begin waits to retry a busy bind", async () => {
+			vi.useFakeTimers()
+			let rejectInitialBind!: (error: CallbackPortInUseError) => void
+			const h = makeHarness()
+			h.startCallbackServer.mockReturnValueOnce(
+				new Promise<CallbackServer>((_, reject) => {
+					rejectInitialBind = reject
+				}),
+			)
+
+			const first = h.manager.begin({})
+			rejectInitialBind(new CallbackPortInUseError(8765))
+			// Flush the rejection into the retry delay without advancing its timer.
+			await vi.advanceTimersByTimeAsync(0)
+
+			await expectSsoError(h.manager.begin({}), "SSO_IN_PROGRESS")
+			await vi.advanceTimersByTimeAsync(250)
+			await expect(first).resolves.toMatchObject({ requestId: expect.any(String) })
+			expect(h.startCallbackServer).toHaveBeenCalledTimes(2)
 		})
 
 		// A browser-phase flow whose sso_await was never called has no expiry
@@ -618,4 +660,144 @@ describe("SsoFlowManager", () => {
 			expect(h.manager.takeSettledCredential()).toBeUndefined()
 		})
 	})
+})
+
+// The contention regression lives at the highest existing seam that includes
+// both the manager policy and the real fixed-port listener. Delays below come
+// only from the production single-retry policy, never from test-side sleeps.
+describe("SsoFlowManager with production callback listeners", () => {
+	function makeRealHarness(): Harness {
+		return makeHarness({ startCallbackServer: startRealCallbackServer })
+	}
+
+	async function completeRecoveredBrowserLeg(h: Harness, begin: SsoBeginResponse): Promise<void> {
+		expect(begin.requestId).toBeTruthy()
+		const authorizeUrl = new URL(begin.authorizeUrl)
+		const redirectUri = authorizeUrl.searchParams.get("redirect_uri")
+		const state = authorizeUrl.searchParams.get("state")
+		expect(redirectUri).toBe(`http://localhost:${KIMCHI_SSO_CALLBACK_PORT}/callback`)
+		expect(state).toMatch(/^[0-9a-f]+$/)
+		if (!redirectUri || !state) throw new Error("recovered authorize URL omitted redirect or state")
+
+		const callbackUrl = new URL(redirectUri)
+		callbackUrl.hostname = "127.0.0.1"
+		callbackUrl.searchParams.set("code", "recovered-code")
+		callbackUrl.searchParams.set("state", state)
+		const response = await fetch(callbackUrl, { signal: AbortSignal.timeout(2_000) })
+		expect(response.status).toBe(200)
+		await expect(h.manager.awaitResult({ requestId: begin.requestId })).resolves.toEqual({
+			status: "authenticated",
+			org: { id: "org-1", name: "Acme" },
+		})
+		expect(h.exchangeAuthorizationCode).toHaveBeenCalledWith(
+			expect.objectContaining({ region: "us" }),
+			"recovered-code",
+			expect.any(String),
+			redirectUri,
+			expect.anything(),
+		)
+		expect(h.manager.takeSettledCredential()).toMatchObject({ org: { id: "org-1", name: "Acme" } })
+	}
+
+	async function startUnrelatedListener(): Promise<Server> {
+		const listener = createServer((_request, response) => {
+			response.writeHead(200, { "Content-Type": "text/plain", Connection: "close" })
+			response.end("unrelated listener")
+		})
+		await new Promise<void>((resolveListen, rejectListen) => {
+			const onError = (error: Error) => rejectListen(error)
+			listener.once("error", onError)
+			listener.listen(KIMCHI_SSO_CALLBACK_PORT, "127.0.0.1", () => {
+				listener.off("error", onError)
+				resolveListen()
+			})
+		})
+		return listener
+	}
+
+	async function closeUnrelatedListener(listener: Server): Promise<void> {
+		if (!listener.listening) return
+		await new Promise<void>((resolveClose) => {
+			listener.closeAllConnections()
+			listener.close(() => resolveClose())
+		})
+	}
+
+	it("fails a raw unrelated listener after the bounded retry without disturbing it", async () => {
+		const listener = await startUnrelatedListener()
+		const h = makeRealHarness()
+		try {
+			const failure = await h.manager.begin({}).then(
+				() => {
+					throw new Error("begin unexpectedly returned a request identifier")
+				},
+				(error: unknown) => error,
+			)
+			expect(failure).toBeInstanceOf(RequestError)
+			expect(failure).not.toHaveProperty("requestId")
+			expect((failure as RequestError).data).toMatchObject({ code: "CALLBACK_PORT_BUSY" })
+			const message = (failure as RequestError).message
+			expect(message).toMatch(/another sign-in or an unrelated application/i)
+			expect(message).toMatch(/wait.*released.*try signing in again/i)
+			expect(message).not.toMatch(/probably by|another Kimchi session|restart/i)
+
+			// The foreign listener was not killed, taken over, or made unusable.
+			const response = await fetch(`http://127.0.0.1:${KIMCHI_SSO_CALLBACK_PORT}/health`, {
+				signal: AbortSignal.timeout(2_000),
+			})
+			expect(response.status).toBe(200)
+			expect(await response.text()).toBe("unrelated listener")
+
+			await closeUnrelatedListener(listener)
+			// No pending flow survived the failed begin, so this immediate explicit
+			// retry reaches the ordinary flow instead of SSO_IN_PROGRESS.
+			const recovered = await h.manager.begin({})
+			await completeRecoveredBrowserLeg(h, recovered)
+		} finally {
+			h.manager.cancel({})
+			await closeUnrelatedListener(listener)
+		}
+	})
+
+	it("keeps the same-manager cancel-then-begin real-listener control", async () => {
+		const h = makeRealHarness()
+		try {
+			const first = await h.manager.begin({})
+			h.manager.cancel({ requestId: first.requestId })
+
+			const retry = await h.manager.begin({})
+			expect(retry.requestId).not.toBe(first.requestId)
+			await completeRecoveredBrowserLeg(h, retry)
+		} finally {
+			h.manager.cancel({})
+		}
+	})
+
+	it("recovers across independent managers for 20 consecutive real-listener iterations", async () => {
+		for (let iteration = 0; iteration < 20; iteration++) {
+			const owner = makeRealHarness()
+			const competing = makeRealHarness()
+			try {
+				await owner.manager.begin({})
+				await expectSsoError(competing.manager.begin({}), "CALLBACK_PORT_BUSY")
+
+				// B's two failed binds did not disturb A's active listener.
+				const activeResponse = await fetch(`http://127.0.0.1:${KIMCHI_SSO_CALLBACK_PORT}/not-a-callback`, {
+					signal: AbortSignal.timeout(2_000),
+				})
+				expect(activeResponse.status).toBe(404)
+
+				owner.manager.cancel({})
+				// Deliberately no sleep: B immediately observes A's deferred close,
+				// then succeeds through its one automatic retry and normal browser leg.
+				// Waiting for a port-released signal here would remove the transient
+				// contention this regression is required to exercise.
+				const recovered = await competing.manager.begin({})
+				await completeRecoveredBrowserLeg(competing, recovered)
+			} finally {
+				owner.manager.cancel({})
+				competing.manager.cancel({})
+			}
+		}
+	}, 60_000)
 })

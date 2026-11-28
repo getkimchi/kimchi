@@ -125,12 +125,7 @@ export const SSO_FLOW_TTL_MS = 600_000
  * spirit as the ACP Agent Auth copy: client-neutral, no terminal wording. */
 const SSO_CALLBACK_SUCCESS_MESSAGE = "Signed in with Cast AI. You can close this window and return to Kimchi."
 
-/** How long after a discard the loopback port may still be draining.
- * closeServer defers socket destruction (~100ms) and server.close() releases
- * the bind asynchronously, so a begin immediately after a cancel/terminal
- * outcome can race the port release. */
-const CALLBACK_PORT_DRAIN_WINDOW_MS = 2_000
-/** How long to wait before the single drain-retry. */
+/** How long to wait before the single automatic retry after a busy bind. */
 const CALLBACK_PORT_RETRY_DELAY_MS = 250
 
 export interface SsoFlowManagerDeps {
@@ -141,11 +136,11 @@ export interface SsoFlowManagerDeps {
 	startCallbackServer: typeof startCallbackServerProd
 	exchangeAuthorizationCode: typeof exchangeAuthorizationCodeProd
 	listUserOrganizations: typeof listUserOrganizationsProd
-	/** Injectable clock for expiry; defaults to Date.now. */
+	/** Injectable clock for flow creation, expiry/reaping, and completion TTL checks. */
 	now?: () => number
 	/** Injectable TTL for tests; defaults to {@link SSO_FLOW_TTL_MS}. */
 	flowTtlMs?: number
-	/** Injectable drain-retry delay for tests; defaults to 250ms. */
+	/** Injectable busy-retry delay for tests; defaults to 250ms. */
 	portRetryDelayMs?: number
 }
 
@@ -185,8 +180,8 @@ function requireStringParam(params: Record<string, unknown>, name: string): stri
  */
 export class SsoFlowManager {
 	private flow?: PendingSsoFlow
-	/** When the last flow was discarded — drives the callback-port drain retry. */
-	private lastDiscardedAtMs = 0
+	/** Holds the begin slot across async listener startup, when flow is not yet assigned. */
+	private beginInFlight = false
 	/** Credential + org from the last successful flow, awaiting the caller's
 	 * settle tail. Consumed by takeSettledCredential(). */
 	private settled?: { credential: OAuthCredentials; org: KimchiOrganization }
@@ -207,6 +202,18 @@ export class SsoFlowManager {
 		// Drop any credential left over by an earlier flow whose settle tail the
 		// caller never picked up — a new login supersedes it.
 		this.settled = undefined
+		if (this.beginInFlight) {
+			throw ssoError("SSO_IN_PROGRESS", "A Cast AI SSO sign-in is already in progress on this connection")
+		}
+		this.beginInFlight = true
+		try {
+			return await this.beginExclusive(params)
+		} finally {
+			this.beginInFlight = false
+		}
+	}
+
+	private async beginExclusive(params: Record<string, unknown>): Promise<SsoBeginResponse> {
 		if (this.flow) {
 			// Reap an expired-but-unreaped flow first: a browser-phase flow whose
 			// sso_await was never called has nothing watching expiresAtMs — without
@@ -244,12 +251,12 @@ export class SsoFlowManager {
 		const state = generateOAuthState()
 		let callbackServer: CallbackServer
 		try {
-			callbackServer = await this.startCallbackServerToleratingDrain(state)
+			callbackServer = await this.startCallbackServerWithBoundedRetry(state)
 		} catch (error) {
 			if (error instanceof CallbackPortInUseError) {
 				throw ssoError(
 					"CALLBACK_PORT_BUSY",
-					`Port ${error.port} is already in use by another Kimchi sign-in. Cancel that sign-in and try again.`,
+					`Port ${error.port} is already in use. Another sign-in or an unrelated application may be using it. Wait for the listener to be released, then try signing in again.`,
 				)
 			}
 			throw error
@@ -487,11 +494,13 @@ export class SsoFlowManager {
 		return Promise.race([promise, expiry]).finally(() => clearTimeout(timer))
 	}
 
-	/** Start the loopback server, retrying once through the drain window: a
-	 * begin immediately after a cancel/terminal outcome can otherwise fail with
-	 * a spurious CALLBACK_PORT_BUSY while the just-closed server releases port
-	 * 8765. A genuinely held port (another Kimchi surface) still fails fast. */
-	private async startCallbackServerToleratingDrain(state: string): Promise<CallbackServer> {
+	/** Start the ACP loopback server with exactly one delayed retry after any
+	 * busy result. This stays ACP-local: #888 preserves terminal/TUI bind policy.
+	 * Listener-close activity can belong to another manager or process,
+	 * so eligibility is based only on the observed bind failure. A second busy
+	 * result escapes to begin and becomes CALLBACK_PORT_BUSY; no background
+	 * retry or polling remains after either outcome. */
+	private async startCallbackServerWithBoundedRetry(state: string): Promise<CallbackServer> {
 		const start = () =>
 			this.deps.startCallbackServer(state, {
 				mode: "code",
@@ -504,8 +513,6 @@ export class SsoFlowManager {
 			return await start()
 		} catch (error) {
 			if (!(error instanceof CallbackPortInUseError)) throw error
-			const now = this.deps.now ?? Date.now
-			if (now() - this.lastDiscardedAtMs >= CALLBACK_PORT_DRAIN_WINDOW_MS) throw error
 			await new Promise((resolve) => setTimeout(resolve, this.deps.portRetryDelayMs ?? CALLBACK_PORT_RETRY_DELAY_MS))
 			return start()
 		}
@@ -517,7 +524,6 @@ export class SsoFlowManager {
 	 * entry. Safe to call twice. */
 	private discard(flow: PendingSsoFlow): void {
 		if (this.flow === flow) this.flow = undefined
-		this.lastDiscardedAtMs = (this.deps.now ?? Date.now)()
 		flow.abortController.abort()
 		try {
 			flow.callbackServer.close()
