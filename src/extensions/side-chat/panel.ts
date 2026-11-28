@@ -20,6 +20,7 @@ import {
 import {
 	type Component,
 	Container,
+	isKeyRelease,
 	ScrollView,
 	Spacer,
 	sliceByColumn,
@@ -40,6 +41,8 @@ import { sideChatFocusHint } from "./shortcuts.js"
 export type SidePanelMode = "chat" | "wrapping" | "review"
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+// Match TuiAltScreen's paging overlap so both panes move by the same amount.
+const PAGE_SCROLL_OVERLAP = 4
 
 /** One themed line recomputed on every render. */
 class DynamicLine implements Component {
@@ -308,6 +311,21 @@ export class SideChatPanel {
 				return
 		}
 		this.host.requestRender()
+	}
+
+	/** Scroll this pane for Page Up/Down only while it owns keyboard focus. */
+	handleKeyboard(data: string): boolean {
+		const pageUp = this.host.keybindings.matches(data, "tui.altScreen.pageUp")
+		const pageDown = this.host.keybindings.matches(data, "tui.altScreen.pageDown")
+		if ((!pageUp && !pageDown) || !this.isFocused) return false
+		if (!isKeyRelease(data)) {
+			const direction = pageUp ? -1 : 1
+			const page = direction * Math.max(1, this.scroll.viewportHeight - PAGE_SCROLL_OVERLAP)
+			if (this.historyOpen) this.history.scrollBy(page)
+			else this.scroll.scrollBy(page)
+			this.host.requestRender()
+		}
+		return true
 	}
 
 	/** Scroll the transcript when the wheel is over this pane; never chain into the main transcript. */

@@ -42,6 +42,7 @@ import { applyFocusChrome } from "./focus-chrome.js"
 import {
 	addCompositor,
 	addFocusGuard,
+	addKeyboardInterceptor,
 	addMouseInterceptor,
 	addWheelInterceptor,
 	getSideChatHost,
@@ -51,6 +52,7 @@ import {
 } from "./harness.js"
 import { SideChatPanel } from "./panel.js"
 import {
+	contentText,
 	historyLabel,
 	readSideChatHistory,
 	SIDE_CHAT_ENTRY_TYPE,
@@ -235,6 +237,14 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 	async function prompt(chat: ActiveSideChat, text: string): Promise<void> {
 		const side = await chat.ready
 		if (!side || active !== chat) return
+		if (side.session.isStreaming) {
+			// Editor.submitValue clears before this callback, while a follow-up's
+			// user-message event arrives only after the active turn settles.
+			// Restore the submitted text until that event acknowledges it.
+			chat.panel.editor.setText(text)
+		} else if (chat.panel.editor.getText() === text) {
+			chat.panel.editor.setText("")
+		}
 		// Count and publish the fact only now, once the ready guard confirms a
 		// live side session: a submit into a chat whose session never started
 		// (createSideSession rejected) is dropped, and a dropped submit must
@@ -318,8 +328,8 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 			return
 		}
 		panel.editor.addToHistory(text)
-		panel.editor.setText("")
 		if (command?.name === "wrap") {
+			panel.editor.setText("")
 			void wrapUp(chat, command.args)
 			return
 		}
@@ -440,6 +450,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 		const restoreBorder = applyFocusChrome(host.mainEditor(), theme, { label: "main" })
 		const removePaint = addCompositor((screen, frame, width) => panel.paint(screen, frame, width))
 		const removeWheel = addWheelInterceptor((x, y, delta) => panel.scrollAt(host.frame(), x, y, delta))
+		const removeKeyboard = addKeyboardInterceptor((data) => panel.handleKeyboard(data))
 		const divider: PaneDivider = new PaneDivider({
 			host,
 			theme,
@@ -476,6 +487,11 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 				}
 				unsubscribe = side.session.subscribe((event) => {
 					panel.handleEvent(event)
+					if (event.type === "message_start" && event.message.role === "user") {
+						// Clear an acknowledged follow-up, but never a newer draft
+						// typed while it was waiting for the active turn to settle.
+						if (panel.editor.getText() === contentText(event.message.content)) panel.editor.setText("")
+					}
 					if (event.type !== "agent_end") return
 					panel.setNotice("")
 					if (chat) saveThread(chat)
@@ -507,6 +523,7 @@ export default function sideChatExtension(pi: ExtensionAPI) {
 				panel.dispose()
 				removePaint()
 				removeWheel()
+				removeKeyboard()
 				removeDividerPaint()
 				removeDividerMouse()
 				removeFocusGuard()

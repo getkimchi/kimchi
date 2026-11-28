@@ -4,7 +4,7 @@
  * Upstream `InteractiveMode` owns the fullscreen layout root and the
  * `TuiAltScreen` renderer owns text selection, and neither exposes an
  * extension API for a second pane. This module patches both prototypes with
- * three small, inert-by-default hooks:
+ * small, inert-by-default hooks:
  *
  * - a host bridge onto the live `InteractiveMode` (layout root swap, focus,
  *   editor theme, markdown theme, tool renderers, active selection text);
@@ -17,7 +17,9 @@
  *   `focusComponent`, and a keyboard-only permission ask has no way back);
  * - wheel interceptors that may consume a wheel scroll before it is routed
  *   (upstream chains leftover wheel delta into the primary transcript even
- *   from an `overscroll: "contain"` view).
+ *   from an `overscroll: "contain"` view);
+ * - keyboard interceptors that may consume input before viewport paging is
+ *   routed to the primary transcript.
  *
  * Nothing changes until an extension registers a compositor/interceptor or
  * mounts a side panel. Upstream internals touched here are private members of
@@ -106,12 +108,14 @@ export interface SelectionBounds {
 }
 
 export type Compositor = (screen: string[], frame: Frame, width: number) => string[]
+export type KeyboardInterceptor = (data: string) => boolean
 export type MouseInterceptor = (event: RawMouseEvent) => boolean
 export type WheelInterceptor = (x: number, y: number, delta: number) => boolean
 /** Names a modal dialog that must keep keyboard focus (typically `SideChatHost.modalDialog`), or undefined. */
 export type FocusGuard = () => Component | undefined
 
 const compositors = new Set<Compositor>()
+const keyboardInterceptors = new Set<KeyboardInterceptor>()
 const mouseInterceptors = new Set<MouseInterceptor>()
 const wheelInterceptors = new Set<WheelInterceptor>()
 const focusGuards = new Set<FocusGuard>()
@@ -119,6 +123,11 @@ const focusGuards = new Set<FocusGuard>()
 export function addCompositor(compositor: Compositor): () => void {
 	compositors.add(compositor)
 	return () => compositors.delete(compositor)
+}
+
+export function addKeyboardInterceptor(interceptor: KeyboardInterceptor): () => void {
+	keyboardInterceptors.add(interceptor)
+	return () => keyboardInterceptors.delete(interceptor)
 }
 
 export function addMouseInterceptor(interceptor: MouseInterceptor): () => void {
@@ -141,6 +150,14 @@ export function applyCompositors(screen: string[], frame: Frame, width: number):
 	let result = screen
 	for (const compositor of compositors) result = compositor(result, frame, width)
 	return result
+}
+
+/** Offer keyboard input to the interceptors; true when one consumed it. */
+export function interceptKeyboard(data: string): boolean {
+	for (const interceptor of keyboardInterceptors) {
+		if (interceptor(data)) return true
+	}
+	return false
 }
 
 /** Offer a raw mouse event to the interceptors; true when one consumed it. */
@@ -207,6 +224,7 @@ interface AltScreenInternals {
 	getSelectionBounds(): SelectionBounds | undefined
 	getActiveSelectionText(): string | undefined
 	compositeScrollToEndIndicator(screen: string[], layout: Frame, width: number): string[]
+	handleViewportInput(data: string): { consume: boolean } | undefined
 	handleMouseEvent(event: RawMouseEvent): void
 	routeWheel(event: { x: number; y: number }, delta: number): void
 	requestRender(): void
@@ -247,6 +265,7 @@ let installState: "pending" | "installed" | "incompatible" = "pending"
 
 const PATCHED_ALT_SCREEN_METHODS = [
 	"compositeScrollToEndIndicator",
+	"handleViewportInput",
 	"handleMouseEvent",
 	"routeWheel",
 	"getSelectionBounds",
@@ -296,6 +315,12 @@ export function installSideChatHarnessPatch(): boolean {
 		width: number,
 	) {
 		return applyCompositors(originalComposite.call(this, screen, layout, width), layout, width)
+	}
+
+	const originalHandleViewportInput = altProto.handleViewportInput
+	altProto.handleViewportInput = function patchedHandleViewportInput(this: AltScreenInternals, data: string) {
+		if (interceptKeyboard(data)) return { consume: true }
+		return originalHandleViewportInput.call(this, data)
 	}
 
 	const originalHandleMouse = altProto.handleMouseEvent
