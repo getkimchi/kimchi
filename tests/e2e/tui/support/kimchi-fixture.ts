@@ -215,6 +215,12 @@ export interface CreateKimchiFixtureOptions {
 	 * scrollback the hermetic assertions read.
 	 */
 	sessionTuiMode?: "regular" | "fullscreen"
+	/**
+	 * Leave the one-time fullscreen migration pending (default: false). The
+	 * fixture otherwise pre-writes its completion marker so the seeded
+	 * `tuiMode` holds; only the migration's own scenario opts in.
+	 */
+	pendingFullscreenMigration?: boolean
 }
 
 export type RunKimchiSessionOptions = CreateKimchiFixtureOptions & {
@@ -317,6 +323,16 @@ export async function createKimchiFixture(options: CreateKimchiFixtureOptions): 
 			...(seedIsResult ? ((rawSeed as SeedHomeResult).env ?? {}) : {}),
 		}
 		const seedResult = seedIsResult ? (rawSeed as SeedHomeResult).data : rawSeed
+
+		// Mark the one-time fullscreen migration done so it cannot flip the
+		// seeded regular mode on first launch (src/tui-one-time-fullscreen.ts).
+		if (options.pendingFullscreenMigration !== true) {
+			writeFileSync(
+				join(agentDir, "one-time-fullscreen.json"),
+				JSON.stringify({ switchedAt: "2026-01-01T00:00:00.000Z" }),
+				"utf-8",
+			)
+		}
 
 		// Pre-record a persisted trust decision for the workDir when its seeded
 		// content is trust-requiring (so the gate does not block tests that
