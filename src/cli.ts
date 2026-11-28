@@ -211,6 +211,7 @@ import {
 	prepareProviderRequest,
 	recordProviderResponse,
 } from "./extensions/work-attribution.js"
+import workspaceActivityExtension from "./extensions/workspace-activity/index.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
 import { installGlobalFetchInstrumentation } from "./http/instrument-fetch.js"
 import {
@@ -1089,6 +1090,7 @@ async function cliMain(): Promise<void> {
 				remoteRunExtension,
 				prWatchExtension,
 				telemetryExtension(telemetryConfig),
+				workspaceActivityExtension(),
 				sessionMetadataExtension(),
 				surveysExtension(),
 				toolRenderingExtension,
