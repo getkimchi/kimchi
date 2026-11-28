@@ -136,7 +136,7 @@ export interface SsoFlowManagerDeps {
 	startCallbackServer: typeof startCallbackServerProd
 	exchangeAuthorizationCode: typeof exchangeAuthorizationCodeProd
 	listUserOrganizations: typeof listUserOrganizationsProd
-	/** Injectable clock for expiry; defaults to Date.now. */
+	/** Injectable clock for flow creation, expiry/reaping, and completion TTL checks. */
 	now?: () => number
 	/** Injectable TTL for tests; defaults to {@link SSO_FLOW_TTL_MS}. */
 	flowTtlMs?: number
@@ -180,6 +180,8 @@ function requireStringParam(params: Record<string, unknown>, name: string): stri
  */
 export class SsoFlowManager {
 	private flow?: PendingSsoFlow
+	/** Holds the begin slot across async listener startup, when flow is not yet assigned. */
+	private beginInFlight = false
 	/** Credential + org from the last successful flow, awaiting the caller's
 	 * settle tail. Consumed by takeSettledCredential(). */
 	private settled?: { credential: OAuthCredentials; org: KimchiOrganization }
@@ -200,6 +202,18 @@ export class SsoFlowManager {
 		// Drop any credential left over by an earlier flow whose settle tail the
 		// caller never picked up — a new login supersedes it.
 		this.settled = undefined
+		if (this.beginInFlight) {
+			throw ssoError("SSO_IN_PROGRESS", "A Cast AI SSO sign-in is already in progress on this connection")
+		}
+		this.beginInFlight = true
+		try {
+			return await this.beginExclusive(params)
+		} finally {
+			this.beginInFlight = false
+		}
+	}
+
+	private async beginExclusive(params: Record<string, unknown>): Promise<SsoBeginResponse> {
 		if (this.flow) {
 			// Reap an expired-but-unreaped flow first: a browser-phase flow whose
 			// sso_await was never called has nothing watching expiresAtMs — without
@@ -480,8 +494,9 @@ export class SsoFlowManager {
 		return Promise.race([promise, expiry]).finally(() => clearTimeout(timer))
 	}
 
-	/** Start the loopback server with exactly one delayed retry after any busy
-	 * result. Listener-close activity can belong to another manager or process,
+	/** Start the ACP loopback server with exactly one delayed retry after any
+	 * busy result. This stays ACP-local: #888 preserves terminal/TUI bind policy.
+	 * Listener-close activity can belong to another manager or process,
 	 * so eligibility is based only on the observed bind failure. A second busy
 	 * result escapes to begin and becomes CALLBACK_PORT_BUSY; no background
 	 * retry or polling remains after either outcome. */

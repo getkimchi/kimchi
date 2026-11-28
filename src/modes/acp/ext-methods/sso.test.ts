@@ -246,7 +246,6 @@ describe("SsoFlowManager", () => {
 			const h = makeHarness({ portRetryDelayMs: 1 })
 			const first = await h.manager.begin({})
 			h.manager.cancel({ requestId: first.requestId })
-			h.clock.now += 5_000
 			h.startCallbackServer.mockRejectedValueOnce(new CallbackPortInUseError(8765))
 
 			await expect(h.manager.begin({})).resolves.toMatchObject({ requestId: expect.any(String) })
@@ -257,6 +256,27 @@ describe("SsoFlowManager", () => {
 			const h = makeHarness()
 			await h.manager.begin({})
 			await expectSsoError(h.manager.begin({}), "SSO_IN_PROGRESS")
+		})
+
+		it("rejects a concurrent begin while the first begin waits to retry a busy bind", async () => {
+			vi.useFakeTimers()
+			let rejectInitialBind!: (error: CallbackPortInUseError) => void
+			const h = makeHarness()
+			h.startCallbackServer.mockReturnValueOnce(
+				new Promise<CallbackServer>((_, reject) => {
+					rejectInitialBind = reject
+				}),
+			)
+
+			const first = h.manager.begin({})
+			rejectInitialBind(new CallbackPortInUseError(8765))
+			// Flush the rejection into the retry delay without advancing its timer.
+			await vi.advanceTimersByTimeAsync(0)
+
+			await expectSsoError(h.manager.begin({}), "SSO_IN_PROGRESS")
+			await vi.advanceTimersByTimeAsync(250)
+			await expect(first).resolves.toMatchObject({ requestId: expect.any(String) })
+			expect(h.startCallbackServer).toHaveBeenCalledTimes(2)
 		})
 
 		// A browser-phase flow whose sso_await was never called has no expiry
